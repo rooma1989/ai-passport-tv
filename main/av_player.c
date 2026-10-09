@@ -3242,7 +3242,16 @@ static void process_key(const key_ev_t *item) {
         }
         return;
     }
-    if (item->ev==BSP_BTN_LONG) {
+    // Which arrow gesture means volume is a board fact: the Xingzhi case prints
+    // VOL+/VOL- on these keys, so there a click steps the volume and a long press
+    // changes channel -- the Passport's mapping swapped. Only click and long press
+    // trade places; the double-click below means the same on every board.
+    bsp_btn_ev_t arrow_ev=item->ev;
+#if BSP_ARROW_CLICK_IS_VOLUME
+    if (arrow_ev==BSP_BTN_CLICK) arrow_ev=BSP_BTN_LONG;
+    else if (arrow_ev==BSP_BTN_LONG) arrow_ev=BSP_BTN_CLICK;
+#endif
+    if (arrow_ev==BSP_BTN_LONG) {
         // Long press steps the volume, ten percent at a time.
         //
         // It was five, and that read as "the button does nothing": the codec
@@ -3275,7 +3284,7 @@ static void process_key(const key_ev_t *item) {
         ui_menu_open_status(&s.menu);
         return;
     }
-    if (item->ev!=BSP_BTN_CLICK) return;
+    if (arrow_ev!=BSP_BTN_CLICK) return;
     // A click steps through the server-provided list. With no list yet (the
     // first CONFIG has not arrived) the gesture is ignored rather than guessed.
     // Work out the neighbouring channel and copy its id, all inside the lock the

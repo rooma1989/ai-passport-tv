@@ -47,6 +47,8 @@
 // 外壳右侧从上到下:音量- / 音量+ / BOOT / 复位(电源)。最下面那个是硬件键,MCU 读不到。
 // ============================================================================
 #define BSP_BTN_COUNT        3
+// 播放时上/下键:短按调音量(外壳上就标着音量+/-)、长按换台。与 Passport 相反。
+#define BSP_ARROW_CLICK_IS_VOLUME 1
 #define BSP_BTN_GPIO_UP      40          // 外壳上的"音量+"
 #define BSP_BTN_GPIO_DOWN    39          // 外壳上的"音量-"
 #define BSP_BTN_GPIO_OK      0           // BOOT 键,也是下载模式的 strapping 脚
