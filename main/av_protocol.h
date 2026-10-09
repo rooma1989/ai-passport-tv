@@ -4,6 +4,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "av_adpcm.h"
+// Board selection reaches this header through sdkconfig on the device; host
+// tests have no sdkconfig and get the Passport geometry.
+#if __has_include("sdkconfig.h")
+#include "sdkconfig.h"
+#endif
 #define AV_HEADER_BYTES 24u
 // Control payload ceiling. It has to hold the channel list, which the server
 // sends in the CONFIG packet: about 47 bytes of JSON per channel plus the fixed
@@ -76,8 +81,16 @@
 #define AV_AUDIO_SAMPLES 640u
 #define AV_AUDIO_PCM_BYTES (AV_AUDIO_SAMPLES * 2u)
 #define AV_AUDIO_BYTES (AV_ADPCM_HEADER_BYTES + AV_AUDIO_SAMPLES / 2u)
+// Per-board values come in pairs, Passport first: tools/check_config_agreement.py
+// reads the first definition for the Passport and the second for the Xingzhi
+// board (AV_BOARD=xingzhi-cube-154). Keep that order.
+#if !defined(CONFIG_AV_BOARD_XINGZHI_CUBE_154)
 #define AV_WIDTH 320u
 #define AV_HEIGHT 240u
+#else
+#define AV_WIDTH 240u
+#define AV_HEIGHT 240u
+#endif
 // How much picture arrives, and how much the device makes of it.
 //
 // The ratio in force is 1/1: the picture arrives at the panel's own size and
@@ -92,8 +105,22 @@
 //
 // The cost is real and is paid in frame rate: a native frame is 20.4 kB against
 // 12.1 kB at 240x180, so the same link carries about half as many of them.
+#if !defined(CONFIG_AV_BOARD_XINGZHI_CUBE_154)
 #define AV_VIDEO_WIDTH 320u
 #define AV_VIDEO_HEIGHT 180u
+#else
+// The server fits a 16:9 source into 240x180 without cropping, so 240x135 of
+// picture shows, centred on the square panel.
+#define AV_VIDEO_WIDTH 240u
+#define AV_VIDEO_HEIGHT 180u
+#endif
+// Whole-panel SPI time at 80 MHz, in whole ms: 320*240*16/80e6 = 15.36,
+// 240*240*16/80e6 = 11.52. av_player.c asserts its own computation against it.
+#if !defined(CONFIG_AV_BOARD_XINGZHI_CUBE_154)
+#define AV_PANEL_FLOOR_MS 15u
+#else
+#define AV_PANEL_FLOOR_MS 11u
+#endif
 // Rows the picture supplies per stripe. Distinct from AV_STRIPE_ROWS, which is
 // what the panel takes: one is the input to the enlargement and the other is its
 // output, and they are equal exactly when the ratio is one.

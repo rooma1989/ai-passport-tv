@@ -143,6 +143,7 @@ run_static_checks() {
     # a network fault rather than as a rejected configuration. It cost an
     # evening. Nothing else connects these two files, so this does.
     python3 tools/check_config_agreement.py
+    TV_GEOMETRY=240x180 AV_BOARD=xingzhi-cube-154 python3 tools/check_config_agreement.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

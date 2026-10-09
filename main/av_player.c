@@ -176,7 +176,7 @@ _Static_assert(AV_PALETTE_ENTRIES == 256, "An 8-bit index needs 256 colours");
 // 320*240*2*8 bits at 80 MHz is 15360 us. Checked as a whole millisecond figure,
 // since the integer division truncates it to 15.
 #define PANEL_FLOOR_MS ((AV_WIDTH * AV_HEIGHT * 2 * 8) * 1000u / BSP_LCD_PCLK_HZ)
-_Static_assert(PANEL_FLOOR_MS == 15u,
+_Static_assert(PANEL_FLOOR_MS == AV_PANEL_FLOOR_MS,
                "The panel floor changed: every per-frame figure is compared against it");
 static const char *TAG = "av_raw";
 // What a session knows about reaching the server.

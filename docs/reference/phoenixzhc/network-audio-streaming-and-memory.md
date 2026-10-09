@@ -25,7 +25,7 @@ The authoritative pin and bus definitions are in
 | I2S data | DOUT GPIO2, DIN GPIO4 |
 | Display | ST7789P3, 240 × 320 |
 
-Use [`bsp_audio`](../../../components/bsp/src/bsp_audio.c) as the owner of the
+Use [`bsp_audio`](../../../components/bsp/src/passport/bsp_audio.c) as the owner of the
 codec and I2S channels. PCM reads and writes are blocking operations and belong
 in worker tasks, never in LVGL or button callbacks.
 

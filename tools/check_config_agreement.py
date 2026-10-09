@@ -21,6 +21,7 @@ rebuilds the values by hand agrees with itself and proves nothing.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -35,12 +36,24 @@ from server.tv_server import CONFIG            # noqa: E402
 HEADER = ROOT / "main" / "av_protocol.h"
 
 
+BOARD = os.environ.get("AV_BOARD", "passport")
+BOARD_INDEX = {"passport": 0, "xingzhi-cube-154": 1}
+
+
 def firmware_constant(name: str) -> int:
-    """A #define from the protocol header, as an integer."""
-    match = re.search(rf"^#define {name}\s+(\d+)u?", HEADER.read_text(), re.M)
-    if not match:
+    """A #define from the protocol header, as an integer.
+
+    Board-specific constants are defined once per board, Passport first, inside
+    `#if !defined(CONFIG_AV_BOARD_XINGZHI_CUBE_154)`. AV_BOARD picks which one
+    the server is checked against; a constant defined once is shared.
+    """
+    if BOARD not in BOARD_INDEX:
+        raise SystemExit(f"AV_BOARD={BOARD} is not a board: choose one of "
+                         f"{', '.join(BOARD_INDEX)}")
+    found = re.findall(rf"^#define {name}\s+(\d+)u?", HEADER.read_text(), re.M)
+    if not found:
         raise SystemExit(f"{name} is not defined in {HEADER}")
-    return int(match.group(1))
+    return int(found[min(BOARD_INDEX[BOARD], len(found) - 1)])
 
 
 # Every field the device checks against a firmware constant. The names on the
