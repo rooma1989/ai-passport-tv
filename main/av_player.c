@@ -543,6 +543,15 @@ static atomic_bool s_setup_active;
 // The viewer asked to leave setup. Read by the setup loop, which owns the
 // decision to go back to playback.
 static atomic_bool s_setup_leave;
+// Which setup page is showing. Turned by the arrows while setup is up.
+static atomic_uint s_setup_page;
+// The setup pages, in order. The help page is there only when a help URL was
+// compiled in; without it the cycle is join, open, status.
+enum { SETUP_PAGE_JOIN, SETUP_PAGE_OPEN, SETUP_PAGE_HELP, SETUP_PAGE_STATUS };
+static unsigned setup_page_count(void) { return AV_HELP_URL[0] ? 4u : 3u; }
+static unsigned setup_page_kind(unsigned index) {
+    return (!AV_HELP_URL[0] && index>=SETUP_PAGE_HELP) ? SETUP_PAGE_STATUS : index;
+}
 // The viewer asked to open the setup screen, set from the status page and
 // consumed at a session boundary -- the same shape as switch_pending, and for
 // the same reason: the request arrives while a session is running, and the
@@ -1968,6 +1977,35 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
             ui_text_draw(surface,14,y,status_text[i],
                          i==STATUS_LINES-1u?UI_COLOR_DIM:UI_COLOR_TEXT,UI_COLOR_BACKDROP);
         }
+        // A code for the help page under the lines, at the right, with what it
+        // is for to its left. Encoded the first time the page is drawn and kept:
+        // the URL is a compile-time constant. Only a version-1 code fits above
+        // the bottom bar, which is why the URL is kept short and upper case.
+        if (AV_HELP_URL[0]) {
+            static uint8_t help_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+            static uint8_t help_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+            static int help_state;   // 0 not tried, 1 encoded, -1 failed
+            if (!help_state) {
+                help_state=qrcodegen_encodeText(AV_HELP_URL,help_tmp,help_qr,qrcodegen_Ecc_LOW,1,6,
+                                                qrcodegen_Mask_AUTO,true) ? 1 : -1;
+            }
+            const int top=header+8+(int)STATUS_LINES*line;
+            const int limit=(int)AV_HEIGHT-(int)AV_VIDEO_Y_OFFSET;
+            if (help_state>0) {
+                const int modules=qrcodegen_getSize(help_qr)+2*UI_QR_QUIET;
+                const int scale=top+modules*3<=limit ? 3 : 2;
+                const int side=modules*scale;
+                if (top+side<=limit) {
+                    ui_qr_draw(surface,(int)AV_WIDTH-14-side,top,scale,help_qr);
+                    static const char *const caption[2]={ "扫码看", "使用说明" };
+                    for (unsigned i=0;i<2u;i++) {
+                        const int y=top+side/2-(int)UI_TEXT_LINE_H-UI_TEXT_PAD_Y+(int)i*line;
+                        if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
+                        ui_text_draw(surface,14,y,caption[i],UI_COLOR_DIM,UI_COLOR_BACKDROP);
+                    }
+                }
+            }
+        }
     }
     #undef LINE_HEIGHT
     #undef LINE_TOP_PAD
@@ -3189,6 +3227,11 @@ static void process_key(const key_ev_t *item) {
     if (atomic_load(&s_setup_active)) {
         if (item->key==BSP_BTN_OK && item->ev==BSP_BTN_LONG) {
             atomic_store(&s_setup_leave,true);
+        } else if (item->key!=BSP_BTN_OK && item->ev==BSP_BTN_CLICK) {
+            // Turn the page: UP back, DOWN forward, wrapping at either end.
+            const unsigned count=setup_page_count();
+            const unsigned page=atomic_load(&s_setup_page)%count;
+            atomic_store(&s_setup_page,(page+(up?count-1u:1u))%count);
         }
         return;
     }
@@ -3408,12 +3451,14 @@ static bool pump_keys(uint32_t wait_ms);
 // fit -- so there is nothing of the session's left to draw into. It must be
 // STRIPE_BYTES long: this writes a whole stripe into it, and a shorter buffer is
 // a silent overwrite of whatever follows it in memory.
-static bool paint_setup_screen(uint8_t *buffer, bool client_ready)
+static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page)
 {
     char ssid[64] = {0};
     char url[64] = {0};
     av_provision_ap_name(ssid,sizeof(ssid));
     av_provision_ap_url(url,sizeof(url));
+    // The address without its scheme, for reading off the screen and typing.
+    const char *host=strncmp(url,"http://",7)==0 ? url+7 : url;
 
     // The text on this screen, in reading order. Laid out as data because the
     // stripe loop below has to know where every line is before it starts: a
@@ -3449,45 +3494,61 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready)
     } else {
         snprintf(server,sizeof(server),"服务器 未设置");
     }
-    // Two QR codes when they can be made: the left one joins the hotspot (a
-    // phone camera recognises the WIFI: form), the right one opens the setup
-    // page, which the phone does not always offer on its own once joined. The
-    // buffers are static because this runs on the main task, whose stack is
-    // 3.5 KB; it is painted only when the screen's state changes.
-    static uint8_t qr_join[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
-    static uint8_t qr_page[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    // One page at a time, turned with the arrows: a single code drawn large is
+    // easier to scan than two small ones, and each page then has room to say
+    // what its code is for.
+    const unsigned count=setup_page_count();
+    if (page>=count) page=0;
+    const unsigned kind=setup_page_kind(page);
+    static const char *const titles[]={ "连接设备热点", "打开配网页", "使用说明", "当前状态" };
+    char title[48];
+    snprintf(title,sizeof(title),"%u/%u %s",page+1u,count,titles[kind]);
+    const int footer_y=(int)AV_HEIGHT-26;
+
+    // The page's code, encoded into static buffers: this runs on the main task,
+    // whose stack is 3.5 KB, and only when the page or its state changes.
+    static uint8_t qr_code[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
     static uint8_t qr_temp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
-    char join[96];
+    char payload[96]={0};
+    char caption[96]={0};
+    if (kind==SETUP_PAGE_JOIN) {
+        // A phone camera joins the hotspot from this form; WeChat's scanner
+        // cannot, which is why the caption names the camera.
+        if (!ui_qr_wifi_text(payload,sizeof(payload),ssid)) payload[0]='\0';
+        snprintf(caption,sizeof(caption),"相机扫码，或连 %s",ssid);
+    } else if (kind==SETUP_PAGE_OPEN) {
+        snprintf(payload,sizeof(payload),"%s",url);
+        snprintf(caption,sizeof(caption),"扫码，或打开 %s",host);
+    } else if (kind==SETUP_PAGE_HELP) {
+        snprintf(payload,sizeof(payload),"%s",AV_HELP_URL);
+        snprintf(caption,sizeof(caption),"扫码看按键说明，微信可扫");
+    }
     ui_qr_layout_t qr={0};
-    const bool have_qr=ui_qr_wifi_text(join,sizeof(join),ssid) &&
-        qrcodegen_encodeText(join,qr_temp,qr_join,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true) &&
-        qrcodegen_encodeText(url,qr_temp,qr_page,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true) &&
-        ui_qr_layout((int)AV_WIDTH,6,qrcodegen_getSize(qr_join),qrcodegen_getSize(qr_page),&qr);
-    const int caption_y=qr.y+qr.side_a+4;
-    const line_t qr_lines[] = {
-        { caption_y,    "①扫码连热点", UI_COLOR_TEXT, qr.x_a+qr.side_a/2 },
-        { caption_y,    "②扫码配网",   UI_COLOR_TEXT, qr.x_b+qr.side_b/2 },
-        { caption_y+30, server,        UI_COLOR_DIM,  -1 },
-        { caption_y+56, state,         UI_COLOR_DIM,  -1 },
-        { caption_y+84, "长按 OK 退出", UI_COLOR_DIM,  -1 },
-    };
-    // Positions are 24 apart, the height a line actually occupies
-    // (UI_TEXT_LINE_H plus a pad top and bottom). Closer than that and the
-    // opaque boxes behind two labels overlap. Used when the codes cannot be
-    // made, which leaves the viewer the old way in.
-    const line_t text_lines[] = {
-        { 12, "配网模式",      UI_COLOR_TEXT, -1 },
-        { 40, "请连接此网络：", UI_COLOR_DIM,  -1 },
-        { 64, ssid,            UI_COLOR_TEXT, -1 },
-        {100, "打开此地址：",   UI_COLOR_DIM,  -1 },
-        {124, url,             UI_COLOR_TEXT, -1 },
-        {158, server,          UI_COLOR_DIM,  -1 },
-        {190, state,           UI_COLOR_DIM,  -1 },
-        {216, "长按 OK 退出",  UI_COLOR_DIM,  -1 },
-    };
-    const line_t *lines=have_qr ? qr_lines : text_lines;
-    const unsigned line_count=have_qr ? sizeof(qr_lines)/sizeof(qr_lines[0])
-                                      : sizeof(text_lines)/sizeof(text_lines[0]);
+    const bool have_qr=payload[0] &&
+        qrcodegen_encodeText(payload,qr_temp,qr_code,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true) &&
+        ui_qr_layout_single((int)AV_WIDTH,32,qrcodegen_getSize(qr_code),footer_y-32-34,&qr);
+    char caption_fit[sizeof(caption)];
+    if (!ui_text_truncate(caption_fit,sizeof(caption_fit),caption,(int)AV_WIDTH-24)) {
+        snprintf(caption_fit,sizeof(caption_fit),"%s",caption);
+    }
+    char hotspot[96], address_line[96];
+    snprintf(hotspot,sizeof(hotspot),"热点 %s",ssid);
+    snprintf(address_line,sizeof(address_line),"配网 %s",host);
+
+    line_t lines[7];
+    unsigned line_count=0;
+    lines[line_count++]=(line_t){ 4, title, UI_COLOR_TEXT, -1 };
+    if (have_qr) {
+        lines[line_count++]=(line_t){ qr.y+qr.side_a+6, caption_fit, UI_COLOR_TEXT, -1 };
+    } else {
+        // The status page, or a code that could not be made: the same facts as
+        // text, so the viewer still has a way in.
+        lines[line_count++]=(line_t){ 40, hotspot,      UI_COLOR_TEXT, -1 };
+        lines[line_count++]=(line_t){ 66, address_line, UI_COLOR_TEXT, -1 };
+        lines[line_count++]=(line_t){ 92, server,       UI_COLOR_DIM,  -1 };
+        lines[line_count++]=(line_t){ 118, state,       UI_COLOR_DIM,  -1 };
+    }
+    lines[line_count++]=(line_t){ footer_y, "上下翻页  长按OK退出", UI_COLOR_DIM, -1 };
 
     for(unsigned y=0;y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
         ui_surface_t strip=stripe_surface(y,buffer);
@@ -3501,8 +3562,7 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready)
         // out of the several it spans, which is fixed below.
         draw_color_bars(strip);
         if (have_qr) {
-            ui_qr_draw(strip,qr.x_a,qr.y,qr.scale,qr_join);
-            ui_qr_draw(strip,qr.x_b,qr.y,qr.scale,qr_page);
+            ui_qr_draw(strip,qr.x_a,qr.y,qr.scale,qr_code);
         }
         for (unsigned i=0;i<line_count;i++) {
             const int line_top=lines[i].y;
@@ -3557,6 +3617,7 @@ static bool run_setup_mode(void)
         ESP_LOGE(TAG,"Cannot show setup: the display is still owned by playback");
         return false;
     }
+    atomic_store(&s_setup_page,0u);
     atomic_store(&s_setup_active,true);
     atomic_store(&s_setup_leave,false);
 
@@ -3612,19 +3673,21 @@ static bool run_setup_mode(void)
     // reflects the state without redrawing identical pixels every 200 ms.
     bool painted=false;
     bool painted_ready=false;
+    unsigned painted_page=0;
 
     bool paint_failed=false;
     for(;;) {
         pump_keys(200);
         bool ready=av_provision_client_ready();
-        if(!painted || ready!=painted_ready) {
-            painted=true; painted_ready=ready;
+        const unsigned page=atomic_load(&s_setup_page);
+        if(!painted || ready!=painted_ready || page!=painted_page) {
+            painted=true; painted_ready=ready; painted_page=page;
             // A failed paint stops the loop. Retrying it would fail the same way
             // every time -- the panel or its DMA is gone -- and each attempt
             // routes through fail(), which logs and raises STOP, so the loop
             // would spin printing while nothing on screen changed. Leaving is
             // what gets the device back to a state it can recover from.
-            if(!paint_setup_screen(buffer,ready)) {
+            if(!paint_setup_screen(buffer,ready,page)) {
                 ESP_LOGE(TAG,"Setup screen could not be drawn; leaving setup");
                 paint_failed=true;
                 break;

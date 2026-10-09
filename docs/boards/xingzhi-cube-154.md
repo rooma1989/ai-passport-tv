@@ -89,6 +89,26 @@ of outbound bandwidth: 15 fps, full-rate audio, ffmpeg at about 12% of one core.
 The token travels in plain text: it keeps scanners out but is not encryption.
 To change channels, edit `channels.txt` on the host and restart the service.
 
+## Status bar and setup screen
+
+- While playing, the top band shows signal bars, a battery icon and the charge;
+  the fill turns red below 20 % and a bolt appears while charging (GPIO38).
+- Setup (status page, long-press the top key) is a set of pages turned with the
+  top key (previous) and the second key (next); long-press OK leaves:
+  1. a Wi-Fi QR code that a phone's **system camera** uses to join the hotspot
+     (WeChat and Alipay cannot join Wi-Fi from a QR code);
+  2. a QR code of the setup page `http://192.168.4.1`;
+  3. a QR code of the help page, when `AV_HELP_URL` is set;
+  4. the hotspot, setup address, server and connection state as text.
+- The status page carries a small help-page QR code when `AV_HELP_URL` is set.
+- `AV_HELP_URL` comes from the git-ignored `main/av_private_config.h`; public
+  builds leave it empty. Keep it short and upper case (for example
+  `HTTPS://EXAMPLE.COM/TV/`): that keeps it in a version-1 QR code, the only size
+  that fits on the status page. The page itself is
+  [`packaging/help/index.html`](../../packaging/help/index.html); copy it to the
+  matching folder on a web host.
+- Up to ten Wi-Fi networks are remembered; the device joins whichever is in range.
+
 ## Keys while playing
 
 | Key | Click | Long press |

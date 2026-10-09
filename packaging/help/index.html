@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小智电视 使用说明</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2129; --dim:#5c6370; --key:#0b6bcb; --rule:#e3e6eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181d; --card:#20232a; --text:#e8eaed; --dim:#a0a6b1; --key:#6cb4ff; --rule:#30343c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:16px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  .sub { color:var(--dim); margin:0 0 16px; font-size:14px; }
+  section { background:var(--card); border-radius:12px; padding:14px 16px; margin:0 0 14px;
+            box-shadow:0 1px 2px rgba(0,0,0,.06); }
+  h2 { font-size:17px; margin:0 0 10px; }
+  table { width:100%; border-collapse:collapse; font-size:15px; }
+  th, td { text-align:left; padding:7px 4px; border-top:1px solid var(--rule); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; border-top:none; }
+  .k { color:var(--key); font-weight:600; white-space:nowrap; }
+  ol, ul { margin:0; padding-left:20px; }
+  li { margin:4px 0; }
+  .note { color:var(--dim); font-size:14px; margin-top:8px; }
+  .keys { display:flex; gap:12px; align-items:center; margin-bottom:10px; }
+  .keys svg { flex:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>小智电视 使用说明</h1>
+  <p class="sub">适用于星智 Cube 1.54（小智 AI 外壳）上的电视固件。</p>
+
+  <section>
+    <h2>按键位置</h2>
+    <div class="keys">
+      <svg width="56" height="120" viewBox="0 0 56 120" aria-hidden="true">
+        <rect x="2" y="2" width="36" height="116" rx="6" fill="none" stroke="currentColor" opacity=".35"/>
+        <rect x="38" y="14" width="10" height="16" rx="3" fill="currentColor"/>
+        <rect x="38" y="38" width="10" height="16" rx="3" fill="currentColor"/>
+        <rect x="38" y="62" width="10" height="16" rx="3" fill="currentColor"/>
+        <rect x="38" y="92" width="10" height="16" rx="3" fill="currentColor" opacity=".45"/>
+      </svg>
+      <div>
+        右侧从上到下四个键：<br>
+        <span class="k">① 上键</span>（壳上印“音量−”）<br>
+        <span class="k">② 下键</span>（壳上印“音量+”）<br>
+        <span class="k">③ 确定键</span>（BOOT）<br>
+        <span class="k">④ 电源键</span>（最下面）
+      </div>
+    </div>
+    <p class="note">上下按位置算：靠上的是“上”，靠下的是“下”，不按壳上印的字。</p>
+  </section>
+
+  <section>
+    <h2>看电视时</h2>
+    <table>
+      <tr><th>按键</th><th>短按</th><th>长按</th></tr>
+      <tr><td class="k">① 上键</td><td>音量 +10%</td><td>下一个台</td></tr>
+      <tr><td class="k">② 下键</td><td>音量 −10%</td><td>上一个台</td></tr>
+      <tr><td class="k">③ 确定键</td><td>打开频道列表</td><td>调节亮度</td></tr>
+      <tr><td class="k">任意键双击</td><td colspan="2">打开状态页</td></tr>
+      <tr><td class="k">④ 电源键</td><td>重启</td><td>开机 / 关机</td></tr>
+    </table>
+    <p class="note">画面右上角：信号格、电池和电量百分比；充电时电池上有黄色闪电，电量低于 20% 变红。</p>
+  </section>
+
+  <section>
+    <h2>频道列表 / 亮度 / 状态页</h2>
+    <ul>
+      <li><b>频道列表</b>：①② 上下移动，③ 短按切换到选中的台，③ 长按返回。</li>
+      <li><b>亮度</b>：①② 调亮调暗，③ 短按完成。</li>
+      <li><b>状态页</b>：显示当前频道、信号、电量，右下角二维码就是这份说明。
+          <b>长按 ①</b> 进入配网；③ 短按返回。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>配网（换 Wi-Fi）</h2>
+    <ol>
+      <li>任意键双击打开状态页，<b>长按 ① 上键</b>，进入配网画面。</li>
+      <li>配网画面共几页，<b>① 上一页、② 下一页</b>，<b>长按 ③ 退出</b>。</li>
+      <li><b>第 1 页</b>：用<b>手机自带相机</b>扫码，按提示加入 FoloToy 开头的热点。
+          微信、支付宝扫不了这个码（它们不支持扫码连 Wi-Fi）；也可以在手机 Wi-Fi 设置里手动连接。</li>
+      <li><b>第 2 页</b>：扫码打开配网页面（或用浏览器打开 192.168.4.1）。</li>
+      <li>在配网页面选择家里的 2.4G Wi-Fi、输入密码，服务器地址一般不用改，点提交。</li>
+      <li>设备会自动重启并连上 Wi-Fi，开始播放。</li>
+    </ol>
+    <p class="note">设备会记住最近 10 个 Wi-Fi，开机自动连附近能找到的那个，换地方不用每次重新配网。
+      只支持 2.4G Wi-Fi，不支持 5G。</p>
+  </section>
+
+  <section>
+    <h2>常见问题</h2>
+    <ul>
+      <li><b>某个台只有声音或一直黑屏</b>：这个台的直播源失效了，换一个台。</li>
+      <li><b>提示连不上服务器</b>：确认配网时填的服务器地址正确；电脑或服务器上的电视服务要在运行。</li>
+      <li><b>画面卡顿</b>：靠近路由器一些；Wi-Fi 信号格少于 2 格时容易卡。</li>
+      <li><b>没反应 / 死机</b>：短按 ④ 电源键重启。</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>

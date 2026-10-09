@@ -7,6 +7,7 @@
 ## 未发布
 
 - **支持星智 Cube 1.54 板**：同一份固件通过 Kconfig 选项 `AV_BOARD` 也能编给 ESP32-S3 的"星智 Cube 1.54 TFT"（以小智 AI 玩具出售）。用 `./tools/validate.sh --xingzhi` 编译，用 `tools/start_xingzhi_media.sh` 提供服务（端口 8098，240×180）。见 [`docs/boards/xingzhi-cube-154.zh_CN.md`](boards/xingzhi-cube-154.zh_CN.md)。
+- **状态栏与扫码配网**：播放时顶部显示信号、电量和充电图标；配网分页显示二维码：连热点、打开配网页、看使用说明（`AV_HELP_URL`、`packaging/help/index.html`），用上下键翻页。
 - **云端部署**：`TV_ALLOW_PUBLIC=1` 让媒体服务接受公网地址的设备，没有配对令牌时拒绝启动。systemd 模板在 `packaging/systemd/`。
 
 ## v1.2.1
