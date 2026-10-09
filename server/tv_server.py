@@ -26,7 +26,7 @@ class SessionState(str, enum.Enum):
     RECOVERING = "RECOVERING"
     CLOSED = "CLOSED"
 
-from . import frames, netident
+from . import frames, live, netident
 from .timeline import SourceState
 from .rate import ADAPTIVE, ByteRate
 from .live import (CHANNELS, CHANNEL_AGENTS, DEFAULT_CHANNEL, LiveChannel, LiveError,
@@ -953,12 +953,17 @@ class AVServer:
         self.phase = "authenticate"
         authenticate(hello, self.token)
         if self.live_enabled:
+            # 视频中转增删 UP 主后会改写频道表；在会话之间重读，正在播放的会话不受影响。
+            live.reload_channels_if_changed()
             # 设备按名选择频道，换频道即新连接；名称缺失或不在表内时回退到 --channel 指定的默认频道。
+            # 重读后上次的频道可能已被删除，此时再退到表中的默认频道。
             requested = json_object(hello.payload).get("channel")
             if isinstance(requested, str) and requested in CHANNELS:
                 channel_id = requested
+            elif self.channel_name in CHANNELS:
+                channel_id = self.channel_name
             else:
-                channel_id = self.channel_name or DEFAULT_CHANNEL
+                channel_id = live.DEFAULT_CHANNEL
             self._live_session(connection, channel_id)
             return
 

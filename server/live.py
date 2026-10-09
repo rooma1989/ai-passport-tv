@@ -74,6 +74,8 @@ DECODER_CONNECT_TIMEOUT_S = float(os.environ.get("TV_DECODER_CONNECT_TIMEOUT_S",
 # 每行 `id | 显示名 | https://... [| user-agent]`，空行与 '#' 注释行忽略。
 CHANNELS_FILE = "channels.txt"
 CHANNELS_ENV = "TV_CHANNELS_FILE"
+# 视频中转生成的频道表（UP 主频道），排在主表前面；见 server/relay/table.py。
+RELAY_CHANNELS_ENV = "TV_RELAY_CHANNELS_FILE"
 # 内置兜底频道，取电视台自有的公开流。
 BUILTIN_CHANNELS = {
     "cgtn": ("CGTN", "https://english-livebkali.cgtn.com/live/encgtn.m3u8"),
@@ -164,10 +166,36 @@ def parse_channels(text: str) -> tuple[dict[str, str], dict[str, str]]:
     return channels, labels, agents
 
 
-def load_channels(path: Path | None = None) -> None:
+def _channel_text(source: Path) -> str:
+    # 读取上限由频道数和单行上限决定，不用 TV_CONTROL_MAX 或 VIDEO_MAX（那是单包线路上限）：
+    # 合法文件不会被截断，超大文件在已知大小处停止。
+    limit = TV_CHANNEL_MAX * MAX_CHANNEL_LINE_BYTES
+    with source.open(encoding="utf-8", errors="strict") as handle:
+        text = handle.read(limit + 1)
+    if len(text) > limit:
+        raise ValueError(f"{source} is larger than {limit} bytes; the device "
+                         f"cannot hold more than {TV_CHANNEL_MAX} channels")
+    return text
+
+
+def _stamp(source: Path | None) -> tuple[int, int] | None:
+    try:
+        info = source.stat() if source is not None else None
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size) if info is not None else None
+
+
+# 上次加载的两个文件及其 (mtime, size)，供 reload_channels_if_changed() 比较。
+_LOADED: dict = {"main": None, "relay": None, "stamps": None}
+
+
+def load_channels(path: Path | None = None, relay_path: Path | None = None) -> None:
     """从文件（给定或查找到的）加载频道表，没有文件时用内置频道。
 
-    导入时调用一次；main() 收到 --channels-file 时再调用。
+    中转生成的频道表（TV_RELAY_CHANNELS_FILE）排在前面，两个文件合起来解析一次，
+    跨文件重复的 id 同样报错；中转文件还不存在时只用主表。
+    导入时调用一次；main() 收到 --channels-file 时再调用；之后由 reload_channels_if_changed() 按需重读。
     """
     global CHANNELS, CHANNEL_LABELS, CHANNEL_AGENTS, DEFAULT_CHANNEL
     source = path
@@ -179,22 +207,24 @@ def load_channels(path: Path | None = None) -> None:
             source = Path(CHANNELS_FILE)
         elif (Path(__file__).resolve().parent.parent / CHANNELS_FILE).is_file():
             source = Path(__file__).resolve().parent.parent / CHANNELS_FILE
+    relay = relay_path
+    if relay is None and os.environ.get(RELAY_CHANNELS_ENV):
+        relay = Path(os.environ[RELAY_CHANNELS_ENV])
+    stamps = (_stamp(source), _stamp(relay))
     if source is None:
-        channels = {key: url for key, (_, url) in BUILTIN_CHANNELS.items()}
-        labels = {key: label for key, (label, _) in BUILTIN_CHANNELS.items()}
-        agents = {}
+        main_text = "".join(f"{key} | {label} | {url}\n"
+                            for key, (label, url) in BUILTIN_CHANNELS.items())
     else:
         if not source.is_file():
             raise ValueError(f"channel file not found: {source}")
-        # 读取上限由频道数和单行上限决定，不用 TV_CONTROL_MAX 或 VIDEO_MAX（那是单包线路上限）：
-        # 合法文件不会被截断，超大文件在已知大小处停止。
-        limit = TV_CHANNEL_MAX * MAX_CHANNEL_LINE_BYTES
-        with source.open(encoding="utf-8", errors="strict") as handle:
-            text = handle.read(limit + 1)
-        if len(text) > limit:
-            raise ValueError(f"{source} is larger than {limit} bytes; the device "
-                             f"cannot hold more than {TV_CHANNEL_MAX} channels")
-        channels, labels, agents = parse_channels(text)
+        main_text = _channel_text(source)
+    relay_text = _channel_text(relay) if relay is not None and relay.is_file() else ""
+    channels, labels, agents = parse_channels(relay_text + "\n" + main_text)
+    if source is None:
+        # 内置频道不带 User-Agent，保持原有行为。
+        for key in BUILTIN_CHANNELS:
+            agents.pop(key, None)
+    _LOADED.update(main=source, relay=relay, stamps=stamps)
     CHANNELS.clear()
     CHANNELS.update(channels)
     CHANNEL_LABELS.clear()
@@ -204,6 +234,26 @@ def load_channels(path: Path | None = None) -> None:
     # 原默认频道仍在表中则保留，否则取表首项；默认频道不在表内会使未指定频道的连接全部失败。
     if DEFAULT_CHANNEL not in channels:
         DEFAULT_CHANNEL = next(iter(channels))
+
+
+
+
+def reload_channels_if_changed() -> bool:
+    """任一频道文件的 mtime 或大小变了就重读；返回频道表是否换了。
+
+    文件有错时保留旧表并告警一次（同一版坏文件不重复告警）。在每个新会话开始时调用。
+    """
+    main, relay = _LOADED["main"], _LOADED["relay"]
+    stamps = (_stamp(main), _stamp(relay))
+    if stamps == _LOADED["stamps"]:
+        return False
+    try:
+        load_channels(main, relay)
+    except (ValueError, OSError, UnicodeError) as error:
+        _LOADED["stamps"] = stamps
+        print(f"警告：频道表有改动但读取失败，继续用原来的频道表：{error}", flush=True)
+        return False
+    return True
 
 
 def channel_list() -> list[dict]:
