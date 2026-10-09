@@ -36,7 +36,7 @@ the server also hosts the user's website.
 
 ```
 phone ──HTTPS──▶ nginx (iewww.com/TV/cast/) ──▶ relay (Aliyun, 127.0.0.1:8099)
-                                                  │  Bilibili: yt-dlp + ffmpeg, direct
+                                                  │  Bilibili: web API + ffmpeg, direct
                                                   │  YouTube:  HTTPS ──▶ relay (cstone, YouTube only)
                                                   ▼
 TV server (Aliyun, :8098) ── ffmpeg ── http://127.0.0.1:8099/ch/<id>
@@ -70,17 +70,29 @@ so it needs no key.
   2. if a video has a saved position, resume it from position − 10 s;
   3. otherwise take the newest video not marked watched;
   4. if all 20 are watched, clear their marks and take the newest.
-- For each video, `yt-dlp -J` gives the format URLs and their HTTP headers
-  (Bilibili needs its `Referer`). Bilibili: the lowest AVC video ≤ 360p plus the
-  lowest audio, remuxed with `ffmpeg -re -c copy -f mpegts` — no transcoding on
-  the 2-core server. YouTube: bytes come from cstone, already small.
+- Bilibili is read through its web API, not yt-dlp: Bilibili answers 412 to the
+  Aliyun address for video pages and for the signed (`wbi`) list API (see
+  Spike findings). Calls, all with a browser User-Agent, `Referer:
+  https://www.bilibili.com/` and a `buvid3` cookie from
+  `/x/frontend/finger/spi`:
+  - creator name: `/x/web-interface/card?mid=`;
+  - upload list: `/x/space/arc/list?mid=&ps=20&pn=1` (newest first);
+  - video `cid`: `/x/web-interface/view?bvid=`;
+  - media: `/x/player/playurl?bvid=&cid=&qn=16&fnval=1&platform=html5` gives one
+    360p MP4 with H.264 and AAC, about 400 kbit/s.
+  The MP4 is remuxed with `ffmpeg -re -ss <offset> -i <url> -c copy -f mpegts` —
+  no transcoding on the 2-core server. Media URLs expire, so they are fetched per
+  request and never stored. YouTube: bytes come from cstone, already small.
 - While streaming, the relay saves the position (start offset + elapsed wall
   time, since `-re` runs at real time) every 10 s.
 - When the video ends naturally it is marked watched and its position cleared,
-  and the response ends. The TV server sees the decoder stop, its existing
-  reconnect path (`reconnect.hold`) reopens the same URL, and the relay serves
-  the next video. The device shows the reconnect notice for a few seconds between
-  videos; that is accepted.
+  and the response ends. The TV server's decoder runs ffmpeg with
+  `-reconnect_streamed 1`, so it reopens the same URL by itself and the relay
+  serves the next video; the device sees no reconnect notice (measured: one
+  88 ms gap).
+- The choice of video depends only on the state file, never on how many requests
+  came before: each channel start also opens a short extra connection to sample
+  the palette. A connection that ends early only saves the position.
 - At the end of a cast video the relay pops the queue; if it is now empty it
   writes a "return" event (see below).
 
@@ -175,10 +187,9 @@ Written atomically; one lock around every change.
 
 ## Testing
 
-- **Spike first** (before the rest is built): one Bilibili video remuxed by hand
-  to an HTTP MPEG-TS URL and played through the TV server; confirm the clock
-  calibration accepts it and that the end of the stream leads to a reopen. One
-  YouTube video fetched on cstone with yt-dlp.
+- **Spike first** (before the rest is built) — done for Bilibili, see below. The
+  YouTube half (one video fetched on cstone with yt-dlp) is done at the start of
+  step 4.
 - Host unit tests (`tests/test_relay_*.py`): next-video choice (watched, resume,
   wrap at 20), link validation, channel-table output and name cutting, event
   file `seq`, key check, state file round trip. yt-dlp and ffmpeg are mocked.
@@ -187,6 +198,20 @@ Written atomically; one lock around every change.
   to a device without the HELLO flag.
 - Firmware host tests: `AV_SWITCH` header and sequence acceptance.
 - Device: cast from the phone while watching live TV → switch, play, return.
+
+## Spike findings (2026-10-09)
+
+- From the Aliyun address, Bilibili video pages, `x/space/wbi/arc/search` and
+  `x/series/recArchivesByKeywords` answer 412, with or without a `buvid3`
+  cookie, so yt-dlp's Bilibili extractors fail. `x/space/arc/list`,
+  `x/web-interface/card`, `x/web-interface/view` and `x/player/playurl` work.
+- `playurl` with `qn=16&fnval=1&platform=html5` returned a single 360p MP4
+  (H.264 High 640×360 25 fps, HE-AAC) for all four videos tried, about
+  400 kbit/s; resolving took 0.2–0.4 s.
+- A throwaway relay remuxing it to HTTP MPEG-TS played on the device with
+  picture and sound. The TV server calibrated from the decoder's timestamps and
+  held 15 fps and 25 audio packets/s. At each end of a 40 s piece the decoder
+  reopened the URL itself; the server logged one 88 ms gap and no reconnect.
 
 ## Delivery in steps
 

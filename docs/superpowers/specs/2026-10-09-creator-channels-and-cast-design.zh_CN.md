@@ -31,7 +31,7 @@
 
 ```
 手机 ──HTTPS──▶ nginx（iewww.com/TV/cast/）──▶ 中转（阿里云，127.0.0.1:8099）
-                                                  │  B 站：yt-dlp + ffmpeg，直连
+                                                  │  B 站：网页 API + ffmpeg，直连
                                                   │  YouTube：HTTPS ──▶ 中转（cstone，只做 YouTube）
                                                   ▼
 电视服务（阿里云，:8098）── ffmpeg ── http://127.0.0.1:8099/ch/<id>
@@ -58,12 +58,20 @@
   2. 有保存进度的视频，从「进度 − 10 秒」处续播；
   3. 否则取最新的未看视频；
   4. 20 个都看过，清掉标记，取最新的一个。
-- 每个视频先用 `yt-dlp -J` 拿到各格式地址及所需 HTTP 头（B 站需要 `Referer`）。B 站：取 ≤360p 的
-  最低 AVC 视频和最低音频，`ffmpeg -re -c copy -f mpegts` 直接封装，2 核服务器上不转码。
-  YouTube：数据来自 cstone，已经是小码流。
+- B 站通过网页 API 读取，不用 yt-dlp：B 站对阿里云这个地址的视频网页和带签名（`wbi`）的列表接口都返回 412
+  （见「验证结果」）。所有调用都带浏览器 User-Agent、`Referer: https://www.bilibili.com/`，以及从
+  `/x/frontend/finger/spi` 拿到的 `buvid3` cookie：
+  - UP 主名字：`/x/web-interface/card?mid=`；
+  - 投稿列表：`/x/space/arc/list?mid=&ps=20&pn=1`（从新到旧）；
+  - 视频 `cid`：`/x/web-interface/view?bvid=`；
+  - 媒体：`/x/player/playurl?bvid=&cid=&qn=16&fnval=1&platform=html5` 给出一个 360p 的 MP4（H.264 + AAC），约 400 kbit/s。
+  MP4 用 `ffmpeg -re -ss <起点> -i <地址> -c copy -f mpegts` 直接封装，2 核服务器上不转码。媒体地址会过期，所以每次请求现取、
+  不保存。YouTube：数据来自 cstone，已经是小码流。
 - 播放中每 10 秒保存一次进度（起点 + 已过的真实时间，`-re` 按实时速度输出）。
-- 视频自然播完就标记已看、清除进度，然后结束响应。电视服务看到解码停止，现有重连流程
-  （`reconnect.hold`）重新打开同一地址，中转就给出下一个视频。两个视频之间设备会显示几秒重连提示，可以接受。
+- 视频自然播完就标记已看、清除进度，然后结束响应。电视服务的解码 ffmpeg 带 `-reconnect_streamed 1`，会自己重新打开同一地址，
+  中转就给出下一个视频；设备上不出现重连提示（实测只有一次 88 毫秒的空档）。
+- 选哪个视频只看状态文件，不看之前来过几次请求：每次起播时，电视服务还会另开一个短连接采样调色板。
+  提前结束的连接只保存进度。
 - 投屏视频播完，中转把它移出队列；队列空了就写一个「return」事件（见下）。
 
 ### 频道表
@@ -140,14 +148,23 @@ nginx 把 `https://iewww.com/TV/cast/` 转到中转。这里的每个请求都�
 
 ## 测试
 
-- **先做验证**（其余部分动工前）：手工把一个 B 站视频封装成 HTTP MPEG-TS 地址，经电视服务播放，确认时钟校准能接受、
-  流结束后会重新打开；在 cstone 上用 yt-dlp 取一个 YouTube 视频。
+- **先做验证**（其余部分动工前）：B 站部分已完成，见下。YouTube 部分（在 cstone 上用 yt-dlp 取一个视频）放在第 4 步开头做。
 - 主机单元测试（`tests/test_relay_*.py`）：下一个视频的选择（已看、续播、20 个后回绕）、链接校验、频道表输出与名字截断、
   事件文件 `seq`、密钥检查、状态文件读写。yt-dlp 与 ffmpeg 用模拟替代。
 - 电视服务测试：mtime 变化时重读、坏文件保留旧表、`cast` 再 `return` 发出正确的 SWITCH、不重放旧事件、
   不给没有 HELLO 标志的设备发 SWITCH。
 - 固件主机测试：`AV_SWITCH` 的包头和序号接受。
 - 设备：看直播时从手机投屏 → 自动切台、播放、播完返回。
+
+## 验证结果（2026-10-09）
+
+- 从阿里云地址访问，B 站视频网页、`x/space/wbi/arc/search`、`x/series/recArchivesByKeywords` 都返回 412，
+  带不带 `buvid3` cookie 都一样，所以 yt-dlp 的 B 站解析用不了。`x/space/arc/list`、`x/web-interface/card`、
+  `x/web-interface/view`、`x/player/playurl` 可用。
+- `playurl` 带 `qn=16&fnval=1&platform=html5`，试的四个视频都返回单个 360p MP4（H.264 High 640×360 25 fps、HE-AAC），
+  约 400 kbit/s；解析耗时 0.2–0.4 秒。
+- 用临时中转把它封装成 HTTP MPEG-TS，在设备上有画面有声音。电视服务按解码器时间戳完成校准，稳定在每秒 15 帧、25 个音频包。
+  每段 40 秒结束时解码器自己重新打开地址；服务端只记到一次 88 毫秒的空档，没有重连。
 
 ## 分步交付
 
