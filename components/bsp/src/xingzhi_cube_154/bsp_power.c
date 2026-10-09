@@ -6,6 +6,7 @@
 #include "bsp_pins.h"
 #include "driver/rtc_io.h"
 #include "driver/uart.h"
+#include "esp_system.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -68,6 +69,9 @@ static void modem_quiet_task(void *arg)
 
 esp_err_t bsp_power_init(void)
 {
+    // USB 在复位后要重新枚举,ROM 打印的复位原因常常来不及被电脑收到;这里补一条。
+    // 3=软件复位 4=异常/崩溃 9=欠压(esp_reset_reason_t)。
+    ESP_LOGI(TAG, "上次复位原因: %d", (int)esp_reset_reason());
     rtc_gpio_hold_dis(BSP_POWER_HOLD_GPIO);
     esp_err_t e = rtc_gpio_init(BSP_POWER_HOLD_GPIO);
     if (e == ESP_OK) e = rtc_gpio_set_direction(BSP_POWER_HOLD_GPIO, RTC_GPIO_MODE_OUTPUT_ONLY);
