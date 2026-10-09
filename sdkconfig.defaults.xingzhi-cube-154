@@ -5,3 +5,17 @@ CONFIG_IDF_TARGET="esp32s3"
 CONFIG_AV_BOARD_XINGZHI_CUBE_154=y
 # PSRAM 保持关闭:播放器在 C3 的内部内存里就能跑,S3 内部内存更大;开 PSRAM 会让大块
 # malloc 落进 PSRAM,SPI DMA 只能先拷贝一遍。控制台仍是 USB-Serial-JTAG(GPIO19/20)。
+# 系统事件任务(sys_evt,Wi-Fi 事件回调跑在这里)在 Xtensa 上比 C3 的 RISC-V 用栈多:
+# 沿用 sdkconfig.defaults 的 2304 字节,配网后连 Wi-Fi 时实测栈溢出重启。
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+# Wi-Fi 发射功率上限 11 dBm。这块板电源偏弱:满功率 20 dBm 发射时纯 TCP 只收得到 15~50 KB/s
+# (丢包重传),13 dBm 约 230 KB/s,11 dBm 约 400 KB/s,8 dBm 又掉回 15 KB/s(信号不够)。
+# 实测于 2026-10-08,路由器 RSSI 约 -50 dBm、2.4 GHz 信道 11;换环境后可能需要重测。
+CONFIG_ESP_PHY_MAX_WIFI_TX_POWER=11
+CONFIG_ESP_PHY_MAX_TX_POWER=11
+# 与上面测速时同一组接收缓冲(S3 内部内存比 C3 宽裕)。
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=64
+CONFIG_ESP_WIFI_RX_BA_WIN=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_TX_BA_WIN=32
