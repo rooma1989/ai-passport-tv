@@ -1,0 +1,7 @@
+# 星智 Cube 1.54 TFT (ESP32-S3)。叠加在 sdkconfig.defaults 之后使用,产品固件再加 sdkconfig.av-prototype:
+#   SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.av-prototype;sdkconfig.defaults.xingzhi-cube-154"
+#   idf.py -D IDF_TARGET=esp32s3 ...
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_AV_BOARD_XINGZHI_CUBE_154=y
+# PSRAM 保持关闭:播放器在 C3 的内部内存里就能跑,S3 内部内存更大;开 PSRAM 会让大块
+# malloc 落进 PSRAM,SPI DMA 只能先拷贝一遍。控制台仍是 USB-Serial-JTAG(GPIO19/20)。
