@@ -58,6 +58,11 @@ run_static_checks() {
         tests/test_av_settings.c main/av_settings.c \
         -o "${test_dir}/test_av_settings"
     "${test_dir}/test_av_settings"
+    # Xingzhi board BSP arithmetic: volume curve, I2S sample scaling, battery table.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src/xingzhi_cube_154 \
+        tests/test_bsp_xz_math.c components/bsp/src/xingzhi_cube_154/bsp_xz_math.c \
+        -o "${test_dir}/test_bsp_xz_math"
+    "${test_dir}/test_bsp_xz_math"
     # The server address arrives as text someone typed or pasted, so the cases
     # that matter are the messy ones. A wrong answer here is a device that
     # silently never connects, which is the hardest kind of fault to see.
