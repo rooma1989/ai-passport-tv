@@ -505,6 +505,19 @@ static char shown_channel[AV_CHANNEL_ID_MAX];
 // draw the waiting screen even though its channel id is still empty and equals
 // shown_channel. See the use site.
 static bool waiting_drawn;
+// When the video task last finished drawing a frame, and whether frames were
+// arriving the last time anyone asked. A session can carry sound and no picture
+// -- a dead source, for which the server sends silence and one placeholder frame
+// while it retries -- and the overlays are drawn onto frames, so without these
+// the screen froze on the last frame and every key press went unseen.
+static int64_t last_frame_us;
+static bool picture_was_live;
+// How long without a frame before the device paints the waiting screen itself.
+#define VIDEO_STALL_US 1500000
+// How long a session may carry sound without ever showing a picture before it is
+// ended, so the dead-channel policy gets to see it fail.
+#define NO_PICTURE_TIMEOUT_US 20000000
+static bool picture_live(void);
 // Whether the black bars above and below the picture currently carry readings,
 // and when they were last painted. The picture never covers the bars, so during
 // playback they are only touched by refresh_info_bars(). The top bar carries the
@@ -1766,7 +1779,14 @@ static bool paint_band(unsigned start, unsigned height, const band_reading_t *re
 // receive rates are the list's, as before: painted each second while it is open,
 // blanked once when it closes.
 static bool refresh_info_bars(void) {
-    if (!atomic_load(&s.media_started)) return true;
+    // The waiting screen owns the whole panel while no frames arrive. Mark the
+    // bars for repainting -- the top one with the status group, the bottom one
+    // blank -- for when frames return over the waiting screen's colour bars.
+    if (!picture_live()) {
+        top_drawn=false;
+        bottom_drawn=true;
+        return true;
+    }
     const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
     if (bar==0) return true;
     const bool want_bottom=s.menu.view==UI_VIEW_MENU;
@@ -2795,11 +2815,25 @@ static void draw_color_bars(ui_surface_t surface) {
 // on "connecting" for as long as the device keeps retrying. Asking repeatedly
 // makes the screen follow the state instead of sampling it once at the worst
 // possible moment.
+static bool picture_live(void)
+{
+    return av_channel_policy_picture_live(s.decoded,esp_timer_get_time(),last_frame_us,VIDEO_STALL_US);
+}
+
 static bool waiting_screen_stale(void)
 {
-    // Nothing owns the panel until the first frame arrives. After that the
-    // frames do, and repainting the bars underneath them would flash.
-    if (atomic_load(&s.media_started)) return false;
+    // Frames own the panel while they arrive, and repainting the bars underneath
+    // them would flash. When they stop -- or have not started, even though sound
+    // has, which is all a dead source delivers -- this screen takes over: once at
+    // the moment they stop, then whenever what it shows changes.
+    if (picture_live()) {
+        picture_was_live=true;
+        return false;
+    }
+    if (picture_was_live) {
+        picture_was_live=false;
+        return true;
+    }
     if (!waiting_drawn) return true;
     if (strcmp(s.channel,shown_channel)) return true;
     if ((int)s.menu.view!=waiting_view) return true;
@@ -3084,6 +3118,7 @@ static void video_task(void *arg) {
             }
             if(drawn && s.drawn_stripes>=AV_STRIPES) {
                 s.decoded++;
+                last_frame_us=esp_timer_get_time();
                 s.drawn_stripes=0;
                 // A capture is taken from a whole frame, and only once the
                 // session has settled: the first seconds after a channel change
@@ -3934,6 +3969,8 @@ void av_player_main(void) {
             if(!(xEventGroupGetBits(s.events)&WIFI_READY) || stopping()) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
         }
         s.submitted_samples=s.decoded=s.dropped=s.decode_max_ms=s.feed_gap_max_ms=0;
+        last_frame_us=0;
+        picture_was_live=false;
         s.silence_samples=0;
         atomic_store(&s.inflate_us,0u); atomic_store(&s.panel_us,0u);
         atomic_store(&s.panel_frames,0u);
@@ -4077,6 +4114,21 @@ void av_player_main(void) {
             // does, and for a stronger reason: the access point needs the memory
             // this session is holding.
             if(switching || atomic_load(&s_setup_request)) {
+                session_drain();
+                break;
+            }
+            // Sound but never a picture: the server is retrying a dead source and
+            // keeps the session open meanwhile, so it would never end on its own.
+            // Ending it lets the dead-channel policy count it and move on.
+            if(atomic_load(&s.media_started) && !av_channel_policy_showed_picture(s.decoded) &&
+               esp_timer_get_time()-session_start>NO_PICTURE_TIMEOUT_US) {
+                ESP_LOGW(TAG,"%s: sound but no picture for %u s; ending the session",
+                         s.channel,(unsigned)(NO_PICTURE_TIMEOUT_US/1000000));
+                // The workers leave only when told: session_drain() waits for
+                // them, it does not stop them. A channel change raises STOP in
+                // request_switch(); without it here the wait ran out and the
+                // device restarted, losing the dead-channel count with it.
+                xEventGroupSetBits(s.events,STOP);
                 session_drain();
                 break;
             }
@@ -4371,7 +4423,7 @@ void av_player_main(void) {
             unsigned limit = atomic_load(&s.chosen_by_user)
                 ? DEAD_CHANNEL_TRIES_USER : DEAD_CHANNEL_TRIES;
             if (av_channel_policy_should_skip(&s.proven,s.channel,server_answered,
-                                              atomic_load(&s.media_started),&s.dead_streak,
+                                              av_channel_policy_showed_picture(s.decoded),&s.dead_streak,
                                               limit,atomic_load(&s.count))) {
                 atomic_store(&s.chosen_by_user,false);
                 unsigned count=atomic_load(&s.count);

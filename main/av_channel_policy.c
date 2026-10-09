@@ -115,3 +115,14 @@ bool av_channel_policy_should_skip(av_channel_policy_t *policy,
     *streak = 0;
     return true;
 }
+
+bool av_channel_policy_showed_picture(unsigned frames_drawn)
+{
+    return frames_drawn >= AV_PICTURE_MIN_FRAMES;
+}
+
+bool av_channel_policy_picture_live(unsigned frames_drawn, int64_t now_us,
+                                    int64_t last_frame_us, int64_t stall_us)
+{
+    return frames_drawn > 0 && now_us - last_frame_us < stall_us;
+}

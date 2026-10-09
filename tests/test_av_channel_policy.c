@@ -230,6 +230,29 @@ static void test_reset_forgets_everything(void)
     assert(!av_channel_policy_has_shown(&proven, "chZ"));
 }
 
+// A dead source still delivers sound -- the server sends silence while it retries
+// -- and one placeholder frame. Counting either as a picture is what kept a dead
+// channel from ever being stepped over.
+static void test_one_placeholder_frame_is_not_a_picture(void)
+{
+    assert(!av_channel_policy_showed_picture(0));
+    assert(!av_channel_policy_showed_picture(1));
+    assert(!av_channel_policy_showed_picture(AV_PICTURE_MIN_FRAMES - 1u));
+    assert(av_channel_policy_showed_picture(AV_PICTURE_MIN_FRAMES));
+}
+
+// The overlays ride on frames. While none arrive the device has to draw them
+// itself, so it has to know when frames have stopped -- not merely whether a
+// session has started, which sound alone satisfies.
+static void test_picture_is_live_only_while_frames_arrive(void)
+{
+    const int64_t stall = 1500000;
+    assert(!av_channel_policy_picture_live(0, 5000000, 0, stall));        /* nothing drawn yet */
+    assert(av_channel_policy_picture_live(30, 5000000, 4000000, stall));  /* last frame 1.0 s ago */
+    assert(!av_channel_policy_picture_live(30, 5000000, 3400000, stall)); /* 1.6 s ago: stalled */
+    assert(!av_channel_policy_picture_live(30, 5000000, 3500000, stall)); /* the limit itself is stalled */
+}
+
 int main(void)
 {
     test_a_channel_that_showed_is_never_abandoned();
@@ -244,6 +267,8 @@ int main(void)
     test_an_id_that_does_not_fit_is_refused_not_truncated();
     test_an_empty_or_missing_id_is_not_a_channel();
     test_reset_forgets_everything();
+    test_one_placeholder_frame_is_not_a_picture();
+    test_picture_is_live_only_while_frames_arrive();
     printf("test_av_channel_policy: all cases passed\n");
     return 0;
 }

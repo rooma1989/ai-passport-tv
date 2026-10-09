@@ -7,6 +7,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 // Channel ids kept as "has shown a picture at least once".
 //
@@ -62,3 +63,17 @@ bool av_channel_policy_should_skip(av_channel_policy_t *policy,
                                    unsigned *streak,
                                    unsigned limit,
                                    unsigned channel_count);
+
+// Frames a session must draw before it counts as having shown a picture. Sound
+// does not count, and neither does the single placeholder frame the server sends
+// while it retries a dead source: that is what kept a dead channel from ever
+// being stepped over.
+#define AV_PICTURE_MIN_FRAMES 10u
+
+bool av_channel_policy_showed_picture(unsigned frames_drawn);
+
+// Whether frames are arriving now: one was drawn less than `stall_us` before
+// `now_us`. While they are not, nothing redraws the overlays, so the device has to
+// paint a screen of its own for them.
+bool av_channel_policy_picture_live(unsigned frames_drawn, int64_t now_us,
+                                    int64_t last_frame_us, int64_t stall_us);
