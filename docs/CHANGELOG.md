@@ -4,6 +4,10 @@
 
 # Changelog
 
+## Unreleased
+
+- **Xingzhi Cube 1.54 board support**: the same firmware now builds for the ESP32-S3 "Xingzhi Cube 1.54 TFT" (sold as a Xiaozhi AI toy) via the `AV_BOARD` Kconfig choice. Build with `./tools/validate.sh --xingzhi`, serve it with `tools/start_xingzhi_media.sh` (port 8098, 240×180). See [`docs/boards/xingzhi-cube-154.md`](boards/xingzhi-cube-154.md).
+
 ## v1.2.1
 
 - **Fix Windows server crash on stream launch (PR #1)**: `subprocess.Popen` enforces an assertion against `pass_fds` on Windows, causing immediate `AssertionError` crashes during playback. Fully upgraded video and audio piping to cross-platform loopback TCP sockets (`127.0.0.1`), configured with `TCP_NODELAY` and 1MB receive buffers, ensuring identical behavior across Windows, macOS, and Linux.

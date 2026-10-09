@@ -124,6 +124,9 @@ and pushing anything upstream (needs the user's separate agreement).
 
 ## Risks
 
+Outcome of device testing (Wi-Fi transmit power, 4G modem airplane mode, event-task stack, button mapping): see [`docs/boards/xingzhi-cube-154.md`](../../boards/xingzhi-cube-154.md).
+
+
 - The battery divider ratio and the amplifier's gain are inferred, not measured.
 - ESP32-S3 Wi-Fi/lwIP throughput with the 64 KB TCP window is untested; the S3
   has more RAM, so this is expected to be easier than on the C3.

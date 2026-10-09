@@ -1,0 +1,100 @@
+<p align="right">
+  <a href="xingzhi-cube-154.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
+# Xingzhi Cube 1.54 board
+
+The same TV firmware also builds for the "Xingzhi Cube 1.54 TFT ML307", an
+ESP32-S3 board sold as a Xiaozhi AI toy (1.54-inch screen, 4G module, battery,
+four keys on the right side). Design notes:
+[`docs/superpowers/specs/2026-10-08-xingzhi-cube-port-design.md`](../superpowers/specs/2026-10-08-xingzhi-cube-port-design.md).
+
+## How it differs from the AI Passport
+
+| | AI Passport | Xingzhi Cube 1.54 |
+| --- | --- | --- |
+| Chip | ESP32-C3 | ESP32-S3, 8 MB flash |
+| Screen | 240×320, picture 320×180 (landscape) | 240×240, picture 240×180 (16:9 shows as 240×135) |
+| Audio | ES8311 codec | I²S straight to the amplifier, software volume |
+| Keys | 3 on one ADC pin | 3 GPIO keys + a hardware reset/power key |
+| Battery | CW2017 fuel gauge | ADC voltage, rough percentage |
+
+Pins and board facts live in
+[`components/bsp/include/boards/xingzhi_cube_154.h`](../../components/bsp/include/boards/xingzhi_cube_154.h);
+build settings in [`sdkconfig.defaults.xingzhi-cube-154`](../../sdkconfig.defaults.xingzhi-cube-154).
+
+## Build
+
+With ESP-IDF 5.5.3 activated:
+
+```bash
+./tools/validate.sh --xingzhi
+```
+
+The image is written to `build/Xingzhi-Cube-154-tv-public.bin`.
+
+## Flash
+
+Enter download mode if the board does not answer: hold **BOOT** (third key from
+the top) and tap the bottom key. On the very first flash, erase the chip first,
+because the Xiaozhi firmware's NVS sits inside this firmware's NVS range:
+
+```bash
+python -m esptool --chip esp32s3 -p /dev/cu.usbmodem1101 erase_flash
+```
+
+```bash
+python -m esptool --chip esp32s3 -p /dev/cu.usbmodem1101 -b 921600 write_flash 0x0 build/Xingzhi-Cube-154-tv-public.bin
+```
+
+## Server
+
+The Passport's server sends 320×180 and the Xingzhi firmware accepts only
+240×180, so run a second media server from the same `tv-server` program:
+
+```bash
+tools/start_xingzhi_media.sh
+```
+
+It listens on port **8098** and prints the address to enter on the device's
+setup page (`<host>.local:8098` or `<LAN IP>:8098`). The Passport instance keeps
+ports 8096 and 8097. A device pointed at the wrong port connects and is refused
+with `CONFIG field width: server=320 device=240` in its log.
+
+## Keys while playing
+
+| Key | Click | Long press |
+| --- | --- | --- |
+| Top 2 (VOL+) | volume +10% | next channel |
+| Top 1 (VOL−) | volume −10% | previous channel |
+| Top 3 (BOOT) | channel list | brightness |
+| Any, double-click | status page (long-press VOL+ there for Wi-Fi setup) | |
+| Bottom | hardware reset; long press powers on/off | |
+
+The arrows are swapped relative to the Passport because the case prints VOL+/VOL−
+on them (`BSP_ARROW_CLICK_IS_VOLUME`).
+
+## Board-specific fixes, all measured on one device
+
+- **Wi-Fi transmit power is capped at 11 dBm.** At 20 dBm this board's supply
+  sags and raw TCP collapsed to 15–50 KB/s; 13 dBm gave about 230 KB/s, 11 dBm
+  about 400 KB/s, 8 dBm fell back to 15 KB/s. Measured 2026-10-08 at about
+  −50 dBm RSSI on a crowded 2.4 GHz channel 11; another location may need a
+  different value.
+- **The 4G module is put in airplane mode** (`AT+CFUN=0`) at boot. With a
+  rejected SIM it kept retrying attach, which contributed to brownouts.
+- **The Wi-Fi event task stack is 4096 bytes.** The shared 2304 overflowed on
+  the S3 right after setup.
+- `bsp_power` logs the previous reset reason as a number at boot (1 = reset
+  key or power-on, 4 = crash, 9 = brownout, 11 = USB), because the ROM's own
+  reset line is lost while USB re-enumerates.
+
+## Not verified
+
+- The battery divider ratio (assumed 1:2) and therefore `bsp_battery_mv()`; the
+  percentage reads high while charging.
+- Long-term stability beyond about ten minutes of play, and behaviour on other
+  Wi-Fi networks.
+- The 4G module's power draw in airplane mode, and whether it should instead be
+  held in reset.
+- `tools/start_xingzhi_media.sh` on Windows (macOS only).
