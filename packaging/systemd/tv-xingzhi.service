@@ -1,0 +1,34 @@
+# Template: install as /etc/systemd/system/tv-xingzhi.service.
+# Steps and the reasons for each setting: docs/boards/xingzhi-cube-154.md ("Cloud server").
+[Unit]
+Description=AI Passport TV media server for the Xingzhi Cube 1.54 (240x180, port 8098)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tvserver
+Group=tvserver
+WorkingDirectory=/opt/ai-passport-tv
+Environment=PYTHONUNBUFFERED=1
+Environment=TV_GEOMETRY=240x180
+# 3 Mbps server shared with websites: 15 fps, 200 kB/s of picture (~1.8 Mbps with sound).
+Environment=TV_FPS=15
+Environment=TV_RATE_START=200000
+Environment=TV_DATA_DIR=/var/lib/ai-passport-tv
+Environment=TV_ALLOW_PUBLIC=1
+Environment=TV_CHANNELS_FILE=/var/lib/ai-passport-tv/channels.txt
+ExecStart=/usr/bin/python3.11 -m server.tv_server live --channel ch000 --port 8098 --ffmpeg /opt/ai-passport-tv/ffmpeg-btbn-8.1 --token-file /etc/ai-passport-tv/token
+Restart=always
+RestartSec=3
+# Keep the websites on this host responsive.
+Nice=10
+CPUQuota=100%
+MemoryMax=600M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ai-passport-tv /tmp
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

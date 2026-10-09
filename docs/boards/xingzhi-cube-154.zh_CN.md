@@ -57,6 +57,28 @@ tools/start_xingzhi_media.sh
 Passport 那份照常占用 8096 和 8097。设备填错端口时能连上但会被拒绝，日志里是
 `CONFIG field width: server=320 device=240`。
 
+## 云服务器
+
+媒体服务也可以跑在一台常开的 Linux 主机上，这样电脑不用开着。实测于 2 核、出网带宽 3 Mbps 的
+Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核的 12%。
+
+1. **Python 3.9 以上。** 代码只用标准库。在 Alibaba Cloud Linux 3 / RHEL 8 上
+   `dnf install python3.11` 会与系统自带的 Python 并存。发布的 `tv-server-linux-x86_64`
+   需要 glibc 2.39，在这类主机上跑不起来。
+2. **ffmpeg。** 用动态链接的版本，比如 BtbN 的 `ffmpeg-n8.1-latest-linux64-gpl`（glibc 2.28+）。
+   `tools/ffmpeg_fetch.py` 下载的全静态版在该主机上解析域名时会崩溃。
+3. 把 `server/`、`tools/` 和你的 `channels.txt` 复制到主机，建一个 `tvserver` 系统用户，
+   以及一个只有它能读的配对令牌文件。
+4. 安装 [`packaging/systemd/tv-xingzhi.service`](../../packaging/systemd/tv-xingzhi.service)。
+   `TV_ALLOW_PUBLIC=1` 允许公网地址的设备连接；没有配置令牌时服务会拒绝启动。
+   `TV_FPS` 和 `TV_RATE_START` 让码流控制在较小的上行带宽内。
+5. 在云厂商的**安全组**和主机**防火墙**两处都放行端口（`firewall-cmd --permanent --add-port=8098/tcp`）。
+6. 用同一个令牌编译设备固件：新建被 git 忽略的 `main/av_private_config.h`（`AV_PAIRING_TOKEN`，
+   可选默认的 `AV_SERVER_IPV4`/`AV_SERVER_PORT`），不加 `AV_PUBLIC_BUILD` 编译。然后在设置页填
+   `<服务器IP>:8098`。
+
+令牌是明文传输的：能挡住扫描端口的人，但不是加密。改频道就改主机上的 `channels.txt` 然后重启服务。
+
 ## 播放时的按键
 
 | 按键 | 短按 | 长按 |

@@ -61,6 +61,34 @@ setup page (`<host>.local:8098` or `<LAN IP>:8098`). The Passport instance keeps
 ports 8096 and 8097. A device pointed at the wrong port connects and is refused
 with `CONFIG field width: server=320 device=240` in its log.
 
+## Cloud server
+
+The media server can also run on an always-on Linux host so the computer does
+not need to be on. Measured on a 2-core Alibaba Cloud Linux 3 host with 3 Mbps
+of outbound bandwidth: 15 fps, full-rate audio, ffmpeg at about 12% of one core.
+
+1. **Python 3.9+.** The code uses only the standard library. On Alibaba Cloud
+   Linux 3 / RHEL 8, `dnf install python3.11` installs beside the system Python.
+   The released `tv-server-linux-x86_64` needs glibc 2.39 and does not run there.
+2. **ffmpeg.** Use a dynamically linked build such as BtbN's
+   `ffmpeg-n8.1-latest-linux64-gpl` (glibc 2.28+). The fully static build that
+   `tools/ffmpeg_fetch.py` downloads crashed resolving host names on that host.
+3. Copy `server/`, `tools/` and your `channels.txt` to the host, create a
+   `tvserver` system user and a pairing-token file readable only by it.
+4. Install [`packaging/systemd/tv-xingzhi.service`](../../packaging/systemd/tv-xingzhi.service).
+   `TV_ALLOW_PUBLIC=1` lets devices connect from public addresses; the server
+   refuses to start with it unless a token is configured. `TV_FPS` and
+   `TV_RATE_START` keep the stream inside a small uplink.
+5. Open the port in **both** the cloud provider's security group and the host
+   firewall (`firewall-cmd --permanent --add-port=8098/tcp`).
+6. Build the device firmware with the same token: create the git-ignored
+   `main/av_private_config.h` (`AV_PAIRING_TOKEN`, optionally a default
+   `AV_SERVER_IPV4`/`AV_SERVER_PORT`) and build without `AV_PUBLIC_BUILD`. Then
+   enter `<server-ip>:8098` on the setup page.
+
+The token travels in plain text: it keeps scanners out but is not encryption.
+To change channels, edit `channels.txt` on the host and restart the service.
+
 ## Keys while playing
 
 | Key | Click | Long press |

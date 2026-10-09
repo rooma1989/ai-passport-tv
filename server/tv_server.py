@@ -82,6 +82,15 @@ def local_ipv4(address: str) -> bool:
     return any(ip in network for network in PRIVATE_NETWORKS)
 
 
+# 公网接入开关。默认只服务局域网设备；部署在云服务器上时设为 1，也接受公网地址的设备。
+# 打开它必须同时配置配对令牌，否则服务拒绝启动：没有令牌的公网端口谁扫到谁就能用你的带宽。
+ALLOW_PUBLIC_ENV = "TV_ALLOW_PUBLIC"
+
+
+def peer_allowed(address: str, allow_public: bool) -> bool:
+    return allow_public or local_ipv4(address)
+
+
 def validate_token(token: str) -> bytes:
     if not isinstance(token, str) or not 16 <= len(token) <= 128:
         raise ValueError("pairing token must be 16..128 printable ASCII characters")
@@ -243,6 +252,10 @@ class AVServer:
             # 构造时即校验，格式错误的令牌在此报错；None 表示不校验。
             validate_token(token.decode("ascii"))
         self.token = token
+        self.allow_public = os.environ.get(ALLOW_PUBLIC_ENV, "0") == "1"
+        if self.allow_public and token is None:
+            raise ValueError(f"{ALLOW_PUBLIC_ENV}=1 requires a pairing token "
+                             f"({TOKEN_ENV} or --token-file)")
         self.bind, self.port = bind, port
         self.stop = threading.Event()
         self.ready = threading.Event()
@@ -311,7 +324,7 @@ class AVServer:
                     continue
                 connection, peer = listener.accept()
                 with connection:
-                    if not local_ipv4(peer[0]):
+                    if not peer_allowed(peer[0], self.allow_public):
                         self.rejected += 1
                         continue
                     connection.setblocking(False)

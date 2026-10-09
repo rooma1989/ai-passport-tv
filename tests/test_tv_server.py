@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from server.tv_server import (AVServer, TOKEN_ENV, authenticate, load_token,
-                            local_ipv4)
+from server.tv_server import (ALLOW_PUBLIC_ENV, AVServer, TOKEN_ENV, authenticate,
+                            load_token, local_ipv4, peer_allowed)
 from server import frames
 from server.media import (AUDIO_BYTES, AUDIO_CHUNK_MS, AUDIO_LEAD_MS, DURATION_MS, FPS, FRAME_COUNT, HEIGHT, Media, START_DELAY_MS, VIDEO_LEAD_MS, WIDTH, prepare, schedule, synthetic_frame, validate_frame)
 from server.protocol import (HEADER, Kind, Packet, ProtocolError, VIDEO_MAX,
@@ -254,6 +254,34 @@ class AuthenticationTests(unittest.TestCase):
             self.assertTrue(local_ipv4(address))
         for address in ("0.0.0.0", "8.8.8.8", "224.0.0.1", "::1", "example.org"):
             self.assertFalse(local_ipv4(address))
+
+
+class PublicAccessTests(unittest.TestCase):
+    """A server on a cloud host has to serve devices arriving from the internet.
+
+    The default stays LAN-only. Opening it is an explicit switch, and the switch
+    is refused without a pairing token: a public port with no token would let
+    anyone who scans it spend the host's bandwidth.
+    """
+
+    def test_public_peers_refused_by_default(self):
+        self.assertFalse(peer_allowed("117.13.59.199", False))
+        self.assertTrue(peer_allowed("192.168.1.94", False))
+
+    def test_public_peers_served_when_opted_in(self):
+        self.assertTrue(peer_allowed("117.13.59.199", True))
+        self.assertTrue(peer_allowed("192.168.1.94", True))
+
+    def test_opt_in_requires_a_token(self):
+        with patch.dict(os.environ, {ALLOW_PUBLIC_ENV: "1"}):
+            with self.assertRaises(ValueError):
+                AVServer(None, "0.0.0.0", 0)
+            self.assertTrue(AVServer(TEST_TOKEN, "0.0.0.0", 0).allow_public)
+
+    def test_default_is_lan_only(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(ALLOW_PUBLIC_ENV, None)
+            self.assertFalse(AVServer(None, "0.0.0.0", 0).allow_public)
 
 
 class ScheduleTests(unittest.TestCase):
