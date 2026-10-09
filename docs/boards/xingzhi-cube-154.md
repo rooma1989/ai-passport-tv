@@ -93,14 +93,15 @@ To change channels, edit `channels.txt` on the host and restart the service.
 
 | Key | Click | Long press |
 | --- | --- | --- |
-| Top 2 (VOL+) | volume +10% | next channel |
-| Top 1 (VOL−) | volume −10% | previous channel |
+| Top (printed VOL−) | volume +10% | next channel |
+| Second (printed VOL+) | volume −10% | previous channel |
 | Top 3 (BOOT) | channel list | brightness |
-| Any, double-click | status page (long-press VOL+ there for Wi-Fi setup) | |
+| Any, double-click | status page (long-press the top key there for Wi-Fi setup) | |
 | Bottom | hardware reset; long press powers on/off | |
 
-The arrows are swapped relative to the Passport because the case prints VOL+/VOL−
-on them (`BSP_ARROW_CLICK_IS_VOLUME`).
+Click and long press are swapped relative to the Passport because these are the
+case's volume keys (`BSP_ARROW_CLICK_IS_VOLUME`). Up and down follow the keys'
+physical order rather than the printed VOL−/VOL+, which read backwards in use.
 
 ## Board-specific fixes, all measured on one device
 
