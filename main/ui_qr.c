@@ -58,6 +58,23 @@ bool ui_qr_layout(int panel_w, int y, int modules_a, int modules_b, ui_qr_layout
     return false;
 }
 
+bool ui_qr_layout_single(int panel_w, int y, int modules, int max_side, ui_qr_layout_t *out)
+{
+    if (!out || modules <= 0) {
+        return false;
+    }
+    for (int scale = UI_QR_SINGLE_MAX_SCALE; scale >= UI_QR_MIN_SCALE; scale--) {
+        const int side = (modules + 2 * UI_QR_QUIET) * scale;
+        if (side > max_side || side > panel_w - 4) {
+            continue;
+        }
+        *out = (ui_qr_layout_t){ .scale = scale, .x_a = (panel_w - side) / 2, .x_b = 0,
+                                 .y = y, .side_a = side, .side_b = 0 };
+        return true;
+    }
+    return false;
+}
+
 void ui_qr_draw(ui_surface_t surface, int x, int y, int scale, const uint8_t qrcode[])
 {
     const int size = qrcodegen_getSize(qrcode);

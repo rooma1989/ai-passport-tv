@@ -21,6 +21,8 @@
 #define UI_QR_MAX_SCALE 4
 // Smallest module size that still scans from arm's length on this panel.
 #define UI_QR_MIN_SCALE 2
+// Largest module size when a page shows a single code.
+#define UI_QR_SINGLE_MAX_SCALE 6
 
 typedef struct {
     int scale;    // pixels per module, shared by both codes
@@ -40,6 +42,12 @@ bool ui_qr_wifi_text(char *out, size_t size, const char *ssid);
 // that fits with one module of gap between the codes (each already has its own
 // light quiet zone) and 2 px at each panel edge. False when even UI_QR_MIN_SCALE does not fit.
 bool ui_qr_layout(int panel_w, int y, int modules_a, int modules_b, ui_qr_layout_t *out);
+
+// Place one code of `modules` modules, centred in `panel_w`, top at `y`, at the
+// largest scale up to UI_QR_SINGLE_MAX_SCALE whose side (quiet zone included)
+// fits both `max_side` and the panel width less 2 px each side. Fills scale, x_a,
+// side_a and y; x_b and side_b are zero. False below UI_QR_MIN_SCALE.
+bool ui_qr_layout_single(int panel_w, int y, int modules, int max_side, ui_qr_layout_t *out);
 
 // Paint one encoded code (qrcodegen format) with its quiet zone, top-left at
 // (x, y), clipped to the rows `surface` covers.

@@ -54,6 +54,31 @@ static void test_layout(void)
     check(!ui_qr_layout(240, 6, 57, 57, &l), "two version-10 codes cannot share 240 px");
 }
 
+static void test_layout_single(void)
+{
+    ui_qr_layout_t l;
+    check(ui_qr_layout_single(240, 32, 25, 150, &l), "one version-2 code in 150 rows");
+    check(l.scale == 5 && l.side_a == 145, "largest scale under the height limit");
+    check(l.x_a == (240 - 145) / 2 && l.y == 32, "centred, at the requested row");
+    check(l.x_b == 0 && l.side_b == 0, "no second code");
+    check(ui_qr_layout_single(240, 32, 21, 80, &l) && l.scale == 3 && l.side_a == 75,
+          "a version-1 code in 80 rows is 3 px per module");
+    check(ui_qr_layout_single(240, 0, 25, 400, &l) && l.scale == UI_QR_SINGLE_MAX_SCALE &&
+          l.side_a <= 236, "capped by the largest scale and the panel width");
+    check(!ui_qr_layout_single(240, 0, 25, 40, &l), "too little height is refused");
+}
+
+static void test_upper_case_url_is_version_1(void)
+{
+    // The status page only has room for a version-1 code. Upper case keeps a
+    // 21-character URL in alphanumeric mode, which version 1 holds.
+    static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    static uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    check(qrcodegen_encodeText("HTTPS://IEWWW.COM/TV/", tmp, qr, qrcodegen_Ecc_LOW, 1, 6,
+                               qrcodegen_Mask_AUTO, true), "the help URL encodes");
+    check(qrcodegen_getSize(qr) == 21, "upper-case help URL is version 1");
+}
+
 static uint16_t pixel(const uint8_t *buf, int width, int x, int y)
 {
     const uint8_t *p = buf + ((size_t)y * (size_t)width + (size_t)x) * 2u;
@@ -96,6 +121,8 @@ int main(void)
 {
     test_wifi_text();
     test_layout();
+    test_layout_single();
+    test_upper_case_url_is_version_1();
     test_draw();
     if (failures) {
         printf("%d failure(s)\n", failures);
