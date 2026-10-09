@@ -1,0 +1,29 @@
+# Template: install as /etc/systemd/system/tv-relay.service.
+# Video relay for creator channels: docs/superpowers/specs/2026-10-09-creator-channels-and-cast-design.md.
+# Listens on loopback only; nginx proxies https://<site>/TV/cast/ to the page port
+# (packaging/nginx/tv-relay.conf).
+[Unit]
+Description=AI Passport TV video relay (Bilibili creator channels)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tvserver
+Group=tvserver
+WorkingDirectory=/opt/ai-passport-tv
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3.11 -m server.relay --state /var/lib/ai-passport-tv/relay-state.json --channels-out /var/lib/ai-passport-tv/relay-channels.txt --key-file /etc/ai-passport-tv/relay-key --ffmpeg /opt/ai-passport-tv/ffmpeg-btbn-8.1
+Restart=always
+RestartSec=3
+# Remuxing only (-c copy), so it needs little CPU; keep the websites responsive.
+Nice=10
+CPUQuota=50%
+MemoryMax=200M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ai-passport-tv
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

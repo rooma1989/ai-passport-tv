@@ -2,7 +2,7 @@
 # Steps and the reasons for each setting: docs/boards/xingzhi-cube-154.md ("Cloud server").
 [Unit]
 Description=AI Passport TV media server for the Xingzhi Cube 1.54 (240x180, port 8098)
-After=network-online.target
+After=network-online.target tv-relay.service
 Wants=network-online.target
 
 [Service]
@@ -19,6 +19,8 @@ Environment=TV_ALLOW_PUBLIC=1
 # Some sources take 15-30 s to open from a mainland host; the device waits 45 s.
 Environment=TV_DECODER_CONNECT_TIMEOUT_S=30
 Environment=TV_CHANNELS_FILE=/var/lib/ai-passport-tv/channels.txt
+# Creator channels written by tv-relay.service; listed first, re-read between sessions.
+Environment=TV_RELAY_CHANNELS_FILE=/var/lib/ai-passport-tv/relay-channels.txt
 ExecStart=/usr/bin/python3.11 -m server.tv_server live --channel ch000 --port 8098 --ffmpeg /opt/ai-passport-tv/ffmpeg-btbn-8.1 --token-file /etc/ai-passport-tv/token
 Restart=always
 RestartSec=3
