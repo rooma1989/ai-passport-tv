@@ -1,4 +1,4 @@
-// components/bsp/src/bsp_button.c
+// components/bsp/src/passport/bsp_button.c
 // 移植自 trae_card/components/platform/platform_esp32/src/btn_iot_button.c
 #include "bsp_button.h"
 #include "bsp_pins.h"

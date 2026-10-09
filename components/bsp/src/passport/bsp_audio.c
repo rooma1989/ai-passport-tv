@@ -1,4 +1,4 @@
-// components/bsp/src/bsp_audio.c
+// components/bsp/src/passport/bsp_audio.c
 // 移植自 trae_card/components/platform/platform_esp32/src/audio_es8311.c
 #include "bsp_audio.h"
 #include "bsp_i2c.h"

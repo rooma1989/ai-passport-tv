@@ -1,0 +1,20 @@
+menu "AI Passport TV board"
+
+    choice AV_BOARD
+        prompt "Target board"
+        default AV_BOARD_XINGZHI_CUBE_154 if IDF_TARGET_ESP32S3
+        default AV_BOARD_PASSPORT
+        help
+            Which board the BSP drives. Each board's pins are in
+            components/bsp/include/boards/.
+
+        config AV_BOARD_PASSPORT
+            bool "FoloToy AI Passport (ESP32-C3)"
+            depends on IDF_TARGET_ESP32C3
+
+        config AV_BOARD_XINGZHI_CUBE_154
+            bool "Xingzhi Cube 1.54 TFT (ESP32-S3)"
+            depends on IDF_TARGET_ESP32S3
+    endchoice
+
+endmenu

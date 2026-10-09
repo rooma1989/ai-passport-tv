@@ -43,14 +43,17 @@ C"在小智框架上重写"会丢掉已调好的播放器）。
    `AV_BOARD_PASSPORT`（默认）和 `AV_BOARD_XINGZHI_CUBE_154`。板子默认配置放在
    `sdkconfig.defaults.xingzhi-cube-154`，通过
    `SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xingzhi-cube-154"`
-   和 `idf.py set-target esp32s3` 生效。该文件设定板型、目标芯片、8 MB Flash 和 octal
-   PSRAM。电视产品固件仍和 Passport 一样，在列表里再加上 `sdkconfig.av-prototype`
+   和 `idf.py set-target esp32s3` 生效。该文件设定板型和目标芯片。PSRAM 保持关闭：播放器在 C3
+   的内部内存里就能跑，S3 的内部内存更大；开了 PSRAM 后大块 `malloc` 可能落进 PSRAM，
+   SPI DMA 只能先拷贝一遍。电视产品固件仍和 Passport 一样，在列表里再加上 `sdkconfig.av-prototype`
    （`CONFIG_AV_RAW_PROTOTYPE`）；不加时编出的是 BSP 演示菜单，本次移植把它当作硬件自检。
 2. **BSP 拆分。** `components/bsp/include` 中的公开头文件仍是唯一接口。`bsp_pins.h`
    改为分发器，按板型包含 `boards/passport/bsp_pins_board.h` 或
-   `boards/xingzhi_cube_154/bsp_pins_board.h`。源文件移到 `src/passport/*.c` 与
-   `src/xingzhi_cube_154/*.c`，`CMakeLists.txt` 只编译选中的那组。共用代码
-   （`bsp_display_lvgl.c`）保持公共。星智板子没有 I²C 外设：它的 `bsp_i2c_init()` 返回
+   `boards/xingzhi_cube_154/bsp_pins_board.h`。音频、按键、电量、I²C、电源的源文件移到
+   `src/passport/*.c` 与 `src/xingzhi_cube_154/*.c`，`CMakeLists.txt` 只编译选中的那组。
+   屏幕驱动（`bsp_display.c`、`bsp_display_lvgl.c`）保持一份共用，用
+   `BSP_LCD_VENDOR_INIT`（只有 Passport 需要的 gamma 表）和 `BSP_RAW_*` 方向宏参数化，
+   DMA 条带推屏代码不复制。星智板子没有 I²C 外设：它的 `bsp_i2c_init()` 返回
    `ESP_ERR_NOT_SUPPORTED`，`bsp_i2c_scan()` 只打日志，因此 `main.c` 无需改动。
 3. **"画面模式"屏幕方向作为引脚事实。** 每块板子定义 `BSP_RAW_W`/`BSP_RAW_H`（画面
    模式下帧缓冲的尺寸）以及 raw claim 的 swap/mirror。Passport：通过 swap + mirror X
@@ -72,12 +75,14 @@ C"在小智框架上重写"会丢掉已调好的播放器）。
    2062 → 20 %、2154 → 40 %、2246 → 60 %、2338 → 80 %、2430 → 100 %）。
    `bsp_battery_mv()` 返回校准后引脚电压 ×2（按 1:2 分压推测，实测前标注为未验证）。
 8. **电源。** 新增 `bsp_power_init()`（仅星智有效，Passport 上为空操作），在 `app_main`
-   最开始把 GPIO21 拉高。
+   最开始把 GPIO21 拉高。玩法本身不会主动关机，所以不提供关机接口；充电检测脚只记在上表，
+   不使用。
 9. **服务端。** 不改代码。提供一个辅助脚本，用用户现有的 `tv-server` 再启动一个媒体服务：
    `TV_GEOMETRY=240x180`、端口 8098、不带自己的频道页，这样 Passport 那份（320×180，
    媒体端口 8096、频道页 8097）照常运行。设备配网时服务器地址填
    `<电脑主机名>.local:8098`。
-10. **刷机。** 用 `esptool` 在 `0x0` 写入合并后的 8 MB 镜像。新板子同样保留 Passport 的
+10. **刷机。** 用 `esptool` 在 `0x0` 写入合并后的 8 MB 镜像。第一次刷之前整片擦除：
+    小智留下的 NVS 和 otadata 落在本分区表的 NVS 范围内，不擦会干扰 `nvs_flash_init`。新板子同样保留 Passport 的
     受保护分区布局（3 MB 应用、`cardid` 位于 `0x356000`），两块板共用一张分区表。
 
 ## 测试

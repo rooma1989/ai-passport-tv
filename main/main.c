@@ -14,6 +14,7 @@
 #include "bsp_button.h"
 #include "bsp_audio.h"
 #include "bsp_battery.h"
+#include "bsp_power.h"
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
 #include "ui_pixel.h"
@@ -109,6 +110,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
 }
 
 void app_main(void) {
+    // 星智板靠 GPIO21 保持电池供电,必须最先拉住;Passport 上是空操作。
+    bsp_power_init();
 #ifdef CONFIG_AV_JPEG_BENCH
     jpeg_bench_main();
 #endif

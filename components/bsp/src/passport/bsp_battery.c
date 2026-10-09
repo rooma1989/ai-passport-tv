@@ -1,4 +1,4 @@
-// components/bsp/src/bsp_battery.c
+// components/bsp/src/passport/bsp_battery.c
 // CW2017 电量计驱动。
 #include "bsp_battery.h"
 #include "bsp_i2c.h"

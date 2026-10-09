@@ -1,4 +1,4 @@
-// components/bsp/src/bsp_i2c.c
+// components/bsp/src/passport/bsp_i2c.c
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
 #include "esp_log.h"

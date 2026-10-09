@@ -48,18 +48,23 @@ the Xiaozhi framework" discards the tuned player).
    `AV_BOARD_XINGZHI_CUBE_154`. Board defaults live in
    `sdkconfig.defaults.xingzhi-cube-154`, applied with
    `SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.xingzhi-cube-154"`
-   and `idf.py set-target esp32s3`. That file sets the board choice, target,
-   8 MB flash and octal PSRAM. The TV product is still built by adding
+   and `idf.py set-target esp32s3`. That file sets the board choice and target.
+   PSRAM stays off: the player already fits the C3's internal RAM, the S3 has
+   more, and with PSRAM on large `malloc`s could land where SPI DMA has to
+   bounce-copy them. The TV product is still built by adding
    `sdkconfig.av-prototype` (`CONFIG_AV_RAW_PROTOTYPE`) to that list, exactly
    as on the Passport; without it the image is the BSP demo menu, which this
    port uses as its hardware bring-up test.
 2. **BSP split.** Public headers in `components/bsp/include` stay the single
    interface. `bsp_pins.h` becomes a dispatcher that includes
    `boards/passport/bsp_pins_board.h` or
-   `boards/xingzhi_cube_154/bsp_pins_board.h`. Sources move to
-   `src/passport/*.c` and `src/xingzhi_cube_154/*.c`; `CMakeLists.txt`
-   compiles only the selected set. Shared code (`bsp_display_lvgl.c`) stays
-   common. The Xingzhi board has no I²C peripherals: its `bsp_i2c_init()`
+   `boards/xingzhi_cube_154/bsp_pins_board.h`. Audio, button, battery,
+   I²C and power sources move to `src/passport/*.c` and
+   `src/xingzhi_cube_154/*.c`; `CMakeLists.txt` compiles only the selected set.
+   The display driver (`bsp_display.c`, `bsp_display_lvgl.c`) stays one shared
+   file, parameterised by `BSP_LCD_VENDOR_INIT` (Passport-only gamma table) and
+   the `BSP_RAW_*` orientation macros, so the DMA stripe path is not
+   duplicated. The Xingzhi board has no I²C peripherals: its `bsp_i2c_init()`
    returns `ESP_ERR_NOT_SUPPORTED` and `bsp_i2c_scan()` logs that, so
    `main.c` keeps calling them unchanged.
 3. **Raw display orientation as a pin fact.** Each board defines
@@ -87,13 +92,17 @@ the Xiaozhi framework" discards the tuned player).
    2430 → 100 %). `bsp_battery_mv()` returns the calibrated pin voltage ×2
    (divider assumed 1:2; marked unverified until measured).
 8. **Power.** `bsp_power_init()` (new, Xingzhi only, no-op on Passport) drives
-   GPIO21 high first thing in `app_main`.
+   GPIO21 high first thing in `app_main`. Nothing in the play powers the board
+   down, so there is no power-off API; the charging-detect pin is recorded in
+   the table above but not used.
 9. **Server.** No code change. A helper script starts a second media server
    from the user's existing `tv-server` with `TV_GEOMETRY=240x180` on port 8098
    and without its own channel page, so the Passport instance (320×180, media
    8096, channel page 8097) keeps running. The device is provisioned with
    `<mac-hostname>.local:8098`.
-10. **Flashing.** Merged 8 MB image at `0x0` via `esptool`. The protected
+10. **Flashing.** Merged 8 MB image at `0x0` via `esptool`. The first flash
+    erases the chip: the Xiaozhi NVS and otadata sit inside this table's NVS
+    range and would otherwise confuse `nvs_flash_init`. The protected
     Passport layout (3 MB app, `cardid` at `0x356000`) is kept unchanged on the
     new board too, so one partition table serves both.
 
