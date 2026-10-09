@@ -1,0 +1,106 @@
+// The setup screen's QR codes, tested without a device.
+//
+// A code that does not scan looks exactly like one that does, so the checks are
+// on the things that decide it: the join string's escaping, whether both codes fit
+// the panel at a usable size, and whether the drawn pixels have a dark finder
+// corner inside a light quiet zone.
+#include "ui_qr.h"
+#include "qrcodegen.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+// ui_text.c reads the non-ASCII glyphs from a blob the device build embeds; the
+// host has none, and these tests draw no text.
+const uint8_t ui_font_cjk_blob_start[] __asm__("_binary_ui_font_cjk_bin_start") = { 0, 0, 0, 0 };
+
+static int failures;
+
+static void check(int condition, const char *what)
+{
+    if (!condition) {
+        printf("FAIL: %s\n", what);
+        failures++;
+    }
+}
+
+static void test_wifi_text(void)
+{
+    char out[96];
+    check(ui_qr_wifi_text(out, sizeof(out), "FoloToy-04E1"), "a plain SSID fits");
+    check(strcmp(out, "WIFI:T:nopass;S:FoloToy-04E1;;") == 0, "open-network join string");
+    check(ui_qr_wifi_text(out, sizeof(out), "a;b,c:d\\e\"f"), "special characters fit");
+    check(strcmp(out, "WIFI:T:nopass;S:a\\;b\\,c\\:d\\\\e\\\"f;;") == 0,
+          "; , : \\ \" are escaped");
+    char tiny[10];
+    check(!ui_qr_wifi_text(tiny, sizeof(tiny), "FoloToy-04E1"), "too small a buffer is refused");
+}
+
+static void test_layout(void)
+{
+    ui_qr_layout_t l;
+    check(ui_qr_layout(240, 6, 25, 25, &l), "two version-2 codes fit 240 wide");
+    check(l.scale == 4, "240 wide uses 4 px modules");
+    check(l.side_a == (25 + 2 * UI_QR_QUIET) * 4 && l.side_b == l.side_a, "side includes the quiet zone");
+    check(l.x_a >= 2 && l.x_b + l.side_b <= 238, "both stay off the panel edges");
+    check(l.x_b - (l.x_a + l.side_a) >= l.scale, "a module of gap between them");
+    check(l.y == 6, "tops at the requested row");
+
+    check(ui_qr_layout(320, 6, 25, 25, &l), "two version-2 codes fit 320 wide");
+    check(l.scale == 5, "320 wide is capped at 5 px modules");
+    check(l.x_b + l.side_b <= 318, "320 layout stays on the panel");
+
+    check(!ui_qr_layout(240, 6, 57, 57, &l), "two version-10 codes cannot share 240 px");
+}
+
+static uint16_t pixel(const uint8_t *buf, int width, int x, int y)
+{
+    const uint8_t *p = buf + ((size_t)y * (size_t)width + (size_t)x) * 2u;
+    return (uint16_t)((p[0] << 8) | p[1]);
+}
+
+static void test_draw(void)
+{
+    static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    static uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    check(qrcodegen_encodeText("http://192.168.4.1", tmp, qr, qrcodegen_Ecc_LOW, 1, 6,
+                               qrcodegen_Mask_AUTO, true), "the setup URL encodes");
+    const int scale = 4, x = 10, y = 10;
+    const int side = (qrcodegen_getSize(qr) + 2 * UI_QR_QUIET) * scale;
+    enum { W = 160, H = 160 };
+    static uint8_t buf[W * H * 2];
+    memset(buf, 0x55, sizeof(buf));   // neither black nor white
+    ui_surface_t surface = { buf, W, 0, H };
+    ui_qr_draw(surface, x, y, scale, qr);
+
+    const int quiet = UI_QR_QUIET * scale;
+    check(pixel(buf, W, x, y) == 0xFFFFu, "quiet zone corner is white");
+    check(pixel(buf, W, x + quiet - 1, y + quiet - 1) == 0xFFFFu, "quiet zone inner edge is white");
+    check(pixel(buf, W, x + quiet, y + quiet) == 0x0000u, "finder pattern corner is black");
+    check(pixel(buf, W, x + side - 1, y + side - 1) == 0xFFFFu, "far quiet corner is white");
+    check(pixel(buf, W, x + side, y + side) == 0x5555u, "nothing drawn outside the code");
+
+    // Drawn one stripe at a time it must come out the same.
+    static uint8_t striped[W * H * 2];
+    memset(striped, 0x55, sizeof(striped));
+    for (int row = 0; row < H; row += 12) {
+        int rows = H - row < 12 ? H - row : 12;
+        ui_surface_t strip = { striped + (size_t)row * W * 2u, W, row, rows };
+        ui_qr_draw(strip, x, y, scale, qr);
+    }
+    check(memcmp(buf, striped, sizeof(buf)) == 0, "stripe-by-stripe drawing matches");
+}
+
+int main(void)
+{
+    test_wifi_text();
+    test_layout();
+    test_draw();
+    if (failures) {
+        printf("%d failure(s)\n", failures);
+        return 1;
+    }
+    printf("test_ui_qr: PASS\n");
+    return 0;
+}

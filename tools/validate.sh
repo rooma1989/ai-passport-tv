@@ -63,6 +63,11 @@ run_static_checks() {
         tests/test_bsp_xz_math.c components/bsp/src/xingzhi_cube_154/bsp_xz_math.c \
         -o "${test_dir}/test_bsp_xz_math"
     "${test_dir}/test_bsp_xz_math"
+    # Setup-screen QR codes: join string escaping, two-code layout, drawing.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Icomponents/qrcodegen \
+        tests/test_ui_qr.c main/ui_qr.c main/ui_text.c components/qrcodegen/qrcodegen.c \
+        -o "${test_dir}/test_ui_qr"
+    "${test_dir}/test_ui_qr"
     # The server address arrives as text someone typed or pasted, so the cases
     # that matter are the messy ones. A wrong answer here is a device that
     # silently never connects, which is the hardest kind of fault to see.
