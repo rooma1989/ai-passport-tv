@@ -201,3 +201,6 @@ int bsp_battery_mv(void) {
     uint32_t raw = ((uint32_t)b[0] << 8 | b[1]) & 0x3FFF;   // 14bit
     return (int)((raw * 3125) / 10000);                     // raw * 312.5uV → mV
 }
+
+// CW2017 只报电压和电量,不报是否在充电。
+int bsp_battery_charging(void) { return -1; }

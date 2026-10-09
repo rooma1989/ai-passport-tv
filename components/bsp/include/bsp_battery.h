@@ -14,3 +14,6 @@ int bsp_battery_soc(void);
 
 // 电池电压 mV;读失败返回 -1。
 int bsp_battery_mv(void);
+
+// 是否在充电:1 充电中,0 未充电,-1 本板无法得知或尚未初始化。
+int bsp_battery_charging(void);

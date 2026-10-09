@@ -18,6 +18,8 @@ idf_component_register(
          "av_adpcm.c"
          "ui_text.c"
          "ui_menu.c"
+         "ui_qr.c"
+         "ui_status.c"
          "av_provision.cpp"
          "av_provision_policy.c"
          "av_settings.c"
@@ -29,7 +31,7 @@ idf_component_register(
     # blob rather than included as a header: the same data as C source is about
     # a megabyte of hex, which every rebuild would reparse. ui_text.c reads it.
     EMBED_FILES "ui_font_cjk.bin"
-    REQUIRES bsp bt esp_driver_usb_serial_jtag esp_event esp_hw_support esp_netif
+    REQUIRES bsp qrcodegen bt esp_driver_usb_serial_jtag esp_event esp_hw_support esp_netif
              esp_timer esp_wifi nvs_flash json esp_rom
              esp-wifi-connect
 )

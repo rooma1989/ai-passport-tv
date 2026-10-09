@@ -15,8 +15,10 @@
 // what phone cameras read reliably, and it is what lets two codes share a 240 px
 // panel at a scannable size.
 #define UI_QR_QUIET 2
-// Largest module size in pixels. Bigger only spends height the text lines need.
-#define UI_QR_MAX_SCALE 5
+// Largest module size in pixels. The setup screen puts four text lines under the
+// codes in a 240-row panel; at 5 px a version-2 code is 145 rows and they no
+// longer fit, at 4 px it is 116 and they do.
+#define UI_QR_MAX_SCALE 4
 // Smallest module size that still scans from arm's length on this panel.
 #define UI_QR_MIN_SCALE 2
 

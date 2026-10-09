@@ -48,7 +48,7 @@ static void test_layout(void)
     check(l.y == 6, "tops at the requested row");
 
     check(ui_qr_layout(320, 6, 25, 25, &l), "two version-2 codes fit 320 wide");
-    check(l.scale == 5, "320 wide is capped at 5 px modules");
+    check(l.scale == UI_QR_MAX_SCALE, "320 wide is capped at the largest module size");
     check(l.x_b + l.side_b <= 318, "320 layout stays on the panel");
 
     check(!ui_qr_layout(240, 6, 57, 57, &l), "two version-10 codes cannot share 240 px");

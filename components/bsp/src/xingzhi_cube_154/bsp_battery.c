@@ -7,6 +7,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 
 static const char *TAG = "bsp_batt";
@@ -15,6 +16,7 @@ static const char *TAG = "bsp_batt";
 
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t         s_cali;
+static bool                      s_charge_ready;
 
 esp_err_t bsp_battery_init(void) {
     if (s_adc) return ESP_OK;
@@ -36,6 +38,13 @@ esp_err_t bsp_battery_init(void) {
         ESP_LOGW(TAG, "ADC 校准不可用,bsp_battery_mv() 将返回 -1");
         s_cali = NULL;
     }
+    // 充电检测脚:充电芯片推挽输出,不加上下拉(与小智固件一致)。失败不影响读电量。
+    const gpio_config_t charge = {
+        .pin_bit_mask = 1ULL << BSP_BATT_CHARGE_GPIO, .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    s_charge_ready = gpio_config(&charge) == ESP_OK;
     ESP_LOGI(TAG, "电量 ADC 就绪");
     return ESP_OK;
 }
@@ -61,4 +70,9 @@ int bsp_battery_mv(void) {
     if (raw < 0 || !s_cali) return -1;
     if (adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) return -1;
     return mv * BSP_BATT_DIVIDER;
+}
+
+int bsp_battery_charging(void) {
+    if (!s_charge_ready) return -1;
+    return gpio_get_level(BSP_BATT_CHARGE_GPIO) ? 1 : 0;
 }

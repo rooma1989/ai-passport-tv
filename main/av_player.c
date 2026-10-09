@@ -14,6 +14,9 @@
 #include "av_store.h"
 #include "av_channel_policy.h"
 #include "ui_text.h"
+#include "ui_status.h"
+#include "ui_qr.h"
+#include "qrcodegen.h"
 // The ROM's copy of miniz: tinfl_decompress lives at a fixed address in the
 // ESP32-C3 mask ROM (see components/esp_rom/esp32c3/ld/esp32c3.rom.ld), so
 // inflating costs no flash and no third-party component. Only the low-level
@@ -504,9 +507,10 @@ static char shown_channel[AV_CHANNEL_ID_MAX];
 static bool waiting_drawn;
 // Whether the black bars above and below the picture currently carry readings,
 // and when they were last painted. The picture never covers the bars, so during
-// playback they are only touched by refresh_info_bars().
-static bool bars_drawn;
-static int64_t bars_painted_us;
+// playback they are only touched by refresh_info_bars(). The top bar carries the
+// status group whenever media plays; the bottom one only while the list is open.
+static bool top_drawn, bottom_drawn;
+static int64_t top_painted_us, bottom_painted_us;
 // Which overlay the waiting screen was last painted with, and when.
 //
 // The waiting screen is a still image, so it is painted when something it shows
@@ -1679,12 +1683,21 @@ static unsigned wifi_bars(void) {
 
 static void drain_display(void);
 
+// Readings for the bars, taken once per repaint rather than once per stripe: the
+// Wi-Fi figure asks the driver, and several stripes cover each bar.
+typedef struct {
+    unsigned bars;
+    int soc;
+    int charging;
+} band_reading_t;
+
 // Readings for the black bars around the picture, drawn into whichever stripe
 // overlaps a bar and nothing else. The picture covers rows
 // [AV_VIDEO_Y_OFFSET, AV_HEIGHT-AV_VIDEO_Y_OFFSET), so these rows belong to the
-// overlay alone: WiFi and battery in the top bar, frame rate and receive rate in
-// the bottom one. A bar too thin to hold a line of text is left alone.
-static void info_bars_stripe(ui_surface_t surface) {
+// overlay alone: the status group (signal, battery) in the top bar, frame rate
+// and receive rate in the bottom one when `bottom_info` asks for them. A bar too
+// thin to hold a line of text is left alone.
+static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading, bool bottom_info) {
     // Text sits 16 px from each edge: the panel's corners are rounded, and the
     // bars are exactly where they cut in.
     const int edge=UI_TEXT_PAD_X+2+8;   // half a 16 px glyph
@@ -1695,22 +1708,13 @@ static void info_bars_stripe(ui_surface_t surface) {
     const int pad=(bar-(int)UI_TEXT_LINE_H)/2;
     char text[24];
 
-    const int top_y=pad;
-    if (first<bar && last>top_y-UI_TEXT_PAD_Y) {
-        unsigned bars=wifi_bars();
-        if (bars) snprintf(text,sizeof(text),"WiFi %u/4",bars);
-        else snprintf(text,sizeof(text),"WiFi --");
-        ui_text_draw(surface,edge,top_y,text,UI_COLOR_DIM,UI_COLOR_BOX);
-        int soc=atomic_load(&s.battery_soc);
-        if (soc>=0) snprintf(text,sizeof(text),"Battery %d%%",soc);
-        else snprintf(text,sizeof(text),"Battery --");
-        ui_text_draw(surface,(int)AV_WIDTH-edge-ui_text_width(text),top_y,
-                     text,UI_COLOR_DIM,UI_COLOR_BOX);
+    if (first<bar) {
+        ui_status_draw(surface,(int)AV_WIDTH,bar,reading->bars,reading->soc,reading->charging);
     }
 
     const int bottom=(int)AV_HEIGHT-bar;
     const int bottom_y=bottom+pad;
-    if (last>bottom) {
+    if (bottom_info && last>bottom) {
         // Cleared first: the list's last row can run into this band on a screen
         // that paints the whole height, and it must not show through.
         ui_text_fill(surface,0,bottom,(int)AV_WIDTH,bar,UI_COLOR_BOX);
@@ -1724,39 +1728,56 @@ static void info_bars_stripe(ui_surface_t surface) {
     }
 }
 
-// Draw the channel list's readings on the bars, or blank them, between frames.
-// Called from the video task, which owns the panel: the queue is drained first so
-// the stripe buffer is free, then each band is built in s.stripe[0] and sent the
-// way the first frame blackens the bars. Does nothing until the picture owns the
-// panel; before that the waiting screen paints the bars itself.
-static bool refresh_info_bars(void) {
-    if (!atomic_load(&s.media_started)) return true;
-    const bool want=s.menu.view==UI_VIEW_MENU;
-    const int64_t now=esp_timer_get_time();
-    if (want) {
-        if (bars_drawn && now-bars_painted_us<1000000) return true;
-    } else if (!bars_drawn) {
-        return true;
-    }
-    const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
-    if (bar==0) return true;
-    drain_display();
-    const unsigned starts[2]={0u,(unsigned)AV_HEIGHT-bar};
-    for (unsigned b=0;b<2;b++) {
-        for (unsigned y=starts[b];y<starts[b]+bar;y+=AV_STRIPE_ROWS) {
-            unsigned rows=starts[b]+bar-y;
-            if (rows>AV_STRIPE_ROWS) rows=AV_STRIPE_ROWS;
-            memset(s.stripe[0],0,STRIPE_BYTES);
-            if (want) info_bars_stripe(stripe_surface(y,s.stripe[0]));
-            if (bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
-                bsp_display_raw_drain(1,200)!=ESP_OK) {
-                fail("info bar DMA");
-                return false;
-            }
+// Paint one bar, `height` rows from `start`, a stripe at a time through s.stripe[0].
+static bool paint_band(unsigned start, unsigned height, const band_reading_t *reading,
+                       bool bottom_info) {
+    for (unsigned y=start;y<start+height;y+=AV_STRIPE_ROWS) {
+        unsigned rows=start+height-y;
+        if (rows>AV_STRIPE_ROWS) rows=AV_STRIPE_ROWS;
+        memset(s.stripe[0],0,STRIPE_BYTES);
+        info_bars_stripe(stripe_surface(y,s.stripe[0]),reading,bottom_info);
+        if (bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
+            bsp_display_raw_drain(1,200)!=ESP_OK) {
+            fail("info bar DMA");
+            return false;
         }
     }
-    bars_drawn=want;
-    bars_painted_us=now;
+    return true;
+}
+
+// Keep the bars current between frames. Called from the video task, which owns
+// the panel: the queue is drained first so the stripe buffer is free, then each
+// bar is built in s.stripe[0] and sent the way the first frame blackens the bars.
+// Does nothing until the picture owns the panel; before that the waiting screen
+// paints the bars itself.
+//
+// The top bar's status group is always shown while playing and repainted every
+// two seconds -- the battery is only read every thirty and the Wi-Fi figure moves
+// slowly, so faster would only cost panel time. The bottom bar's frame and
+// receive rates are the list's, as before: painted each second while it is open,
+// blanked once when it closes.
+static bool refresh_info_bars(void) {
+    if (!atomic_load(&s.media_started)) return true;
+    const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
+    if (bar==0) return true;
+    const bool want_bottom=s.menu.view==UI_VIEW_MENU;
+    const int64_t now=esp_timer_get_time();
+    const bool top_due=!top_drawn || now-top_painted_us>=2000000;
+    const bool bottom_due=want_bottom ? (!bottom_drawn || now-bottom_painted_us>=1000000)
+                                      : bottom_drawn;
+    if (!top_due && !bottom_due) return true;
+    const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc), bsp_battery_charging() };
+    drain_display();
+    if (top_due) {
+        if (!paint_band(0,bar,&reading,false)) return false;
+        top_drawn=true;
+        top_painted_us=now;
+    }
+    if (bottom_due) {
+        if (!paint_band((unsigned)AV_HEIGHT-bar,bar,&reading,want_bottom)) return false;
+        bottom_drawn=want_bottom;
+        bottom_painted_us=now;
+    }
     return true;
 }
 
@@ -1876,7 +1897,13 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
                          chosen?UI_COLOR_SELECT_TEXT:UI_COLOR_TEXT,
                          chosen?UI_COLOR_SELECT:UI_COLOR_BOX);
         }
-        info_bars_stripe(surface);
+        // Only stripes that reach a bar need the readings; the Wi-Fi one asks
+        // the driver.
+        if (first<(unsigned)AV_VIDEO_Y_OFFSET || last>(unsigned)(AV_HEIGHT-AV_VIDEO_Y_OFFSET)) {
+            const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc),
+                                           bsp_battery_charging() };
+            info_bars_stripe(surface,&reading,true);
+        }
     } else if (s.menu.view==UI_VIEW_BRIGHTNESS) {
         // The backlight page. Deliberately the same shape as the volume
         // indicator: a labelled level over a filled bar, because they are the
@@ -3391,7 +3418,8 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready)
     // The text on this screen, in reading order. Laid out as data because the
     // stripe loop below has to know where every line is before it starts: a
     // stripe can only draw the lines that intersect it.
-    typedef struct { int y; const char *text; uint16_t colour; } line_t;
+    // `centre` is the x a line is centred on, or -1 for the panel's centre.
+    typedef struct { int y; const char *text; uint16_t colour; int centre; } line_t;
     char state[48];
     snprintf(state,sizeof(state),"%s",client_ready ? "已连接设备" : "等待设备连接");
     // Shown because setup opens for either of two reasons now: no network, or
@@ -3421,20 +3449,45 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready)
     } else {
         snprintf(server,sizeof(server),"服务器 未设置");
     }
+    // Two QR codes when they can be made: the left one joins the hotspot (a
+    // phone camera recognises the WIFI: form), the right one opens the setup
+    // page, which the phone does not always offer on its own once joined. The
+    // buffers are static because this runs on the main task, whose stack is
+    // 3.5 KB; it is painted only when the screen's state changes.
+    static uint8_t qr_join[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    static uint8_t qr_page[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    static uint8_t qr_temp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    char join[96];
+    ui_qr_layout_t qr={0};
+    const bool have_qr=ui_qr_wifi_text(join,sizeof(join),ssid) &&
+        qrcodegen_encodeText(join,qr_temp,qr_join,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true) &&
+        qrcodegen_encodeText(url,qr_temp,qr_page,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true) &&
+        ui_qr_layout((int)AV_WIDTH,6,qrcodegen_getSize(qr_join),qrcodegen_getSize(qr_page),&qr);
+    const int caption_y=qr.y+qr.side_a+4;
+    const line_t qr_lines[] = {
+        { caption_y,    "①扫码连热点", UI_COLOR_TEXT, qr.x_a+qr.side_a/2 },
+        { caption_y,    "②扫码配网",   UI_COLOR_TEXT, qr.x_b+qr.side_b/2 },
+        { caption_y+30, server,        UI_COLOR_DIM,  -1 },
+        { caption_y+56, state,         UI_COLOR_DIM,  -1 },
+        { caption_y+84, "长按 OK 退出", UI_COLOR_DIM,  -1 },
+    };
     // Positions are 24 apart, the height a line actually occupies
     // (UI_TEXT_LINE_H plus a pad top and bottom). Closer than that and the
-    // opaque boxes behind two labels overlap.
-    const line_t lines[] = {
-        { 12, "配网模式",      UI_COLOR_TEXT },
-        { 40, "请连接此网络：", UI_COLOR_DIM  },
-        { 64, ssid,            UI_COLOR_TEXT },
-        {100, "打开此地址：",   UI_COLOR_DIM  },
-        {124, url,             UI_COLOR_TEXT },
-        {158, server,          UI_COLOR_DIM  },
-        {190, state,           UI_COLOR_DIM  },
-        {216, "长按 OK 退出",  UI_COLOR_DIM  },
+    // opaque boxes behind two labels overlap. Used when the codes cannot be
+    // made, which leaves the viewer the old way in.
+    const line_t text_lines[] = {
+        { 12, "配网模式",      UI_COLOR_TEXT, -1 },
+        { 40, "请连接此网络：", UI_COLOR_DIM,  -1 },
+        { 64, ssid,            UI_COLOR_TEXT, -1 },
+        {100, "打开此地址：",   UI_COLOR_DIM,  -1 },
+        {124, url,             UI_COLOR_TEXT, -1 },
+        {158, server,          UI_COLOR_DIM,  -1 },
+        {190, state,           UI_COLOR_DIM,  -1 },
+        {216, "长按 OK 退出",  UI_COLOR_DIM,  -1 },
     };
-    const unsigned line_count=sizeof(lines)/sizeof(lines[0]);
+    const line_t *lines=have_qr ? qr_lines : text_lines;
+    const unsigned line_count=have_qr ? sizeof(qr_lines)/sizeof(qr_lines[0])
+                                      : sizeof(text_lines)/sizeof(text_lines[0]);
 
     for(unsigned y=0;y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
         ui_surface_t strip=stripe_surface(y,buffer);
@@ -3447,6 +3500,10 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready)
         // treating the wrong cause -- the text was being drawn into one stripe
         // out of the several it spans, which is fixed below.
         draw_color_bars(strip);
+        if (have_qr) {
+            ui_qr_draw(strip,qr.x_a,qr.y,qr.scale,qr_join);
+            ui_qr_draw(strip,qr.x_b,qr.y,qr.scale,qr_page);
+        }
         for (unsigned i=0;i<line_count;i++) {
             const int line_top=lines[i].y;
             const int line_bottom=line_top+(int)UI_TEXT_LINE_H+2*UI_TEXT_PAD_Y;
@@ -3459,7 +3516,8 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready)
             // clipping makes safe.
             if (line_bottom<=(int)y || line_top>=(int)(y+AV_STRIPE_ROWS)) continue;
             int width=ui_text_width(lines[i].text);
-            int x=(width>=(int)AV_WIDTH-24)?12:((int)AV_WIDTH-width)/2;
+            int x=lines[i].centre>=0 ? lines[i].centre-width/2
+                 : (width>=(int)AV_WIDTH-24)?12:((int)AV_WIDTH-width)/2;
             ui_text_draw(strip,x,line_top,lines[i].text,lines[i].colour,UI_COLOR_BACKDROP);
         }
         if(bsp_display_raw_submit(y,AV_STRIPE_ROWS,buffer,200)!=ESP_OK ||
@@ -3823,7 +3881,7 @@ void av_player_main(void) {
         atomic_store(&s.rx_video_bytes,0u); atomic_store(&s.rx_video_packets,0u);
         atomic_store(&s.rx_audio_packets,0u);
         atomic_store(&s.fps_x10,0u); atomic_store(&s.rx_bytes_per_s,0u);
-        bars_drawn=false;   // the first frame blackens the bars again
+        top_drawn=bottom_drawn=false;   // the first frame blackens the bars again
         atomic_store(&s.rx_io_us,0u); atomic_store(&s.rx_wait_us,0u);
         atomic_store(&s.rx_overhead_us,0u); atomic_store(&s.rx_iterations,0u);
         atomic_store(&s.rx_frame_starts,0u); atomic_store(&s.rx_frame_skipped,0u);
