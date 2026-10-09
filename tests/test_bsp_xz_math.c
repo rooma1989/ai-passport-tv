@@ -26,6 +26,14 @@ static void test_volume_curve(void)
     check(bsp_xz_volume_q16(200) == 65536u, "values above 100% are clamped");
 }
 
+static void test_gain_ceiling(void)
+{
+    check(bsp_xz_gain_q16(100, 32768u) == 32768u, "full volume reaches the ceiling, not beyond");
+    check(bsp_xz_gain_q16(50, 32768u) == 8192u, "the curve is scaled down, not cut off");
+    check(bsp_xz_gain_q16(0, 32768u) == 0u, "0% stays silent under a ceiling");
+    check(bsp_xz_gain_q16(100, 70000u) == 65536u, "a ceiling above unity is clamped to unity");
+}
+
 static void test_scale_extremes_fit_int32(void)
 {
     const int16_t in[] = { 32767, -32768, 0, 1 };
@@ -58,6 +66,7 @@ static void test_battery_table(void)
 int main(void)
 {
     test_volume_curve();
+    test_gain_ceiling();
     test_scale_extremes_fit_int32();
     test_battery_table();
     if (failures) {

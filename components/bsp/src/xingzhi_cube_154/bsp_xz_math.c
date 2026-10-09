@@ -7,6 +7,12 @@ uint32_t bsp_xz_volume_q16(uint8_t percent)
     return (uint32_t)percent * percent * 65536u / 10000u;
 }
 
+uint32_t bsp_xz_gain_q16(uint8_t percent, uint32_t max_q16)
+{
+    if (max_q16 > 65536u) max_q16 = 65536u;
+    return (uint32_t)(((uint64_t)bsp_xz_volume_q16(percent) * max_q16) >> 16);
+}
+
 void bsp_xz_scale_s16_to_s32(const int16_t *in, int32_t *out, size_t n, uint32_t gain_q16)
 {
     if (gain_q16 > 65536u) gain_q16 = 65536u;

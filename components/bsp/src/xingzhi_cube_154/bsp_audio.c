@@ -72,7 +72,7 @@ esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch) {
 static esp_err_t write_scaled(const void *pcm, size_t bytes, size_t *written, uint32_t timeout_ms) {
     const int16_t *in = pcm;
     const size_t samples = bytes / 2;
-    const uint32_t gain = s_mute ? 0u : bsp_xz_volume_q16(s_volume);
+    const uint32_t gain = s_mute ? 0u : bsp_xz_gain_q16(s_volume, BSP_AUDIO_MAX_GAIN_Q16);
     size_t done = 0;
     while (done < samples) {
         size_t n = samples - done;
