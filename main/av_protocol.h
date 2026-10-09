@@ -164,8 +164,11 @@
 // anything, so the wait is deliberate: the prebuffer target is a few seconds and
 // this sits well above it. It used to be 90 s, which meant a channel whose
 // source is dead left the screen on the test pattern for a minute and a half
-// before the device noticed the server had already given up.
-#define AV_FIRST_MEDIA_TIMEOUT_MS 30000u
+// before the device noticed the server had already given up. 45 s rather than 30
+// because some live sources take up to 30 s to open (measured: Taiwanese and
+// overseas news channels from a mainland host), and the server only starts
+// sending once they have.
+#define AV_FIRST_MEDIA_TIMEOUT_MS 45000u
 // How long an empty PCM queue may last before it counts as a real underrun.
 // Must exceed the I2S DMA depth (~90 ms at 16 kHz) plus network burst jitter,
 // or routine Wi-Fi gaps reset the session.

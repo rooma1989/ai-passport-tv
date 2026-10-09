@@ -512,6 +512,11 @@ static bool waiting_drawn;
 // the screen froze on the last frame and every key press went unseen.
 static int64_t last_frame_us;
 static bool picture_was_live;
+// When this session's first media packet arrived. The no-picture limit counts
+// from here, not from the dial: a slow source delivers sound and picture nearly
+// together after a long silence, while a dead one gets the server's filler sound
+// straight away and then nothing.
+static int64_t media_started_us;
 // How long without a frame before the device paints the waiting screen itself.
 #define VIDEO_STALL_US 1500000
 // How long a session may carry sound without ever showing a picture before it is
@@ -1293,7 +1298,12 @@ static void receive_task(void *arg) {
             header_deadline_ms=AV_FIRST_MEDIA_TIMEOUT_MS;
         } else if (h.type==AV_AUDIO) {
             audio_t a={.pts=h.pts_ms};
-            atomic_store(&s.media_started,true);
+            // The time first, then the flag: the session loop reads the time only
+            // after seeing the flag, and the atomic store orders the two.
+            if (!atomic_load(&s.media_started)) {
+                media_started_us=esp_timer_get_time();
+                atomic_store(&s.media_started,true);
+            }
             // Flow control, applied only to audio and only now that the header
             // is already read. The host sends audio at its own clock rate while
             // the device consumes at the I2S rate, and the two drift apart by a
@@ -1334,7 +1344,12 @@ static void receive_task(void *arg) {
             const bool frame_start=!(h.flags&AV_VIDEO_CONTINUES);
             if(frame_start) atomic_fetch_add(&s.rx_frame_starts,1u);
             else atomic_fetch_add(&s.rx_stray_packets,1u);
-            atomic_store(&s.media_started,true);
+            // The time first, then the flag: the session loop reads the time only
+            // after seeing the flag, and the atomic store orders the two.
+            if (!atomic_load(&s.media_started)) {
+                media_started_us=esp_timer_get_time();
+                atomic_store(&s.media_started,true);
+            }
             s_rx_stage="video-table";
             int64_t io_start=esp_timer_get_time();
             int64_t wait_total=0;
@@ -4121,7 +4136,7 @@ void av_player_main(void) {
             // keeps the session open meanwhile, so it would never end on its own.
             // Ending it lets the dead-channel policy count it and move on.
             if(atomic_load(&s.media_started) && !av_channel_policy_showed_picture(s.decoded) &&
-               esp_timer_get_time()-session_start>NO_PICTURE_TIMEOUT_US) {
+               esp_timer_get_time()-media_started_us>NO_PICTURE_TIMEOUT_US) {
                 ESP_LOGW(TAG,"%s: sound but no picture for %u s; ending the session",
                          s.channel,(unsigned)(NO_PICTURE_TIMEOUT_US/1000000));
                 // The workers leave only when told: session_drain() waits for

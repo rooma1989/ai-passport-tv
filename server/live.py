@@ -65,8 +65,10 @@ PREBUFFER_FRAMES = int(PREBUFFER_SECONDS * _START_FPS)
 # 仅为源始终不出数据时的兜底，正常起播由预缓冲目标决定。
 PREBUFFER_TIMEOUT_S = 60
 
-# 等待解码器回连两个回环套接字的时限（秒）。ffmpeg 启动后很快连接，超时说明进程没有起来，在 start() 报告。
-DECODER_CONNECT_TIMEOUT_S = 10
+# 等待解码器回连两个回环套接字的时限（秒）。ffmpeg 打开源、探测完之后才连接，所以这其实是"源起播"的时限：
+# 本地源一两秒，部分海外/港台源要 15~30 秒。默认 10 秒保持原样；云端部署设 TV_DECODER_CONNECT_TIMEOUT_S=30
+# 以保留这些慢源（设备端首包等待 AV_FIRST_MEDIA_TIMEOUT_MS 须更长）。
+DECODER_CONNECT_TIMEOUT_S = float(os.environ.get("TV_DECODER_CONNECT_TIMEOUT_S", "10"))
 
 # 频道表：TV_CHANNELS_FILE 指向文本文件，或在工作目录放 channels.txt，启动时读取一次。
 # 每行 `id | 显示名 | https://... [| user-agent]`，空行与 '#' 注释行忽略。
