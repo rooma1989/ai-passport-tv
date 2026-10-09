@@ -5,7 +5,7 @@ mode="${1:---all}"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--all|--static|--firmware|--prototype]" >&2
+    echo "Usage: $0 [--all|--static|--firmware|--prototype|--xingzhi]" >&2
 }
 
 run_static_checks() {
@@ -152,9 +152,14 @@ run_firmware_checks() (
     local validation_build_dir
     local defaults="${repo_root}/sdkconfig.defaults"
     local artifact="FoloToy-AI-Passport-full.bin"
+    local target="esp32c3"
     if [[ "${1:-demo}" == prototype ]]; then
         defaults="${defaults};${repo_root}/sdkconfig.av-prototype"
         artifact="FoloToy-AI-Passport-prototype-public.bin"
+    elif [[ "${1:-demo}" == xingzhi ]]; then
+        defaults="${defaults};${repo_root}/sdkconfig.av-prototype;${repo_root}/sdkconfig.defaults.xingzhi-cube-154"
+        artifact="Xingzhi-Cube-154-tv-public.bin"
+        target="esp32s3"
     fi
 
     if ! command -v idf.py >/dev/null 2>&1; then
@@ -167,6 +172,7 @@ run_firmware_checks() (
 
     SDKCONFIG_DEFAULTS="${defaults}" \
         idf.py -B "${validation_build_dir}" \
+        -D "IDF_TARGET=${target}" \
         -D AV_PUBLIC_BUILD=ON \
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
     idf.py -B "${validation_build_dir}" merge-bin \
@@ -194,6 +200,10 @@ case "${mode}" in
     --prototype)
         run_static_checks
         run_firmware_checks prototype
+        ;;
+    --xingzhi)
+        run_static_checks
+        run_firmware_checks xingzhi
         ;;
     *)
         usage
