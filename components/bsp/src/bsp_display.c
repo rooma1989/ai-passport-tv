@@ -46,6 +46,7 @@ static bool                      s_bl_ready;
 //   0x29 DISPON               → esp_lcd_panel_disp_on_off()
 //   0x36 MADCTL               → esp_lcd_panel_mirror()(⚠ 别再手动写 0x36,会被它覆盖)
 // ---------------------------------------------------------------------------
+#if BSP_LCD_VENDOR_INIT
 typedef struct {
     uint8_t  cmd;
     uint8_t  data[16];
@@ -70,6 +71,7 @@ static const st_init_cmd_t ST7789P3_CMDS[] = {
     {0xE1, {0xD0, 0x03, 0x09, 0x0A, 0x0A, 0x06, 0x2E, 0x44,
             0x40, 0x3A, 0x15, 0x15, 0x26, 0x2A}, 14, 10},  // NVGAMCTRL 负伽马
 };
+#endif
 
 static void backlight_init(void) {
     if (BSP_LCD_BL < 0) { ESP_LOGW(TAG, "背光引脚未接 MCU,亮度不可调"); return; }
@@ -136,12 +138,14 @@ esp_err_t bsp_display_init(void) {
     esp_lcd_panel_reset(s_panel);   // rst=-1 时走 SWRESET
     esp_lcd_panel_init(s_panel);    // SLPOUT / COLMOD / RAMCTRL
 
+#if BSP_LCD_VENDOR_INIT
     for (size_t i = 0; i < sizeof(ST7789P3_CMDS) / sizeof(ST7789P3_CMDS[0]); i++) {
         const st_init_cmd_t *c = &ST7789P3_CMDS[i];
         esp_err_t r = esp_lcd_panel_io_tx_param(s_io, c->cmd, c->data, c->len);
         if (r != ESP_OK) ESP_LOGE(TAG, "厂商初始化命令 0x%02X 失败: %s", c->cmd, esp_err_to_name(r));
         if (c->delay_ms) vTaskDelay(pdMS_TO_TICKS(c->delay_ms));
     }
+#endif
 
     esp_lcd_panel_invert_color(s_panel, BSP_LCD_INVERT_COLOR);   // 0x21 / 0x20
     esp_lcd_panel_mirror(s_panel, false, false);                 // 0x36 MADCTL:本板不需镜像(XY 双镜像 = 画面 180°)
@@ -175,8 +179,8 @@ esp_err_t bsp_display_raw_claim(void) {
     if (!s_raw_done) return ESP_ERR_NO_MEM;
     esp_lcd_panel_io_callbacks_t cb = { .on_color_trans_done = raw_done };
     esp_err_t e = esp_lcd_panel_io_register_event_callbacks(s_io, &cb, s_raw_done);
-    if (e == ESP_OK) e = esp_lcd_panel_swap_xy(s_panel, true);
-    if (e == ESP_OK) e = esp_lcd_panel_mirror(s_panel, true, false);
+    if (e == ESP_OK) e = esp_lcd_panel_swap_xy(s_panel, BSP_RAW_SWAP_XY);
+    if (e == ESP_OK) e = esp_lcd_panel_mirror(s_panel, BSP_RAW_MIRROR_X, BSP_RAW_MIRROR_Y);
     if (e != ESP_OK) {
         cb.on_color_trans_done = NULL;
         esp_lcd_panel_io_register_event_callbacks(s_io, &cb, NULL);
@@ -195,20 +199,20 @@ esp_err_t bsp_display_raw_wait(uint32_t timeout_ms) {
 }
 esp_err_t bsp_display_raw_submit(int y, int rows, const void *pixels, uint32_t timeout_ms) {
     if (!s_raw) return ESP_ERR_INVALID_STATE;
-    if (!pixels || y < 0 || rows <= 0 || y + rows > BSP_LCD_W) return ESP_ERR_INVALID_ARG;
+    if (!pixels || y < 0 || rows <= 0 || y + rows > BSP_RAW_H) return ESP_ERR_INVALID_ARG;
     esp_err_t e = bsp_display_raw_wait(timeout_ms);
     if (e != ESP_OK) return e;
-    e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BSP_LCD_H, y + rows, pixels);
+    e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BSP_RAW_W, y + rows, pixels);
     if (e == ESP_OK) s_raw_outstanding++;
     return e;
 }
 esp_err_t bsp_display_raw_submit_nowait(int y, int rows, const void *pixels) {
     if (!s_raw) return ESP_ERR_INVALID_STATE;
-    if (!pixels || y < 0 || rows <= 0 || y + rows > BSP_LCD_W) return ESP_ERR_INVALID_ARG;
+    if (!pixels || y < 0 || rows <= 0 || y + rows > BSP_RAW_H) return ESP_ERR_INVALID_ARG;
     // No wait here, and that is the entire difference from submit(). The
     // controller's own queue holds ten, so this returns once the transfer is
     // queued rather than once the bus is free.
-    esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BSP_LCD_H, y + rows, pixels);
+    esp_err_t e = esp_lcd_panel_draw_bitmap(s_panel, 0, y, BSP_RAW_W, y + rows, pixels);
     if (e == ESP_OK) s_raw_outstanding++;
     return e;
 }
@@ -246,7 +250,7 @@ static bool s_raw_window_open;
 
 esp_err_t bsp_display_raw_window_begin(int y, int rows) {
     if (!s_raw || !s_panel || !s_io) return ESP_ERR_INVALID_STATE;
-    if (y < 0 || rows <= 0 || y + rows > BSP_LCD_W) return ESP_ERR_INVALID_ARG;
+    if (y < 0 || rows <= 0 || y + rows > BSP_RAW_H) return ESP_ERR_INVALID_ARG;
     // CASET addresses columns, RASET rows -- panel_st7789_draw_bitmap sends
     // them in that order with x in CASET. The panel is already swapped to
     // landscape by raw_claim, so the caller's rows are the panel's y, and the
@@ -257,7 +261,7 @@ esp_err_t bsp_display_raw_window_begin(int y, int rows) {
     // as panel_st7789_draw_bitmap adds its own.
     const uint8_t caset[] = {
         0, 0,
-        (uint8_t)((BSP_LCD_H - 1) >> 8), (uint8_t)((BSP_LCD_H - 1) & 0xff),
+        (uint8_t)((BSP_RAW_W - 1) >> 8), (uint8_t)((BSP_RAW_W - 1) & 0xff),
     };
     const uint8_t raset[] = {
         (uint8_t)(y >> 8), (uint8_t)(y & 0xff),
@@ -277,7 +281,7 @@ esp_err_t bsp_display_raw_window_push(int rows, const void *rgb565_be) {
     // -1: pixels with no command in front, so the window stands and no
     // outstanding-transfer wait is forced.
     esp_err_t e = esp_lcd_panel_io_tx_color(s_io, -1, rgb565_be,
-                                            (size_t)BSP_LCD_H * (size_t)rows * 2);
+                                            (size_t)BSP_RAW_W * (size_t)rows * 2);
     if (e == ESP_OK) s_raw_outstanding++;
     return e;
 }

@@ -164,7 +164,7 @@ _Static_assert(STRIPE_BYTES == AV_WIDTH * AV_STRIPE_ROWS * 2,
 _Static_assert(AV_STRIPE_PIXELS * 2 <= STRIPE_BYTES,
                "The incoming stripe must fit before it is enlarged");
 #define DMA_ESTIMATE_MS 90 // Six 240-frame descriptors / 16 kHz; NOT DMA measurement.
-_Static_assert(AV_WIDTH == BSP_LCD_H && AV_HEIGHT == BSP_LCD_W, "Landscape geometry");
+_Static_assert(AV_WIDTH == BSP_RAW_W && AV_HEIGHT == BSP_RAW_H, "Raw picture geometry");
 _Static_assert(AV_PALETTE_ENTRIES == 256, "An 8-bit index needs 256 colours");
 // The panel's floor, and it is asserted rather than trusted because the
 // expression printing it has been wrong twice in the same direction: 3 ms for a
