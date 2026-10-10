@@ -49,6 +49,7 @@ typedef struct {
     char number[4];       // "07", or "" when the channel is not in the list
     char name[64];
     unsigned bars;        // 0..4; 0 reads "--"
+    int rssi;             // dBm, shown beside the signal; 0 when unknown
     int soc;              // < 0 reads "--"
     unsigned pet;
     const uint8_t *qr;    // the remote's (or the help page's) code, or NULL

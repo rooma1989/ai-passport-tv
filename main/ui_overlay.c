@@ -260,7 +260,9 @@ void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page)
 
     char value[8];
     ui_text_draw_scaled(surface, 20, 72, "信号", 1, UI_MUTED, UI_INK);
-    if (page->bars) snprintf(value, sizeof(value), "%u/4", page->bars > 4u ? 4u : page->bars);
+    // The strength in dBm says more than the bars when the signal is weak.
+    if (page->bars && page->rssi) snprintf(value, sizeof(value), "%ddBm", page->rssi);
+    else if (page->bars) snprintf(value, sizeof(value), "%u/4", page->bars > 4u ? 4u : page->bars);
     else snprintf(value, sizeof(value), "--");
     ui_text_draw_scaled(surface, 60, 72, value, 1, UI_PAPER, UI_INK);
     ui_text_draw_scaled(surface, 20, 96, "电量", 1, UI_MUTED, UI_INK);

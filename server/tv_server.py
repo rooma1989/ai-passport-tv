@@ -458,9 +458,24 @@ class AVServer:
             name = reset_reason_name(reason) if isinstance(reason, int) else "?"
             self.logger(f"device boot reason={name}({reason}) uptime={uptime}s")
 
+    def note_device_wifi(self, wifi) -> None:
+        """设备连的哪个 Wi-Fi、信号多强、哪个信道、发射功率多少：卡顿时对照日志用。"""
+        if not isinstance(wifi, dict):
+            return
+        parts = []
+        for key in ("ssid", "rssi", "ch", "tx"):
+            value = wifi.get(key)
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                parts.append(f"{key}={str(value)[:32]}")
+        if parts:
+            self.logger("device wifi " + " ".join(parts))
+
     def _take_status(self, packet: Packet) -> None:
-        """设备的音量或亮度变了：记下来给手机看，会话照常。"""
+        """设备的音量或亮度变了：记下来给手机看，会话照常。也每 30 秒报一次信号。"""
         report = json_object(packet.payload)
+        rssi = report.get("rssi")
+        if isinstance(rssi, int) and not isinstance(rssi, bool) and rssi:
+            self.logger(f"device rssi={rssi}")
         if self.device_status is not None:
             for key in ("volume", "brightness", "pet"):
                 if isinstance(report.get(key), int):
@@ -1139,6 +1154,7 @@ class AVServer:
             # 旧固件不认识 SWITCH 包，收到会断开，所以只发给 HELLO 里声明了的设备。
             greeting = json_object(hello.payload)
             self.note_device_boot(greeting)
+            self.note_device_wifi(greeting.get("wifi"))
             self.device_switches = greeting.get("switch") == 1
             # 新固件在 HELLO 里报音量、亮度；报了的才接受手机的调节。
             # 新固件自己画暂停横条（"pause": 1）；旧固件靠服务端发 PAUSED 画面。

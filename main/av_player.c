@@ -1353,10 +1353,14 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
 }
 // Report the volume and backlight (AV_STATUS). Best effort: a lost report only
 // leaves the phone showing an old value until the next change or session.
+static int wifi_rssi(void);
 static void send_status(int fd, uint32_t session) {
-    char body[64];
-    int n=snprintf(body,sizeof(body),"{\"volume\":%u,\"brightness\":%u,\"pet\":%u}",
-                   (unsigned)s.volume,(unsigned)s.menu.brightness,(unsigned)atomic_load(&s.pet));
+    char body[96];
+    // The signal rides along: sent every 30 s as well as on a change, it lets
+    // the server's log show how the link was when playback suffered.
+    int n=snprintf(body,sizeof(body),"{\"volume\":%u,\"brightness\":%u,\"pet\":%u,\"rssi\":%d}",
+                   (unsigned)s.volume,(unsigned)s.menu.brightness,(unsigned)atomic_load(&s.pet),
+                   wifi_rssi());
     if (n<=0 || n>=(int)sizeof(body)) return;
     uint8_t wire[AV_HEADER_BYTES];
     av_header_t h={.type=AV_STATUS,.session=session,.length=(uint32_t)n};
@@ -1402,6 +1406,23 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"reset_reason",(int)esp_reset_reason()) &&
         (AV_PAIRING_TOKEN[0]=='\0' ||
          cJSON_AddStringToObject(j,"token",AV_PAIRING_TOKEN)!=NULL);
+    // The link as it is now, for the server's log: which network, how strong,
+    // which channel, and the transmit power actually in effect (the setup
+    // page's Advanced tab can change it).
+    if (ok) {
+        wifi_ap_record_t ap;
+        int8_t quarter_dbm=0;
+        cJSON *wifi=cJSON_CreateObject();
+        if (wifi && esp_wifi_sta_get_ap_info(&ap)==ESP_OK) {
+            cJSON_AddStringToObject(wifi,"ssid",(const char *)ap.ssid);
+            cJSON_AddNumberToObject(wifi,"rssi",ap.rssi);
+            cJSON_AddNumberToObject(wifi,"ch",ap.primary);
+        }
+        if (wifi && esp_wifi_get_max_tx_power(&quarter_dbm)==ESP_OK) {
+            cJSON_AddNumberToObject(wifi,"tx",quarter_dbm/4.0);
+        }
+        if (wifi) cJSON_AddItemToObject(j,"wifi",wifi);
+    }
     char *body=ok ? cJSON_PrintUnformatted(j) : NULL;
     cJSON_Delete(j);
     if (!body) return false;
@@ -1455,10 +1476,14 @@ static void receive_task(void *arg) {
     uint8_t wire[AV_HEADER_BYTES];
     unsigned header_deadline_ms=2000;
     int64_t last_header_us=0;
+    int64_t last_status_us=esp_timer_get_time();
     while (!stopping()) {
         // Tell the server about a volume or backlight change, between packets:
         // this task owns the socket, so nothing else writes to it mid-packet.
+        // Every 30 s regardless, for the signal reading.
+        if (esp_timer_get_time()-last_status_us>=30000000) atomic_store(&s.status_dirty,true);
         if (stream.configured && atomic_exchange(&s.status_dirty,false)) {
+            last_status_us=esp_timer_get_time();
             s_rx_stage="status-send";
             send_status(fd,stream.session);
         }
@@ -2142,6 +2167,7 @@ static void refresh_status_page(void) {
     taskEXIT_CRITICAL(&list_lock);
     if (!found) snprintf(status_page.name,sizeof(status_page.name),"%s",s.channel[0] ? s.channel : "小智电视");
     status_page.bars=wifi_bars();
+    status_page.rssi=status_page.bars ? wifi_rssi() : 0;
     status_page.soc=atomic_load(&s.battery_soc);
     status_page.pet=atomic_load(&s.pet);
     status_page.audio_only=atomic_load(&s.audio_only);

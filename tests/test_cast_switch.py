@@ -406,6 +406,15 @@ class DeviceControlTests(unittest.TestCase):
         self.wrote_audio = False
         self.assertNotIn({"audio_only": 1}, self.session(hello, script))
 
+    def test_wifi_and_rssi_are_logged(self):
+        from server.tv_server import AVServer
+        lines = []
+        server = AVServer.__new__(AVServer)
+        server.logger = lines.append
+        server.note_device_wifi({"ssid": "PHP2.4G", "rssi": -78, "ch": 6, "tx": 11.0})
+        server.note_device_wifi("nonsense")
+        self.assertEqual(lines, ["device wifi ssid=PHP2.4G rssi=-78 ch=6 tx=11.0"])
+
     def test_no_controls_for_firmware_without_them(self):
         def script(client, session, elapsed):
             if elapsed > 0.5 and not getattr(self, "wrote", False):

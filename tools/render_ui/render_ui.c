@@ -182,7 +182,7 @@ int main(int argc, char **argv)
     static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(3)], tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
     qrcodegen_encodeText("https://iewww.com/tv/r/abcdef1234", tmp, qr, qrcodegen_Ecc_LOW, 1, 3,
                          qrcodegen_Mask_AUTO, true);
-    ui_status_page_t page = { "07", "CCTV-7 国防军事", 3, 76, 0, qr, "手机遥控", false };
+    ui_status_page_t page = { "07", "CCTV-7 国防军事", 3, -62, 76, 0, qr, "手机遥控", false };
     picture(); bars(NULL, "状态", 76, 0, 3);
     ui_draw_panel(whole(), 30, 210);
     ui_overlay_status(whole(), &page);
