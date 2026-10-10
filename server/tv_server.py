@@ -448,13 +448,20 @@ class AVServer:
             raise ProtocolError("only END or STATUS allowed while playing")
         return True
 
-    def note_device_boot(self, greeting: dict) -> None:
-        """设备重启了就记一行：用来分辨「Wi-Fi 抖了一下」和「设备自己重启了（原因）」。"""
+    def note_device_boot(self, greeting: dict, now: float | None = None) -> None:
+        """设备重启了就记一行：用来分辨「Wi-Fi 抖了一下」和「设备自己重启了（原因）」。
+
+        和「上次 HELLO 的开机时长 + 之后过去的时间」比，而不是只和上次的开机时长比：
+        一次会话可能放了十几分钟，期间重启的设备再连上时开机时长早已超过上次 HELLO 里的数。"""
         uptime, reason = greeting.get("uptime_s"), greeting.get("reset_reason")
         if not isinstance(uptime, int):
             return
-        last, self._device_uptime = self._device_uptime, uptime
-        if (last is None and uptime < FRESH_BOOT_S) or (last is not None and uptime < last):
+        now = time.monotonic() if now is None else now
+        last, last_at = self._device_uptime, getattr(self, "_device_uptime_at", now)
+        self._device_uptime, self._device_uptime_at = uptime, now
+        expected = None if last is None else last + (now - last_at)
+        # 留 5 秒余量：两端时钟和连接耗时都有误差。
+        if (last is None and uptime < FRESH_BOOT_S) or (expected is not None and uptime < expected - 5):
             name = reset_reason_name(reason) if isinstance(reason, int) else "?"
             self.logger(f"device boot reason={name}({reason}) uptime={uptime}s")
 

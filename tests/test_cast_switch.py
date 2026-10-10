@@ -520,6 +520,20 @@ class DeviceBootLogTests(unittest.TestCase):
         self.assertEqual(boots, ["device boot reason=PANIC(4) uptime=8s",
                                  "device boot reason=BROWNOUT(9) uptime=6s"])
 
+    def test_boot_noticed_after_a_long_session(self):
+        """A reboot whose new uptime exceeds the last HELLO's is still a reboot."""
+        from server.tv_server import AVServer
+        lines = []
+        server = AVServer(None, b"t" * 32, "127.0.0.1", 0, 60000, logger=lines.append)
+        server.note_device_boot({"uptime_s": 4, "reset_reason": 11}, now=1000.0)
+        # Ten minutes later the device rebooted and came back 26 s into its new life.
+        server.note_device_boot({"uptime_s": 26, "reset_reason": 11}, now=1600.0)
+        # And a plain reconnect a minute after that is not a boot.
+        server.note_device_boot({"uptime_s": 87, "reset_reason": 11}, now=1661.0)
+        boots = [l for l in lines if "device boot" in l]
+        self.assertEqual(boots, ["device boot reason=USB(11) uptime=4s",
+                                 "device boot reason=USB(11) uptime=26s"])
+
     def test_server_restart_does_not_fake_a_boot(self):
         from server.tv_server import AVServer
         lines = []
