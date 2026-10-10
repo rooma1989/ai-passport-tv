@@ -5,6 +5,7 @@ server: the key, the API answers the page reads, the channel table, and what a
 stream request does to the saved state.
 """
 
+import io
 import json
 import re
 import sys
@@ -247,7 +248,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(names, ["我的投屏", "UP 主", "央视", "卫视", "其他"])
         self.assertEqual(state["now"], {"channel": "ch001", "online": True, "switch": True,
                                         "group": "卫视", "name": "湖南卫视", "n": 1, "title": "",
-                                        "since": self.now})
+                                        "since": self.now, "video": None})
         creators = next(g for g in state["groups"] if g["name"] == "UP 主")["channels"]
         self.assertEqual(creators, [{"id": "up01", "name": "UP42", "n": 1}])
 
@@ -259,7 +260,7 @@ class WebTests(unittest.TestCase):
         now_playing.write(self.playing, "ch001", True, True, now=self.now)
         self.assertEqual(self.call("POST", "/api/switch", {"channel": "nope"})["error"], "没有这个台")
         self.assertEqual(self.call("POST", "/api/switch", {"channel": "ch000"}), {"ok": True, "at": self.now})
-        self.assertEqual(events.read_event(self.events), (1, "switch", "ch000"))
+        self.assertEqual(events.read_event(self.events), (1, "switch", "ch000", None))
 
     def test_move_a_channel_to_another_group(self):
         self.assertEqual(self.call("POST", "/api/groups", {"channel": "ch002", "group": "音乐"}), {"ok": True})
@@ -358,7 +359,7 @@ class WebTests(unittest.TestCase):
     def test_cast_switches_plays_and_returns(self):
         answer = self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
         self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ", "at": self.now})
-        self.assertEqual(events.read_event(self.events), (1, "cast", ""))
+        self.assertEqual(events.read_event(self.events), (1, "cast", "", None))
         self.assertEqual(self.call("GET", "/api/state")["cast"],
                          {"title": "tBV1aZpw6DEKJ", "done": False})
         self.outcome = "client_gone"
@@ -369,7 +370,7 @@ class WebTests(unittest.TestCase):
         self.stream("cast")
         self.assertEqual(self.started[-1][1], 20.0)
         self.assertTrue(self.state.cast_done)
-        self.assertEqual(events.read_event(self.events), (2, "return", ""))
+        self.assertEqual(events.read_event(self.events), (2, "return", "", None))
         # Chosen by hand afterwards, it plays again from the start.
         self.stream("cast")
         self.assertEqual(self.started[-1][1], 0.0)
@@ -426,16 +427,170 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.status(f"http://127.0.0.1:{self.streams.server_address[1]}/x")[0], 404)
 
 
+class PlaybackControlTests(unittest.TestCase):
+    """Seek and next cut the stream being served; the reopened one starts at the target."""
+
+    def setUp(self):
+        import threading as _threading
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.state = State(root / "relay-state.json")
+        self.client = FakeClient()
+        self.playing = root / "now-playing.json"
+        self.events = root / "relay-events.json"
+        self.started = []
+        self.procs = []
+        self.now = 1000.0
+        self.mono = 50.0
+        self.relay = web.Relay(self.state, self.client, root / "relay-channels.txt", "/opt/ff", KEY,
+                               events_out=self.events, now_playing_in=self.playing,
+                               log=lambda _m: None, clock=lambda: self.now,
+                               monotonic=lambda: self.mono,
+                               starter=self.fake_start, pumper=self.fake_pump)
+        self.relay.add_creator("https://space.bilibili.com/42")
+        from server import now_playing
+        now_playing.write(self.playing, "up01", True, True, now=self.now, since=self.now)
+        self._threading = _threading
+        self.threads = []
+
+    def tearDown(self):
+        for proc in self.procs:
+            proc.kill()
+        # The play threads save state as they finish; let them, before the files go.
+        for thread in self.threads:
+            thread.join(5)
+        self.tmp.cleanup()
+
+    def fake_start(self, ffmpeg, url, offset):
+        self.started.append((url, offset))
+        proc = BlockingProc()
+        self.procs.append(proc)
+        return proc
+
+    def fake_pump(self, proc, write, on_tick):
+        proc.killed.wait(5)
+        return "failed"
+
+    def serve(self, cid="up01"):
+        """Play the channel in a thread, as the TV server's decoder would."""
+        class Handler:
+            def __init__(self):
+                self.wfile = io.BytesIO()
+            def send_response(self, code): pass
+            def send_header(self, *a): pass
+            def end_headers(self): pass
+            def send_error(self, code): self.error = code
+        thread = self._threading.Thread(target=self.relay.play, args=(cid, Handler()), daemon=True)
+        thread.start()
+        self.threads.append(thread)
+        for _ in range(100):
+            if cid in self.relay._active:
+                return thread
+            import time as _time
+            _time.sleep(0.01)
+        self.fail("stream did not start")
+
+    def test_progress_is_reported(self):
+        self.serve()
+        self.mono += 42
+        video = self.relay.summary()["now"]["video"]
+        self.assertEqual((video["position"], video["duration"], video["paused"]), (42.0, 600, False))
+        self.assertEqual(video["started"], self.now)
+
+    def test_seek_cuts_and_reopens_at_the_target(self):
+        thread = self.serve()
+        self.mono += 100
+        answer = self.relay.seek(delta=30)
+        self.assertEqual((answer["ok"], answer["position"]), (True, 130.0))
+        thread.join(2)
+        self.assertTrue(self.procs[0].killed.is_set())
+        self.assertEqual(self.state.get("up01").positions["a"], 130.0 + 10,
+                         "the cut stream did not overwrite the target")
+        self.serve()
+        self.assertEqual(self.started[-1], ("https://media.example/a.mp4", 130.0))
+
+    def test_seek_bounds(self):
+        self.serve()
+        self.mono += 10
+        self.assertEqual(self.relay.seek(delta=-30)["position"], 0.0)
+        self.serve()
+        self.relay.seek(position=599)
+        self.assertIn("a", self.state.get("up01").watched, "past the end is next")
+
+    def test_next_marks_watched(self):
+        thread = self.serve()
+        self.assertTrue(self.relay.next()["ok"])
+        thread.join(2)
+        self.assertEqual(self.state.get("up01").watched, ["a"])
+        self.serve()
+        self.assertEqual(self.started[-1][0], "https://media.example/b.mp4")
+
+    def test_next_on_a_cast_returns(self):
+        from server import now_playing
+        self.relay.cast("https://www.bilibili.com/video/BV1aZpw6DEKJ")
+        now_playing.write(self.playing, "cast", True, True, now=self.now, since=self.now)
+        self.serve("cast")
+        self.assertTrue(self.relay.next()["ok"])
+        self.assertEqual(events.read_event(self.events).action, "return")
+        self.assertTrue(self.state.cast_done)
+
+    def test_pause_and_resume_continue_exactly(self):
+        thread = self.serve()
+        self.mono += 50
+        answer = self.relay.pause()
+        self.assertTrue(answer["ok"])
+        thread.join(2)
+        self.assertEqual(events.read_event(self.events).action, "pause")
+        video = self.relay.summary()["now"]["video"]
+        self.assertEqual((video["paused"], video["position"]), (True, 50.0))
+        self.assertEqual(self.relay.open_channel("up01"), 503, "no stream while paused")
+        self.assertTrue(self.relay.resume()["ok"])
+        self.assertEqual(events.read_event(self.events).action, "resume")
+        self.serve()
+        self.assertEqual(self.started[-1], ("https://media.example/a.mp4", 50.0))
+
+    def test_pause_expires_and_ends_on_another_channel(self):
+        from server import now_playing
+        self.serve()
+        self.relay.pause()
+        self.now += web.PAUSE_MAX_S + 1
+        self.assertNotEqual(self.relay.open_channel("up01"), 503, "a long pause ends by itself")
+        self.relay.pause()  # nothing playing now: refused
+        self.serve()
+        self.relay.pause()
+        now_playing.write(self.playing, "ch000", True, True, now=self.now, since=self.now)
+        self.assertNotEqual(self.relay.open_channel("up01"), 503, "switching away ends the pause")
+
+    def test_nothing_to_control(self):
+        from server import now_playing
+        self.assertFalse(self.relay.seek(delta=30)["ok"])
+        now_playing.write(self.playing, "ch000", True, True, now=self.now, since=self.now)
+        self.assertFalse(self.relay.next()["ok"])
+
+
+class BlockingProc:
+    def __init__(self):
+        import threading as _threading
+        self.killed = _threading.Event()
+
+    def kill(self):
+        self.killed.set()
+
+    def wait(self, timeout=None):
+        return -9
+
+
 class PageFieldTests(unittest.TestCase):
     """The page's script and the API agree on field names (see test_channel_config.py)."""
 
     def test_page_fields_are_served(self):
         script = web.PAGE.split("<script>", 1)[1]
-        used = set(re.findall(r"\b(?:data|now|data\.now|data\.youtube|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
+        used = set(re.findall(r"\b(?:data|now|data\.now|data\.now\.video|data\.youtube|v|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
         used -= {"length", "find", "map", "includes"}
         served = {"now", "groups", "creators", "cast", "history", "group_names", "youtube", "state",
                   "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
-                  "site", "at", "since", "left", "total", "ok", "error", "creator"}
+                  "site", "at", "since", "left", "total", "ok", "error", "creator",
+                  "video", "position", "duration", "paused", "started"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

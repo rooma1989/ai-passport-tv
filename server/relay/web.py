@@ -33,6 +33,8 @@ _CREATOR = re.compile(r"^/api/creators/(up\d\d)$")
 _HISTORY = re.compile(r"^/api/history/(bilibili|youtube)/([A-Za-z0-9_-]{1,32})$")
 _CODE = re.compile(r"^/r/([A-Za-z2-7]{20})$")
 COOKIE = "tvs"
+# 暂停最长多久（与电视服务的 PAUSE_MAX_S 一致），之后自动继续。
+PAUSE_MAX_S = 30 * 60
 # 最多每分钟问一次 YouTube 节点的健康状态。
 YOUTUBE_HEALTH_S = 60
 
@@ -72,6 +74,11 @@ class Relay:
         self._titles: dict[str, str] = {}
         # YouTube 节点的健康状态，最多每分钟问一次。
         self._youtube_health: tuple[float, str] | None = None
+        # 每个台正在推的那一路流：进程、视频、起点、开始时刻；跳转、下一个、暂停靠它掐断。
+        self._active: dict[str, dict] = {}
+        self._active_lock = threading.Lock()
+        # 手机上暂停的那个台：视频、精确位置、暂停时刻。暂停期间这个台不给流。
+        self._paused: dict | None = None
 
     # ---- 频道表 ----
 
@@ -105,6 +112,8 @@ class Relay:
         """选出下一个视频并启动 ffmpeg；返回 (进程, 视频, 起点) 或说明原因的 HTTP 码。"""
         if self.state.get(cid) is None:
             return 404
+        if self._paused_on(cid):
+            return 503
         self.refresh_if_stale(cid)
         for _ in range(MAX_SKIPS):
             pick = self.state.next_video(cid)
@@ -167,6 +176,8 @@ class Relay:
             video, done, position = self.state.cast, self.state.cast_done, self.state.cast_position
         if video is None:
             return 404
+        if self._paused_on(table.CAST_ID):
+            return 503
         offset = 0.0 if done else max(0.0, position - RESUME_BACK_S)
         try:
             return self._start(video, offset), video, offset
@@ -194,6 +205,10 @@ class Relay:
         self._titles[cid] = video.title
         self.log(f"{cid} 开始 {video.bvid} 从 {int(offset)} 秒 《{video.title}》")
         began = self.monotonic()
+        entry = {"proc": proc, "video": video, "offset": offset, "began": began,
+                 "at": self.clock(), "abort": ""}
+        with self._active_lock:
+            self._active[cid] = entry
         try:
             handler.send_response(200)
             handler.send_header("Content-Type", "video/mp2t")
@@ -208,6 +223,8 @@ class Relay:
 
         def tick(elapsed: float) -> None:
             ticked[0] = elapsed
+            if entry["abort"]:
+                return          # 跳转等已经存好了新位置，别再覆盖
             if cast:
                 self.state.save_cast_position(video.bvid, offset + elapsed)
             else:
@@ -216,11 +233,119 @@ class Relay:
 
         outcome = self.pumper(proc, handler.wfile.write, tick)
         elapsed = max(self.monotonic() - began, ticked[0])
+        with self._active_lock:
+            if self._active.get(cid) is entry:
+                del self._active[cid]
+        if entry["abort"]:
+            # 手机上跳转、下一个或暂停掐断的：状态已经由那边改好了，这里不再记进度或标看过。
+            self.log(f"{cid} 结束 {video.bvid} {entry['abort']} 播了 {int(elapsed)} 秒")
+            return
         if cast:
             self.finish_cast(video, offset, outcome, elapsed)
         else:
             self.finish(cid, video, offset, outcome, elapsed)
         self.log(f"{cid} 结束 {video.bvid} {outcome} 播了 {int(elapsed)} 秒")
+
+    # ---- 播放控制 ----
+
+    def _playing_entry(self):
+        """(台, 正在推的流)；只对投屏台和 UP 主台有效。"""
+        playing = now_playing.read(self.now_playing_in, self.clock())
+        cid = playing["channel"]
+        if not playing["online"] or not (cid == table.CAST_ID or cid.startswith("up")):
+            return cid, None
+        with self._active_lock:
+            return cid, self._active.get(cid)
+
+    def _position(self, entry: dict) -> float:
+        return entry["offset"] + (self.monotonic() - entry["began"])
+
+    def _cut(self, cid: str, entry: dict, reason: str) -> None:
+        entry["abort"] = reason
+        try:
+            entry["proc"].kill()
+        except OSError:
+            pass
+        self.log(f"{cid} {reason}：掐断当前的流，电视服务会重新打开")
+
+    def _paused_on(self, cid: str) -> dict | None:
+        """cid 正在暂停时返回暂停信息。暂停超过 PAUSE_MAX_S，或设备已换到别的台，就当作结束了。"""
+        paused = self._paused
+        if paused is None or paused["cid"] != cid:
+            return None
+        playing = now_playing.read(self.now_playing_in, self.clock())
+        if self.clock() - paused["at"] > PAUSE_MAX_S or (playing["online"] and playing["channel"] != cid):
+            self._paused = None
+            return None
+        return paused
+
+    def _store_position(self, cid: str, video, target: float) -> None:
+        # 重新打开时会从「存的位置 − RESUME_BACK_S」开始，所以存目标加回退量，正好从目标起播。
+        stored = target + RESUME_BACK_S if target > 0 else 0.0
+        if cid == table.CAST_ID:
+            self.state.save_cast_position(video.bvid, stored)
+        else:
+            self.state.save_position(cid, video.bvid, stored)
+        self.state.save()
+
+    def pause(self) -> dict:
+        cid, entry = self._playing_entry()
+        if entry is None:
+            return {"ok": False, "error": "现在没有在播视频"}
+        position = self._position(entry)
+        self._store_position(cid, entry["video"], position)
+        self._paused = {"cid": cid, "video": entry["video"], "position": position, "at": self.clock()}
+        self._cut(cid, entry, "暂停")
+        self._event("pause")
+        return {"ok": True, "at": self.clock()}
+
+    def resume(self) -> dict:
+        playing = now_playing.read(self.now_playing_in, self.clock())
+        if self._paused_on(playing["channel"]) is None:
+            return {"ok": False, "error": "现在没有暂停"}
+        self._paused = None
+        self._event("resume")
+        return {"ok": True, "at": self.clock()}
+
+    def video_progress(self, cid: str) -> dict | None:
+        paused = self._paused_on(cid)
+        if paused is not None:
+            return {"position": round(paused["position"], 1), "duration": paused["video"].duration,
+                    "paused": True, "started": paused["at"]}
+        with self._active_lock:
+            entry = self._active.get(cid)
+        if entry is None:
+            return None
+        return {"position": round(self._position(entry), 1), "duration": entry["video"].duration,
+                "paused": False, "started": entry["at"]}
+
+    def seek(self, delta: float | None = None, position: float | None = None) -> dict:
+        cid, entry = self._playing_entry()
+        if entry is None:
+            return {"ok": False, "error": "现在没有在播视频"}
+        video = entry["video"]
+        target = position if position is not None else self._position(entry) + (delta or 0)
+        target = max(0.0, float(target))
+        if video.duration and target >= video.duration - 3:
+            return self.next()
+        self._store_position(cid, video, target)
+        self._cut(cid, entry, f"跳到 {int(target)} 秒")
+        return {"ok": True, "at": self.clock(), "position": target}
+
+    def next(self) -> dict:
+        cid, entry = self._playing_entry()
+        if entry is None:
+            return {"ok": False, "error": "现在没有在播视频"}
+        video = entry["video"]
+        if cid == table.CAST_ID:
+            self.state.cast_ended(video.bvid)
+            self.state.save()
+            self._event("return")
+        else:
+            self.state.mark_watched(cid, video.bvid)
+            self.state.save()
+        self._cut(cid, entry, "下一个")
+        return {"ok": True, "at": self.clock()}
 
     # ---- 管理 ----
 
@@ -281,7 +406,8 @@ class Relay:
             title = self._titles.get(cid, "")
         return {"channel": cid, "online": playing["online"], "switch": playing["switch"],
                 "group": found[0] if found else "", "name": found[1]["name"] if found else "",
-                "n": found[1]["n"] if found else 0, "title": title, "since": playing["since"]}
+                "n": found[1]["n"] if found else 0, "title": title, "since": playing["since"],
+                "video": self.video_progress(cid) if playing["online"] else None}
 
     def youtube_state(self) -> str:
         """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
@@ -568,6 +694,23 @@ def _manage_handler(relay: Relay):
                 group = body.get("group")
                 self._json(relay.set_group(str(body.get("channel") or ""),
                                            group if isinstance(group, str) else None))
+                return
+            if path == "/api/seek":
+                delta, position = body.get("delta"), body.get("position")
+                if not isinstance(delta, (int, float)) and not isinstance(position, (int, float)):
+                    self._json({"ok": False, "error": "请求格式不对"}, 400)
+                    return
+                self._json(relay.seek(delta=delta if isinstance(delta, (int, float)) else None,
+                                      position=position if isinstance(position, (int, float)) else None))
+                return
+            if path == "/api/next":
+                self._json(relay.next())
+                return
+            if path == "/api/pause":
+                self._json(relay.pause())
+                return
+            if path == "/api/resume":
+                self._json(relay.resume())
                 return
             if path == "/api/history/play":
                 self._json(relay.replay(str(body.get("site") or ""), str(body.get("id") or "")))

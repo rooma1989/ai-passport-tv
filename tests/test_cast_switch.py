@@ -71,6 +71,26 @@ class WatcherTests(unittest.TestCase):
         events.write_event(self.path, "switch", channel="ch013")
         self.assertIsNone(watcher.poll("ch013", 3.0))
 
+    def test_switch_is_not_lost_behind_later_events(self):
+        """A slider writes events quickly; the switch before them still happens."""
+        watcher = SwitchWatcher(self.path)
+        watcher.poll("ch001", 1.0)
+        events.write_event(self.path, "switch", channel="ch013")
+        events.write_event(self.path, "volume", value=60)
+        events.write_event(self.path, "volume", value=70)
+        self.assertEqual(watcher.poll("ch001", 2.0), ("switch", "ch013"))
+        self.assertEqual(watcher.take_controls(), [("volume", 70)])
+        self.assertEqual(watcher.take_controls(), [])
+
+    def test_controls_in_order(self):
+        watcher = SwitchWatcher(self.path)
+        watcher.poll("up01", 1.0)
+        events.write_event(self.path, "pause")
+        events.write_event(self.path, "brightness", value=2)
+        events.write_event(self.path, "resume")
+        self.assertIsNone(watcher.poll("up01", 2.0))
+        self.assertEqual(watcher.take_controls(), [("pause", None), ("brightness", 2), ("resume", None)])
+
     def test_no_file_configured(self):
         self.assertIsNone(SwitchWatcher(None).poll("ch001", 5.0))
 
@@ -188,6 +208,65 @@ class SessionTests(unittest.TestCase):
             client.close()
             thread.join(timeout=3)
         self.assertEqual(json.loads(config.payload)["channel"], "cast")
+
+
+class PauseTests(unittest.TestCase):
+    """Pause closes the source and holds the device; resume starts a new one."""
+
+    setUp = SessionTests.setUp
+    tearDown = SessionTests.tearDown
+
+    def test_pause_then_resume(self):
+        import socket
+        import threading
+        import time
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_live_transcode import StubFactory
+        from server.protocol import Kind, Packet, json_bytes, receive_packet, send_packet
+        from server.tv_server import AVServer
+
+        token = b"t" * 32
+        server = AVServer(None, token, "127.0.0.1", 0, 60000, logger=lambda _m: None)
+        server.live_enabled = True
+        factory = StubFactory()
+        server.channel_factory = factory
+        thread = threading.Thread(target=server.serve, daemon=True)
+        thread.start()
+        self.assertTrue(server.ready.wait(5))
+        client = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+        client.setblocking(False)
+        kinds_after_pause, session, phase = [], None, "playing"
+        start = time.monotonic()
+        try:
+            send_packet(client, Packet(Kind.HELLO, 0, 0, 0, json_bytes(
+                {"version": 1, "token": token.decode(), "channel": "ch000", "switch": 1})))
+            while time.monotonic() - start < 6.0:
+                elapsed = time.monotonic() - start
+                if phase == "playing" and elapsed > 0.6:
+                    events.write_event(self.events, "pause")
+                    phase = "pausing"
+                elif phase == "pausing" and elapsed > 2.0:
+                    self.assertEqual(len(factory.created), 1, "no new source while paused")
+                    phase = "paused"
+                elif phase == "paused" and elapsed > 3.5:
+                    events.write_event(self.events, "resume")
+                    phase = "resumed"
+                try:
+                    packet = receive_packet(client, timeout=0.2, expected_session=session)
+                except TimeoutError:
+                    continue
+                session = packet.session
+                if phase == "paused":
+                    kinds_after_pause.append(packet.kind)
+        except EOFError:
+            pass
+        finally:
+            server.stop.set()
+            client.close()
+            thread.join(timeout=3)
+        self.assertIn(Kind.PCM, kinds_after_pause, "silence keeps the device's audio clock going")
+        self.assertIn(Kind.JPEG, kinds_after_pause, "the paused frame is re-sent")
+        self.assertGreaterEqual(len(factory.created), 2, "resume started a new source")
 
 
 if __name__ == "__main__":

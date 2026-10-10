@@ -41,6 +41,22 @@
   .screen .ti { font: 14px/1.4 var(--serif); color: var(--dim); margin-top: 2px; }
   .screen.off .ch { color: var(--faint); text-shadow: none; }
 
+  .player { margin: -2px 14px 12px; }
+  .player[hidden] { display: none; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; padding: 0; border: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--rule); }
+  input[type=range]::-moz-range-track { height: 2px; background: var(--rule); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -6px;
+                                           background: var(--red); border: 0; border-radius: 0; }
+  input[type=range]::-moz-range-thumb { width: 14px; height: 14px; background: var(--red); border: 0; border-radius: 0; }
+  input[type=range]:disabled { opacity: .35; }
+  .times { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--dim); margin-top: -2px; }
+  .controls { display: flex; gap: 8px; margin-top: 8px; }
+  .controls button { flex: 1; background: none; border: 1px solid var(--rule); color: var(--paper);
+                     padding: 7px 0; font: 14px var(--serif); letter-spacing: 1px; }
+  .controls button:active { border-color: var(--red); color: var(--red); }
+  .controls button.main { color: var(--amber); border-color: #5a4a2c; }
+  .controls button:disabled { opacity: .35; }
   .seg { display: flex; gap: 18px; overflow-x: auto; padding: 4px 16px 10px; scrollbar-width: none; }
   .seg::-webkit-scrollbar { display: none; }
   .seg button { flex: none; background: none; border: 0; padding: 4px 0 3px; color: var(--dim); font: 15px var(--serif); }
@@ -125,6 +141,16 @@
         <div class="top"><span class="ch" id="ch">— —</span><span class="grp" id="grp"></span></div>
         <div class="nm" id="nm">正在连接…</div>
         <div class="ti" id="ti"></div>
+      </div>
+      <div class="player" id="player" hidden>
+        <input type="range" id="seek" min="0" max="100" step="1" value="0">
+        <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+        <div class="controls">
+          <button id="back">退 30 秒</button>
+          <button id="pause" class="main">暂停</button>
+          <button id="fwd">进 30 秒</button>
+          <button id="next">下一个</button>
+        </div>
       </div>
       <div class="seg" id="seg"></div>
       <ol class="rows" id="channels"></ol>
@@ -212,8 +238,8 @@ function dateLabel(at) {
   return (day.getMonth() + 1) + "月" + day.getDate() + "日";
 }
 
-function startPending(channel, name, at, slow) {
-  pending = { channel, name, at, deadline: Date.now() + (slow ? 45000 : 20000) };
+function startPending(channel, name, at, slow, kind) {
+  pending = { kind: kind || "switch", channel, name, at, deadline: Date.now() + (slow ? 45000 : 20000) };
   render();
   schedule(800);
 }
@@ -221,12 +247,46 @@ function startPending(channel, name, at, slow) {
 function settlePending() {
   if (!pending) return;
   const now = data.now;
-  if (now.online && now.channel === pending.channel && now.since >= pending.at - 1) {
+  const v = now.video;
+  // 换台：小智报告了在请求之后开始的、目标台的会话。跳转：同一会话里有了在请求之后开始的新一路流
+  // （或已经离开了这个台，比如投屏点了「下一个」）。
+  const done = pending.kind === "seek"
+    ? now.channel !== pending.channel || (v && !v.paused && v.started >= pending.at - 1)
+    : now.online && now.channel === pending.channel && now.since >= pending.at - 1;
+  if (done) {
     pending = null;
   } else if (Date.now() > pending.deadline) {
-    toast("切换好像没成功，再点一次试试", true);
+    toast(pending.kind === "seek" ? "跳转好像没成功，再试一次" : "切换好像没成功，再点一次试试", true);
     pending = null;
   }
+}
+
+function clock(seconds) {
+  seconds = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, sec = seconds % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(sec).padStart(2, "0");
+}
+
+// 两次刷新之间进度条自己往前走；拖动时不动。
+let fetchedAt = 0;
+let dragging = false;
+function renderPlayer() {
+  const v = data.now.online ? data.now.video : null;
+  $("player").hidden = !v;
+  if (!v) return;
+  const busy = pending !== null;
+  const position = v.paused ? v.position : v.position + (Date.now() - fetchedAt) / 1000;
+  const duration = v.duration || 0;
+  const bar = $("seek");
+  bar.disabled = busy || !duration;
+  if (!dragging) {
+    bar.max = String(Math.max(1, Math.floor(duration)));
+    bar.value = String(Math.min(Math.floor(position), Math.floor(duration)));
+    $("pos").textContent = clock(position);
+  }
+  $("dur").textContent = duration ? clock(duration) : "--:--";
+  $("pause").textContent = v.paused ? "继续" : "暂停";
+  for (const id of ["back", "pause", "fwd", "next"]) $(id).disabled = busy;
 }
 
 function renderNotice() {
@@ -242,12 +302,24 @@ function renderNotice() {
 function renderScreen() {
   const now = data.now;
   const screen = $("screen");
-  if (pending) {
+  if (pending && pending.kind === "seek") {
+    screen.className = "screen switching";
+    $("ch").textContent = "CH " + pad(now.n || 0);
+    $("grp").textContent = now.group;
+    $("nm").textContent = now.name || now.channel;
+    $("ti").textContent = "跳转中…";
+  } else if (pending) {
     screen.className = "screen switching";
     $("ch").textContent = "CH ··";
     $("grp").textContent = "";
     $("nm").textContent = "正在切到「" + pending.name + "」";
     $("ti").textContent = "切换中…";
+  } else if (now.online && now.video && now.video.paused) {
+    screen.className = "screen";
+    $("ch").textContent = "CH " + pad(now.n || 0);
+    $("grp").textContent = now.group;
+    $("nm").textContent = now.name || now.channel;
+    $("ti").textContent = "已暂停 · " + (now.title || "");
   } else if (now.online && now.channel) {
     screen.className = "screen";
     $("ch").textContent = "CH " + pad(now.n || 0);
@@ -381,6 +453,7 @@ function render() {
   if (!data) return;
   renderNotice();
   renderScreen();
+  renderPlayer();
   renderGroups();
   renderChannels();
   renderHistory();
@@ -389,6 +462,7 @@ function render() {
 
 async function refresh() {
   try { data = await call("GET", "api/state"); } catch (error) { return; }
+  fetchedAt = Date.now();
   settlePending();
   render();
 }
@@ -447,6 +521,23 @@ $("newcode").onclick = async () => {
   const answer = await call("POST", "api/code", {});
   if (answer.ok) toast("已换新码，小电视换台后显示新的二维码");
 };
+
+async function control(path, body) {
+  const answer = await call("POST", path, body || {});
+  if (!answer.ok) { toast(answer.error, true); return; }
+  if (path === "api/pause" || path === "api/resume") { refresh(); return; }
+  startPending(data.now.channel, data.now.name, answer.at, true, "seek");
+}
+$("back").onclick = () => control("api/seek", { delta: -30 });
+$("fwd").onclick = () => control("api/seek", { delta: 30 });
+$("next").onclick = () => control("api/next");
+$("pause").onclick = () => control(data.now.video && data.now.video.paused ? "api/resume" : "api/pause");
+$("seek").addEventListener("input", () => { dragging = true; $("pos").textContent = clock(Number($("seek").value)); });
+$("seek").addEventListener("change", () => {
+  dragging = false;
+  control("api/seek", { position: Number($("seek").value) });
+});
+setInterval(() => { if (data && !document.hidden) renderPlayer(); }, 1000);
 
 refresh();
 schedule(5000);

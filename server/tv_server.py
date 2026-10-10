@@ -93,6 +93,8 @@ NOW_PLAYING_ENV = "TV_NOW_PLAYING_FILE"
 # 中转写的手机遥控地址（大写，二维码用字母数字模式），随 CONFIG 发给设备画在状态页上。
 REMOTE_URL_ENV = "TV_REMOTE_URL_FILE"
 REMOTE_URL_MAX = 64
+# 暂停最长多久，之后自动继续（与中转的 PAUSE_MAX_S 一致）。
+PAUSE_MAX_S = 30 * 60
 _REMOTE_URL = re.compile(r"^HTTPS?://[A-Z0-9.:/%-]+$")
 
 
@@ -451,6 +453,27 @@ class AVServer:
                 return True
         return False
 
+    def pause_verdict(self, paused_at: float) -> str:
+        """暂停中每轮调用：继续（resume）、结束会话（leave，有换台请求）或接着暂停（paused）。"""
+        decision = self.switch_watcher.poll(self.channel_name, time.monotonic())
+        if decision is not None:
+            kind, target = decision
+            if kind == "switch":
+                self.pending_switch = target
+            self.logger(f"paused: cast {kind} {target or self.channel_name}")
+            return "leave"
+        controls = self.switch_watcher.take_controls()
+        resumed = any(kind == "resume" for kind, _ in controls)
+        # 音量、亮度留到恢复播放后再发。
+        self.switch_watcher.requeue([c for c in controls if c[0] in ("volume", "brightness")])
+        if resumed:
+            self.logger("resume")
+            return "resume"
+        if time.monotonic() - paused_at > PAUSE_MAX_S:
+            self.logger("pause expired; resuming")
+            return "resume"
+        return "paused"
+
     def switch_waiting(self) -> bool:
         """起播等待、断流重连时轮询换台请求：有就记下并返回 True，由调用者结束会话。
 
@@ -659,7 +682,7 @@ class AVServer:
             busy_us += took * 1e6
             gap_start = at
 
-        def hold_on_notice(empty_since: float) -> bool:
+        def hold_on_notice(empty_since: float, paused: bool = False) -> bool:
             """停留在重连提示画面，直到源重新有数据。
 
             会话结束（设备离开或要求停止）时返回 False。
@@ -674,7 +697,8 @@ class AVServer:
                 empty_since=round(empty_since, 4)
             )
             wire = reconnect.WireState(seq, audio_pts, last_audio_wire, last_video_wire)
-            held = reconnect.hold(self, connection, session, channel, wire, origin, empty_since)
+            held = reconnect.hold(self, connection, session, channel, wire, origin, empty_since,
+                                  paused=paused)
             if held is None:
                 return False
             if held is not channel:
@@ -770,6 +794,13 @@ class AVServer:
                     send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
                                                    json_bytes({"channel": target})))
                     seq += 1
+            for kind, value in self.switch_watcher.take_controls():
+                if kind == "pause":
+                    # 手机上暂停：停在 PAUSED 画面，继续时重启视频源（reconnect.hold 的 paused 模式）。
+                    self.logger(f"session={session} pause")
+                    if not hold_on_notice(time.monotonic(), paused=True):
+                        return
+                    now = time.monotonic()
             if getattr(self, "duration_ms", None) is not None and (now - origin) * 1000 >= self.duration_ms:
                 send_packet(connection, Packet(Kind.END, session, seq, 0))
                 return

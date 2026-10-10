@@ -9,6 +9,8 @@ from __future__ import annotations
 from . import frames
 
 NOTICE_TEXT = "RECONNECTING..."
+# 手机上暂停时的提示。
+PAUSE_TEXT = "PAUSED"
 
 BLACK = 0
 WHITE = 255
@@ -23,6 +25,11 @@ _GLYPHS: dict[str, tuple[str, ...]] = {
     "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
     "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
     "G": (".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###."),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
     ".": ("..", "..", "..", "..", "..", "##", "##"),
 }
 _GLYPH_ROWS = 7
@@ -34,13 +41,13 @@ def _text_columns(text: str) -> int:
     return sum(len(_GLYPHS[c][0]) for c in text) + _LETTER_GAP * (len(text) - 1)
 
 
-def reconnect_frame(base: bytes | None) -> bytes:
+def reconnect_frame(base: bytes | None, text: str = NOTICE_TEXT) -> bytes:
     """在 `base` 中央的黑框上绘制提示；`base` 为 None 时用纯深蓝底。"""
     if base is not None and len(base) != frames.FRAME_PIXELS:
         raise ValueError(f"frame is {len(base)} bytes, expected {frames.FRAME_PIXELS}")
     width, height = frames.WIDTH, frames.HEIGHT
     pixels = bytearray(base) if base is not None else bytearray([DARK_BLUE]) * frames.FRAME_PIXELS
-    columns = _text_columns(NOTICE_TEXT)
+    columns = _text_columns(text)
     scale = max(1, (width - 4 * _BOX_PAD) // columns)
     text_w, text_h = columns * scale, _GLYPH_ROWS * scale
     left, top = (width - text_w) // 2, (height - text_h) // 2
@@ -52,7 +59,7 @@ def reconnect_frame(base: bytes | None) -> bytes:
                 pixels[row + x] = BLACK
 
     x0 = left
-    for char in NOTICE_TEXT:
+    for char in text:
         glyph = _GLYPHS[char]
         for gy, line in enumerate(glyph):
             for gx, cell in enumerate(line):

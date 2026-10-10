@@ -23,6 +23,8 @@ from .protocol import (AUDIO_BYTES, VIDEO_CONTINUES, Kind, Packet, json_bytes,
 RECONNECT_TIMEOUT_S = float(os.environ.get("TV_RECONNECT_TIMEOUT_S", "60"))
 # 进程存活但这么久没有数据，视为卡住并替换。
 STALL_RESTART_S = 5.0
+# 暂停时多久重发一次 PAUSED 画面：要短于设备判定「画面停了」的 1.5 秒。
+PAUSE_FRAME_S = 1.0
 # 单次替换必须在此时间内产出预缓冲完成的新源。
 ATTEMPT_TIMEOUT_S = 20.0
 RETRY_DELAY_S = 2.0
@@ -90,9 +92,9 @@ def _tell_device(connection, session: int, reason: str) -> None:
 
 
 def _send_notice(server, connection, session: int, wire: WireState,
-                 shown: bytes | None) -> bytes:
+                 shown: bytes | None, text: str = overlay.NOTICE_TEXT) -> bytes:
     """发送提示画面，返回设备此刻显示的内容。"""
-    raw = overlay.reconnect_frame(shown)
+    raw = overlay.reconnect_frame(shown, text)
     chosen = frames.choose_stripes(raw, shown, 0, 1 << 20)
     parts = frames.pack_stripes(chosen)
     stamp = max(wire.audio_stamp, wire.video_stamp + 1)
@@ -126,12 +128,17 @@ def _send_silence(server, connection, session: int, wire: WireState,
 
 
 def hold(server, connection, session: int, channel: LiveChannel, wire: WireState,
-         origin: float, since: float, restart_reason: str = "") -> LiveChannel | None:
+         origin: float, since: float, restart_reason: str = "",
+         paused: bool = False) -> LiveChannel | None:
     """让设备停留在提示画面，直到源重新有数据。
 
     返回继续使用的频道：原频道已恢复或新启动的替换频道；设备离开时返回 None。
     `wire` 原地更新。自 `since` 起超过 `RECONNECT_TIMEOUT_S` 抛 LiveError。
     `restart_reason` 非空时立即替换 `channel`。
+
+    `paused`：手机上暂停。先关掉视频源，持续补静音、每秒重发一次 PAUSED 画面（不让设备因为
+    没画面而换成等待画面），直到 server.pause_verdict() 说继续；然后按重连的流程重启视频源，
+    重连的超时从继续的那一刻算起。
     """
     deadline = since + RECONNECT_TIMEOUT_S
     restart: Restart | None = None
@@ -141,7 +148,33 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
     make = server.make_channel
     try:
         server.phase = "live_reconnect"
-        channel.shown = _send_notice(server, connection, session, wire, channel.shown)
+        text = overlay.PAUSE_TEXT if paused else overlay.NOTICE_TEXT
+        shown = _send_notice(server, connection, session, wire, getattr(channel, "shown", None), text)
+        channel.shown = shown
+        if paused:
+            paused_at = time.monotonic()
+            next_frame = paused_at + PAUSE_FRAME_S
+            _close_background(channel)
+            channel = None
+            while not server.stop.is_set():
+                server.phase = "live_paused"
+                _send_silence(server, connection, session, wire, origin)
+                now = time.monotonic()
+                verdict = server.pause_verdict(paused_at)
+                if verdict == "leave":
+                    return None
+                if verdict == "resume":
+                    pending = "resumed"
+                    deadline = now + RECONNECT_TIMEOUT_S
+                    break
+                if now >= next_frame:
+                    shown = _send_notice(server, connection, session, wire, shown, text)
+                    next_frame = now + PAUSE_FRAME_S
+                if not server._wait_until(connection, time.monotonic() + 0.02, session):
+                    return None
+            if server.stop.is_set():
+                return None
+            server.phase = "live_reconnect"
         while not server.stop.is_set():
             server.phase = "live_reconnect"
             now = time.monotonic()
