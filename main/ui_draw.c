@@ -151,6 +151,35 @@ void ui_draw_pet(ui_surface_t surface, unsigned pet, unsigned mood, int x, int y
     }
 }
 
+bool ui_pet_rows(unsigned pet, unsigned mood, int *top, int *bottom)
+{
+    if (pet >= PET_COUNT) {
+        return false;
+    }
+    const pet_sprite_t *sprite = &PETS[pet];
+    if (mood >= sprite->mood_count) {
+        mood = sprite->mood_count - 1u;
+    }
+    const uint8_t *frame = sprite->frames[mood];
+    int first = -1, last = -1;
+    for (int row = 0; row < UI_PET_SIZE; row++) {
+        for (int i = 0; i < UI_PET_SIZE / 2; i++) {
+            if (frame[row * (UI_PET_SIZE / 2) + i]) {
+                if (first < 0) first = row;
+                last = row;
+                break;
+            }
+        }
+    }
+    if (first < 0) {
+        first = 0;
+        last = UI_PET_SIZE - 1;
+    }
+    if (top) *top = first;
+    if (bottom) *bottom = last;
+    return true;
+}
+
 void ui_draw_dotted_hline(ui_surface_t surface, int x0, int x1, int y, uint16_t color)
 {
     if (!touches(surface, y, 1)) {

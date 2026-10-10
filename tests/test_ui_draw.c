@@ -114,6 +114,11 @@ static void test_pet(void)
     }
     check(memcmp(whole, buf, sizeof(buf)) == 0, "3x by stripes equals 3x whole");
 
+    int top = -1, bottom = -1;
+    check(ui_pet_rows(0, 1, &top, &bottom) && top == 0 && bottom == 20, "电电 fills rows 0..20");
+    check(ui_pet_rows(6, 1, &top, &bottom) && top == 5 && bottom == 18, "按按 fills rows 5..18");
+    check(!ui_pet_rows(99, 0, &top, &bottom), "no rows for an unknown pet");
+
     surface = clear();
     ui_draw_pet(surface, 99, 0, 0, 0, 2);
     check(count(0, 0, W, H, BACK) == W * H, "an unknown pet draws nothing");

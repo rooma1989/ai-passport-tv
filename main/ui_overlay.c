@@ -385,15 +385,23 @@ static void draw_listen(ui_surface_t surface, const ui_wait_page_t *page, unsign
         // least 16 rows apart, so their cells never overlap.
         for (unsigned j = 0; j < 3u; j++) {
             const unsigned age = (tick + j * 8u) % 24u;
-            // Clear of the pet's right edge (x=180): some pets' sleepy faces
+            // Clear of the pet's right edge (x=192): some pets' sleepy faces
             // carry a little z of their own at the top corner.
             const int y = 76 - (int)age * 2;
-            const int x = 184 + (int)age / 2;
+            const int x = 196 + (int)age / 2;
             if (y < 32) continue;
             ui_text_draw_scaled(surface, x, y, "Z", 1, age > 14u ? UI_PAPER : UI_MUTED, UI_INK);
         }
     }
-    ui_draw_pet(surface, page->pet, mood, 60, 46 - lift, 5);
+    // At 6x (144 px), standing with its feet just above the bars (row 189),
+    // whatever empty rows its sprite has; the lift is capped so the head
+    // never reaches the top bar.
+    int top = 0, bottom = UI_PET_SIZE - 1;
+    (void)ui_pet_rows(page->pet, mood, &top, &bottom);
+    const int y = 189 - (bottom + 1) * 6;
+    if (y + top * 6 - lift < 32) lift = y + top * 6 - 32;
+    if (lift < 0) lift = 0;
+    ui_draw_pet(surface, page->pet, mood, 48, y - lift, 6);
 
     if (!page->asleep) {
         // More notes the louder it is, each rising for 3 s, left and right in turn.
@@ -410,14 +418,14 @@ static void draw_listen(ui_surface_t surface, const ui_wait_page_t *page, unsign
     }
 
     // The bars: the last 12 chunks' loudness, oldest at the left, as stacks of
-    // up to six 3 px cells; the top lit cell vermilion. A resting baseline
-    // when asleep or silent.
+    // up to four 3 px cells under the pet's feet; the top lit cell vermilion.
+    // A resting baseline when asleep or silent.
     for (unsigned k = 0; k < UI_LISTEN_BARS; k++) {
         const int x = 30 + (int)k * 15;
-        const unsigned cells = page->asleep ? 0u : (page->history[k] * 6u + 127u) / 255u;
-        ui_text_fill(surface, x, 203, 11, 3, UI_RULE);
-        for (unsigned c = 0; c < cells && c < 6u; c++) {
-            ui_text_fill(surface, x, 203 - (int)c * 4, 11, 3, c + 1u == cells ? UI_VERM : UI_AMBER);
+        const unsigned cells = page->asleep ? 0u : (page->history[k] * 4u + 127u) / 255u;
+        ui_text_fill(surface, x, 204, 11, 3, UI_RULE);
+        for (unsigned c = 0; c < cells && c < 4u; c++) {
+            ui_text_fill(surface, x, 204 - (int)c * 4, 11, 3, c + 1u == cells ? UI_VERM : UI_AMBER);
         }
     }
 }

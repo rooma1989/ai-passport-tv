@@ -60,7 +60,8 @@ backlight dims.
 
 ## Added after the first build
 
-- The pet is drawn at 5x rather than 3x, breathing (a slow 3 px rise and
+- The pet is drawn at 6x rather than 3x, standing just above the loudness bars
+  whatever empty rows its sprite has (`ui_pet_rows`), breathing (a slow 3 px rise and
   fall), with its plain face for a moment every 4 s like a blink, and music
   notes rising and swaying on both sides; the picture area repaints every
   0.2 s.
@@ -69,8 +70,8 @@ backlight dims.
 - The pet moves with the sound: the audio task measures each 40 ms chunk's
   loudness as it goes to the speaker (the peak on a square-root scale; zero when
   muted), and the screen, now repainted every 0.1 s, lifts the pet up to 10 px
-  with it and shows one to three notes. Twelve bars under the pet show the last
-  half second. When the backlight dims the pet takes its sleepy face (mood 2)
+  with it and shows one to three notes. Twelve bars of up to four cells under
+  the pet show the last half second. When the backlight dims the pet takes its sleepy face (mood 2)
   with Z z rising, and notes and bars rest; a key wakes it with a hop. Five
   small stars twinkle at their own pace.
 

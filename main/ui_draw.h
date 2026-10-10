@@ -67,6 +67,11 @@ const char *ui_pet_kind(unsigned pet);   // what it is, e.g. "小电视"; NULL o
 // 电电 has mood 3, "sad"); a pet out of range draws nothing.
 void ui_draw_pet(ui_surface_t surface, unsigned pet, unsigned mood, int x, int y, int scale);
 
+// The rows of a pet's frame that hold anything, first and last (0..23), so a
+// layout can stand the pet on a line whatever empty rows its sprite has.
+// False for a pet out of range.
+bool ui_pet_rows(unsigned pet, unsigned mood, int *top, int *bottom);
+
 // A one-pixel rule, two on and two off from x0, through x1 inclusive.
 void ui_draw_dotted_hline(ui_surface_t surface, int x0, int x1, int y, uint16_t color);
 
