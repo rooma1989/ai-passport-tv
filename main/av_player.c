@@ -1338,6 +1338,10 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"brightness_steps",AV_BRIGHTNESS_COUNT) &&
         // This firmware draws its own pause band; the server then sends no frames.
         cJSON_AddNumberToObject(j,"pause",1) &&
+        // How long since boot and why the last reset, so the server's log can
+        // tell a device that restarted (and why) from one that lost Wi-Fi.
+        cJSON_AddNumberToObject(j,"uptime_s",(double)(esp_timer_get_time()/1000000)) &&
+        cJSON_AddNumberToObject(j,"reset_reason",(int)esp_reset_reason()) &&
         (AV_PAIRING_TOKEN[0]=='\0' ||
          cJSON_AddStringToObject(j,"token",AV_PAIRING_TOKEN)!=NULL);
     char *body=ok ? cJSON_PrintUnformatted(j) : NULL;

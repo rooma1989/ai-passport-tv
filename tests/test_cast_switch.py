@@ -413,5 +413,34 @@ class DevicePauseTests(unittest.TestCase):
         self.assertEqual(frames_while_paused, 0, "the device keeps the frozen frame")
 
 
+class DeviceBootLogTests(unittest.TestCase):
+    """The device's uptime and last reset reason tell a reboot from a network hiccup."""
+
+    def test_reason_names(self):
+        from server.tv_server import reset_reason_name
+        self.assertEqual(reset_reason_name(4), "PANIC")
+        self.assertEqual(reset_reason_name(9), "BROWNOUT")
+        self.assertEqual(reset_reason_name(99), "99")
+
+    def test_boot_noticed_once_per_boot(self):
+        from server.tv_server import AVServer
+        lines = []
+        server = AVServer(None, b"t" * 32, "127.0.0.1", 0, 60000, logger=lines.append)
+        server.note_device_boot({"uptime_s": 8, "reset_reason": 4})
+        server.note_device_boot({"uptime_s": 300, "reset_reason": 4})
+        server.note_device_boot({"uptime_s": 6, "reset_reason": 9})
+        server.note_device_boot({})
+        boots = [l for l in lines if "device boot" in l]
+        self.assertEqual(boots, ["device boot reason=PANIC(4) uptime=8s",
+                                 "device boot reason=BROWNOUT(9) uptime=6s"])
+
+    def test_server_restart_does_not_fake_a_boot(self):
+        from server.tv_server import AVServer
+        lines = []
+        server = AVServer(None, b"t" * 32, "127.0.0.1", 0, 60000, logger=lines.append)
+        server.note_device_boot({"uptime_s": 5000, "reset_reason": 1})
+        self.assertEqual([l for l in lines if "device boot" in l], [])
+
+
 if __name__ == "__main__":
     unittest.main()

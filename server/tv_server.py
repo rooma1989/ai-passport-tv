@@ -93,6 +93,16 @@ NOW_PLAYING_ENV = "TV_NOW_PLAYING_FILE"
 # 中转写的手机遥控地址（大写，二维码用字母数字模式），随 CONFIG 发给设备画在状态页上。
 REMOTE_URL_ENV = "TV_REMOTE_URL_FILE"
 REMOTE_URL_MAX = 64
+# 设备在 HELLO 里报的上次复位原因（esp_reset_reason_t），日志里写名字。
+_RESET_REASONS = {1: "POWERON", 2: "EXT", 3: "SW", 4: "PANIC", 5: "INT_WDT", 6: "TASK_WDT",
+                  7: "WDT", 8: "DEEPSLEEP", 9: "BROWNOUT", 10: "SDIO", 11: "USB", 12: "JTAG",
+                  13: "EFUSE", 14: "PWR_GLITCH", 15: "CPU_LOCKUP"}
+# 开机这么久以内的第一次连接，即使服务刚重启也算作「设备刚开机」。
+FRESH_BOOT_S = 120
+
+
+def reset_reason_name(code: int) -> str:
+    return _RESET_REASONS.get(code, str(code))
 # 暂停最长多久，之后自动继续（与中转的 PAUSE_MAX_S 一致）。
 PAUSE_MAX_S = 30 * 60
 _REMOTE_URL = re.compile(r"^HTTPS?://[A-Z0-9.:/%-]+$")
@@ -287,6 +297,8 @@ class AVServer:
         self.device_switches = False
         self.device_status: dict | None = None
         self.device_pause = False
+        # 上次握手时设备报的开机时长；变小说明设备重启过。
+        self._device_uptime: int | None = None
         # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
         self.pending_switch = ""
         # 给手机网页看的「正在播放」；不设则不写。
@@ -432,6 +444,16 @@ class AVServer:
         if packet.kind != Kind.END:
             raise ProtocolError("only END or STATUS allowed while playing")
         return True
+
+    def note_device_boot(self, greeting: dict) -> None:
+        """设备重启了就记一行：用来分辨「Wi-Fi 抖了一下」和「设备自己重启了（原因）」。"""
+        uptime, reason = greeting.get("uptime_s"), greeting.get("reset_reason")
+        if not isinstance(uptime, int):
+            return
+        last, self._device_uptime = self._device_uptime, uptime
+        if (last is None and uptime < FRESH_BOOT_S) or (last is not None and uptime < last):
+            name = reset_reason_name(reason) if isinstance(reason, int) else "?"
+            self.logger(f"device boot reason={name}({reason}) uptime={uptime}s")
 
     def _take_status(self, packet: Packet) -> None:
         """设备的音量或亮度变了：记下来给手机看，会话照常。"""
@@ -1088,6 +1110,7 @@ class AVServer:
             live.reload_channels_if_changed()
             # 旧固件不认识 SWITCH 包，收到会断开，所以只发给 HELLO 里声明了的设备。
             greeting = json_object(hello.payload)
+            self.note_device_boot(greeting)
             self.device_switches = greeting.get("switch") == 1
             # 新固件在 HELLO 里报音量、亮度；报了的才接受手机的调节。
             # 新固件自己画暂停横条（"pause": 1）；旧固件靠服务端发 PAUSED 画面。
