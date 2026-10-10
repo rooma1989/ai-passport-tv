@@ -23,6 +23,7 @@ import ssl
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -30,6 +31,9 @@ LIST_SIZE = 20
 # 1 核的机器，同时转码最多两路。
 MAX_STREAMS = 2
 RUN_TIMEOUT_S = 120
+# 解析一个视频在 1 核的 cstone 上要 18 秒左右，而一次起播会连两次（先采样调色板，再正式播放），
+# 投屏还会先查一次信息。视频地址能用几个小时，所以解析结果留 30 分钟。
+INFO_CACHE_S = 30 * 60
 CHUNK_BYTES = 64 * 1024
 # 先要 360p 的 H.264+AAC 合体格式（18），没有再取 360p 以内的最好的。
 FORMAT = "18/b[height<=360]/bv*[height<=360]+ba/b"
@@ -139,6 +143,22 @@ class Node:
         self.popen = popen
         self.log = log
         self.streams = threading.BoundedSemaphore(MAX_STREAMS)
+        self._info: dict[str, tuple[float, dict]] = {}
+        self._info_lock = threading.Lock()
+        self.clock = time.monotonic
+
+    def video_info(self, video_id: str) -> tuple[int, dict | str]:
+        now = self.clock()
+        with self._info_lock:
+            cached = self._info.get(video_id)
+            if cached and now - cached[0] < INFO_CACHE_S:
+                return 200, cached[1]
+        code, info = self.ytdlp_json(info_args(self.tools, video_id))
+        if code == 200:
+            with self._info_lock:
+                self._info = {k: v for k, v in self._info.items() if now - v[0] < INFO_CACHE_S}
+                self._info[video_id] = (now, info)
+        return code, info
 
     def key_ok(self, given: str | None) -> bool:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
@@ -195,7 +215,7 @@ def _handler(node: Node):
                 if not _ID.match(video_id):
                     self._json(400, "bad id")
                     return
-                code, data = node.ytdlp_json(info_args(node.tools, video_id))
+                code, data = node.video_info(video_id)
                 self._json(code, info_summary(data) if code == 200 else data)
             elif parts.path == "/yt/stream":
                 self._stream(query)
@@ -211,7 +231,7 @@ def _handler(node: Node):
                 self._json(503, "busy")
                 return
             try:
-                code, info = node.ytdlp_json(info_args(node.tools, video_id))
+                code, info = node.video_info(video_id)
                 if code != 200:
                     self._json(code, info)
                     return

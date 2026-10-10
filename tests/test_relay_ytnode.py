@@ -158,6 +158,14 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(answer.read(), b"\x47" * 1000)
         self.assertIn("30", self.runs[-1])
 
+    def test_video_info_is_cached(self):
+        """Resolving takes about 18 s on cstone; a channel start connects twice."""
+        self.get("/yt/info?id=jNQXAC9IVRw").read()
+        self.get("/yt/stream?id=jNQXAC9IVRw&ss=0").read()
+        self.get("/yt/stream?id=jNQXAC9IVRw&ss=10").read()
+        resolves = [args for args in self.runs if args[0] == TOOLS.ytdlp]
+        self.assertEqual(len(resolves), 1)
+
     def test_stream_failure_is_cut(self):
         self.stream_code = 1
         answer = self.get("/yt/stream?id=jNQXAC9IVRw&ss=0")
