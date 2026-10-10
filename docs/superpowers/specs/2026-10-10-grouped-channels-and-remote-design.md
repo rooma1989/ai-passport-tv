@@ -35,7 +35,7 @@ Status: approved 2026-10-10. Follows
   - `cast` → My cast; `upNN` → Creators;
   - name starts with `CCTV` → CCTV;
   - name contains the word for "satellite TV" (except the Hong Kong satellite
-    station) → Satellite;
+    station), or a local station's 4K channel (name ending in 4K) → Satellite;
   - names of Hong Kong, Macau and Taiwan stations (Phoenix, TVBS, EBC, CTS, FTV,
     SET, CTV, CTi, TTV, Bright Smart, Hong Kong) → HK/Macau/Taiwan;
   - Latin-only names, and CGTN/CNA/NHK/BBC/RT names → International;
