@@ -120,6 +120,20 @@ bool av_channel_step(const char *const *ids, unsigned count, unsigned *index,
     *index = next;
     return true;
 }
+bool av_channel_step_group(const uint8_t *groups, unsigned count, unsigned *index, int delta) {
+    if (!count || !index || !delta) return false;
+    unsigned at = *index % count;
+    int step = delta > 0 ? 1 : -1;
+    for (unsigned tried = 1; tried < count; tried++) {
+        unsigned next = (unsigned)(((int)at + step * (int)tried % (int)count + (int)count) % (int)count);
+        if (!groups || groups[next] == groups[at]) {
+            *index = next;
+            return true;
+        }
+    }
+    *index = at;
+    return true;
+}
 bool av_video_decode(const uint8_t *payload, size_t length, av_video_t *v) {
     if (!payload || !v || length < 2u) return false;
     unsigned first=payload[0], count=payload[1];

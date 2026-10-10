@@ -17,11 +17,11 @@ static void check(int condition, const char *what)
 }
 
 static ui_menu_entry_t ENTRIES[] = {
-    { "cctv1", "CCTV1" },
-    { "cctv5", "CCTV5" },
-    { "cctv9", "CCTV9" },
-    { "cgtn", "CGTN" },
-    { "dongfang", "Dongfang" },
+    { "cctv1", "CCTV1", 0 },
+    { "cctv5", "CCTV5", 0 },
+    { "cctv9", "CCTV9", 0 },
+    { "cgtn", "CGTN", 0 },
+    { "dongfang", "Dongfang", 0 },
 };
 #define ENTRY_COUNT (sizeof(ENTRIES) / sizeof(ENTRIES[0]))
 
@@ -122,28 +122,28 @@ static void test_unusable_entries_are_skipped_not_fatal(void)
     // A malformed entry must not cost the viewer the whole menu: the rest of the
     // list is still usable, and refusing everything was how one odd channel name
     // could disable the list entirely.
-    ui_menu_entry_t mixed[3] = { { "ok1", "Fine" }, { "has space", "Broken" },
-                                 { "ok2", "Also fine" } };
+    ui_menu_entry_t mixed[3] = { { "ok1", "Fine", 0 }, { "has space", "Broken", 0 },
+                                 { "ok2", "Also fine", 0 } };
     check(ui_menu_load(&menu, mixed, 3, "ok1"), "a list with one bad entry still loads");
     check(menu.count == 2, "only the usable entries are kept");
     check(strcmp(ui_menu_selected(&menu), "ok1") == 0, "the highlight follows the current id");
 
     // A 16-byte id is one the device table cannot hold, so it is dropped.
-    ui_menu_entry_t too_long[2] = { { "0123456789abcdef", "Sixteen" }, { "ok", "Fine" } };
+    ui_menu_entry_t too_long[2] = { { "0123456789abcdef", "Sixteen", 0 }, { "ok", "Fine", 0 } };
     check(ui_menu_load(&menu, too_long, 2, NULL), "a list with only that id plus a good one loads");
     check(menu.count == 1 && strcmp(ui_menu_selected(&menu), "ok") == 0,
           "the unusable id is dropped and the good one kept");
 
     // An empty name disqualifies an entry; an overlong one is only truncated
     // where it is drawn, so it stays.
-    ui_menu_entry_t empty_name[2] = { { "ok", "" }, { "also", "Kept" } };
+    ui_menu_entry_t empty_name[2] = { { "ok", "", 0 }, { "also", "Kept", 0 } };
     check(ui_menu_load(&menu, empty_name, 2, NULL), "an empty name drops just that entry");
     check(menu.count == 1 && strcmp(ui_menu_selected(&menu), "also") == 0,
           "the entry without a name is the one that goes");
 
     // Nothing usable at all: keep what was already there rather than empty it.
     unsigned before = menu.count;
-    ui_menu_entry_t all_bad[1] = { { "has space", "Broken" } };
+    ui_menu_entry_t all_bad[1] = { { "has space", "Broken", 0 } };
     check(!ui_menu_load(&menu, all_bad, 1, NULL), "a wholly unusable list is refused");
     check(menu.count == before, "a refused list leaves the previous one intact");
 
@@ -320,6 +320,110 @@ static void test_visible_rows_never_exceeds_the_list(void)
           "the row count never exceeds the list capacity");
 }
 
+// ---- two levels: groups, then the group's channels ----
+
+static const char GROUP_NAMES[][UI_MENU_GROUP_NAME_MAX] = { "投屏", "UP 主", "央视", "空组" };
+
+static ui_menu_entry_t GROUPED[] = {
+    { "cast", "我的投屏", 0 },
+    { "up01", "小Lin说", 1 },
+    { "up02", "老高", 1 },
+    { "ch000", "CCTV1", 2 },
+    { "ch001", "CCTV2", 2 },
+    { "ch002", "CCTV3", 2 },
+};
+#define GROUPED_COUNT (sizeof(GROUPED) / sizeof(GROUPED[0]))
+
+static ui_menu_t grouped(const char *current)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    check(ui_menu_set_groups(&menu, GROUP_NAMES, 4), "group names load");
+    check(ui_menu_load(&menu, GROUPED, (unsigned)GROUPED_COUNT, current), "the grouped list loads");
+    ui_menu_set_rows(&menu, 8);
+    return menu;
+}
+
+static void test_groups_open_on_the_playing_group(void)
+{
+    ui_menu_t menu = grouped("ch001");
+    ui_menu_open(&menu);
+    check(ui_menu_at_groups(&menu), "a grouped list opens on the group level");
+    check(ui_menu_row_count(&menu) == 3, "only groups with channels are listed");
+    check(strcmp(ui_menu_row_label(&menu, 2), "央视") == 0, "rows are the group names");
+    check(menu.selected == 2, "the highlight starts on the playing channel's group");
+    check(strcmp(ui_menu_title(&menu), "频道分组") == 0, "the group level is titled");
+    check(ui_menu_selected(&menu) == NULL, "no channel is chosen on the group level");
+}
+
+static void test_confirm_enters_the_group_and_back_returns(void)
+{
+    ui_menu_t menu = grouped("ch001");
+    ui_menu_open(&menu);
+    ui_menu_confirm(&menu);
+    check(!ui_menu_at_groups(&menu), "OK on a group opens its channels");
+    check(menu.action == UI_ACTION_NONE, "entering a group switches nothing");
+    check(ui_menu_row_count(&menu) == 3, "the level lists that group only");
+    check(strcmp(ui_menu_title(&menu), "央视") == 0, "the channel level is titled with the group");
+    check(strcmp(ui_menu_selected(&menu), "ch001") == 0, "the playing channel is highlighted");
+    ui_menu_step(&menu, 1);
+    ui_menu_step(&menu, 1);
+    check(strcmp(ui_menu_selected(&menu), "ch000") == 0, "stepping wraps inside the group");
+
+    ui_menu_back(&menu);
+    check(menu.view == UI_VIEW_MENU && ui_menu_at_groups(&menu), "back returns to the groups");
+    check(menu.selected == 2, "on the group just left");
+    ui_menu_step(&menu, -1);
+    ui_menu_confirm(&menu);
+    check(strcmp(ui_menu_selected(&menu), "up01") == 0,
+          "another group opens on its first channel when nothing in it is playing");
+    ui_menu_confirm(&menu);
+    char id[UI_MENU_ID_MAX];
+    check(ui_menu_take_action(&menu, id, sizeof(id)) == UI_ACTION_SWITCH && strcmp(id, "up01") == 0,
+          "OK on a channel asks for the switch");
+
+    ui_menu_back(&menu);
+    ui_menu_back(&menu);
+    check(menu.view == UI_VIEW_VIDEO, "back from the group level closes the list");
+}
+
+static void test_without_groups_the_list_is_one_level(void)
+{
+    ui_menu_t menu = loaded("cctv9");
+    ui_menu_open(&menu);
+    check(!ui_menu_at_groups(&menu), "no groups: straight to the channels");
+    check(ui_menu_row_count(&menu) == ENTRY_COUNT, "every channel is a row");
+    check(strcmp(ui_menu_title(&menu), "频道") == 0, "titled as a plain list");
+    ui_menu_back(&menu);
+    check(menu.view == UI_VIEW_VIDEO, "back closes a one-level list");
+
+    ui_menu_t one;
+    ui_menu_init(&one);
+    check(ui_menu_set_groups(&one, GROUP_NAMES, 1), "a single group loads");
+    check(ui_menu_load(&one, ENTRIES, (unsigned)ENTRY_COUNT, "cctv1"), "list loads");
+    ui_menu_open(&one);
+    check(!ui_menu_at_groups(&one), "a single group skips the group level too");
+}
+
+static void test_group_names_are_bounded(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    char many[UI_MENU_GROUP_MAX + 1][UI_MENU_GROUP_NAME_MAX];
+    memset(many, 0, sizeof(many));
+    for (unsigned i = 0; i < UI_MENU_GROUP_MAX + 1; i++) snprintf(many[i], sizeof(many[i]), "g%u", i);
+    check(!ui_menu_set_groups(&menu, (const char (*)[UI_MENU_GROUP_NAME_MAX])many, UI_MENU_GROUP_MAX + 1),
+          "too many groups are refused");
+    check(ui_menu_set_groups(&menu, NULL, 0), "clearing the groups is allowed");
+    // An entry naming a group that does not exist is shown under the first.
+    static ui_menu_entry_t stray[] = { { "a", "A", 0 }, { "b", "B", 9 } };
+    check(ui_menu_set_groups(&menu, GROUP_NAMES, 2), "two groups");
+    check(ui_menu_load(&menu, stray, 2, "a"), "loads");
+    ui_menu_open(&menu);
+    check(!ui_menu_at_groups(&menu) && ui_menu_row_count(&menu) == 2,
+          "the stray entry joins the first group, and one non-empty group needs no group level");
+}
+
 int main(void)
 {
     test_open_selects_the_playing_channel();
@@ -336,6 +440,10 @@ int main(void)
     test_confirm_then_take_yields_the_id_once();
     test_confirm_survives_a_long_list_and_scrolling();
     test_visible_rows_never_exceeds_the_list();
+    test_groups_open_on_the_playing_group();
+    test_confirm_enters_the_group_and_back_returns();
+    test_without_groups_the_list_is_one_level();
+    test_group_names_are_bounded();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

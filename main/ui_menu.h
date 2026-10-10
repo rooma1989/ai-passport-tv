@@ -15,6 +15,10 @@
 // what can be shown; a longer name is drawn truncated, never refused.
 #define UI_MENU_NAME_MAX 48u
 #define UI_MENU_ID_MAX 16u
+// Channel groups sent by the server (live TV split by kind, creators, the cast).
+// The server's list has nine; the room left is for a server that grows it.
+#define UI_MENU_GROUP_MAX 16u
+#define UI_MENU_GROUP_NAME_MAX 24u
 
 typedef enum {
     UI_VIEW_VIDEO = 0,   // playing; a banner may still be up
@@ -33,12 +37,22 @@ typedef enum {
 typedef struct {
     char id[UI_MENU_ID_MAX];
     char name[UI_MENU_NAME_MAX];
+    // Index into the group names; one past the last means the first group.
+    uint8_t group;
 } ui_menu_entry_t;
 
 typedef struct {
     ui_view_t view;
     ui_menu_entry_t entries[UI_MENU_MAX];
     unsigned count;
+    // The list has two levels when the channels fall into more than one group:
+    // the groups, then one group's channels. `selected` and `scroll` count rows
+    // of whichever level is showing.
+    char groups[UI_MENU_GROUP_MAX][UI_MENU_GROUP_NAME_MAX];
+    unsigned group_count;
+    bool at_groups;
+    unsigned group;       // the group whose channels are (or were last) shown
+    char current[UI_MENU_ID_MAX]; // the channel playing, as last loaded
     unsigned selected;
     unsigned scroll;      // index of the first visible row
     unsigned visible_rows; // rows the caller can draw; 0 means it has not said
@@ -69,8 +83,24 @@ void ui_menu_init(ui_menu_t *menu);
 // Returns false and leaves the menu untouched if any entry is unusable.
 bool ui_menu_load(ui_menu_t *menu, const ui_menu_entry_t *entries, unsigned count,
                   const char *current);
-// Open the list. No effect when the list is empty.
+// Set the group names the entries' `group` fields index. Call before
+// ui_menu_load. Zero names (or one) gives a one-level list, as before groups.
+// Returns false, changing nothing, for more than UI_MENU_GROUP_MAX names.
+bool ui_menu_set_groups(ui_menu_t *menu, const char (*names)[UI_MENU_GROUP_NAME_MAX],
+                        unsigned count);
+// Open the list: on the groups, highlighting the playing channel's group, when
+// there is more than one non-empty group; otherwise on the channels. No effect
+// when the list is empty.
 void ui_menu_open(ui_menu_t *menu);
+// Long press on OK: from a group's channels back to the groups; from the
+// groups, or a one-level list, close.
+void ui_menu_back(ui_menu_t *menu);
+// What the list is showing, for drawing: whether it is the group level, how
+// many rows the level has, each row's text, and the header title.
+bool ui_menu_at_groups(const ui_menu_t *menu);
+unsigned ui_menu_row_count(const ui_menu_t *menu);
+const char *ui_menu_row_label(const ui_menu_t *menu, unsigned row);
+const char *ui_menu_title(const ui_menu_t *menu);
 // Open the status page.
 void ui_menu_open_status(ui_menu_t *menu);
 // Open the backlight page. Unlike the list this needs no channel data, so it
@@ -89,7 +119,8 @@ void ui_menu_step(ui_menu_t *menu, int delta);
 void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows);
 // Tell the menu how many rows it may show, so it can keep the highlight visible.
 void ui_menu_set_rows(ui_menu_t *menu, unsigned rows);
-// Confirm the highlighted entry. Inside the list this asks for a switch.
+// Confirm the highlighted row: on a group, open its channels; on a channel, ask
+// for a switch.
 void ui_menu_confirm(ui_menu_t *menu);
 
 // Advance timers. Returns true when something changed and the screen must be
@@ -112,5 +143,6 @@ void ui_menu_show_volume(ui_menu_t *menu, unsigned level);
 bool ui_menu_volume_visible(const ui_menu_t *menu);
 
 
-// The id currently highlighted, or NULL when the list is empty.
+// The channel id currently highlighted, or NULL when the list is empty or the
+// group level is showing.
 const char *ui_menu_selected(const ui_menu_t *menu);

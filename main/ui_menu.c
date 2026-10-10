@@ -55,6 +55,170 @@ static void follow_selection(ui_menu_t *menu, unsigned rows)
     }
 }
 
+// ---- groups ----
+//
+// The entries stay one flat table in the server's order; a level is a filtered
+// view of it, worked out on demand. A list is at most AV_CHANNEL_MAX entries and
+// a screen shows about eight rows, so scanning is cheaper than keeping a second
+// index in step with the first.
+
+static unsigned entry_group(const ui_menu_t *menu, unsigned i)
+{
+    unsigned g = menu->entries[i].group;
+    return g < menu->group_count ? g : 0;   // an unknown group joins the first
+}
+
+static bool group_used(const ui_menu_t *menu, unsigned g)
+{
+    for (unsigned i = 0; i < menu->count; i++) {
+        if (entry_group(menu, i) == g) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static unsigned used_groups(const ui_menu_t *menu)
+{
+    unsigned used = 0;
+    for (unsigned g = 0; g < menu->group_count; g++) {
+        used += group_used(menu, g) ? 1u : 0u;
+    }
+    return used;
+}
+
+// Two levels only pay for themselves with something to choose between: with
+// one non-empty group the group page would be a single row to press through.
+static bool two_levels(const ui_menu_t *menu)
+{
+    return menu->group_count > 1 && used_groups(menu) > 1;
+}
+
+static int group_at_row(const ui_menu_t *menu, unsigned row)
+{
+    for (unsigned g = 0; g < menu->group_count; g++) {
+        if (group_used(menu, g) && row-- == 0) {
+            return (int)g;
+        }
+    }
+    return -1;
+}
+
+static unsigned row_of_group(const ui_menu_t *menu, unsigned group)
+{
+    unsigned row = 0;
+    for (unsigned g = 0; g < group && g < menu->group_count; g++) {
+        row += group_used(menu, g) ? 1u : 0u;
+    }
+    return row;
+}
+
+static int entry_at_row(const ui_menu_t *menu, unsigned row)
+{
+    if (!two_levels(menu)) {
+        return row < menu->count ? (int)row : -1;
+    }
+    for (unsigned i = 0; i < menu->count; i++) {
+        if (entry_group(menu, i) == menu->group && row-- == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static unsigned row_of_entry(const ui_menu_t *menu, unsigned index)
+{
+    if (!two_levels(menu)) {
+        return index;
+    }
+    unsigned row = 0;
+    for (unsigned i = 0; i < index; i++) {
+        row += entry_group(menu, i) == entry_group(menu, index) ? 1u : 0u;
+    }
+    return row;
+}
+
+static int find_entry(const ui_menu_t *menu, const char *id)
+{
+    if (!id || !id[0]) {
+        return -1;
+    }
+    for (unsigned i = 0; i < menu->count; i++) {
+        if (strcmp(menu->entries[i].id, id) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+bool ui_menu_set_groups(ui_menu_t *menu, const char (*names)[UI_MENU_GROUP_NAME_MAX],
+                        unsigned count)
+{
+    if (!menu || count > UI_MENU_GROUP_MAX || (count && !names)) {
+        return false;
+    }
+    memset(menu->groups, 0, sizeof(menu->groups));
+    for (unsigned g = 0; g < count; g++) {
+        strncpy(menu->groups[g], names[g], UI_MENU_GROUP_NAME_MAX - 1);
+    }
+    menu->group_count = count;
+    if (menu->group >= count) {
+        menu->group = 0;
+    }
+    menu->at_groups = false;
+    return true;
+}
+
+bool ui_menu_at_groups(const ui_menu_t *menu)
+{
+    return menu && menu->at_groups;
+}
+
+unsigned ui_menu_row_count(const ui_menu_t *menu)
+{
+    if (!menu) {
+        return 0;
+    }
+    if (menu->at_groups) {
+        return used_groups(menu);
+    }
+    if (!two_levels(menu)) {
+        return menu->count;
+    }
+    unsigned rows = 0;
+    for (unsigned i = 0; i < menu->count; i++) {
+        rows += entry_group(menu, i) == menu->group ? 1u : 0u;
+    }
+    return rows;
+}
+
+const char *ui_menu_row_label(const ui_menu_t *menu, unsigned row)
+{
+    if (!menu) {
+        return NULL;
+    }
+    if (menu->at_groups) {
+        int g = group_at_row(menu, row);
+        return g < 0 ? NULL : menu->groups[g];
+    }
+    int i = entry_at_row(menu, row);
+    if (i < 0) {
+        return NULL;
+    }
+    return menu->entries[i].name[0] ? menu->entries[i].name : menu->entries[i].id;
+}
+
+const char *ui_menu_title(const ui_menu_t *menu)
+{
+    if (menu && menu->at_groups) {
+        return "频道分组";
+    }
+    if (menu && two_levels(menu)) {
+        return menu->groups[menu->group];
+    }
+    return "频道";
+}
+
 unsigned ui_menu_visible_rows(int screen_height, int row_height)
 {
     if (screen_height <= 0 || row_height <= 0) {
@@ -141,7 +305,16 @@ bool ui_menu_load(ui_menu_t *menu, const ui_menu_entry_t *entries, unsigned coun
     memcpy(menu->entries, staged, count * sizeof(staged[0]));
     free(staged);
     menu->count = count;
-    menu->selected = selected;
+    if (current) {
+        strncpy(menu->current, current, UI_MENU_ID_MAX - 1);
+        menu->current[UI_MENU_ID_MAX - 1] = '\0';
+    }
+    // The selection counts rows of the level showing. A list that arrives while
+    // the group page is open stays there, on the playing channel's group.
+    menu->group = entry_group(menu, selected);
+    menu->at_groups = menu->at_groups && two_levels(menu);
+    menu->selected = menu->at_groups ? row_of_group(menu, menu->group)
+                                     : row_of_entry(menu, selected);
     // Start from the top of the window and pull it to the highlight. The old
     // code only clamped scroll downwards and never advanced it, so once the
     // selection passed the last visible row it drew off-screen.
@@ -152,10 +325,11 @@ bool ui_menu_load(ui_menu_t *menu, const ui_menu_entry_t *entries, unsigned coun
 
 const char *ui_menu_selected(const ui_menu_t *menu)
 {
-    if (!menu || menu->count == 0 || menu->selected >= menu->count) {
+    if (!menu || menu->count == 0 || menu->at_groups) {
         return NULL;
     }
-    return menu->entries[menu->selected].id;
+    int i = entry_at_row(menu, menu->selected);
+    return i < 0 ? NULL : menu->entries[i].id;
 }
 
 void ui_menu_open(ui_menu_t *menu)
@@ -166,6 +340,34 @@ void ui_menu_open(ui_menu_t *menu)
     menu->view = UI_VIEW_MENU;
     menu->timeout_ms = UI_MENU_TIMEOUT_MS;
     menu->action = UI_ACTION_NONE;
+    if (two_levels(menu)) {
+        // Grouped: start on the groups, at the one the viewer is watching.
+        int playing = find_entry(menu, menu->current);
+        if (playing >= 0) {
+            menu->group = entry_group(menu, (unsigned)playing);
+        }
+        menu->at_groups = true;
+        menu->selected = row_of_group(menu, menu->group);
+        menu->scroll = 0;
+        follow_selection(menu, menu->visible_rows);
+    }
+    // One level: the highlight stays where it was, as it always has.
+}
+
+void ui_menu_back(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    if (menu->view == UI_VIEW_MENU && !menu->at_groups && two_levels(menu)) {
+        menu->at_groups = true;
+        menu->selected = row_of_group(menu, menu->group);
+        menu->scroll = 0;
+        follow_selection(menu, menu->visible_rows);
+        menu->timeout_ms = UI_MENU_TIMEOUT_MS;
+        return;
+    }
+    ui_menu_close(menu);
 }
 
 void ui_menu_open_brightness(ui_menu_t *menu)
@@ -236,7 +438,10 @@ void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows)
     // Wrap around: reaching either end and continuing is more natural than
     // stopping dead, and it is the only way back without holding a key through
     // the whole list.
-    int count = (int)menu->count;
+    int count = (int)ui_menu_row_count(menu);
+    if (count == 0) {
+        return;
+    }
     int next = ((int)menu->selected + delta) % count;
     if (next < 0) {
         next += count;
@@ -249,6 +454,22 @@ void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows)
 void ui_menu_confirm(ui_menu_t *menu)
 {
     if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0) {
+        return;
+    }
+    if (menu->at_groups) {
+        // Into the group: on the playing channel if it is in there, else the top.
+        int g = group_at_row(menu, menu->selected);
+        if (g < 0) {
+            return;
+        }
+        menu->group = (unsigned)g;
+        menu->at_groups = false;
+        int playing = find_entry(menu, menu->current);
+        menu->selected = (playing >= 0 && entry_group(menu, (unsigned)playing) == (unsigned)g)
+                             ? row_of_entry(menu, (unsigned)playing) : 0;
+        menu->scroll = 0;
+        follow_selection(menu, menu->visible_rows);
+        menu->timeout_ms = UI_MENU_TIMEOUT_MS;
         return;
     }
     menu->action = UI_ACTION_SWITCH;

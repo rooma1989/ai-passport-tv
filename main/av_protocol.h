@@ -261,6 +261,10 @@ bool av_channel_step(const char *const *ids, unsigned count, unsigned *index,
 // Locate the id the device is currently playing. Returns count when the id is
 // not listed, so callers can tell "absent" apart from "index 0".
 unsigned av_channel_index_of(const char *const *ids, unsigned count, const char *id);
+// Move *index to the next (delta > 0) or previous channel in the same group as
+// the one at *index, wrapping; a channel alone in its group stays put. NULL
+// groups means one group. False for an empty list, no index or delta 0.
+bool av_channel_step_group(const uint8_t *groups, unsigned count, unsigned *index, int delta);
 
 // --- The indexed picture -------------------------------------------------
 //

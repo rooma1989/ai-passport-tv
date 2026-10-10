@@ -334,6 +334,26 @@ static void channel_tests(void) {
     assert(!av_channel_step(ids,3,NULL,1,out,sizeof(out)));
     assert(!av_channel_step(ids,3,&index,0,out,sizeof(out)));
     assert(!av_channel_step(ids,3,&index,1,NULL,sizeof(out)));
+
+    // Within a group: the long-press arrows stay among channels of the group
+    // the playing one belongs to, wrapping, and skip everything else.
+    const uint8_t groups[]={0,1,1,2,1,2};
+    unsigned at=1;
+    assert(av_channel_step_group(groups,6,&at,1) && at==2);
+    assert(av_channel_step_group(groups,6,&at,1) && at==4);
+    assert(av_channel_step_group(groups,6,&at,1) && at==1);   // wraps past 5
+    assert(av_channel_step_group(groups,6,&at,-1) && at==4);  // and back
+    at=3;
+    assert(av_channel_step_group(groups,6,&at,-1) && at==5);
+    at=0;                                                     // alone in its group
+    assert(av_channel_step_group(groups,6,&at,1) && at==0);
+    at=7;                                                     // index past the end
+    assert(av_channel_step_group(groups,6,&at,1) && at==2);   // counts from 7%6=1
+    unsigned flat=2;                                          // no groups: every channel
+    assert(av_channel_step_group(NULL,6,&flat,1) && flat==3);
+    assert(!av_channel_step_group(groups,0,&at,1));
+    assert(!av_channel_step_group(groups,6,NULL,1));
+    assert(!av_channel_step_group(groups,6,&at,0));
 }
 static void json_tests(void) {
     const char *flat="{\"text\":\"[{\\\"}\\\\\",\"n\":1}";

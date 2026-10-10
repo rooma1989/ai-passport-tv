@@ -438,6 +438,11 @@ typedef struct {
     // The server sends the channel list in CONFIG; the device only stores ids
     // and never hardcodes them, so adding a channel needs no reflash.
     channel_t list[AV_CHANNEL_MAX];
+    // The group each channel is in (an index into group_names), and the names,
+    // as CONFIG sent them. No "groups" in CONFIG: one group, count 0.
+    uint8_t list_group[AV_CHANNEL_MAX];
+    char group_names[UI_MENU_GROUP_MAX][UI_MENU_GROUP_NAME_MAX];
+    unsigned group_count;
     // Which part of the frame currently being received this packet is, read by
     // the video task before the wait that follows. A frame arrives as five
     // consecutive packets sharing one timestamp, and the four that continue it
@@ -1152,6 +1157,22 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
             atomic_store(&s.count,0);
             taskEXIT_CRITICAL(&list_lock);
             memset(s.list,0,sizeof(s.list));
+            memset(s.list_group,0,sizeof(s.list_group));
+            // Group names come once; each channel carries an index into them
+            // ("g"). Written while count is zero, like the table, so no reader
+            // sees names from one list and indexes from another.
+            memset(s.group_names,0,sizeof(s.group_names));
+            s.group_count=0;
+            const cJSON *names=cJSON_GetObjectItemCaseSensitive(j,"groups");
+            if (cJSON_IsArray(names)) {
+                const cJSON *gname=NULL;
+                cJSON_ArrayForEach(gname,names) {
+                    if (s.group_count>=UI_MENU_GROUP_MAX) break;
+                    if (!cJSON_IsString(gname) || !gname->valuestring) break;
+                    strncpy(s.group_names[s.group_count],gname->valuestring,UI_MENU_GROUP_NAME_MAX-1);
+                    s.group_count++;
+                }
+            }
             unsigned n=0;
             const cJSON *entry=NULL;
             cJSON_ArrayForEach(entry,list) {
@@ -1174,6 +1195,10 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
                 const cJSON *name=entry ? cJSON_GetObjectItemCaseSensitive(entry,"name") : NULL;
                 if (cJSON_IsString(name) && name->valuestring) {
                     strncpy(s.list[n].name,name->valuestring,sizeof(s.list[n].name)-1);
+                }
+                const cJSON *g=cJSON_GetObjectItemCaseSensitive(entry,"g");
+                if (cJSON_IsNumber(g) && g->valuedouble>=0 && g->valuedouble<(double)s.group_count) {
+                    s.list_group[n]=(uint8_t)g->valuedouble;
                 }
                 n++;
             }
@@ -1968,16 +1993,26 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         if (first<(unsigned)header+1u && last>(unsigned)header) {
             ui_text_fill(surface,0,header,(int)AV_WIDTH,1,UI_COLOR_RULE);
         }
+        // The header names the level -- the groups, or the group being
+        // browsed -- and where the highlight is in it. Left-aligned and as one
+        // string: on a board with a top band, the status icons are drawn over
+        // the right end of the header afterwards.
+        const unsigned total=ui_menu_row_count(&s.menu);
+        if (first<(unsigned)header) {
+            char title[UI_MENU_GROUP_NAME_MAX+16];
+            snprintf(title,sizeof(title),"%s %u/%u",ui_menu_title(&s.menu),s.menu.selected+1u,total);
+            ui_text_draw(surface,14,(header-(int)UI_TEXT_LINE_H)/2,title,UI_COLOR_DIM,UI_COLOR_BOX);
+        }
         unsigned rows=menu_rows();
         for (unsigned i=0;i<rows;i++) {
             unsigned index=s.menu.scroll+i;
-            if (index>=s.menu.count) break;
+            if (index>=total) break;
             int y=header+(int)i*row+4;
             if ((int)last<=y || (int)first>=y+row-2) continue;
             bool chosen=index==s.menu.selected;
             if (chosen) ui_text_fill(surface,0,y-4,(int)AV_WIDTH,row,UI_COLOR_SELECT);
-            const char *label=s.menu.entries[index].name[0]
-                ? s.menu.entries[index].name : s.menu.entries[index].id;
+            const char *label=ui_menu_row_label(&s.menu,index);
+            if (!label) continue;
             ui_text_draw(surface,14,y,label,
                          chosen?UI_COLOR_SELECT_TEXT:UI_COLOR_TEXT,
                          chosen?UI_COLOR_SELECT:UI_COLOR_BOX);
@@ -3349,7 +3384,10 @@ static void process_key(const key_ev_t *item) {
                     ui_menu_close(&s.menu);
                 }
             } else if (item->ev==BSP_BTN_LONG) {
-                ui_menu_close(&s.menu);          // long press is the way out
+                // Long press is the way out: one level at a time in the list
+                // (a group's channels, then the groups), straight out elsewhere.
+                if (s.menu.view==UI_VIEW_MENU) ui_menu_back(&s.menu);
+                else ui_menu_close(&s.menu);
             }
             return;
         }
@@ -3467,8 +3505,10 @@ static void process_key(const key_ev_t *item) {
     taskENTER_CRITICAL(&list_lock);
     unsigned count=atomic_load(&s.count);
     if (count) {
-        unsigned index=atomic_load(&s.index) % count;
-        unsigned target=(unsigned)(((int)index+(up?1:-1)+(int)count)%(int)count);
+        // Within the playing channel's group: watching live TV, the arrows do
+        // not wander into the creators, and the reverse.
+        unsigned target=atomic_load(&s.index) % count;
+        av_channel_step_group(s.group_count>1 ? s.list_group : NULL,count,&target,up?1:-1);
         const char *id=s.list[target].id;
         size_t n=id ? strnlen(id,AV_CHANNEL_ID_MAX) : 0;
         if (n>0 && n<AV_CHANNEL_ID_MAX) {
@@ -4278,7 +4318,10 @@ void av_player_main(void) {
                         memset(&entries[i],0,sizeof(entries[i]));
                         memcpy(entries[i].id,s.list[i].id,sizeof(entries[i].id));
                         memcpy(entries[i].name,s.list[i].name,sizeof(entries[i].name));
+                        entries[i].group=s.list_group[i];
                     }
+                    if (n) ui_menu_set_groups(&s.menu,(const char (*)[UI_MENU_GROUP_NAME_MAX])s.group_names,
+                                              s.group_count);
                     taskEXIT_CRITICAL(&list_lock);
                     if (n) ui_menu_set_rows(&s.menu,menu_rows());
                 if (n && !ui_menu_load(&s.menu,entries,n,s.channel)) {
@@ -4549,10 +4592,13 @@ void av_player_main(void) {
                                               limit,atomic_load(&s.count))) {
                 atomic_store(&s.chosen_by_user,false);
                 unsigned count=atomic_load(&s.count);
-                unsigned index=(atomic_load(&s.index)+1)%count;
+                unsigned index=atomic_load(&s.index)%count;
                 char next[AV_CHANNEL_ID_MAX]={0};
                 bool ok=false;
                 taskENTER_CRITICAL(&list_lock);
+                // The next channel of the same group, as the arrows would pick:
+                // a dead live channel hands over to live TV, not to a creator.
+                av_channel_step_group(s.group_count>1 ? s.list_group : NULL,count,&index,1);
                 const char *id=s.list[index].id;
                 size_t length=id ? strnlen(id,AV_CHANNEL_ID_MAX) : 0;
                 if (length>0 && length<AV_CHANNEL_ID_MAX) {
