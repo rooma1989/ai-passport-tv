@@ -512,12 +512,16 @@ class PlaybackControlTests(unittest.TestCase):
         self.serve()
         self.mono += 42
         video = self.relay.summary()["now"]["video"]
-        self.assertEqual((video["position"], video["duration"], video["paused"]), (42.0, 600, False))
+        lag = web.PLAYBACK_LAG_S
+        self.assertEqual((video["position"], video["duration"], video["paused"]), (42.0 - lag, 600, False),
+                         "what the device shows, behind what the relay has sent")
+        self.mono = 50.0 + 1
+        self.assertEqual(self.relay.summary()["now"]["video"]["position"], 0.0, "never before the start")
         self.assertEqual(video["started"], self.now)
 
     def test_seek_cuts_and_reopens_at_the_target(self):
         thread = self.serve()
-        self.mono += 100
+        self.mono += 100 + web.PLAYBACK_LAG_S
         answer = self.relay.seek(delta=30)
         self.assertEqual((answer["ok"], answer["position"]), (True, 130.0))
         thread.join(2)
@@ -526,6 +530,21 @@ class PlaybackControlTests(unittest.TestCase):
                          "the cut stream did not overwrite the target")
         self.serve()
         self.assertEqual(self.started[-1], ("https://media.example/a.mp4", 130.0))
+
+    def test_quick_presses_add_up_before_the_new_stream(self):
+        thread = self.serve()
+        self.mono += 100 + web.PLAYBACK_LAG_S
+        self.relay.seek(delta=30)
+        thread.join(2)
+        # The TV server has not reopened yet: the next press builds on the first.
+        self.assertEqual(self.relay.summary()["now"]["video"]["position"], 130.0)
+        self.assertEqual(self.relay.summary()["now"]["video"]["started"], 0.0)
+        self.assertEqual(self.relay.seek(delta=30)["position"], 160.0)
+        self.assertEqual(self.relay.seek(delta=-90)["position"], 70.0)
+        self.serve()
+        self.assertEqual(self.started[-1], ("https://media.example/a.mp4", 70.0))
+        self.now += web.SEEK_BRIDGE_S + 1
+        self.assertIsNotNone(self.relay.summary()["now"]["video"], "the new stream reports itself")
 
     def test_seek_bounds(self):
         self.serve()
@@ -554,7 +573,7 @@ class PlaybackControlTests(unittest.TestCase):
 
     def test_pause_and_resume_continue_exactly(self):
         thread = self.serve()
-        self.mono += 50
+        self.mono += 50 + web.PLAYBACK_LAG_S
         answer = self.relay.pause()
         self.assertTrue(answer["ok"])
         thread.join(2)

@@ -33,6 +33,10 @@ _CREATOR = re.compile(r"^/api/creators/(up\d\d)$")
 _HISTORY = re.compile(r"^/api/history/(bilibili|youtube)/([A-Za-z0-9_-]{1,32})$")
 _CODE = re.compile(r"^/r/([A-Za-z2-7]{20})$")
 COOKIE = "tvs"
+# 中转推出的内容要经电视服务缓冲约这么久才在小智屏幕上出现（实测音频领先约 2.7 秒，加上解码起步）。
+PLAYBACK_LAG_S = 4.0
+# 跳转后多久内，新流还没起来也按跳转目标继续累加。
+SEEK_BRIDGE_S = 15.0
 # 暂停最长多久（与电视服务的 PAUSE_MAX_S 一致），之后自动继续。
 PAUSE_MAX_S = 30 * 60
 # 最多每分钟问一次 YouTube 节点的健康状态。
@@ -79,6 +83,8 @@ class Relay:
         self._active_lock = threading.Lock()
         # 手机上暂停的那个台：视频、精确位置、暂停时刻。暂停期间这个台不给流。
         self._paused: dict | None = None
+        # 跳转后、新流起来之前（约 2–5 秒）：记下目标，连着点「进 30 秒」就在它上面累加。
+        self._bridge: dict[str, dict] = {}
 
     # ---- 频道表 ----
 
@@ -209,6 +215,7 @@ class Relay:
                  "at": self.clock(), "abort": ""}
         with self._active_lock:
             self._active[cid] = entry
+            self._bridge.pop(cid, None)
         try:
             handler.send_response(200)
             handler.send_header("Content-Type", "video/mp2t")
@@ -258,7 +265,19 @@ class Relay:
             return cid, self._active.get(cid)
 
     def _position(self, entry: dict) -> float:
-        return entry["offset"] + (self.monotonic() - entry["began"])
+        """小智此刻大约播到的位置。中转推出去的内容要先经电视服务缓冲，约 PLAYBACK_LAG_S 后才在
+        屏幕上出现，所以从推流时长里扣掉它；跳转、暂停也按这个位置算，和画面对得上。"""
+        return entry["offset"] + max(0.0, self.monotonic() - entry["began"] - PLAYBACK_LAG_S)
+
+    def _current(self):
+        """(台, 视频, 当前位置, 正在推的流)。刚跳转、新流还没起来时，用跳转目标顶上。"""
+        cid, entry = self._playing_entry()
+        if entry is not None:
+            return cid, entry["video"], self._position(entry), entry
+        bridge = self._bridge.get(cid)
+        if bridge is not None and self.clock() - bridge["at"] < SEEK_BRIDGE_S:
+            return cid, bridge["video"], bridge["target"], None
+        return cid, None, 0.0, None
 
     def _cut(self, cid: str, entry: dict, reason: str) -> None:
         entry["abort"] = reason
@@ -289,15 +308,16 @@ class Relay:
         self.state.save()
 
     def pause(self) -> dict:
-        cid, entry = self._playing_entry()
-        if entry is None:
+        cid, video, position, entry = self._current()
+        if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
-        position = self._position(entry)
-        self._store_position(cid, entry["video"], position)
-        self._paused = {"cid": cid, "video": entry["video"], "position": position, "at": self.clock()}
-        self._cut(cid, entry, "暂停")
-        self._event("pause", text=entry["video"].title)
-        return {"ok": True, "at": self.clock()}
+        self._store_position(cid, video, position)
+        self._paused = {"cid": cid, "video": video, "position": position, "at": self.clock()}
+        self._bridge.pop(cid, None)
+        if entry is not None:
+            self._cut(cid, entry, "暂停")
+        self._event("pause", text=video.title)
+        return {"ok": True, "at": self.clock(), "position": position}
 
     def resume(self) -> dict:
         playing = now_playing.read(self.now_playing_in, self.clock())
@@ -315,28 +335,36 @@ class Relay:
         with self._active_lock:
             entry = self._active.get(cid)
         if entry is None:
-            return None
+            bridge = self._bridge.get(cid)
+            if bridge is None or self.clock() - bridge["at"] >= SEEK_BRIDGE_S:
+                return None
+            # 新流还没起来：先报跳转目标；started 留在 0，手机上的「跳转中」等真正的新流。
+            return {"position": round(bridge["target"], 1), "duration": bridge["video"].duration,
+                    "paused": False, "started": 0.0}
         return {"position": round(self._position(entry), 1), "duration": entry["video"].duration,
                 "paused": False, "started": entry["at"]}
 
     def seek(self, delta: float | None = None, position: float | None = None) -> dict:
-        cid, entry = self._playing_entry()
-        if entry is None:
+        cid, video, current, entry = self._current()
+        if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
-        video = entry["video"]
-        target = position if position is not None else self._position(entry) + (delta or 0)
+        target = position if position is not None else current + (delta or 0)
         target = max(0.0, float(target))
         if video.duration and target >= video.duration - 3:
             return self.next()
         self._store_position(cid, video, target)
-        self._cut(cid, entry, f"跳到 {int(target)} 秒")
+        self._bridge[cid] = {"video": video, "target": target, "at": self.clock()}
+        if entry is not None:
+            self._cut(cid, entry, f"跳到 {int(target)} 秒")
+        else:
+            self.log(f"{cid} 跳到 {int(target)} 秒（新流起来时生效）")
         return {"ok": True, "at": self.clock(), "position": target}
 
     def next(self) -> dict:
-        cid, entry = self._playing_entry()
-        if entry is None:
+        cid, video, _, entry = self._current()
+        if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
-        video = entry["video"]
+        self._bridge.pop(cid, None)
         if cid == table.CAST_ID:
             self.state.cast_ended(video.bvid)
             self.state.save()
@@ -344,7 +372,8 @@ class Relay:
         else:
             self.state.mark_watched(cid, video.bvid)
             self.state.save()
-        self._cut(cid, entry, "下一个")
+        if entry is not None:
+            self._cut(cid, entry, "下一个")
         return {"ok": True, "at": self.clock()}
 
     # ---- 管理 ----

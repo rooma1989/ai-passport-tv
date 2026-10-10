@@ -248,8 +248,9 @@ function dateLabel(at) {
   return (day.getMonth() + 1) + "月" + day.getDate() + "日";
 }
 
-function startPending(channel, name, at, slow, kind) {
-  pending = { kind: kind || "switch", channel, name, at, deadline: Date.now() + (slow ? 45000 : 20000) };
+function startPending(channel, name, at, slow, kind, target) {
+  pending = { kind: kind || "switch", channel, name, at, target,
+              deadline: Date.now() + (slow ? 45000 : 20000) };
   render();
   schedule(800);
 }
@@ -284,11 +285,13 @@ function renderPlayer() {
   const v = data.now.online ? data.now.video : null;
   $("player").hidden = !v;
   if (!v) return;
-  const busy = pending !== null;
-  const position = v.paused ? v.position : v.position + (Date.now() - fetchedAt) / 1000;
+  // 跳转后先显示目标位置，等小智接上新流再按服务器的进度走。
+  const seeking = pending && pending.kind === "seek" && pending.target != null;
+  const position = seeking ? pending.target
+    : v.paused || !v.started ? v.position : v.position + (Date.now() - fetchedAt) / 1000;
   const duration = v.duration || 0;
   const bar = $("seek");
-  bar.disabled = busy || !duration;
+  bar.disabled = !duration;
   if (!dragging) {
     bar.max = String(Math.max(1, Math.floor(duration)));
     bar.value = String(Math.min(Math.floor(position), Math.floor(duration)));
@@ -296,7 +299,6 @@ function renderPlayer() {
   }
   $("dur").textContent = duration ? clock(duration) : "--:--";
   $("pause").textContent = v.paused ? "继续" : "暂停";
-  for (const id of ["back", "pause", "fwd", "next"]) $(id).disabled = busy;
 }
 
 function renderNotice() {
@@ -546,11 +548,19 @@ $("newcode").onclick = async () => {
   if (answer.ok) toast("已换新码，小电视换台后显示新的二维码");
 };
 
+// 按钮不锁：连着点也行，每次都立刻告诉你跳到了哪里。
 async function control(path, body) {
   const answer = await call("POST", path, body || {});
   if (!answer.ok) { toast(answer.error, true); return; }
-  if (path === "api/pause" || path === "api/resume") { refresh(); return; }
-  startPending(data.now.channel, data.now.name, answer.at, true, "seek");
+  if (path === "api/pause") { toast("已暂停"); refresh(); return; }
+  if (path === "api/resume") { toast("继续播放"); refresh(); return; }
+  if (path === "api/next") {
+    toast("下一个");
+    startPending(data.now.channel, data.now.name, answer.at, true, "seek");
+    return;
+  }
+  toast("已跳到 " + clock(answer.position) + "，小智马上接上");
+  startPending(data.now.channel, data.now.name, answer.at, true, "seek", answer.position);
 }
 $("back").onclick = () => control("api/seek", { delta: -30 });
 $("fwd").onclick = () => control("api/seek", { delta: 30 });
