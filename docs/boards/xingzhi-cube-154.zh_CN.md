@@ -99,6 +99,13 @@ Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核
 但只发给握手时声明支持的固件。旧固件手动选「我的投屏」也能看。
 
 B 站对云服务器地址的网页和带签名的接口返回 412，所以中转直接调用不带签名的网页 API，不用 yt-dlp。
+
+同一个网页也能粘贴 **YouTube** 链接，加频道、投屏都行。国内主机从不连 YouTube：海外主机上的节点
+（[`server/relay/ytnode.py`](../../server/relay/ytnode.py)、[`packaging/systemd/yt-relay.service`](../../packaging/systemd/yt-relay.service)）
+运行 yt-dlp 并转成约 400 kbit/s 的小码流，中转经 HTTPS 读取，只信任节点的自签证书，并带密钥（`--cstone` 指向含 `url`、`key`、`cert`
+的 JSON）。节点端口只对中转所在主机开放。节点需要 yt-dlp、deno（yt-dlp 的 JavaScript 运行环境）和 ffmpeg，实际上还需要一个
+Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户端身份，YouTube 都要求海外主机登录。单核上解析一个视频约 18 秒，
+所以节点缓存 30 分钟；新 YouTube 视频第一次出画面要 20–40 秒。
 密钥是唯一的保护：拿到链接的人都能增删 UP 主。
 
 ## 状态栏与配网画面

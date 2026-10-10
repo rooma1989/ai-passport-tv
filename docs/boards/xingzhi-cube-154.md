@@ -120,7 +120,20 @@ handshake says it understands one. Older firmware still plays "My cast" when
 picked by hand.
 
 Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
-relay uses the unsigned web API rather than yt-dlp. The key is the only
+relay uses the unsigned web API rather than yt-dlp.
+
+**YouTube** links work on the same page, for creators and casts. The mainland
+host never contacts YouTube: a node on an overseas host
+([`server/relay/ytnode.py`](../../server/relay/ytnode.py),
+[`packaging/systemd/yt-relay.service`](../../packaging/systemd/yt-relay.service))
+runs yt-dlp and transcodes to about 400 kbit/s, and the relay reads it over HTTPS
+with a pinned self-signed certificate and a key (`--cstone` JSON with `url`,
+`key`, `cert`). Allow the node's port only from the relay's host. The node needs
+yt-dlp, deno (yt-dlp's JavaScript runtime) and ffmpeg, and in practice a cookies
+file from a secondary Google account exported in a private window: YouTube asked
+the overseas host to sign in for every client tried. Resolving a video takes about
+18 s on one core, so the node caches it for 30 minutes; the first picture of a
+new YouTube video takes 20-40 s. The key is the only
 protection: anyone with the link can add and remove creators.
 
 ## Status bar and setup screen

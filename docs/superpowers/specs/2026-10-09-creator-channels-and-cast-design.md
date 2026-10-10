@@ -100,7 +100,7 @@ so it needs no key.
 
 The relay writes `relay-channels.txt` (same format as `channels.txt`):
 `cast | <"My cast" in Chinese> | http://127.0.0.1:8099/ch/cast` and one `upNN | <name> | …/ch/upNN`
-per creator. Names are cut to 10 characters so the CONFIG list stays below
+per creator. Names are cut to 20 columns (a Chinese character counts two, so 10 of them or 20 letters) so the CONFIG list stays below
 `TV_CONTROL_MAX` (7168 bytes); at most 12 creators.
 
 ### Events to the TV server
@@ -212,6 +212,20 @@ Written atomically; one lock around every change.
   picture and sound. The TV server calibrated from the decoder's timestamps and
   held 15 fps and 25 audio packets/s. At each end of a 40 s piece the decoder
   reopened the URL itself; the server logged one 88 ms gap and no reconnect.
+
+## YouTube findings (2026-10-10)
+
+- cstone is Ubuntu 22.04 with one vCPU and 1 GB. yt-dlp 2026.08.19 needs a
+  JavaScript runtime for YouTube (deno 2.9.7). Even with it, every player client
+  tried (tv, android_vr, mweb, web_safari, tv_simply, web_embedded, ios) was told
+  "Sign in to confirm you're not a bot", so the node uses a cookies file from a
+  secondary account, exported in a private window.
+- With cookies: video info in 18.6 s (0.5 s cached), a channel's uploads in 6.6 s.
+  The stream is 320x240 H.264 15 fps plus mono AAC, about 405 kbit/s; load on
+  cstone stayed near 0.2 while it ran.
+- A cast reached the device about 3 s after the switch (info cached by the cast
+  call). The node is reached on its own port with a self-signed certificate
+  pinned on Aliyun; the firewall admits only the Aliyun address.
 
 ## Delivery in steps
 
