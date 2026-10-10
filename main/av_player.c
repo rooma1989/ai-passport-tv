@@ -200,6 +200,11 @@ typedef enum {
     // refused or timed-out connection -- ends here, because what the viewer
     // does about all of them is the same: go to the setup page.
     LINK_DOWN,
+    // Not on the network yet: the stored Wi-Fi has not been found or joined.
+    // Nothing can be dialled, and the viewer may need the setup page -- the
+    // stored network can disappear (a new router, a changed channel), and
+    // without a screen saying so the device looks dead.
+    LINK_NO_WIFI,
 } link_state_t;
 
 // One audio packet as it arrived: IMA ADPCM, decoded to PCM by the audio task
@@ -2927,11 +2932,19 @@ for(unsigned y=0;y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
     // have.
     char heading[UI_MENU_NAME_MAX+16];
     const char *reason=NULL;
+    static char wifi_name[33];
     if (failed) {
         reason="连不上服务器";
     }
     bool has_heading=s.channel[0]!=0;
-    if (has_heading) {
+    if (link==LINK_NO_WIFI) {
+        // Named, because the usual cause is that this network is gone or has
+        // moved, and the viewer has to know which one the device is looking for.
+        snprintf(heading,sizeof(heading),"正在连接 Wi-Fi");
+        av_provision_network_name(wifi_name,sizeof(wifi_name));
+        reason=wifi_name[0] ? wifi_name : NULL;
+        has_heading=true;
+    } else if (has_heading) {
         current_channel_name(heading,sizeof(heading));
     } else {
         // No channel named yet, so the line carries the state instead, which
@@ -2960,7 +2973,9 @@ for(unsigned y=0;y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
     // screen; telling the viewer about a screen that cannot appear would be
     // worse than saying nothing.
     const char *hint=NULL;
-    if (reason) {
+    if (link==LINK_NO_WIFI) {
+        hint="双击↑ 长按↑ 重新配网";
+    } else if (reason) {
         hint="双击↑ 长按↑ 改地址";
     }
 
@@ -3842,6 +3857,41 @@ static bool pump_keys(uint32_t wait_ms) {
     return false;
 }
 
+// Wait for the network with the keys and the screen alive.
+//
+// Before this the loop only pumped the keys, and nothing was drawn until a
+// session started -- so a device whose stored network had gone (a new router,
+// or one that moved to channel 12) showed whatever the panel held at power-up
+// and answered no key visibly, while the setup page it needed sat behind a
+// status page that could not appear. This draws the waiting screen with its
+// overlays, which is what makes the status page, and through it setup,
+// reachable without a network.
+//
+// No session exists here, so it borrows one stripe of its own and claims the
+// panel for the duration. Returns when the network is up, the time is up, or
+// the viewer asked for setup (s_setup_request, which also raises STOP).
+static void wait_for_wifi(uint32_t timeout_ms)
+{
+    atomic_store(&s.link,(int)LINK_NO_WIFI);
+    uint8_t *stripe=heap_caps_malloc(STRIPE_BYTES,MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA);
+    bool claimed=stripe && bsp_display_raw_claim()==ESP_OK;
+    s.stripe[0]=stripe;
+    waiting_drawn=false;
+    int64_t deadline=esp_timer_get_time()+(int64_t)timeout_ms*1000;
+    while(!(xEventGroupGetBits(s.events)&WIFI_READY) && esp_timer_get_time()<deadline
+          && !stopping() && !atomic_load(&s_setup_request)) {
+        pump_keys(50);
+        if (claimed && waiting_screen_stale() && !paint_waiting_screen()) break;
+    }
+    if (claimed) bsp_display_raw_release();
+    s.stripe[0]=NULL;
+    free(stripe);
+    // The session that follows dials afresh; leaving this state behind would
+    // have its screen still asking for Wi-Fi.
+    atomic_store(&s.link,(int)LINK_TRYING);
+    waiting_drawn=false;
+}
+
 void av_player_main(void) {
     ESP_LOGW(TAG,"RAW LAN prototype; audio clock ESTIMATED (+90ms DMA budget), not DMA/physical output");
     // Nothing is required at build time any more. The network, its password and
@@ -3977,9 +4027,15 @@ void av_player_main(void) {
         // race it. This waits for the address instead, and keeps the keys alive
         // while it does so the viewer is never locked out of the device.
         if(!(xEventGroupGetBits(s.events)&WIFI_READY)) {
-            int64_t deadline=esp_timer_get_time()+15000000;
-            while(!(xEventGroupGetBits(s.events)&WIFI_READY) && esp_timer_get_time()<deadline && !stopping()) {
-                pump_keys(50);
+            wait_for_wifi(15000);
+            if(atomic_exchange(&s_setup_request,false)) {
+                // Asked for from the status page drawn over the Wi-Fi screen. No
+                // session holds memory here, so the access point can start at once.
+                ESP_LOGW(TAG,"Entering setup mode from the Wi-Fi wait");
+                if(run_setup_mode()) { has_network=true; continue; }
+                ESP_LOGW(TAG,"Restarting after an unfinished setup");
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
             }
             if(!(xEventGroupGetBits(s.events)&WIFI_READY) || stopping()) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
         }

@@ -150,6 +150,18 @@ bool av_provision_init(bool *has_stored_network)
     }
     manager.SetEventCallback(handle_event);
 
+    // Scan channels 1-13, as a router in China may use. Left at the driver's
+    // default ("01", channels 1-11), a network that moved to channel 12 or 13
+    // -- routers pick their channel themselves -- is simply never seen, and the
+    // device sits waiting for Wi-Fi that is right next to it. 802.11d is off
+    // so a neighbour's beacon cannot narrow the range again.
+    {
+        esp_err_t err = esp_wifi_set_country_code("CN", false);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Could not set the Wi-Fi country: %s", esp_err_to_name(err));
+        }
+    }
+
     // Stay on one access point rather than roaming between the two boxes that
     // carry this network's name.
     //

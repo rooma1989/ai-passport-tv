@@ -282,7 +282,10 @@ void WifiStation::HandleScanResult() {
             StartScan();
             return;
         }
-        ESP_LOGI(TAG, "No AP found, next scan in %d seconds", scan_current_interval_microseconds_ / 1000 / 1000);
+        // How many networks the scan saw at all tells a radio problem (none)
+        // from a stored network that is gone or out of range (some).
+        ESP_LOGI(TAG, "No AP found (%u networks visible), next scan in %d seconds",
+                 static_cast<unsigned>(ap_num), scan_current_interval_microseconds_ / 1000 / 1000);
         esp_timer_start_once(timer_handle_, scan_current_interval_microseconds_);
         UpdateScanInterval();
         return;
