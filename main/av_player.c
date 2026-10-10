@@ -15,6 +15,7 @@
 #include "av_channel_policy.h"
 #include "ui_text.h"
 #include "ui_status.h"
+#include "ui_draw.h"
 #include "ui_qr.h"
 #include "qrcodegen.h"
 // The ROM's copy of miniz: tinfl_decompress lives at a fixed address in the
@@ -562,6 +563,11 @@ static bool picture_live(void);
 // status group whenever media plays; the bottom one only while the list is open.
 static bool top_drawn, bottom_drawn;
 static int64_t top_painted_us, bottom_painted_us;
+// The top bar's label, rebuilt from the view and the channel by
+// build_topbar_label(), and the one last painted, so a change -- another
+// channel, a moved highlight -- repaints at once instead of at the next
+// two-second refresh. Only the video task touches either.
+static ui_topbar_label_t topbar_label, topbar_painted;
 // Which overlay the waiting screen was last painted with, and when.
 //
 // The waiting screen is a still image, so it is painted when something it shows
@@ -1887,6 +1893,61 @@ typedef struct {
     int charging;
 } band_reading_t;
 
+// The top bar's label for what is on screen (HANDOFF.md 4.1, 4.7-4.10): the
+// channel number and name over the picture, the level and position in the
+// list, or the page's name.
+static void build_topbar_label(ui_topbar_label_t *label) {
+    char number[8], name[UI_MENU_NAME_MAX+2], count[16];
+    const char *texts[3];
+    uint16_t colors[3];
+    unsigned n=0;
+    switch (s.menu.view) {
+    case UI_VIEW_MENU: {
+        const unsigned total=ui_menu_row_count(&s.menu);
+        snprintf(count,sizeof(count)," %u/%u",total ? s.menu.selected+1u : 0u,total);
+        if (ui_menu_in_group(&s.menu)) {
+            texts[n]="< "; colors[n++]=UI_MUTED;
+        }
+        texts[n]=ui_menu_title(&s.menu); colors[n++]=UI_PAPER;
+        texts[n]=count; colors[n++]=UI_MUTED;
+        break;
+    }
+    case UI_VIEW_BRIGHTNESS:
+        texts[n]="亮度"; colors[n++]=UI_PAPER;
+        break;
+    case UI_VIEW_STATUS:
+        texts[n]="状态"; colors[n++]=UI_PAPER;
+        break;
+    default: {
+        // The number is the channel's place in the whole list, as the phone
+        // and the list rows count it.
+        unsigned index=0;
+        bool found=false;
+        name[0]=' ';
+        taskENTER_CRITICAL(&list_lock);
+        unsigned total=atomic_load(&s.count);
+        for (unsigned i=0;i<total;i++) {
+            if (!strcmp(s.list[i].id,s.channel)) {
+                snprintf(name+1,sizeof(name)-1,"%s",s.list[i].name[0] ? s.list[i].name : s.list[i].id);
+                index=i;
+                found=true;
+                break;
+            }
+        }
+        taskEXIT_CRITICAL(&list_lock);
+        if (found) {
+            snprintf(number,sizeof(number),"%02u",(index+1u)%100u);
+            texts[n]=number; colors[n++]=UI_AMBER;
+            texts[n]=name; colors[n++]=UI_PAPER;
+        } else {
+            texts[n]=s.channel[0] ? s.channel : "小智电视"; colors[n++]=UI_MUTED;
+        }
+        break;
+    }
+    }
+    ui_topbar_set_label(label,texts,colors,n);
+}
+
 // Readings for the black bars around the picture, drawn into whichever stripe
 // overlaps a bar and nothing else. The picture covers rows
 // [AV_VIDEO_Y_OFFSET, AV_HEIGHT-AV_VIDEO_Y_OFFSET), so these rows belong to the
@@ -1905,7 +1966,7 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
     char text[24];
 
     if (first<bar) {
-        ui_status_draw(surface,(int)AV_WIDTH,bar,reading->bars,reading->soc,reading->charging);
+        ui_status_draw(surface,(int)AV_WIDTH,&topbar_label,reading->bars,reading->soc,reading->charging);
     }
 
     const int bottom=(int)AV_HEIGHT-bar;
@@ -1913,14 +1974,14 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
     if (bottom_info && last>bottom) {
         // Cleared first: the list's last row can run into this band on a screen
         // that paints the whole height, and it must not show through.
-        ui_text_fill(surface,0,bottom,(int)AV_WIDTH,bar,UI_COLOR_BOX);
+        ui_text_fill(surface,0,bottom,(int)AV_WIDTH,bar,UI_DEEP);
         uint32_t fps=atomic_load(&s.fps_x10);
         snprintf(text,sizeof(text),"FPS %u.%u",(unsigned)(fps/10u),(unsigned)(fps%10u));
-        ui_text_draw(surface,edge,bottom_y,text,UI_COLOR_DIM,UI_COLOR_BOX);
+        ui_text_draw(surface,edge,bottom_y,text,UI_COLOR_DIM,UI_DEEP);
         snprintf(text,sizeof(text),"Net %u KB/s",
                  (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
         ui_text_draw(surface,(int)AV_WIDTH-edge-ui_text_width(text),bottom_y,
-                     text,UI_COLOR_DIM,UI_COLOR_BOX);
+                     text,UI_COLOR_DIM,UI_DEEP);
     }
 }
 
@@ -1930,8 +1991,9 @@ static bool paint_band(unsigned start, unsigned height, const band_reading_t *re
     for (unsigned y=start;y<start+height;y+=AV_STRIPE_ROWS) {
         unsigned rows=start+height-y;
         if (rows>AV_STRIPE_ROWS) rows=AV_STRIPE_ROWS;
-        memset(s.stripe[0],0,STRIPE_BYTES);
-        info_bars_stripe(stripe_surface(y,s.stripe[0]),reading,bottom_info);
+        ui_surface_t surface=stripe_surface(y,s.stripe[0]);
+        ui_text_fill(surface,0,(int)y,(int)AV_WIDTH,(int)rows,UI_DEEP);
+        info_bars_stripe(surface,reading,bottom_info);
         if (bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
             bsp_display_raw_drain(1,200)!=ESP_OK) {
             fail("info bar DMA");
@@ -1965,7 +2027,9 @@ static bool refresh_info_bars(void) {
     if (bar==0) return true;
     const bool want_bottom=s.menu.view==UI_VIEW_MENU;
     const int64_t now=esp_timer_get_time();
-    const bool top_due=!top_drawn || now-top_painted_us>=2000000;
+    build_topbar_label(&topbar_label);
+    const bool top_due=!top_drawn || now-top_painted_us>=2000000 ||
+                       memcmp(&topbar_label,&topbar_painted,sizeof(topbar_label));
     const bool bottom_due=want_bottom ? (!bottom_drawn || now-bottom_painted_us>=1000000)
                                       : bottom_drawn;
     if (!top_due && !bottom_due) return true;
@@ -1973,6 +2037,7 @@ static bool refresh_info_bars(void) {
     drain_display();
     if (top_due) {
         if (!paint_band(0,bar,&reading,false)) return false;
+        topbar_painted=topbar_label;
         top_drawn=true;
         top_painted_us=now;
     }
@@ -2030,6 +2095,12 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
     #define LINE_TOP_PAD UI_TEXT_PAD_Y
     #define LINE_HEIGHT ((int)UI_TEXT_LINE_H + 2*UI_TEXT_PAD_Y)
 
+    // F2: every menu and page sits on an opaque panel over the whole picture
+    // area, so no video shows between or around its rows. The picture comes
+    // back with the first frame after it closes.
+    if (s.menu.view!=UI_VIEW_VIDEO) {
+        ui_draw_panel(surface,(int)AV_VIDEO_Y_OFFSET,(int)(AV_HEIGHT-AV_VIDEO_Y_OFFSET));
+    }
     if (s.menu.view==UI_VIEW_VIDEO) {
         // The volume indicator, at the top of the screen while it is up.
         //
@@ -2090,12 +2161,8 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         // browsed -- and where the highlight is in it. Left-aligned and as one
         // string: on a board with a top band, the status icons are drawn over
         // the right end of the header afterwards.
+        // The title and position are the top bar's label (build_topbar_label).
         const unsigned total=ui_menu_row_count(&s.menu);
-        if (first<(unsigned)header) {
-            char title[UI_MENU_GROUP_NAME_MAX+16];
-            snprintf(title,sizeof(title),"%s %u/%u",ui_menu_title(&s.menu),s.menu.selected+1u,total);
-            ui_text_draw(surface,14,(header-(int)UI_TEXT_LINE_H)/2,title,UI_COLOR_DIM,UI_COLOR_BOX);
-        }
         unsigned rows=menu_rows();
         for (unsigned i=0;i<rows;i++) {
             unsigned index=s.menu.scroll+i;
@@ -2115,6 +2182,7 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         if (first<(unsigned)AV_VIDEO_Y_OFFSET || last>(unsigned)(AV_HEIGHT-AV_VIDEO_Y_OFFSET)) {
             const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc),
                                            bsp_battery_charging() };
+            build_topbar_label(&topbar_label);
             info_bars_stripe(surface,&reading,true);
         }
     } else if (s.menu.view==UI_VIEW_BRIGHTNESS) {
@@ -3107,17 +3175,20 @@ static bool paint_pause_band(void)
     const unsigned rows=AV_STRIPE_ROWS;
     const unsigned top=((AV_HEIGHT/2u-32u)/rows)*rows;
     const unsigned bottom=top+((64u+rows-1u)/rows)*rows;
-    const char *label="‖ 已暂停";
+    // HANDOFF.md 4.6: the pet dozing at the left, the pause mark and the word
+    // beside it, the video's title under them. The rows come out at y=84..155
+    // as the design has them.
+    char fitted[sizeof(title)+4];
+    (void)ui_text_ellipsize(fitted,sizeof(fitted),title,226-80);
     for (unsigned y=top;y<bottom && !stopping();y+=rows) {
         ui_surface_t strip=stripe_surface(y,s.stripe[0]);
-        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,(int)(bottom-top),UI_COLOR_BOX);
-        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,1,UI_COLOR_RULE);
-        ui_text_fill(strip,0,(int)bottom-1,(int)AV_WIDTH,1,UI_COLOR_RULE);
-        const int w=ui_text_width(label);
-        ui_text_draw(strip,((int)AV_WIDTH-w)/2,(int)top+8,label,UI_COLOR_TEXT,UI_COLOR_BOX);
-        const int tw=ui_text_width(title);
-        const int tx=tw<(int)AV_WIDTH-28 ? ((int)AV_WIDTH-tw)/2 : 14;
-        ui_text_draw(strip,tx,(int)top+8+(int)UI_TEXT_LINE_H+2*UI_TEXT_PAD_Y,title,UI_COLOR_DIM,UI_COLOR_BOX);
+        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,(int)(bottom-top),UI_INK);
+        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,1,UI_RULE);
+        ui_text_fill(strip,0,(int)bottom-1,(int)AV_WIDTH,1,UI_RULE);
+        ui_draw_pet(strip,0,2,20,(int)top+10,2);
+        ui_draw_icon(strip,UI_ICON_PAUSE,80,(int)top+16,1,UI_AMBER);
+        ui_text_draw(strip,100,(int)top+16,"已暂停",UI_PAPER,UI_INK);
+        ui_text_draw(strip,80,(int)top+42,fitted,UI_MUTED,UI_INK);
         if(bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
            bsp_display_raw_drain(1,200)!=ESP_OK) {
             fail("pause band DMA");
@@ -3368,7 +3439,8 @@ static void video_task(void *arg) {
             if(!v.dropped) {
 #if AV_VIDEO_Y_OFFSET > 0
                 if(s.decoded == 0 && v.stripe == 0) {
-                    memset(s.stripe[0], 0, STRIPE_BYTES);
+                    ui_text_fill(stripe_surface(0, s.stripe[0]), 0, 0, (int)AV_WIDTH,
+                                 (int)AV_STRIPE_ROWS, UI_DEEP);
                     for (unsigned cy = 0; cy < (unsigned)AV_VIDEO_Y_OFFSET; ) {
                         unsigned rows = (unsigned)AV_VIDEO_Y_OFFSET - cy;
                         if (rows > AV_STRIPE_ROWS) rows = AV_STRIPE_ROWS;

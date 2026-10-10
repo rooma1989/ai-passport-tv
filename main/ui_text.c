@@ -203,19 +203,11 @@ void ui_text_fill(ui_surface_t surface, int x, int y, int w, int h, uint16_t col
     }
 }
 
-int ui_text_draw(ui_surface_t surface, int x, int y, const char *text,
-                 uint16_t foreground, uint16_t background)
+// The glyphs of `text` from (x, y), each dot a `scale` x `scale` block, with no
+// background. Returns the x just past the text.
+static int draw_glyphs(ui_surface_t surface, int x, int y, const char *text, int scale,
+                       uint16_t foreground)
 {
-    if (!text) {
-        return x;
-    }
-    // The background box is painted first so the glyphs sit on a known colour,
-    // which is what keeps them readable when the video behind them is bright.
-    int width = ui_text_width(text);
-    ui_text_fill(surface, x - UI_TEXT_PAD_X, y - UI_TEXT_PAD_Y,
-                 width + 2 * UI_TEXT_PAD_X, (int)UI_TEXT_LINE_H + 2 * UI_TEXT_PAD_Y,
-                 background);
-
     int pen = x;
     const char *cursor = text;
     while (*cursor) {
@@ -223,8 +215,33 @@ int ui_text_draw(ui_surface_t surface, int x, int y, const char *text,
         unsigned length = next_code(cursor, &code);
         int advance = 0;
         const uint8_t *glyph = lookup(code, &advance);
-        if (glyph) {
+        // Rows of a glyph wholly outside the band are skipped before their bits
+        // are looked at: most stripes see only part of a line.
+        if (glyph && y + (int)UI_GLYPH_H * scale > surface.origin_y
+                && y < surface.origin_y + surface.rows) {
+            // tools/make_font.py centres every glyph in its 16-pixel cell but
+            // gives a narrow one an advance of its ink width plus two. Drawn
+            // from the cell's edge, the ink would land several pixels right of
+            // the pen, by an amount that differs per character -- a colon then
+            // touches the digit after it, and a 3x number lands 15 px off and
+            // past its own background. So a narrow glyph is moved left until
+            // its ink starts one pixel after the pen.
+            int bearing = 0;
+            if (advance < (int)UI_GLYPH_W) {
+                uint16_t any = 0;
+                for (unsigned gy = 0; gy < UI_GLYPH_H; gy++) {
+                    any |= (uint16_t)((glyph[gy * 2u] << 8) | glyph[gy * 2u + 1u]);
+                }
+                while (any && !(any & (uint16_t)(1u << (UI_GLYPH_W - 1u - (unsigned)bearing)))) {
+                    bearing++;
+                }
+                bearing = bearing > 0 ? bearing - 1 : 0;
+            }
             for (unsigned gy = 0; gy < UI_GLYPH_H; gy++) {
+                const int row_y = y + (int)gy * scale;
+                if (row_y + scale <= surface.origin_y || row_y >= surface.origin_y + surface.rows) {
+                    continue;
+                }
                 uint16_t bits = (uint16_t)((glyph[gy * 2u] << 8) | glyph[gy * 2u + 1u]);
                 if (!bits) {
                     continue;  // blank row: the box already painted it
@@ -244,14 +261,65 @@ int ui_text_draw(ui_surface_t surface, int x, int y, const char *text,
                            (bits & (uint16_t)(1u << (UI_GLYPH_W - 1u - run_end)))) {
                         run_end++;
                     }
-                    ui_text_fill(surface, pen + (int)run_start, y + (int)gy,
-                                 (int)(run_end - run_start), 1, foreground);
+                    ui_text_fill(surface, pen + ((int)run_start - bearing) * scale, row_y,
+                                 (int)(run_end - run_start) * scale, scale, foreground);
                     run_start = run_end;
                 }
             }
         }
-        pen += advance;
+        pen += advance * scale;
         cursor += length;
     }
     return pen;
+}
+
+int ui_text_draw(ui_surface_t surface, int x, int y, const char *text,
+                 uint16_t foreground, uint16_t background)
+{
+    if (!text) {
+        return x;
+    }
+    // The background box is painted first so the glyphs sit on a known colour,
+    // which is what keeps them readable when the video behind them is bright.
+    int width = ui_text_width(text);
+    ui_text_fill(surface, x - UI_TEXT_PAD_X, y - UI_TEXT_PAD_Y,
+                 width + 2 * UI_TEXT_PAD_X, (int)UI_TEXT_LINE_H + 2 * UI_TEXT_PAD_Y,
+                 background);
+    return draw_glyphs(surface, x, y, text, 1, foreground);
+}
+
+int ui_text_draw_scaled(ui_surface_t surface, int x, int y, const char *text, int scale,
+                        uint16_t foreground, uint16_t background)
+{
+    if (!text) {
+        return x;
+    }
+    if (scale < 1) {
+        scale = 1;
+    }
+    ui_text_fill(surface, x, y, ui_text_width(text) * scale, (int)UI_TEXT_LINE_H * scale,
+                 background);
+    return draw_glyphs(surface, x, y, text, scale, foreground);
+}
+
+bool ui_text_ellipsize(char *out, size_t out_size, const char *text, int limit)
+{
+    if (!out || !out_size) {
+        return false;
+    }
+    if (!text || ui_text_truncate(out, out_size, text, limit)) {
+        out[0] = text ? out[0] : '\0';
+        return true;
+    }
+    static const char ellipsis[] = "\xE2\x80\xA6";   // U+2026
+    const int room = limit - ui_text_width(ellipsis);
+    if (room < 0 || out_size < sizeof(ellipsis)) {
+        if (out && out_size) {
+            out[0] = '\0';
+        }
+        return false;
+    }
+    (void)ui_text_truncate(out, out_size - (sizeof(ellipsis) - 1u), text, room);
+    strcat(out, ellipsis);
+    return false;
 }

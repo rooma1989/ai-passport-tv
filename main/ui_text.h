@@ -22,15 +22,28 @@ typedef struct {
 #define UI_TEXT_PAD_X 6
 #define UI_TEXT_PAD_Y 4
 
-// Opaque RGB565 colours. Names describe the role, not the shade: the palette is
-// deliberately small so overlays stay legible over arbitrary video.
-#define UI_COLOR_BOX     0x0000u  // near-black panel behind text
-#define UI_COLOR_TEXT    0xFFFFu  // white
-#define UI_COLOR_DIM     0x9CF3u  // light grey, secondary lines
-#define UI_COLOR_SELECT  0x04FFu  // highlight bar for the chosen row
-#define UI_COLOR_SELECT_TEXT 0x0000u
-#define UI_COLOR_RULE    0x4208u  // separator
-#define UI_COLOR_BACKDROP 0x18E3u // status page background
+// The palette, RGB565. The same eight values are defined, token for token, in
+// xiaozhi_tv_ui_assets.h, the design's own export; a copy here keeps that
+// 78 KB header out of every file that only wants a colour, and ui_draw.c
+// includes both, where any drift is a redefinition the -Werror build rejects.
+#define UI_INK    0x18C2  /* panels, full-screen pages, overlay boxes */
+#define UI_DEEP   0x1061  /* top and bottom bars; text on a selected row */
+#define UI_RULE   0x39A5  /* rules, dotted lines, unlit cells and signal bars */
+#define UI_FAINT  0x6B2A  /* battery outline, scroll thumb; never text */
+#define UI_MUTED  0x8C0E  /* labels, hints, counts */
+#define UI_PAPER  0xE6D8  /* body text, channel names, light QR modules */
+#define UI_AMBER  0xFDA9  /* channel numbers, values, key names in hints */
+#define UI_VERM   0xD2A8  /* selected row, errors, low battery */
+
+// Colours by role, for the screens not yet redrawn to the new layout. Names
+// describe the role, not the shade.
+#define UI_COLOR_BOX     UI_INK    // panel behind text
+#define UI_COLOR_TEXT    UI_PAPER
+#define UI_COLOR_DIM     UI_MUTED  // secondary lines
+#define UI_COLOR_SELECT  UI_VERM   // highlight bar for the chosen row
+#define UI_COLOR_SELECT_TEXT UI_DEEP
+#define UI_COLOR_RULE    UI_RULE   // separator
+#define UI_COLOR_BACKDROP UI_INK   // status page background
 
 // Fill a rectangle. Coordinates are screen-space; the band clips them.
 void ui_text_fill(ui_surface_t surface, int x, int y, int w, int h, uint16_t color);
@@ -40,9 +53,22 @@ void ui_text_fill(ui_surface_t surface, int x, int y, int w, int h, uint16_t col
 int ui_text_draw(ui_surface_t surface, int x, int y, const char *text,
                  uint16_t foreground, uint16_t background);
 
+// The same text with every dot drawn as a `scale` x `scale` block, for the
+// large numbers (channel number, percentage, countdown). (x, y) is where the
+// glyphs start, as for ui_text_draw, but the background is the glyph cells
+// alone -- width * scale by UI_TEXT_LINE_H * scale -- with no padding, so a
+// layout can place the block exactly. Returns the x just past the text.
+int ui_text_draw_scaled(ui_surface_t surface, int x, int y, const char *text, int scale,
+                        uint16_t foreground, uint16_t background);
+
 // Width in pixels the text would occupy, for centring and for truncation.
 int ui_text_width(const char *text);
 
 // Copy at most `limit` bytes of `text` into `out` without splitting a character,
 // then terminate. Returns true when the whole string fitted.
 bool ui_text_truncate(char *out, size_t out_size, const char *text, int limit);
+
+// Fit `text` into `limit` pixels: all of it when it fits, otherwise as many
+// whole characters as leave room for a trailing "…". Returns true when nothing
+// was cut.
+bool ui_text_ellipsize(char *out, size_t out_size, const char *text, int limit);

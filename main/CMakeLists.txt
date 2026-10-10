@@ -20,6 +20,7 @@ idf_component_register(
          "ui_menu.c"
          "ui_qr.c"
          "ui_status.c"
+         "ui_draw.c"
          "av_provision.cpp"
          "av_provision_policy.c"
          "av_settings.c"

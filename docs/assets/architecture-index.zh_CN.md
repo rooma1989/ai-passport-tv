@@ -54,6 +54,8 @@
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
 | [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机——纯逻辑，无 LVGL。 |
 | [`main/ui_text.c`/`.h`](../../main/ui_text.h) | 直接画到屏幕条带上的位图文字（非 LVGL）；CJK 字形来自 `ui_font_cjk.bin`，由 `tools/make_font.py` 重新生成。 |
+| [`main/ui_draw.c`/`.h`](../../main/ui_draw.h) | 设备端 UI 设计稿的图标、宠物和像素图形（点线、切角矩形、10 格进度条、不透明面板）；素材在 `main/xiaozhi_tv_ui_assets.h`，由设计稿导出。 |
+| [`main/ui_status.c`/`.h`](../../main/ui_status.h) | 顶条：左侧标签（播放时是台号和台名）和右侧的信号、电量。 |
 | [`main/ui_pixel.c`/`.h`](../../main/ui_pixel.h) | 共用的视觉主题（天空/草地/吉祥物/面板），BSP 演示菜单也在用。按 `docs/development/ai-guide.md` 要求保持完整。 |
 
 ## 3. 服务端：`server/`（纯 Python 标准库）

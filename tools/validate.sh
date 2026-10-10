@@ -70,9 +70,14 @@ run_static_checks() {
     "${test_dir}/test_ui_qr"
     # Top-band status group: battery fill, low colour, signal bars, charging bolt.
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_ui_status.c main/ui_status.c main/ui_text.c \
+        tests/test_ui_status.c main/ui_status.c main/ui_draw.c main/ui_text.c \
         -o "${test_dir}/test_ui_status"
     "${test_dir}/test_ui_status"
+    # The design's icons, pets and pixel grammar: placement, scale, clipping.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_ui_draw.c main/ui_draw.c main/ui_text.c \
+        -o "${test_dir}/test_ui_draw"
+    "${test_dir}/test_ui_draw"
     # The server address arrives as text someone typed or pasted, so the cases
     # that matter are the messy ones. A wrong answer here is a device that
     # silently never connects, which is the hardest kind of fault to see.

@@ -98,6 +98,8 @@ void ui_menu_back(ui_menu_t *menu);
 // What the list is showing, for drawing: whether it is the group level, how
 // many rows the level has, each row's text, and the header title.
 bool ui_menu_at_groups(const ui_menu_t *menu);
+// True while one group's channels are showing, so OK long press goes back.
+bool ui_menu_in_group(const ui_menu_t *menu);
 unsigned ui_menu_row_count(const ui_menu_t *menu);
 const char *ui_menu_row_label(const ui_menu_t *menu, unsigned row);
 const char *ui_menu_title(const ui_menu_t *menu);

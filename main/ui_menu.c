@@ -174,6 +174,11 @@ bool ui_menu_at_groups(const ui_menu_t *menu)
     return menu && menu->at_groups;
 }
 
+bool ui_menu_in_group(const ui_menu_t *menu)
+{
+    return menu && !menu->at_groups && two_levels(menu);
+}
+
 unsigned ui_menu_row_count(const ui_menu_t *menu)
 {
     if (!menu) {

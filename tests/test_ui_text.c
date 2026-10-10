@@ -135,7 +135,7 @@ static void test_text_draw_paints_background_then_glyphs(void)
 
     // Every pixel in the padded box is either the box colour or the text colour.
     for (int y = 4 - UI_TEXT_PAD_Y; y < 4 + (int)UI_TEXT_LINE_H + UI_TEXT_PAD_Y; y++) {
-        for (int x = 20 - UI_TEXT_PAD_X; x < 20 + (int)UI_GLYPH_W + UI_TEXT_PAD_X; x++) {
+        for (int x = 20 - UI_TEXT_PAD_X; x < end + UI_TEXT_PAD_X; x++) {
             uint16_t value = pixel(surface, x, y);
             check(value == UI_COLOR_BOX || value == UI_COLOR_TEXT,
                   "the box contains only background and glyph colours");
@@ -161,6 +161,64 @@ static void test_draw_off_surface_does_not_write_out_of_bounds(void)
     check(1, "off-surface draws return without corrupting memory");
 }
 
+static void test_scaled_text(void)
+{
+    ui_surface_t surface = surface_at(0, SURFACE_ROWS);
+    memset(surface.pixels, 0, (size_t)SURFACE_W * SURFACE_ROWS * 2u);
+    int end1 = ui_text_draw(surface, 20, 4, "7", UI_PAPER, UI_INK);  // its box fits the rows
+    int ink1 = 0;
+    for (int y = 0; y < SURFACE_ROWS; y++)
+        for (int x = 0; x < SURFACE_W; x++) ink1 += pixel(surface, x, y) == UI_PAPER;
+
+    memset(surface.pixels, 0, (size_t)SURFACE_W * SURFACE_ROWS * 2u);
+    int end2 = ui_text_draw_scaled(surface, 20, 0, "7", 2, UI_PAPER, UI_INK);  // 32 rows
+    int ink2 = 0, box = 0;
+    for (int y = 0; y < SURFACE_ROWS; y++)
+        for (int x = 0; x < SURFACE_W; x++) {
+            ink2 += pixel(surface, x, y) == UI_PAPER;
+            box += pixel(surface, x, y) == UI_INK;
+        }
+    check(end2 - 20 == 2 * (end1 - 20), "2x advances twice as far");
+    check(ink2 == 4 * ink1, "2x has four times the ink");
+    check(ink2 + box == (end2 - 20) * 2 * (int)UI_TEXT_LINE_H,
+          "the background is exactly the scaled cells, no padding");
+    check(pixel(surface, 19, 0) == 0 && pixel(surface, end2, 0) == 0, "nothing left or right of the cells");
+}
+
+// Narrow glyphs are centred in their cells by the font tool; drawn as they
+// are, the ink of each would sit several pixels right of the pen.
+static void test_narrow_glyphs_start_at_the_pen(void)
+{
+    const char *samples[] = { "1", "7", "%", "A", ":" };
+    for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); i++) {
+        ui_surface_t surface = surface_at(0, SURFACE_ROWS);
+        memset(surface.pixels, 0, (size_t)SURFACE_W * SURFACE_ROWS * 2u);
+        int end = ui_text_draw(surface, 40, 4, samples[i], UI_PAPER, UI_INK);
+        int left = SURFACE_W, right = -1;
+        for (int y = 0; y < SURFACE_ROWS; y++)
+            for (int x = 0; x < SURFACE_W; x++)
+                if (pixel(surface, x, y) == UI_PAPER) {
+                    if (x < left) left = x;
+                    if (x > right) right = x;
+                }
+        check(left == 41, "ink starts one pixel after the pen");
+        check(right == end - 2, "and ends one pixel before the advance");
+    }
+}
+
+static void test_ellipsize(void)
+{
+    char out[64];
+    check(ui_text_ellipsize(out, sizeof(out), "CCTV", 1000) && strcmp(out, "CCTV") == 0,
+          "a fitting string is kept whole");
+    const int limit = 60;
+    check(!ui_text_ellipsize(out, sizeof(out), "ABCDEFGHIJKLMNOP", limit), "a long one is cut");
+    const size_t n = strlen(out);
+    check(n >= 3 && strcmp(out + n - 3, "\xE2\x80\xA6") == 0, "and ends in an ellipsis");
+    check(ui_text_width(out) <= limit, "within the limit, ellipsis included");
+    check(ui_text_ellipsize(out, sizeof(out), NULL, 10) && out[0] == '\0', "NULL is empty");
+}
+
 int main(void)
 {
     test_font_table_is_self_consistent();
@@ -169,6 +227,9 @@ int main(void)
     test_fill_clips_to_the_band();
     test_text_draw_paints_background_then_glyphs();
     test_draw_off_surface_does_not_write_out_of_bounds();
+    test_scaled_text();
+    test_narrow_glyphs_start_at_the_pen();
+    test_ellipsize();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);
