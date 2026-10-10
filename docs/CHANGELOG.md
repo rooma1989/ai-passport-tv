@@ -9,6 +9,9 @@
 - **Xingzhi Cube 1.54 board support**: the same firmware now builds for the ESP32-S3 "Xingzhi Cube 1.54 TFT" (sold as a Xiaozhi AI toy) via the `AV_BOARD` Kconfig choice. Build with `./tools/validate.sh --xingzhi`, serve it with `tools/start_xingzhi_media.sh` (port 8098, 240×180). See [`docs/boards/xingzhi-cube-154.md`](boards/xingzhi-cube-154.md).
 - **Dead channels no longer freeze the screen**: when a channel has sound but no picture, the device shows the waiting screen with its overlays after 1.5 s (keys keep working), ends the session after 20 s and moves on after a few tries.
 - **Status bar and QR-code setup**: signal, battery and charging icons in the top band while playing; setup is a set of pages with QR codes to join the hotspot, open the setup page and read a help page (`AV_HELP_URL`, `packaging/help/index.html`), turned with the arrow keys.
+- **Bilibili creator channels**: a video relay (`server/relay/`, `packaging/systemd/tv-relay.service`) turns each followed creator into a channel playing their newest unwatched upload, resuming where it stopped; a key-protected phone page behind nginx (`packaging/nginx/tv-relay.conf`) adds and removes creators. The media server re-reads `channels.txt` and the relay's table (`TV_RELAY_CHANNELS_FILE`) at the next channel change instead of only at start-up.
+- **No more dead screen without Wi-Fi**: while the stored network cannot be found the device shows "connecting to Wi-Fi" with the network's name, and setup is reachable from there; channels 1-13 are scanned (country CN), so a router on channel 12 or 13 is found.
+- **Slow sources get time to start**: `TV_DECODER_CONNECT_TIMEOUT_S` (30 s on the Xingzhi unit) and a 45 s first-media wait on the device.
 - **Cloud hosting**: `TV_ALLOW_PUBLIC=1` lets the media server accept devices from public addresses, and refuses to start without a pairing token. A systemd template is in `packaging/systemd/`.
 
 ## v1.2.1

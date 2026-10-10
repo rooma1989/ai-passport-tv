@@ -77,7 +77,25 @@ Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核
    可选默认的 `AV_SERVER_IPV4`/`AV_SERVER_PORT`），不加 `AV_PUBLIC_BUILD` 编译。然后在设置页填
    `<服务器IP>:8098`。
 
-令牌是明文传输的：能挡住扫描端口的人，但不是加密。改频道就改主机上的 `channels.txt` 然后重启服务。
+令牌是明文传输的：能挡住扫描端口的人，但不是加密。改频道就改主机上的 `channels.txt`，下次换台时服务端会重新读取
+（`TV_RELAY_CHANNELS_FILE` 也一样）。
+
+## UP 主频道
+
+同一台主机上的视频中转把每个关注的 B 站 UP 主变成一个台：播放他最新的、没看过的视频，播完接下一个，中断后从停下的地方继续。
+设计和实测数据见
+[`docs/superpowers/specs/2026-10-09-creator-channels-and-cast-design.zh_CN.md`](../superpowers/specs/2026-10-09-creator-channels-and-cast-design.zh_CN.md)。
+
+1. 安装 [`packaging/systemd/tv-relay.service`](../../packaging/systemd/tv-relay.service)，在
+   `/etc/ai-passport-tv/relay-key` 里放一个至少 16 个字符的随机密钥（权限 0640，组 `tvserver`）。它只监听本机回环：
+   8099 给媒体服务拉流，8100 是管理网页。
+2. 媒体服务的单元里加 `TV_RELAY_CHANNELS_FILE`（模板里已有）；UP 主频道排在 `channels.txt` 前面。
+3. 由网站转发管理网页：把 [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) 放进站点的 nginx 配置
+   （宝塔面板主机放在站点的 `extension/<站点>/` 目录），检查后重新加载 nginx。
+4. 手机打开 `https://<站点>/TV/cast/?k=<密钥>`，粘贴 UP 主主页链接或他的任意一个视频链接。设备下次换台后就能看到这个台。
+
+B 站对云服务器地址的网页和带签名的接口返回 412，所以中转直接调用不带签名的网页 API，不用 yt-dlp。
+密钥是唯一的保护：拿到链接的人都能增删 UP 主。
 
 ## 状态栏与配网画面
 
@@ -91,7 +109,8 @@ Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核
 - `AV_HELP_URL` 来自被 git 忽略的 `main/av_private_config.h`，公开版为空。网址要短并用大写
   （例如 `HTTPS://EXAMPLE.COM/TV/`）：这样能放进版本 1 的二维码，状态页只放得下这么大。
   说明页本身是 [`packaging/help/index.html`](../../packaging/help/index.html)，复制到网站对应目录即可。
-- 最多记住 10 个 Wi-Fi，开机自动连附近能找到的那个。
+- 最多记住 10 个 Wi-Fi，开机自动连附近能找到的那个。扫描 1–13 信道。找不到已保存的网络时，屏幕会显示正在连接的网络名；
+  双击再长按最上面的键进入配网。
 
 ## 播放时的按键
 

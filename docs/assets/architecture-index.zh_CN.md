@@ -71,6 +71,7 @@
 | [`server/netident.py`](../../server/netident.py) | 推算本机自身可达地址，打印给设备用。 |
 | [`server/usb_link.py`](../../server/usb_link.py) | 在 USB 串口传输上包一层 socket 形状的适配器（仅用于测量build）。 |
 | [`server/live_sender.py`](../../server/live_sender.py) | opt-in 的 v2 发送器（`TV_LIVE_ENGINE=v2`）；动它之前先看 [`docs/development/live-sender-v2.md`](../development/live-sender-v2.zh_CN.md) 的范围与边界。 |
+| [`server/relay/`](../../server/relay/web.py) | UP 主频道的视频中转：B 站接口、看过/进度状态、生成的频道表、MPEG-TS 流和带密钥的网页。独立服务（`python3 -m server.relay`）。 |
 | [`server/fault.py`](../../server/fault.py) | 面向受控设备实验（B02-R）的故障注入工具；不在正式发布的服务端路径里。 |
 
 ## 4. 做需求时真正会用到的工具
@@ -111,7 +112,8 @@
 
 | 新需求提到... | 从这里开始 |
 | --- | --- |
-| 频道列表，增删/排序频道 | `channels.txt`、`tools/channel_config.py`、`server/live.py`（`CHANNELS`）、`main/av_channel_policy.c` |
+| 频道列表，增删/排序频道 | `channels.txt`、`tools/channel_config.py`、`server/live.py`（`CHANNELS`、`reload_channels_if_changed`）、`main/av_channel_policy.c` |
+| UP 主频道、视频网站、手机网页 | `server/relay/`、`packaging/systemd/tv-relay.service`、`packaging/nginx/tv-relay.conf` |
 | 线协议/包格式改动 | `main/av_protocol.h`、`server/protocol.py`、`server/frames.py`，见上文第 5 节 |
 | 画质、帧率、条带/几何参数 | `main/av_protocol.h`（`AV_VIDEO_*`、`AV_FPS`）、`server/frames.py`、`server/rate.py`、`main/av_player.c` 的 `video_task`/`push_stripe` |
 | 音画同步、drift、卡顿、会话重置 | `server/timeline.py`、`server/pts.py`、`main/av_player.c` 的 `audio_task`/`video_task`、`docs/development/state-20260916.md` |

@@ -87,7 +87,33 @@ of outbound bandwidth: 15 fps, full-rate audio, ffmpeg at about 12% of one core.
    enter `<server-ip>:8098` on the setup page.
 
 The token travels in plain text: it keeps scanners out but is not encryption.
-To change channels, edit `channels.txt` on the host and restart the service.
+To change channels, edit `channels.txt` on the host; the server re-reads it at
+the next channel change (`TV_RELAY_CHANNELS_FILE` is re-read the same way).
+
+## Creator channels
+
+A video relay on the same host turns each followed Bilibili creator into a
+channel that plays their newest unwatched upload, then the next, resuming where
+it stopped. Design and measurements:
+[`docs/superpowers/specs/2026-10-09-creator-channels-and-cast-design.md`](../superpowers/specs/2026-10-09-creator-channels-and-cast-design.md).
+
+1. Install [`packaging/systemd/tv-relay.service`](../../packaging/systemd/tv-relay.service)
+   and put a random key of at least 16 characters in `/etc/ai-passport-tv/relay-key`
+   (mode 0640, group `tvserver`). It listens on loopback only: streams on 8099
+   for the media server, the page on 8100.
+2. Add `TV_RELAY_CHANNELS_FILE` to the media server's unit (the template has it);
+   creator channels are listed before `channels.txt`.
+3. Proxy the page from the website: copy
+   [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) into
+   the site's nginx configuration (on a BT panel host, the site's
+   `extension/<site>/` folder), test and reload nginx.
+4. Open `https://<site>/TV/cast/?k=<key>` on a phone and paste a creator's
+   space link or any of their video links. The channel appears after the
+   device's next channel change.
+
+Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
+relay uses the unsigned web API rather than yt-dlp. The key is the only
+protection: anyone with the link can add and remove creators.
 
 ## Status bar and setup screen
 
@@ -108,6 +134,8 @@ To change channels, edit `channels.txt` on the host and restart the service.
   [`packaging/help/index.html`](../../packaging/help/index.html); copy it to the
   matching folder on a web host.
 - Up to ten Wi-Fi networks are remembered; the device joins whichever is in range.
+  Channels 1-13 are scanned. While no stored network is found the screen says so
+  and names the network; double-click and long-press the top key opens setup.
 
 ## Keys while playing
 
