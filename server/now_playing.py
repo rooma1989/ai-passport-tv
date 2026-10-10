@@ -13,6 +13,9 @@ from pathlib import Path
 
 REFRESH_S = 10.0
 STALE_S = 30.0
+# 会话刚结束的这段时间仍算在线：换台、断流重连时设备几秒内就会回来，
+# 这时手机上的换台先记下，设备连上时直接给它新台（见 tv_server 的 pending_switch）。
+GRACE_S = 15.0
 
 
 def write(path: Path | None, channel: str, connected: bool, switch: bool,
@@ -40,6 +43,7 @@ def read(path: Path | None, now: float | None = None) -> dict:
         at = float(data.get("at", 0))
     except (OSError, ValueError, TypeError, AttributeError):
         data, at = {}, 0.0
-    online = bool(data.get("connected")) and now - at < STALE_S
+    age = now - at
+    online = age < (STALE_S if data.get("connected") else GRACE_S)
     return {"channel": str(data.get("channel") or ""), "online": online,
             "switch": bool(data.get("switch")) and online}

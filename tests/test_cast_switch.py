@@ -160,6 +160,35 @@ class SessionTests(unittest.TestCase):
     def test_no_switch_for_older_firmware(self):
         self.assertEqual(self.run_session({}), [])
 
+    def test_switch_asked_between_sessions_is_applied_at_the_next(self):
+        """The phone asked while the device was reconnecting: CONFIG names the new channel."""
+        import json
+        import socket
+        import threading
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_live_transcode import StubFactory
+        from server.protocol import Kind, Packet, json_bytes, receive_packet, send_packet
+        from server.tv_server import AVServer
+
+        token = b"t" * 32
+        server = AVServer(None, token, "127.0.0.1", 0, 60000, logger=lambda _m: None)
+        server.live_enabled = True
+        server.channel_factory = StubFactory()
+        events.write_event(self.events, "switch", channel="cast")
+        thread = threading.Thread(target=server.serve, daemon=True)
+        thread.start()
+        self.assertTrue(server.ready.wait(5))
+        client = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+        try:
+            send_packet(client, Packet(Kind.HELLO, 0, 0, 0, json_bytes(
+                {"version": 1, "token": token.decode(), "channel": "ch000", "switch": 1})))
+            config = receive_packet(client, timeout=3)
+        finally:
+            server.stop.set()
+            client.close()
+            thread.join(timeout=3)
+        self.assertEqual(json.loads(config.payload)["channel"], "cast")
+
 
 if __name__ == "__main__":
     unittest.main()

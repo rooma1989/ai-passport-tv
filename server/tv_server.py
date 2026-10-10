@@ -283,6 +283,8 @@ class AVServer:
         events_file = os.environ.get(RELAY_EVENTS_ENV)
         self.switch_watcher = SwitchWatcher(Path(events_file) if events_file else None)
         self.device_switches = False
+        # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
+        self.pending_switch = ""
         # 给手机网页看的「正在播放」；不设则不写。
         playing_file = os.environ.get(NOW_PLAYING_ENV)
         self.now_playing_path = Path(playing_file) if playing_file else None
@@ -449,6 +451,23 @@ class AVServer:
                 return True
         return False
 
+    def switch_waiting(self) -> bool:
+        """起播等待、断流重连时轮询换台请求：有就记下并返回 True，由调用者结束会话。
+
+        这两个阶段不便插入 SWITCH 包（序号与时间轴由重连逻辑管理），结束会话后设备
+        立即重连，在 HELLO 时拿到新台。
+        """
+        if not self.device_switches:
+            return False
+        decision = self.switch_watcher.poll(self.channel_name, time.monotonic())
+        if decision is None:
+            return False
+        kind, target = decision
+        if kind == "switch":
+            self.pending_switch = target
+        self.logger(f"cast {kind} while waiting {target or self.channel_name}")
+        return True
+
     def _channel_payload(self) -> dict:
         """CONFIG 里的频道部分：分组、频道列表，有遥控地址时再加 remote_url。"""
         payload = live.channel_config()
@@ -530,6 +549,8 @@ class AVServer:
                     break
                 # 轮询连接与停止标志，不整段休眠：否则停止请求被忽略，设备重连也要排队等待。
                 if self.stop.is_set():
+                    return
+                if self.switch_waiting():
                     return
                 # _wait_until 会改写 phase，调用后恢复，否则此处结束的会话会被记为调度等待。
                 waiting = self._wait_until(connection, min(deadline, time.monotonic() + 0.02), session)
@@ -1015,6 +1036,15 @@ class AVServer:
                 channel_id = self.channel_name
             else:
                 channel_id = live.DEFAULT_CHANNEL
+            # 手机在设备不在推流时要求换台：直接在 CONFIG 里给新台，设备按 CONFIG 的 channel 更新自己。
+            if self.device_switches:
+                decision = self.switch_watcher.poll(channel_id, time.monotonic(), force=True)
+                if decision is not None and decision[0] == "switch":
+                    self.pending_switch = decision[1]
+                if self.pending_switch in CHANNELS:
+                    self.logger(f"cast switch at connect {channel_id} -> {self.pending_switch}")
+                    channel_id = self.pending_switch
+            self.pending_switch = ""
             self._live_session(connection, channel_id)
             return
 

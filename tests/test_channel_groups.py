@@ -104,7 +104,10 @@ class NowPlayingTests(unittest.TestCase):
             self.assertEqual(now_playing.read(path, 120.0), {"channel": "ch012", "online": True, "switch": True})
             self.assertFalse(now_playing.read(path, 131.0)["online"])
             now_playing.write(path, "ch012", False, True, now=140.0)
-            self.assertEqual(now_playing.read(path, 141.0), {"channel": "ch012", "online": False, "switch": False})
+            # Between two sessions -- a channel change, a reconnect -- the device
+            # is still there; a switch asked for then is applied when it is back.
+            self.assertEqual(now_playing.read(path, 150.0), {"channel": "ch012", "online": True, "switch": True})
+            self.assertEqual(now_playing.read(path, 156.0), {"channel": "ch012", "online": False, "switch": False})
 
 
 class ConfigTests(unittest.TestCase):

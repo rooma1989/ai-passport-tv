@@ -187,6 +187,10 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                     winner, restart = restart.channel, None
                     return winner
 
+            # 手机要换台：结束会话，设备重连时拿到新台（AVServer.switch_waiting）。
+            waiting = getattr(server, "switch_waiting", None)
+            if waiting is not None and waiting():
+                return None
             if not server._wait_until(connection, time.monotonic() + 0.01, session):
                 return None
         return None

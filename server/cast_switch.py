@@ -23,9 +23,12 @@ class SwitchWatcher:
         self.previous = ""
         self._next_poll = 0.0
 
-    def poll(self, current: str, now: float):
-        """返回 ("switch", 频道) 、("restart", None)（已在投屏台时来了新投屏）或 None。"""
-        if self.path is None or now < self._next_poll:
+    def poll(self, current: str, now: float, force: bool = False):
+        """返回 ("switch", 频道) 、("restart", None)（已在投屏台时来了新投屏）或 None。
+
+        平时每秒最多看一次；force 用于设备刚连上的那一刻，不能错过。
+        """
+        if self.path is None or (now < self._next_poll and not force):
             return None
         self._next_poll = now + POLL_INTERVAL_S
         event = read_event(self.path)
