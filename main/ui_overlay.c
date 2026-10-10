@@ -391,10 +391,27 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
         centred(surface, 180, "正在打开", UI_MUTED);
         break;
     }
-    case UI_WAIT_LISTEN:
-        // Just the pet, large and content, while the sound plays.
-        ui_draw_pet(surface, page->pet, 1, 84, 84 - bob, 3);
+    case UI_WAIT_LISTEN: {
+        // The pet, large and content, breathing to the sound, with notes
+        // floating up beside it. Steps of 0.2 s.
+        const unsigned step = tick / 2u;
+        static const int8_t breath[10] = { 0, 1, 2, 3, 3, 3, 2, 1, 0, 0 };
+        // Happy, with its plain face for one step every 4 s, like a blink.
+        const unsigned mood = step % 20u == 19u ? 0u : 1u;
+        ui_draw_pet(surface, page->pet, mood, 60, 58 - breath[step % 10u], 5);
+        // Three notes, each rising for 3 s from beside the pet's feet, a step
+        // apart, swaying a little; left and right in turn.
+        for (unsigned i = 0; i < 3u; i++) {
+            const unsigned age = (step + i * 5u) % 15u;
+            const int y = 152 - (int)age * 8;
+            if (y < 36) continue;
+            const int sway = ((age / 2u) % 2u) ? 3 : 0;
+            const bool left = ((step + i * 5u) / 15u + i) % 2u == 0u;
+            ui_draw_icon(surface, UI_ICON_NOTE, left ? 14 + sway : 194 - sway, y, 2,
+                         i == 1u ? UI_PAPER : UI_AMBER);
+        }
         break;
+    }
     case UI_WAIT_FAILED: {
         ui_draw_pet(surface, page->pet, 3, 96, 40 - bob, 2);
         centred(surface, 90, "连不上服务器", UI_PAPER);
@@ -423,8 +440,9 @@ unsigned ui_overlay_wait_frame(ui_wait_kind_t kind, unsigned tick, int *y0, int 
         *y0 = 168; *y1 = 172;
         return bounce(tick, 15u);
     case UI_WAIT_LISTEN:
-        *y0 = 82; *y1 = 158;
-        return bob;
+        // The whole picture area moves (pet and notes), every 0.2 s.
+        *y0 = 30; *y1 = 210;
+        return tick / 2u;
     case UI_WAIT_FAILED:
     default:
         *y0 = 38; *y1 = 90;

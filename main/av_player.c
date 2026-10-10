@@ -3654,6 +3654,12 @@ static void process_key(const key_ev_t *item) {
             ui_menu_open(&s.menu);
             return;
         }
+        if (item->ev==BSP_BTN_DOUBLE) {
+            // Audio-only on or off, straight from playback: the one OK gesture
+            // left, and quick to reach without looking at the screen.
+            set_audio_only(!listening());
+            return;
+        }
         if (item->ev==BSP_BTN_LONG) {
             // The backlight. It is set once and then left alone, so it takes the
             // gesture that responds immediately and is harder to reach by

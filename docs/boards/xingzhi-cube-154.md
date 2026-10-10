@@ -208,8 +208,9 @@ firmware's own drawing code and font, for checking a layout without flashing.
 - The chosen pet is stored in NVS (`avsettings/pet`); the status page's long
   press on the second key opens the picker.
 - **Audio-only mode** plays sound with the pet on screen and no picture
-  ([design](../superpowers/specs/2026-10-10-audio-only-mode-design.md)). OK on
-  the status page or the phone's switch turns it on or off; it is stored
+  ([design](../superpowers/specs/2026-10-10-audio-only-mode-design.md)). A
+  double-click on OK, OK on the status page, or the phone's switch turns it on
+  or off; the screen shows the pet at 5x, breathing, with notes rising beside it; it is stored
   (`avsettings/audio`) and the device redials, so the server stops sending
   pictures (about 8 KB/s instead of 200). Sound is then what counts as a live
   channel, and the backlight dims to the lowest step after 10 s untouched.
@@ -249,7 +250,8 @@ firmware's own drawing code and font, for checking a layout without flashing.
 | Top (printed VOL−) | volume +10% | next channel in the same group |
 | Second (printed VOL+) | volume −10% | previous channel in the same group |
 | Top 3 (BOOT) | channel list | brightness |
-| Any, double-click | status page (there, long-press the top key for Wi-Fi setup, the second key for the pet picker) | |
+| Top or second, double-click | status page (there, long-press the top key for Wi-Fi setup, the second key for the pet picker, click OK for audio-only) | |
+| Top 3 (BOOT), double-click | audio-only on or off | |
 | Bottom | hardware reset; long press powers on/off | |
 
 The channel list has two levels when the server sends groups: it opens on the
