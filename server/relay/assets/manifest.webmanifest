@@ -1,7 +1,6 @@
 {
   "name": "小智电视",
   "short_name": "小智电视",
-  "start_url": "/tv/",
   "scope": "/tv/",
   "display": "standalone",
   "background_color": "#1c1915",

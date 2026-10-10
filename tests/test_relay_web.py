@@ -185,7 +185,8 @@ class WebTests(unittest.TestCase):
     def login_cookie(self, path):
         answer, _ = self.raw("GET", path)
         self.assertEqual(answer.status, 302)
-        self.assertEqual(answer.getheader("Location"), "/tv/")
+        self.assertRegex(answer.getheader("Location"), r"^/tv/\?s=[A-Za-z0-9_-]{40,}$")
+        self.last_location = answer.getheader("Location")
         cookie = answer.getheader("Set-Cookie")
         for part in ("HttpOnly", "Secure", "SameSite=Lax", "Path=/tv/", "Max-Age=15552000"):
             self.assertIn(part, cookie)
@@ -199,6 +200,15 @@ class WebTests(unittest.TestCase):
         answer, body = self.raw("GET", "/api/state", {"Cookie": cookie})
         self.assertEqual(answer.status, 200)
         self.assertEqual(self.raw("GET", "/tv/", {"Cookie": "tvs=forged"})[0].status, 404)
+
+    def test_home_screen_url_carries_the_session(self):
+        """An iPhone home-screen app starts without Safari's cookies."""
+        self.login_cookie(f"/?k={KEY}")
+        answer, body = self.raw("GET", self.last_location)
+        self.assertEqual(answer.status, 200)
+        cookie = answer.getheader("Set-Cookie").split(";")[0]
+        self.assertEqual(self.raw("GET", "/api/state", {"Cookie": cookie})[0].status, 200)
+        self.assertEqual(self.raw("GET", "/tv/?s=forged")[0].status, 404)
 
     def test_code_link_and_new_code(self):
         self.relay.write_remote_url()
@@ -215,7 +225,8 @@ class WebTests(unittest.TestCase):
     def test_assets_need_no_login(self):
         answer, body = self.raw("GET", "/manifest.webmanifest")
         self.assertEqual(answer.status, 200)
-        self.assertEqual(json.loads(body)["start_url"], "/tv/")
+        self.assertEqual(json.loads(body)["scope"], "/tv/")
+        self.assertNotIn("start_url", json.loads(body))
         self.assertEqual(self.raw("GET", "/icon-180.png")[1][:4], b"\x89PNG")
 
     # ---- remote ----

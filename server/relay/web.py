@@ -450,6 +450,10 @@ def _manage_handler(relay: Relay):
             return (relay.key_ok(self.headers.get("X-Key"))
                     or relay.state.session_ok(self._cookie(), relay.clock()))
 
+        def _cookie_header(self, token: str) -> str:
+            return (f"{COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/tv/; "
+                    f"Max-Age={SESSION_S}")
+
         def _send(self, code: int, body: bytes, kind: str, headers: dict | None = None) -> None:
             self.send_response(code)
             self.send_header("Content-Type", kind)
@@ -474,9 +478,10 @@ def _manage_handler(relay: Relay):
             """验证过密钥或扫码码：发一个 180 天的会话 cookie，跳到遥控页。"""
             token = relay.state.new_session(relay.clock())
             relay.state.save()
-            cookie = (f"{COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/tv/; "
-                      f"Max-Age={SESSION_S}")
-            self._send(302, b"", "text/plain", {"Location": "/tv/", "Set-Cookie": cookie})
+            # 会话也放进跳转后的网址：iPhone 加到桌面的网页应用不和 Safari 共用 cookie，
+            # 从这个页面「添加到主屏幕」，图标会记住带会话的网址。它只是可作废的会话，不是密钥。
+            self._send(302, b"", "text/plain",
+                       {"Location": f"/tv/?s={token}", "Set-Cookie": self._cookie_header(token)})
 
         def _body(self):
             try:
@@ -506,6 +511,12 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/" and relay.key_ok(self._query().get("k")):
                 self._login()
+                return
+            session = self._query().get("s")
+            if path == "/" and relay.state.session_ok(session, relay.clock()):
+                # 从桌面图标打开：网址里的会话有效，补上 cookie，后续接口调用就带着它。
+                self._send(200, PAGE.encode(), "text/html; charset=utf-8",
+                           {"Set-Cookie": self._cookie_header(session)})
                 return
             if not self._authorized():
                 self._not_found()
