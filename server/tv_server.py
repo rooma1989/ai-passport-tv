@@ -298,6 +298,8 @@ class AVServer:
         self.device_status: dict | None = None
         self.device_pause = False
         self.device_hints = False
+        # 只听声音的设备：这次会话不发画面（HELLO 里 "audio_only": 1）。
+        self.device_audio_only = False
         # 上次握手时设备报的开机时长；变小说明设备重启过。
         self._device_uptime: int | None = None
         # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
@@ -519,7 +521,7 @@ class AVServer:
         controls = self.switch_watcher.take_controls()
         resumed = any(kind == "resume" for kind, _ in controls)
         # 音量、亮度留到恢复播放后再发。
-        self.switch_watcher.requeue([c for c in controls if c[0] in ("volume", "brightness", "pet")])
+        self.switch_watcher.requeue([c for c in controls if c[0] in ("volume", "brightness", "pet", "audio")])
         if resumed:
             self.logger("resume")
             return "resume"
@@ -858,6 +860,12 @@ class AVServer:
                     send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
                                                    json_bytes({kind: value})))
                     seq += 1
+                elif kind == "audio" and self.device_status is not None and "audio_only" in self.device_status:
+                    # 手机开关只听声音：设备存下来后自己重连，新 HELLO 决定发不发画面。
+                    self.phase = "control_send"
+                    send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
+                                                   json_bytes({"audio_only": value})))
+                    seq += 1
                 elif kind == "pet" and self.device_status is not None and "pet" in self.device_status:
                     # 手机换宠物：设备换上、让它开心 2 秒，再报回来。
                     self.phase = "control_send"
@@ -948,7 +956,8 @@ class AVServer:
                     self._frame_sizes.append(sum(len(p) for p in frame))
                     # 不做迟到否决：设备按到达即绘，略迟的帧仍值得发；丢弃会使索引跳进，引发持续丢帧。
                     # 陈旧度由队列限定：队列定长，满时丢最旧。
-                    if writable:
+                    # 只听声音的设备不要画面：帧照样取出（节奏不变），只是不写。
+                    if writable and not self.device_audio_only:
                         # 不可写时丢弃整帧而非尝试：发不完的写入会阻塞单线程循环及音频，也不得在线上留下半个包。
                         # 同一帧的各包要么全发要么不发。
                         self.phase = "live_video_send"
@@ -1039,7 +1048,7 @@ class AVServer:
                                 window_video_bytes = 0
                                 window_frames = 0
                                 window_dropped = 0
-                    else:
+                    elif not self.device_audio_only:
                         # 拥塞：放弃该帧以保住音频时间轴；时间戳取自时钟，丢帧只损失一张画面。
                         self.dropped_video += 1
                         window_dropped += 1
@@ -1136,6 +1145,7 @@ class AVServer:
             self.device_pause = greeting.get("pause") == 1
             # 新固件自己画快进、下一个的提示（"hint": 1）；别的固件不发，免得它把包当成坏数据。
             self.device_hints = greeting.get("hint") == 1
+            self.device_audio_only = greeting.get("audio_only") == 1
             self.device_status = None
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):
                 self.device_status = {"volume": greeting["volume"], "brightness": greeting["brightness"],
@@ -1143,6 +1153,9 @@ class AVServer:
                 # 会换宠物的固件在 HELLO 里报当前宠物。
                 if isinstance(greeting.get("pet"), int):
                     self.device_status["pet"] = greeting["pet"]
+                # 会只听声音的固件报当前是不是只听声音。
+                if isinstance(greeting.get("audio_only"), int):
+                    self.device_status["audio_only"] = greeting["audio_only"]
             # 设备按名选择频道，换频道即新连接；名称缺失或不在表内时回退到 --channel 指定的默认频道。
             # 重读后上次的频道可能已被删除，此时再退到表中的默认频道。
             requested = json_object(hello.payload).get("channel")
@@ -1183,7 +1196,7 @@ class AVServer:
             if kind == Kind.PCM and now > origin + pts / 1000 + 0.1:
                 self.phase = "audio_schedule_late"
                 raise TimeoutError("audio schedule stalled; reconnect for a new origin")
-            if kind == Kind.JPEG and now > origin + (pts + 83) / 1000:
+            if kind == Kind.JPEG and (self.device_audio_only or now > origin + (pts + 83) / 1000):
                 self.dropped_video += 1
                 continue
             if kind == Kind.PCM:

@@ -99,6 +99,14 @@ class WatcherTests(unittest.TestCase):
         self.assertIsNone(watcher.poll("up01", 2.0))
         self.assertEqual(watcher.take_controls(), [("seek", -30), ("next", None)])
 
+    def test_audio_is_a_control_latest_wins(self):
+        watcher = SwitchWatcher(self.path)
+        watcher.poll("up01", 1.0)
+        events.write_event(self.path, "audio", value=1)
+        events.write_event(self.path, "audio", value=0)
+        self.assertIsNone(watcher.poll("up01", 2.0))
+        self.assertEqual(watcher.take_controls(), [("audio", 0)])
+
     def test_no_file_configured(self):
         self.assertIsNone(SwitchWatcher(None).poll("ch001", 5.0))
 
@@ -312,6 +320,7 @@ class DeviceControlTests(unittest.TestCase):
         hello = {"version": 1, "token": token.decode(), "channel": "ch000", "switch": 1}
         hello.update(hello_extra)
         payloads, session = [], None
+        self.kinds = []
         start = time.monotonic()
         try:
             send_packet(client, Packet(Kind.HELLO, 0, 0, 0, json_bytes(hello)))
@@ -323,6 +332,7 @@ class DeviceControlTests(unittest.TestCase):
                 except TimeoutError:
                     continue
                 session = packet.session
+                self.kinds.append(packet.kind)
                 if packet.kind == Kind.SWITCH:
                     payloads.append(json.loads(packet.payload))
         except EOFError:
@@ -376,6 +386,25 @@ class DeviceControlTests(unittest.TestCase):
         self.wrote_pet = False
         payloads = self.session({"volume": 70, "brightness": 2, "brightness_steps": 5}, script)
         self.assertNotIn({"pet": 4}, payloads)
+
+    def test_audio_only_session_has_no_video(self):
+        from server.protocol import Kind
+        hello = {"volume": 70, "brightness": 2, "brightness_steps": 5}
+        self.session(hello, lambda *_: None)
+        self.assertIn(Kind.JPEG, self.kinds, "the stub sends pictures normally")
+        self.session(dict(hello, audio_only=1), lambda *_: None)
+        self.assertNotIn(Kind.JPEG, self.kinds, "no pictures for an audio-only device")
+        self.assertIn(Kind.PCM, self.kinds, "sound as usual")
+
+    def test_audio_toggle_only_for_firmware_that_reports_it(self):
+        def script(client, session, elapsed):
+            if elapsed > 0.5 and not getattr(self, "wrote_audio", False):
+                self.wrote_audio = True
+                events.write_event(self.events, "audio", value=1)
+        hello = {"volume": 70, "brightness": 2, "brightness_steps": 5}
+        self.assertIn({"audio_only": 1}, self.session(dict(hello, audio_only=0), script))
+        self.wrote_audio = False
+        self.assertNotIn({"audio_only": 1}, self.session(hello, script))
 
     def test_no_controls_for_firmware_without_them(self):
         def script(client, session, elapsed):

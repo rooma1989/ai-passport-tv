@@ -478,6 +478,19 @@ class Relay:
         self._event("pet", value=pet)
         return {"ok": True}
 
+    def set_audio(self, on) -> dict:
+        """手机开关只听声音。"""
+        playing = now_playing.read(self.now_playing_in, self.clock())
+        if not playing["online"]:
+            return {"ok": False, "error": "小智没在线"}
+        status = playing["device"]
+        if status is None or "audio_only" not in status:
+            return {"ok": False, "error": "小电视的固件太旧，需要更新才能只听声音"}
+        if not isinstance(on, bool):
+            return {"ok": False, "error": "请求格式不对"}
+        self._event("audio", value=1 if on else 0)
+        return {"ok": True}
+
     def youtube_state(self) -> str:
         """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
         now = self.clock()
@@ -624,8 +637,9 @@ def _phone_device(device: dict | None) -> dict | None:
         return None
     phone = {"volume": device["volume"], "brightness": device["steps"] - 1 - device["brightness"],
              "steps": device["steps"]}
-    if "pet" in device:
-        phone["pet"] = device["pet"]
+    for key in ("pet", "audio_only"):
+        if key in device:
+            phone[key] = device[key]
     return phone
 
 
@@ -790,6 +804,9 @@ def _manage_handler(relay: Relay):
                 volume, level = body.get("volume"), body.get("brightness")
                 self._json(relay.device(volume=volume if isinstance(volume, (int, float)) else None,
                                         brightness=level if isinstance(level, int) else None))
+                return
+            if path == "/api/audio":
+                self._json(relay.set_audio(body.get("on")))
                 return
             if path == "/api/pet":
                 self._json(relay.set_pet(body.get("pet")))

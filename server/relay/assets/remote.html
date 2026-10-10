@@ -47,6 +47,13 @@
   .dial input { flex: 1; }
   .dial b { flex: none; width: 44px; text-align: right; font: 600 13px var(--mono); color: var(--amber); }
   .dials.off b { color: var(--faint); }
+  .listen { display: flex; align-items: center; gap: 10px; margin: 4px 0 0; }
+  .listen span { flex: none; width: 34px; font: 14px var(--serif); color: var(--dim); white-space: nowrap; }
+  .listen em { flex: 1; font: 13px var(--serif); font-style: normal; color: var(--faint); }
+  .listen button { flex: none; width: 52px; height: 24px; border: 1px solid var(--rule); background: var(--ink-deep);
+                   color: var(--faint); font: 12px var(--serif); padding: 0; }
+  .listen button.on { background: var(--red); border-color: var(--red); color: var(--ink-deep); }
+  .listen button:disabled { opacity: .35; }
   .player { margin: -2px 14px 12px; }
   .player[hidden] { display: none; }
   input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; padding: 0; border: 0; }
@@ -187,6 +194,7 @@
       <div class="dials" id="dials">
         <label class="dial"><span>音量</span><input type="range" id="vol" min="0" max="100" step="10" value="0"><b id="volv">--</b></label>
         <label class="dial"><span>亮度</span><input type="range" id="bri" min="0" max="4" step="1" value="0"><b id="briv">--</b></label>
+        <div class="listen"><span>只听</span><em id="listenNote">只放声音，屏幕只显示宠物</em><button id="listen">关</button></div>
       </div>
       <button class="petline" id="petline"><span>宠物</span><b id="petname">--</b><i>›</i></button>
       <div class="player" id="player" hidden>
@@ -578,9 +586,30 @@ function showPage(id) {
   for (const page of document.querySelectorAll(".page")) page.classList.toggle("on", page.id === id);
 }
 
+// 点了开关、小智还没换过去的那段时间：{ want, deadline }。
+let listenPending = null;
+function renderListen() {
+  const d = data.now.online ? data.now.device : null;
+  const button = $("listen");
+  const known = d && typeof d.audio_only === "number";
+  button.disabled = !known || !!listenPending;
+  let on = known && d.audio_only === 1;
+  if (listenPending) {
+    if (known && (d.audio_only === 1) === listenPending.want) listenPending = null;
+    else if (Date.now() > listenPending.deadline) { listenPending = null; toast("小智好像没切过去，再点一次试试", true); }
+    else on = listenPending.want;
+  }
+  button.className = on ? "on" : "";
+  button.textContent = on ? "开" : "关";
+  $("listenNote").textContent = listenPending ? "切换中…"
+    : !known ? (d ? "固件太旧，用不了" : "小智没在线")
+    : on ? "只放声音，省流量也省电" : "只放声音，屏幕只显示宠物";
+}
+
 function render() {
   if (!data) return;
   renderPets();
+  renderListen();
   renderNotice();
   renderScreen();
   renderDials();
@@ -604,7 +633,7 @@ function schedule(delay) {
   clearTimeout(timer);
   timer = setTimeout(async () => {
     if (!document.hidden) await refresh();
-    schedule(pending ? 1000 : 5000);
+    schedule(pending || listenPending ? 1000 : 5000);
   }, delay);
 }
 
@@ -620,6 +649,20 @@ try {
   const button = document.querySelector('nav button[data-page="' + saved + '"]');
   if (button) button.click();
 } catch (error) {}
+
+$("listen").onclick = async () => {
+  const d = data && data.now.device;
+  if (!d || typeof d.audio_only !== "number") return;
+  const want = d.audio_only !== 1;
+  try {
+    const answer = await call("POST", "api/audio", { on: want });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    // 小智存下来后会重连一次（约 1–2 秒），新的会话里报回新状态。
+    listenPending = { want, deadline: Date.now() + 15000 };
+    render();
+    schedule(1000);
+  } catch (error) { toast(error.message, true); }
+};
 
 $("petline").onclick = () => { petPick = null; if (data) renderPets(); showPage("pets"); };
 $("petback").onclick = () => showPage("remote");

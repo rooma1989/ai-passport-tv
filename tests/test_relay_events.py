@@ -65,5 +65,16 @@ class EventTests(unittest.TestCase):
                 events.write_event(Path(tmp) / "e.json", "switch")
 
 
+class AudioEventTests(unittest.TestCase):
+    def test_audio_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "events.json"
+            events.write_event(path, "audio", value=1)
+            last = events.read_event(path)
+            self.assertEqual((last.action, last.value), ("audio", 1))
+            with self.assertRaises(ValueError):
+                events.write_event(path, "audio", value=2)
+
+
 if __name__ == "__main__":
     unittest.main()

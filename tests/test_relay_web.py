@@ -295,6 +295,19 @@ class WebTests(unittest.TestCase):
         for bad in (11, -1, "3", True, None):
             self.assertFalse(self.call("POST", "/api/pet", {"pet": bad})["ok"], bad)
 
+    def test_audio_only_from_the_phone(self):
+        from server import now_playing
+        self.assertEqual(self.call("POST", "/api/audio", {"on": True})["error"], "小智没在线")
+        now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now,
+                          device={"volume": 70, "brightness": 1, "steps": 5})
+        self.assertIn("固件", self.call("POST", "/api/audio", {"on": True})["error"])
+        now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now,
+                          device={"volume": 70, "brightness": 1, "steps": 5, "audio_only": 0})
+        self.assertEqual(self.call("GET", "/api/state")["now"]["device"]["audio_only"], 0)
+        self.assertTrue(self.call("POST", "/api/audio", {"on": True})["ok"])
+        self.assertEqual(events.read_event(self.events), (1, "audio", "", 1, ""))
+        self.assertFalse(self.call("POST", "/api/audio", {"on": "yes"})["ok"])
+
     def test_move_a_channel_to_another_group(self):
         self.assertEqual(self.call("POST", "/api/groups", {"channel": "ch002", "group": "音乐"}), {"ok": True})
         groups = {g["name"]: [c["id"] for c in g["channels"]] for g in self.call("GET", "/api/state")["groups"]}
@@ -657,7 +670,7 @@ class PageFieldTests(unittest.TestCase):
                   "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
                   "site", "at", "since", "left", "total", "ok", "error", "creator",
                   "video", "position", "duration", "paused", "started", "moving",
-                  "device", "volume", "brightness", "steps", "pet"}
+                  "device", "volume", "brightness", "steps", "pet", "audio_only"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 
