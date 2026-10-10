@@ -370,10 +370,25 @@ class DevicePauseTests(unittest.TestCase):
         from server.protocol import Kind, Packet, json_bytes, receive_packet, send_packet
         from server.tv_server import AVServer
 
+        from server import now_playing
         token = b"t" * 32
         server = AVServer(None, token, "127.0.0.1", 0, 60000, logger=lambda _m: None)
         server.live_enabled = True
         server.channel_factory = StubFactory()
+        self.refreshes_while_paused = []
+        writes = now_playing.write
+        old_refresh = now_playing.REFRESH_S
+        now_playing.REFRESH_S = 0.3
+
+        def record(*args, **kwargs):
+            if phase == "paused":
+                self.refreshes_while_paused.append(args[1:3])
+            return writes(*args, **kwargs)
+
+        now_playing.write = record
+        self.addCleanup(setattr, now_playing, "write", writes)
+        self.addCleanup(setattr, now_playing, "REFRESH_S", old_refresh)
+        server.now_playing_path = Path(self.tmp.name) / "now-playing.json"
         thread = threading.Thread(target=server.serve, daemon=True)
         thread.start()
         self.assertTrue(server.ready.wait(5))
@@ -411,6 +426,8 @@ class DevicePauseTests(unittest.TestCase):
             thread.join(timeout=3)
         self.assertEqual(switches[:2], [{"paused": 1, "title": "小Lin说 · 日元"}, {"paused": 0}])
         self.assertEqual(frames_while_paused, 0, "the device keeps the frozen frame")
+        self.assertGreaterEqual(len(self.refreshes_while_paused), 2,
+                                "now-playing stays fresh during a pause, or the phone calls the device offline")
 
 
 class DeviceBootLogTests(unittest.TestCase):

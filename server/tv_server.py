@@ -464,6 +464,14 @@ class AVServer:
                     self.device_status[key] = report[key]
             self._write_now_playing(True)
 
+    def keep_now_playing(self) -> None:
+        """会话还在就每 REFRESH_S 秒刷新一次「正在播放」。推流、起播等待、断流重连、暂停
+        都要调用：哪一处漏了，手机就会在 30 秒后把还连着的设备当成离线。"""
+        now = time.monotonic()
+        if now - getattr(self, "_now_playing_at", 0.0) >= now_playing.REFRESH_S:
+            self._now_playing_at = now
+            self._write_now_playing(True)
+
     def _write_now_playing(self, connected: bool) -> None:
         now_playing.write(self.now_playing_path, self.channel_name, connected, self.device_switches,
                           since=getattr(self, "_session_since", 0.0), device=self.device_status)
@@ -621,6 +629,7 @@ class AVServer:
                     return
                 if self.switch_waiting():
                     return
+                self.keep_now_playing()
                 # _wait_until 会改写 phase，调用后恢复，否则此处结束的会话会被记为调度等待。
                 waiting = self._wait_until(connection, min(deadline, time.monotonic() + 0.02), session)
                 self.phase = "live_prebuffer"
@@ -822,9 +831,7 @@ class AVServer:
                 # 设备发来的可能是 END（要走了）或 STATUS（音量、亮度变了，会话照常）。
                 if self._device_left(connection, session):
                     return
-            if now - getattr(self, "_now_playing_at", 0.0) >= now_playing.REFRESH_S:
-                self._now_playing_at = now
-                self._write_now_playing(True)
+            self.keep_now_playing()
             decision = self.switch_watcher.poll(self.channel_name, now)
             if decision is not None and self.device_switches:
                 kind, target = decision

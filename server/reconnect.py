@@ -170,9 +170,11 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
             next_frame = paused_at + PAUSE_FRAME_S
             _close_background(channel)
             channel = None
+            keep = getattr(server, "keep_now_playing", lambda: None)
             while not server.stop.is_set():
                 server.phase = "live_paused"
                 _send_silence(server, connection, session, wire, origin)
+                keep()
                 now = time.monotonic()
                 verdict = server.pause_verdict(paused_at)
                 if verdict == "leave":
@@ -236,6 +238,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                     winner, restart = restart.channel, None
                     return winner
 
+            getattr(server, "keep_now_playing", lambda: None)()
             # 手机要换台：结束会话，设备重连时拿到新台（AVServer.switch_waiting）。
             waiting = getattr(server, "switch_waiting", None)
             if waiting is not None and waiting():
