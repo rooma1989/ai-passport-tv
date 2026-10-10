@@ -16,6 +16,7 @@ from typing import NamedTuple
 
 ACTIONS = ("cast", "return", "switch", "pause", "resume", "volume", "brightness")
 KEEP = 20
+TEXT_MAX = 64
 # 数值的合法范围；亮度档位序号由设备决定，这里只挡住明显不对的值。
 _VALUE_RANGE = {"volume": (0, 100), "brightness": (0, 15)}
 
@@ -25,6 +26,8 @@ class Event(NamedTuple):
     action: str
     channel: str = ""
     value: int | None = None
+    # 只给 pause 用：暂停的视频标题，设备画在暂停横条上。
+    text: str = ""
 
 
 def _valid(event: Event) -> bool:
@@ -42,7 +45,7 @@ def _parse(record) -> Event | None:
     try:
         value = record.get("value")
         event = Event(int(record["seq"]), str(record["action"]), str(record.get("channel") or ""),
-                      int(value) if value is not None else None)
+                      int(value) if value is not None else None, str(record.get("text") or "")[:TEXT_MAX])
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
     return event if _valid(event) else None
@@ -66,8 +69,9 @@ def read_event(path: Path) -> Event | None:
     return listed[-1] if listed else None
 
 
-def write_event(path: Path, action: str, channel: str = "", value: int | None = None) -> int:
-    event = Event(0, action, channel, value)
+def write_event(path: Path, action: str, channel: str = "", value: int | None = None,
+                text: str = "") -> int:
+    event = Event(0, action, channel, value, text[:TEXT_MAX])
     if not _valid(event):
         raise ValueError(f"bad event {action!r} channel={channel!r} value={value!r}")
     path = Path(path)
@@ -78,12 +82,16 @@ def write_event(path: Path, action: str, channel: str = "", value: int | None = 
         record["channel"] = channel
     if value is not None:
         record["value"] = value
+    if text:
+        record["text"] = text[:TEXT_MAX]
     kept = [e._asdict() for e in listed[-(KEEP - 1):]]
     for item in kept:
         if not item["channel"]:
             del item["channel"]
         if item["value"] is None:
             del item["value"]
+        if not item["text"]:
+            del item["text"]
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps({"events": kept + [record]}), encoding="utf-8")
     os.chmod(tmp, 0o644)

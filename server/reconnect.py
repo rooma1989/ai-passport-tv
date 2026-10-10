@@ -127,9 +127,17 @@ def _send_silence(server, connection, session: int, wire: WireState,
         server.audio_sent += 1
 
 
+def _tell_paused(server, connection, session: int, wire: WireState, paused: bool,
+                 title: str = "") -> None:
+    """告诉自己会画暂停横条的固件：暂停了（带标题）或继续了。"""
+    payload = {"paused": 1, "title": title[:48]} if paused else {"paused": 0}
+    send_packet(connection, Packet(Kind.SWITCH, session, wire.seq, 0, json_bytes(payload)))
+    wire.seq += 1
+
+
 def hold(server, connection, session: int, channel: LiveChannel, wire: WireState,
          origin: float, since: float, restart_reason: str = "",
-         paused: bool = False) -> LiveChannel | None:
+         paused: bool = False, pause_title: str = "") -> LiveChannel | None:
     """让设备停留在提示画面，直到源重新有数据。
 
     返回继续使用的频道：原频道已恢复或新启动的替换频道；设备离开时返回 None。
@@ -149,8 +157,14 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
     try:
         server.phase = "live_reconnect"
         text = overlay.PAUSE_TEXT if paused else overlay.NOTICE_TEXT
-        shown = _send_notice(server, connection, session, wire, getattr(channel, "shown", None), text)
-        channel.shown = shown
+        # 会自己画暂停横条的固件：不发画面，屏幕保留暂停前的最后一帧。
+        device_draws = paused and getattr(server, "device_pause", False)
+        if device_draws:
+            _tell_paused(server, connection, session, wire, True, pause_title)
+            shown = getattr(channel, "shown", None)
+        else:
+            shown = _send_notice(server, connection, session, wire, getattr(channel, "shown", None), text)
+            channel.shown = shown
         if paused:
             paused_at = time.monotonic()
             next_frame = paused_at + PAUSE_FRAME_S
@@ -166,8 +180,10 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 if verdict == "resume":
                     pending = "resumed"
                     deadline = now + RECONNECT_TIMEOUT_S
+                    if device_draws:
+                        _tell_paused(server, connection, session, wire, False)
                     break
-                if now >= next_frame:
+                if now >= next_frame and not device_draws:
                     shown = _send_notice(server, connection, session, wire, shown, text)
                     next_frame = now + PAUSE_FRAME_S
                 if not server._wait_until(connection, time.monotonic() + 0.02, session):

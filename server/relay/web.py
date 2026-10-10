@@ -161,11 +161,11 @@ class Relay:
             self.state.save_position(cid, video.bvid, offset + elapsed)
         self.state.save()
 
-    def _event(self, action: str, channel: str = "", value: int | None = None) -> None:
+    def _event(self, action: str, channel: str = "", value: int | None = None, text: str = "") -> None:
         if self.events_out is None:
             return
         try:
-            seq = events.write_event(self.events_out, action, channel=channel, value=value)
+            seq = events.write_event(self.events_out, action, channel=channel, value=value, text=text)
             self.log(f"事件 {seq} {action} {channel or ('' if value is None else value)}".rstrip())
         except OSError as error:
             self.log(f"写事件失败：{error}")
@@ -296,7 +296,7 @@ class Relay:
         self._store_position(cid, entry["video"], position)
         self._paused = {"cid": cid, "video": entry["video"], "position": position, "at": self.clock()}
         self._cut(cid, entry, "暂停")
-        self._event("pause")
+        self._event("pause", text=entry["video"].title)
         return {"ok": True, "at": self.clock()}
 
     def resume(self) -> dict:

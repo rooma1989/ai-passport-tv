@@ -52,7 +52,8 @@ class SwitchWatcher:
                 # 同类的数值只留最新的，免得拖滑条时一个个依次发过去。
                 if action in ("volume", "brightness"):
                     self._controls = [c for c in self._controls if c[0] != action]
-                self._controls.append((action, event.value))
+                # 暂停带的是标题（text），其余带数值。
+                self._controls.append((action, event.text if action == "pause" else event.value))
                 continue
             if action == "switch":
                 # 手机遥控换台；要换回当前这个台就等于不换。

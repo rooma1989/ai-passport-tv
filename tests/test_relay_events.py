@@ -16,9 +16,9 @@ class EventTests(unittest.TestCase):
             self.assertIsNone(events.read_event(path))
             self.assertEqual(events.write_event(path, "cast"), 1)
             self.assertEqual(events.write_event(path, "return"), 2)
-            self.assertEqual(events.read_event(path), (2, "return", "", None))
+            self.assertEqual(events.read_event(path), (2, "return", "", None, ""))
             self.assertEqual(events.write_event(path, "switch", channel="ch013"), 3)
-            self.assertEqual(events.read_event(path), (3, "switch", "ch013", None))
+            self.assertEqual(events.read_event(path), (3, "switch", "ch013", None, ""))
             self.assertEqual(path.stat().st_mode & 0o777, 0o644)
 
     def test_list_keeps_the_last_twenty_in_order(self):
@@ -39,7 +39,7 @@ class EventTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "relay-events.json"
             path.write_text('{"seq": 7, "action": "cast"}')
-            self.assertEqual(events.read_event(path), (7, "cast", "", None))
+            self.assertEqual(events.read_event(path), (7, "cast", "", None, ""))
             self.assertEqual(events.write_event(path, "return"), 8)
 
     def test_values_are_checked(self):

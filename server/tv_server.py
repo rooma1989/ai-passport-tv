@@ -286,6 +286,7 @@ class AVServer:
         self.switch_watcher = SwitchWatcher(Path(events_file) if events_file else None)
         self.device_switches = False
         self.device_status: dict | None = None
+        self.device_pause = False
         # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
         self.pending_switch = ""
         # 给手机网页看的「正在播放」；不设则不写。
@@ -702,7 +703,7 @@ class AVServer:
             busy_us += took * 1e6
             gap_start = at
 
-        def hold_on_notice(empty_since: float, paused: bool = False) -> bool:
+        def hold_on_notice(empty_since: float, paused: bool = False, title: str = "") -> bool:
             """停留在重连提示画面，直到源重新有数据。
 
             会话结束（设备离开或要求停止）时返回 False。
@@ -718,7 +719,7 @@ class AVServer:
             )
             wire = reconnect.WireState(seq, audio_pts, last_audio_wire, last_video_wire)
             held = reconnect.hold(self, connection, session, channel, wire, origin, empty_since,
-                                  paused=paused)
+                                  paused=paused, pause_title=title)
             if held is None:
                 return False
             if held is not channel:
@@ -818,7 +819,7 @@ class AVServer:
                 if kind == "pause":
                     # 手机上暂停：停在 PAUSED 画面，继续时重启视频源（reconnect.hold 的 paused 模式）。
                     self.logger(f"session={session} pause")
-                    if not hold_on_notice(time.monotonic(), paused=True):
+                    if not hold_on_notice(time.monotonic(), paused=True, title=str(value or "")):
                         return
                     now = time.monotonic()
                 elif kind in ("volume", "brightness") and self.device_status is not None:
@@ -1089,6 +1090,8 @@ class AVServer:
             greeting = json_object(hello.payload)
             self.device_switches = greeting.get("switch") == 1
             # 新固件在 HELLO 里报音量、亮度；报了的才接受手机的调节。
+            # 新固件自己画暂停横条（"pause": 1）；旧固件靠服务端发 PAUSED 画面。
+            self.device_pause = greeting.get("pause") == 1
             self.device_status = None
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):
                 self.device_status = {"volume": greeting["volume"], "brightness": greeting["brightness"],

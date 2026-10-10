@@ -472,6 +472,12 @@ typedef struct {
     // The phone's volume (percent) and backlight step, also carried in AV_SWITCH.
     // Stored plus one, so zero means "nothing asked for". Applied in pump_keys.
     atomic_int remote_volume, remote_brightness;
+    // Paused from the phone: the panel keeps the last frame and a band across
+    // the middle says so (paint_pause_band). pause_gen moves on every change so
+    // the band is drawn once per change, not per pass.
+    atomic_bool paused;
+    atomic_uint pause_gen;
+    char pause_title[64];
     // Volume or backlight changed since the server was last told; the receive
     // task, which owns the socket, sends AV_STATUS between packets.
     atomic_bool status_dirty;
@@ -1018,6 +1024,21 @@ static void take_switch(char *buf, size_t n) {
     buf[n]=0;
     const char *end=NULL;
     cJSON *j=cJSON_ParseWithLengthOpts(buf,n+1,&end,true);
+    const cJSON *paused=cJSON_GetObjectItemCaseSensitive(j,"paused");
+    if (cJSON_IsNumber(paused) || cJSON_IsBool(paused)) {
+        const bool on=cJSON_IsTrue(paused) || (cJSON_IsNumber(paused) && paused->valuedouble!=0);
+        const cJSON *title=cJSON_GetObjectItemCaseSensitive(j,"title");
+        taskENTER_CRITICAL(&list_lock);
+        memset(s.pause_title,0,sizeof(s.pause_title));
+        if (on && cJSON_IsString(title) && title->valuestring) {
+            strncpy(s.pause_title,title->valuestring,sizeof(s.pause_title)-1);
+        }
+        taskEXIT_CRITICAL(&list_lock);
+        atomic_store(&s.paused,on);
+        atomic_fetch_add(&s.pause_gen,1u);
+        cJSON_Delete(j);
+        return;
+    }
     const cJSON *channel=cJSON_GetObjectItemCaseSensitive(j,"channel");
     const cJSON *volume=cJSON_GetObjectItemCaseSensitive(j,"volume");
     const cJSON *level=cJSON_GetObjectItemCaseSensitive(j,"brightness");
@@ -1315,6 +1336,8 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"volume",s.volume) &&
         cJSON_AddNumberToObject(j,"brightness",s.menu.brightness) &&
         cJSON_AddNumberToObject(j,"brightness_steps",AV_BRIGHTNESS_COUNT) &&
+        // This firmware draws its own pause band; the server then sends no frames.
+        cJSON_AddNumberToObject(j,"pause",1) &&
         (AV_PAIRING_TOKEN[0]=='\0' ||
          cJSON_AddStringToObject(j,"token",AV_PAIRING_TOKEN)!=NULL);
     char *body=ok ? cJSON_PrintUnformatted(j) : NULL;
@@ -3023,8 +3046,15 @@ static bool picture_live(void)
     return av_channel_policy_picture_live(s.decoded,esp_timer_get_time(),last_frame_us,VIDEO_STALL_US);
 }
 
+static unsigned pause_seen=UINT_MAX;
+
 static bool waiting_screen_stale(void)
 {
+    // Paused from the phone, with nothing open over the picture: the band is
+    // drawn once per change and the frozen frame left alone.
+    if (atomic_load(&s.paused) && s.menu.view==UI_VIEW_VIDEO) {
+        return atomic_load(&s.pause_gen)!=pause_seen;
+    }
     // Frames own the panel while they arrive, and repainting the bars underneath
     // them would flash. When they stop -- or have not started, even though sound
     // has, which is all a dead source delivers -- this screen takes over: once at
@@ -3060,8 +3090,42 @@ static bool waiting_screen_stale(void)
 // over a moving picture. A device with no picture would then have no status
 // page, and the status page is the only way to the setup screen: the state that
 // needs setup most was the one state that could not reach it.
+// The pause band: across the middle of the frozen frame, the rest of the panel
+// untouched. Whole stripes only, since a stripe is the unit the panel takes.
+static bool paint_pause_band(void)
+{
+    pause_seen=atomic_load(&s.pause_gen);
+    char title[sizeof(s.pause_title)];
+    taskENTER_CRITICAL(&list_lock);
+    memcpy(title,s.pause_title,sizeof(title));
+    taskEXIT_CRITICAL(&list_lock);
+    if (!title[0]) current_channel_name(title,sizeof(title));
+    const unsigned rows=AV_STRIPE_ROWS;
+    const unsigned top=((AV_HEIGHT/2u-32u)/rows)*rows;
+    const unsigned bottom=top+((64u+rows-1u)/rows)*rows;
+    const char *label="‖ 已暂停";
+    for (unsigned y=top;y<bottom && !stopping();y+=rows) {
+        ui_surface_t strip=stripe_surface(y,s.stripe[0]);
+        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,(int)(bottom-top),UI_COLOR_BOX);
+        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,1,UI_COLOR_RULE);
+        ui_text_fill(strip,0,(int)bottom-1,(int)AV_WIDTH,1,UI_COLOR_RULE);
+        const int w=ui_text_width(label);
+        ui_text_draw(strip,((int)AV_WIDTH-w)/2,(int)top+8,label,UI_COLOR_TEXT,UI_COLOR_BOX);
+        const int tw=ui_text_width(title);
+        const int tx=tw<(int)AV_WIDTH-28 ? ((int)AV_WIDTH-tw)/2 : 14;
+        ui_text_draw(strip,tx,(int)top+8+(int)UI_TEXT_LINE_H+2*UI_TEXT_PAD_Y,title,UI_COLOR_DIM,UI_COLOR_BOX);
+        if(bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
+           bsp_display_raw_drain(1,200)!=ESP_OK) {
+            fail("pause band DMA");
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool paint_waiting_screen(void)
 {
+    if (atomic_load(&s.paused) && s.menu.view==UI_VIEW_VIDEO) return paint_pause_band();
     waiting_drawn=true;
     waiting_view=(int)s.menu.view;
     waiting_link=(int)atomic_load(&s.link);
@@ -4285,6 +4349,8 @@ void av_player_main(void) {
 #endif
         s.audio_high=s.video_high=0; s.clock_us=0;
         atomic_store(&s.media_started,false);
+        // A pause belongs to the session it was asked in.
+        atomic_store(&s.paused,false);
         // Back to "dialling", but only when that is worth saying.
         //
         // Unconditionally would be wrong twice over. It would make the screen

@@ -89,7 +89,7 @@ class WatcherTests(unittest.TestCase):
         events.write_event(self.path, "brightness", value=2)
         events.write_event(self.path, "resume")
         self.assertIsNone(watcher.poll("up01", 2.0))
-        self.assertEqual(watcher.take_controls(), [("pause", None), ("brightness", 2), ("resume", None)])
+        self.assertEqual(watcher.take_controls(), [("pause", ""), ("brightness", 2), ("resume", None)])
 
     def test_no_file_configured(self):
         self.assertIsNone(SwitchWatcher(None).poll("ch001", 5.0))
@@ -352,6 +352,65 @@ class DeviceControlTests(unittest.TestCase):
                 self.wrote = True
                 events.write_event(self.events, "volume", value=90)
         self.assertEqual(self.session({}, script), [])
+
+
+class DevicePauseTests(unittest.TestCase):
+    """Firmware that draws its own pause band gets messages, not frames."""
+
+    setUp = SessionTests.setUp
+    tearDown = SessionTests.tearDown
+
+    def test_pause_band_messages(self):
+        import json
+        import socket
+        import threading
+        import time
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_live_transcode import StubFactory
+        from server.protocol import Kind, Packet, json_bytes, receive_packet, send_packet
+        from server.tv_server import AVServer
+
+        token = b"t" * 32
+        server = AVServer(None, token, "127.0.0.1", 0, 60000, logger=lambda _m: None)
+        server.live_enabled = True
+        server.channel_factory = StubFactory()
+        thread = threading.Thread(target=server.serve, daemon=True)
+        thread.start()
+        self.assertTrue(server.ready.wait(5))
+        client = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+        client.setblocking(False)
+        switches, frames_while_paused, session, phase = [], 0, None, "playing"
+        start = time.monotonic()
+        try:
+            send_packet(client, Packet(Kind.HELLO, 0, 0, 0, json_bytes(
+                {"version": 1, "token": token.decode(), "channel": "ch000", "switch": 1, "pause": 1})))
+            while time.monotonic() - start < 5.0:
+                elapsed = time.monotonic() - start
+                if phase == "playing" and elapsed > 0.6:
+                    events.write_event(self.events, "pause", text="小Lin说 · 日元")
+                    phase = "pausing"
+                elif phase == "pausing" and elapsed > 1.8:
+                    phase = "paused"
+                elif phase == "paused" and elapsed > 3.0:
+                    events.write_event(self.events, "resume")
+                    phase = "resumed"
+                try:
+                    packet = receive_packet(client, timeout=0.2, expected_session=session)
+                except TimeoutError:
+                    continue
+                session = packet.session
+                if packet.kind == Kind.SWITCH:
+                    switches.append(json.loads(packet.payload))
+                if phase == "paused" and packet.kind == Kind.JPEG:
+                    frames_while_paused += 1
+        except EOFError:
+            pass
+        finally:
+            server.stop.set()
+            client.close()
+            thread.join(timeout=3)
+        self.assertEqual(switches[:2], [{"paused": 1, "title": "小Lin说 · 日元"}, {"paused": 0}])
+        self.assertEqual(frames_while_paused, 0, "the device keeps the frozen frame")
 
 
 if __name__ == "__main__":

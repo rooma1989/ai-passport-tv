@@ -260,7 +260,7 @@ class WebTests(unittest.TestCase):
         now_playing.write(self.playing, "ch001", True, True, now=self.now)
         self.assertEqual(self.call("POST", "/api/switch", {"channel": "nope"})["error"], "没有这个台")
         self.assertEqual(self.call("POST", "/api/switch", {"channel": "ch000"}), {"ok": True, "at": self.now})
-        self.assertEqual(events.read_event(self.events), (1, "switch", "ch000", None))
+        self.assertEqual(events.read_event(self.events), (1, "switch", "ch000", None, ""))
 
     def test_device_volume_and_brightness(self):
         from server import now_playing
@@ -273,9 +273,9 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.call("GET", "/api/state")["now"]["device"],
                          {"volume": 70, "brightness": 3, "steps": 5})
         self.assertTrue(self.call("POST", "/api/device", {"volume": 47})["ok"])
-        self.assertEqual(events.read_event(self.events), (1, "volume", "", 50), "rounded to a step of 10")
+        self.assertEqual(events.read_event(self.events), (1, "volume", "", 50, ""), "rounded to a step of 10")
         self.assertTrue(self.call("POST", "/api/device", {"brightness": 4})["ok"])
-        self.assertEqual(events.read_event(self.events), (2, "brightness", "", 0), "the brightest step")
+        self.assertEqual(events.read_event(self.events), (2, "brightness", "", 0, ""), "the brightest step")
         self.assertFalse(self.call("POST", "/api/device", {"brightness": 5})["ok"])
         self.assertFalse(self.call("POST", "/api/device", {"volume": 120})["ok"])
         self.assertFalse(self.call("POST", "/api/device", {})["ok"])
@@ -377,7 +377,7 @@ class WebTests(unittest.TestCase):
     def test_cast_switches_plays_and_returns(self):
         answer = self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
         self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ", "at": self.now})
-        self.assertEqual(events.read_event(self.events), (1, "cast", "", None))
+        self.assertEqual(events.read_event(self.events), (1, "cast", "", None, ""))
         self.assertEqual(self.call("GET", "/api/state")["cast"],
                          {"title": "tBV1aZpw6DEKJ", "done": False})
         self.outcome = "client_gone"
@@ -388,7 +388,7 @@ class WebTests(unittest.TestCase):
         self.stream("cast")
         self.assertEqual(self.started[-1][1], 20.0)
         self.assertTrue(self.state.cast_done)
-        self.assertEqual(events.read_event(self.events), (2, "return", "", None))
+        self.assertEqual(events.read_event(self.events), (2, "return", "", None, ""))
         # Chosen by hand afterwards, it plays again from the start.
         self.stream("cast")
         self.assertEqual(self.started[-1][1], 0.0)
