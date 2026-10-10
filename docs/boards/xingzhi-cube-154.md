@@ -223,6 +223,12 @@ firmware's own drawing code and font, for checking a layout without flashing.
      time left of the 15-minute setup window.
 - On the setup page, tapping a remembered network fills its name; leaving the
   password empty keeps the stored one. Stored passwords stay on the device.
+- The status page shows the signal in dBm. HELLO reports the network, signal,
+  channel and transmit power, STATUS the signal every 30 s, and the media
+  server logs them (`device wifi ...`, `device rssi=...`). The transmit power is
+  11 dBm by default (`sdkconfig.defaults.xingzhi-cube-154`; 20 dBm gave poor
+  throughput near the router); the setup page's Advanced tab can raise it for a
+  device far from its router, stored in NVS and applied after Wi-Fi starts.
 - The status page carries the phone remote's QR code when the server sends
   one (`remote_url` in CONFIG, a version-2 code at 3 px a module); otherwise a
   small help-page QR code when `AV_HELP_URL` is set.
