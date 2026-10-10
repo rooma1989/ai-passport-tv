@@ -25,10 +25,12 @@ MAX_CREATORS = 12
 
 @dataclass
 class Video:
+    # B 站是 BV 号，YouTube 是 11 位视频 id；字段名沿用最早只有 B 站时的叫法。
     bvid: str
     title: str
     duration: int
     pubdate: int
+    site: str = "bilibili"
 
 
 @dataclass

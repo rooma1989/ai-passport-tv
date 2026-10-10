@@ -16,8 +16,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import events, stream, table
-from .bilibili import BilibiliError
+from . import events, stream, table, youtube as youtube_links
+from .bilibili import BilibiliError, SourceError
 from .state import LIST_MAX_AGE_S, RESUME_BACK_S, State
 
 # 一次请求里最多跳过几个放不了的视频，之后返回 503，让电视服务稍后再来。
@@ -34,12 +34,13 @@ class Relay:
     """播放与管理共用的逻辑；HTTP 处理类只做解析和回写。"""
 
     def __init__(self, state: State, client, channels_out: Path, ffmpeg: str, key: str,
-                 events_out: Path | None = None,
+                 events_out: Path | None = None, youtube=None,
                  log=print, clock=time.time, monotonic=time.monotonic,
                  starter=stream.start, pumper=stream.pump):
         self.state = state
+        # 每个网站一个客户端；YouTube 只经 cstone 节点，没配置时为 None。
+        self.clients = {"bilibili": client, "youtube": youtube}
         self.events_out = Path(events_out) if events_out is not None else None
-        self.client = client
         self.channels_out = Path(channels_out)
         self.ffmpeg = ffmpeg
         self.key = key
@@ -71,8 +72,8 @@ class Relay:
             if creator is None or self.clock() - creator.fetched_at < LIST_MAX_AGE_S:
                 return
             try:
-                videos = self.client.uploads(creator.source)
-            except BilibiliError as error:
+                videos = self._client(creator.site).uploads(creator.source)
+            except SourceError as error:
                 # 拿不到就继续用缓存的列表。
                 self.log(f"{cid} 刷新投稿列表失败，用缓存：{error}")
                 return
@@ -91,17 +92,28 @@ class Relay:
                 return 503
             video, offset = pick
             try:
-                url = self.client.media_url(video.bvid)
-            except BilibiliError as error:
+                return self._start(video, offset), video, offset
+            except SourceError as error:
                 if not error.permanent:
-                    self.log(f"{cid} {video.bvid} 暂时取不到地址：{error}")
+                    self.log(f"{cid} {video.bvid} 暂时取不到：{error}")
                     return 503
                 self.log(f"{cid} {video.bvid} 放不了，跳过：{error}")
                 self.state.mark_watched(cid, video.bvid)
                 self.state.save()
-                continue
-            return self.starter(self.ffmpeg, url, offset), video, offset
         return 503
+
+    def _client(self, site: str):
+        client = self.clients.get(site)
+        if client is None:
+            raise SourceError(f"{site} 还没配置")
+        return client
+
+    def _start(self, video, offset: float):
+        """起播：B 站在本机用 ffmpeg 换封装；YouTube 由 cstone 节点转好码，这里只转发。"""
+        if video.site == "youtube":
+            return self._client("youtube").open(video.bvid, offset)
+        url = self._client("bilibili").media_url(video.bvid)
+        return self.starter(self.ffmpeg, url, offset)
 
     def finish(self, cid: str, video, offset: float, outcome: str, elapsed: float) -> None:
         key = (cid, video.bvid)
@@ -137,11 +149,10 @@ class Relay:
             return 404
         offset = 0.0 if done else max(0.0, position - RESUME_BACK_S)
         try:
-            url = self.client.media_url(video.bvid)
-        except BilibiliError as error:
-            self.log(f"cast {video.bvid} 取不到地址：{error}")
+            return self._start(video, offset), video, offset
+        except SourceError as error:
+            self.log(f"cast {video.bvid} 取不到：{error}")
             return 503
-        return self.starter(self.ffmpeg, url, offset), video, offset
 
     def finish_cast(self, video, offset: float, outcome: str, elapsed: float) -> None:
         if outcome == "ended":
@@ -208,16 +219,19 @@ class Relay:
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "请先粘贴链接"}
+        site = _site_of(text)
+        if self.clients.get(site) is None:
+            return {"ok": False, "error": "YouTube 还没配置好，暂时只能添加 B 站 UP 主"}
         try:
-            mid = self.client.creator_id(text)
+            mid = self.clients[site].creator_id(text)
             if mid is None:
-                return {"ok": False, "error": "看不懂这个链接。请粘贴 B 站 UP 主主页链接，或他的任意一个视频链接"}
-            name, videos = self.client.creator(mid)
-        except BilibiliError as error:
+                return {"ok": False, "error": "看不懂这个链接。请粘贴 UP 主（频道）主页链接，或他的任意一个视频链接"}
+            name, videos = self.clients[site].creator(mid)
+        except SourceError as error:
             self.log(f"添加 UP 主失败：{error}")
-            return {"ok": False, "error": "B 站暂时连不上或拒绝了请求，请稍后再试"}
+            return {"ok": False, "error": f"{_SITE_NAMES[site]}暂时连不上或拒绝了请求，请稍后再试"}
         try:
-            creator = self.state.add("bilibili", mid, name, videos, self.clock())
+            creator = self.state.add(site, mid, name, videos, self.clock())
         except ValueError as error:
             return {"ok": False, "error": str(error)}
         self.state.save()
@@ -229,16 +243,19 @@ class Relay:
         text = (text or "").strip()
         if not text:
             return {"ok": False, "error": "请先粘贴视频链接"}
+        site = _site_of(text)
+        if self.clients.get(site) is None:
+            return {"ok": False, "error": "YouTube 还没配置好，暂时只能投 B 站视频"}
         try:
-            bvid = self.client.video_id(text)
+            bvid = self.clients[site].video_id(text)
             if bvid is None:
-                return {"ok": False, "error": "看不懂这个链接。请粘贴 B 站视频链接（App 里“分享 → 复制链接”）"}
-            video = self.client.video(bvid)
-        except BilibiliError as error:
+                return {"ok": False, "error": "看不懂这个链接。请粘贴视频链接（App 里“分享 → 复制链接”）"}
+            video = self.clients[site].video(bvid)
+        except SourceError as error:
             self.log(f"投屏失败：{error}")
             if error.permanent:
-                return {"ok": False, "error": "这个视频放不了（可能已删除或需要会员）"}
-            return {"ok": False, "error": "B 站暂时连不上，请稍后再试"}
+                return {"ok": False, "error": "这个视频放不了（可能已删除、私享或需要会员）"}
+            return {"ok": False, "error": f"{_SITE_NAMES[site]}暂时取不到，请稍后再试"}
         self.state.set_cast(video)
         self.state.save()
         self.write_table()
@@ -253,6 +270,13 @@ class Relay:
         self.write_table()
         self.log(f"删除 UP 主 {cid}")
         return {"ok": True}
+
+
+_SITE_NAMES = {"bilibili": "B 站", "youtube": "YouTube "}
+
+
+def _site_of(text: str) -> str:
+    return "youtube" if youtube_links.is_youtube(text) else "bilibili"
 
 
 def _stream_handler(relay: Relay):
@@ -403,7 +427,7 @@ PAGE = """<!doctype html>
 
   <section>
     <h2>投屏到小智</h2>
-    <textarea id="cast" placeholder="粘贴 B 站视频链接（App 里“分享 → 复制链接”即可）"></textarea>
+    <textarea id="cast" placeholder="粘贴 B 站或 YouTube 视频链接（App 里“分享 → 复制链接”即可）"></textarea>
     <button class="primary" id="castbtn">在小智上播放</button>
     <div class="msg" id="castmsg"></div>
     <p class="sub" id="nowcast" style="margin:6px 0 0"></p>
@@ -411,7 +435,7 @@ PAGE = """<!doctype html>
 
   <section>
     <h2>添加 UP 主</h2>
-    <textarea id="link" placeholder="粘贴 B 站 UP 主主页链接，或他的任意一个视频链接（App 里“分享 → 复制链接”即可）"></textarea>
+    <textarea id="link" placeholder="粘贴 B 站 UP 主或 YouTube 频道的主页链接，或他的任意一个视频链接（App 里“分享 → 复制链接”即可）"></textarea>
     <button class="primary" id="add">添加</button>
     <div class="msg" id="addmsg"></div>
   </section>

@@ -70,6 +70,33 @@ class FakeProc:
         return 0
 
 
+class FakeYouTube:
+    """The cstone node's client: never touched by Bilibili links."""
+
+    def __init__(self):
+        self.opened = []
+
+    def creator_id(self, text):
+        return "https://www.youtube.com/@ltt" if "youtube.com/@ltt" in text else None
+
+    def creator(self, channel):
+        return "LTT", [Video(bvid="ytvideo0001", title="y1", duration=600, pubdate=0, site="youtube"),
+                       Video(bvid="ytvideo0002", title="y2", duration=600, pubdate=0, site="youtube")]
+
+    def uploads(self, channel):
+        return self.creator(channel)[1]
+
+    def video_id(self, text):
+        return "ytcast00001" if "youtu.be/ytcast00001" in text else None
+
+    def video(self, video_id):
+        return Video(bvid=video_id, title="yt cast", duration=60, pubdate=0, site="youtube")
+
+    def open(self, video_id, offset):
+        self.opened.append((video_id, offset))
+        return FakeProc()
+
+
 class WebTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -81,8 +108,9 @@ class WebTests(unittest.TestCase):
         self.outcome = "ended"
         self.now = 1000.0
         self.events = root / "relay-events.json"
+        self.youtube = FakeYouTube()
         self.relay = web.Relay(self.state, self.client, self.table, "/opt/ff", KEY,
-                               events_out=self.events,
+                               events_out=self.events, youtube=self.youtube,
                                log=lambda _m: None, clock=lambda: self.now,
                                starter=self.fake_start, pumper=self.fake_pump)
         self.streams, self.manage = web.make_servers(self.relay, 0, 0)
@@ -238,6 +266,31 @@ class WebTests(unittest.TestCase):
         self.client.down = True
         offline = self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
         self.assertIn("稍后", offline["error"])
+
+    # ---- YouTube ----
+
+    def test_youtube_creator_streams_through_the_node(self):
+        answer = self.call("POST", "/api/creators", {"url": "https://www.youtube.com/@ltt/videos"})
+        self.assertEqual(answer, {"ok": True, "creator": {"id": "up01", "name": "LTT"}})
+        self.assertEqual(self.state.get("up01").site, "youtube")
+        self.assertEqual(self.call("GET", "/api/state")["creators"][0]["site"], "youtube")
+        self.stream("up01")
+        self.assertEqual(self.youtube.opened, [("ytvideo0001", 0.0)])
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.state.get("up01").watched, ["ytvideo0001"])
+
+    def test_youtube_cast(self):
+        answer = self.call("POST", "/api/cast", {"url": "https://youtu.be/ytcast00001"})
+        self.assertEqual(answer, {"ok": True, "title": "yt cast"})
+        self.stream("cast")
+        self.assertEqual(self.youtube.opened, [("ytcast00001", 0.0)])
+        self.assertEqual(self.state.cast.site, "youtube")
+
+    def test_youtube_not_configured(self):
+        self.relay.clients["youtube"] = None
+        answer = self.call("POST", "/api/cast", {"url": "https://youtu.be/ytcast00001"})
+        self.assertFalse(answer["ok"])
+        self.assertIn("YouTube", answer["error"])
 
     def test_unknown_channel(self):
         self.assertEqual(self.stream("up09")[0], 404)

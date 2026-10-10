@@ -25,16 +25,20 @@ _URL = re.compile(r"(?:https?://)?[A-Za-z0-9.-]+(?:/[^\s]*)?")
 _BVID = re.compile(r"^BV[0-9A-Za-z]{10}$")
 
 
-class BilibiliError(RuntimeError):
-    """接口失败、返回非零 code 或缺字段。
+class SourceError(RuntimeError):
+    """视频来源（B 站接口或 cstone 上的 YouTube 节点）失败、拒绝或回答缺字段。
 
-    permanent 为真表示 B 站明确拒绝（视频删了、充电专属等），重试无用；
+    permanent 为真表示来源明确拒绝（视频删了、充电专属等），重试无用；
     为假表示网络或解析问题，稍后可能恢复。
     """
 
     def __init__(self, message: str, permanent: bool = False):
         super().__init__(message)
         self.permanent = permanent
+
+
+# 最早只有 B 站时的名字，保留给已有代码。
+BilibiliError = SourceError
 
 
 def _urls(text: str):

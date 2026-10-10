@@ -1,0 +1,31 @@
+# Template: install on the overseas host as /etc/systemd/system/yt-relay.service.
+# YouTube node for the video relay (server/relay/ytnode.py, copied alone to
+# /opt/yt-relay/). HTTPS with a self-signed certificate; every request needs the
+# key; the firewall should admit the port only from the relay's host.
+[Unit]
+Description=AI Passport TV YouTube node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ytrelay
+Group=ytrelay
+WorkingDirectory=/var/lib/yt-relay
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/yt-relay
+ExecStart=/usr/bin/python3 /opt/yt-relay/ytnode.py --port 47443 --cert /etc/yt-relay/cert.pem --tls-key /etc/yt-relay/tls-key.pem --key-file /etc/yt-relay/key --cookies /var/lib/yt-relay/cookies.txt
+Restart=always
+RestartSec=5
+# One core shared with the proxy: keep it responsive.
+Nice=10
+CPUQuota=70%
+MemoryMax=400M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+# yt-dlp rewrites the cookie file and deno keeps a cache under HOME.
+ReadWritePaths=/var/lib/yt-relay
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

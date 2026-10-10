@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import threading
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 from .bilibili import Bilibili
 from .state import State
 from .web import Relay, make_servers
+from .youtube import YouTube
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,6 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--events-out", type=Path,
                         help="投屏事件文件，电视服务据此让设备切台")
     parser.add_argument("--ffmpeg", required=True)
+    parser.add_argument("--cstone", type=Path,
+                        help="YouTube 节点配置 JSON：{url, key, cert}；不给则只支持 B 站")
     parser.add_argument("--stream-port", type=int, default=8099)
     parser.add_argument("--manage-port", type=int, default=8100)
     args = parser.parse_args(argv)
@@ -30,15 +34,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{args.key_file}：密钥太短（至少 16 个字符）", file=sys.stderr)
         return 2
     state = State(args.state)
+    youtube = None
+    if args.cstone and args.cstone.is_file():
+        config = json.loads(args.cstone.read_text(encoding="utf-8"))
+        youtube = YouTube(config={k: config[k] for k in ("url", "key", "cert")})
     relay = Relay(state, Bilibili(), args.channels_out, args.ffmpeg, key,
-                  events_out=args.events_out,
+                  events_out=args.events_out, youtube=youtube,
                   log=lambda message: print(message, flush=True))
     relay.write_table()
     # 只监听回环：播放流给本机电视服务，管理网页由 nginx 转进来。
     streams, manage = make_servers(relay, args.stream_port, args.manage_port)
     threading.Thread(target=streams.serve_forever, daemon=True).start()
     print(f"视频中转已启动：播放流 127.0.0.1:{args.stream_port}，"
-          f"管理网页 127.0.0.1:{args.manage_port}，{len(state.creators)} 个 UP 主", flush=True)
+          f"管理网页 127.0.0.1:{args.manage_port}，{len(state.creators)} 个 UP 主，"
+          f"YouTube {'已配置' if youtube else '未配置'}", flush=True)
     try:
         manage.serve_forever()
     except KeyboardInterrupt:
