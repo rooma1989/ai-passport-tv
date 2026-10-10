@@ -111,6 +111,14 @@ it stopped. Design and measurements:
    space link or any of their video links. The channel appears after the
    device's next channel change.
 
+The same page casts a single video: paste a Bilibili video link and the device
+switches to "My cast" (the first channel, always listed) within a second, plays
+it, and returns to the channel it was on when it ends. The relay records this in
+`relay-events.json`; the media server reads it once a second
+(`TV_RELAY_EVENTS_FILE`) and sends a `SWITCH` packet, but only to firmware whose
+handshake says it understands one. Older firmware still plays "My cast" when
+picked by hand.
+
 Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
 relay uses the unsigned web API rather than yt-dlp. The key is the only
 protection: anyone with the link can add and remove creators.
