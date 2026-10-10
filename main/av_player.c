@@ -60,6 +60,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <limits.h>
 #include <string.h>
 
 #define STOP BIT0
@@ -443,6 +444,11 @@ typedef struct {
     uint8_t list_group[AV_CHANNEL_MAX];
     char group_names[UI_MENU_GROUP_MAX][UI_MENU_GROUP_NAME_MAX];
     unsigned group_count;
+    // The phone remote's sign-in address from CONFIG ("remote_url"), shown as a
+    // QR code on the status page. Written by the receive task under list_lock;
+    // remote_gen moves on each change so the drawing side re-encodes only then.
+    char remote_url[AV_REMOTE_URL_MAX+1];
+    atomic_uint remote_gen;
     // Which part of the frame currently being received this packet is, read by
     // the video task before the wait that follows. A frame arrives as five
     // consecutive packets sharing one timestamp, and the four that continue it
@@ -1172,6 +1178,26 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
                     strncpy(s.group_names[s.group_count],gname->valuestring,UI_MENU_GROUP_NAME_MAX-1);
                     s.group_count++;
                 }
+            }
+            // Upper case, digits and URL punctuation only: that keeps the code in
+            // QR alphanumeric mode, small enough for the status page, and keeps
+            // anything else out of the drawing path.
+            {
+                char url[AV_REMOTE_URL_MAX+1]={0};
+                const cJSON *remote=cJSON_GetObjectItemCaseSensitive(j,"remote_url");
+                if (cJSON_IsString(remote) && remote->valuestring &&
+                    strlen(remote->valuestring)<=AV_REMOTE_URL_MAX) {
+                    bool fine=true;
+                    for (const char *c=remote->valuestring;*c;c++) {
+                        if (!((*c>='A'&&*c<='Z')||(*c>='0'&&*c<='9')||strchr(":/.%-",*c))) { fine=false; break; }
+                    }
+                    if (fine) strcpy(url,remote->valuestring);
+                }
+                taskENTER_CRITICAL(&list_lock);
+                bool changed=strcmp(url,s.remote_url)!=0;
+                if (changed) memcpy(s.remote_url,url,sizeof(url));
+                taskEXIT_CRITICAL(&list_lock);
+                if (changed) atomic_fetch_add(&s.remote_gen,1u);
             }
             unsigned n=0;
             const cJSON *entry=NULL;
@@ -2081,6 +2107,51 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         // the lines in place meant a WiFi driver call and a critical section
         // several times a frame.
         refresh_status_text();
+        // The phone remote's code, when the server sent its address. Encoded
+        // when the address changes, not per stripe; a version-2 code at three
+        // pixels a module is the size the help code proved scannable.
+        static uint8_t remote_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
+        static uint8_t remote_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
+        static unsigned remote_seen=UINT_MAX;
+        static bool remote_ok;
+        const unsigned gen=atomic_load(&s.remote_gen);
+        if (gen!=remote_seen) {
+            char url[AV_REMOTE_URL_MAX+1];
+            taskENTER_CRITICAL(&list_lock);
+            memcpy(url,s.remote_url,sizeof(url));
+            taskEXIT_CRITICAL(&list_lock);
+            remote_ok=url[0] && qrcodegen_encodeText(url,remote_tmp,remote_qr,qrcodegen_Ecc_LOW,1,3,
+                                                     qrcodegen_Mask_AUTO,true);
+            remote_seen=gen;
+        }
+        const int top=header+8;
+        const int limit=(int)AV_HEIGHT-(int)AV_VIDEO_Y_OFFSET;
+        int remote_side=0;
+        if (remote_ok) {
+            const int side=(qrcodegen_getSize(remote_qr)+2*UI_QR_QUIET)*3;
+            // Under the channel line, at the right, with the setup line below it.
+            if (top+line+side+line<=limit) remote_side=side;
+        }
+        if (remote_side) {
+            // Channel across the top; Wi-Fi, battery and the caption at the left
+            // of the code; the setup gesture under the code, where it has the
+            // whole width its longer text needs.
+            const int qr_top=top+line;
+            const int ys[STATUS_LINES]={ top, qr_top, qr_top+line, qr_top+remote_side+4 };
+            for (unsigned i=0;i<STATUS_LINES;i++) {
+                const int y=ys[i];
+                if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
+                ui_text_draw(surface,14,y,status_text[i],
+                             i==STATUS_LINES-1u?UI_COLOR_DIM:UI_COLOR_TEXT,UI_COLOR_BACKDROP);
+            }
+            ui_qr_draw(surface,(int)AV_WIDTH-14-remote_side,qr_top,3,remote_qr);
+            static const char *const caption[2]={ "扫码用", "手机遥控" };
+            for (unsigned i=0;i<2u;i++) {
+                const int y=qr_top+2*line+(int)i*line;
+                if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
+                ui_text_draw(surface,14,y,caption[i],UI_COLOR_DIM,UI_COLOR_BACKDROP);
+            }
+        } else {
         for (unsigned i=0;i<STATUS_LINES;i++) {
             int y=header+8+(int)i*line;
             if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
@@ -2092,6 +2163,7 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         // is for to its left. Encoded the first time the page is drawn and kept:
         // the URL is a compile-time constant. Only a version-1 code fits above
         // the bottom bar, which is why the URL is kept short and upper case.
+        // Shown only without the remote code: the remote page links to help.
         if (AV_HELP_URL[0]) {
             static uint8_t help_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
             static uint8_t help_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
@@ -2100,22 +2172,22 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
                 help_state=qrcodegen_encodeText(AV_HELP_URL,help_tmp,help_qr,qrcodegen_Ecc_LOW,1,6,
                                                 qrcodegen_Mask_AUTO,true) ? 1 : -1;
             }
-            const int top=header+8+(int)STATUS_LINES*line;
-            const int limit=(int)AV_HEIGHT-(int)AV_VIDEO_Y_OFFSET;
+            const int help_top=header+8+(int)STATUS_LINES*line;
             if (help_state>0) {
                 const int modules=qrcodegen_getSize(help_qr)+2*UI_QR_QUIET;
-                const int scale=top+modules*3<=limit ? 3 : 2;
+                const int scale=help_top+modules*3<=limit ? 3 : 2;
                 const int side=modules*scale;
-                if (top+side<=limit) {
-                    ui_qr_draw(surface,(int)AV_WIDTH-14-side,top,scale,help_qr);
+                if (help_top+side<=limit) {
+                    ui_qr_draw(surface,(int)AV_WIDTH-14-side,help_top,scale,help_qr);
                     static const char *const caption[2]={ "扫码看", "使用说明" };
                     for (unsigned i=0;i<2u;i++) {
-                        const int y=top+side/2-(int)UI_TEXT_LINE_H-UI_TEXT_PAD_Y+(int)i*line;
+                        const int y=help_top+side/2-(int)UI_TEXT_LINE_H-UI_TEXT_PAD_Y+(int)i*line;
                         if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
                         ui_text_draw(surface,14,y,caption[i],UI_COLOR_DIM,UI_COLOR_BACKDROP);
                     }
                 }
             }
+        }
         }
     }
     #undef LINE_HEIGHT

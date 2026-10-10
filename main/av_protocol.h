@@ -229,6 +229,10 @@
 // server willing to send one extra turns a boundary case into a dead session.
 #define AV_CHANNEL_MAX 128u
 #define AV_CHANNEL_ID_MAX 16u
+// The phone remote's sign-in address carried in CONFIG ("remote_url"), drawn as a
+// QR code on the status page. Same limit as REMOTE_URL_MAX in server/tv_server.py.
+#define AV_REMOTE_URL_MAX 64u
+
 // AV_SWITCH: the server asks the device to change to the channel named in its
 // JSON payload ({"channel": id}); sent only to a device whose HELLO carried
 // "switch": 1, because firmware without it refuses an unknown kind.

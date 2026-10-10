@@ -77,6 +77,13 @@ static void test_upper_case_url_is_version_1(void)
     check(qrcodegen_encodeText("HTTPS://IEWWW.COM/TV/", tmp, qr, qrcodegen_Ecc_LOW, 1, 6,
                                qrcodegen_Mask_AUTO, true), "the help URL encodes");
     check(qrcodegen_getSize(qr) == 21, "upper-case help URL is version 1");
+    // The phone remote's sign-in address: the site in upper case, /TV/R/, and a
+    // 20-character base32 code -- 43 characters, which version 2 holds at low
+    // error correction. The status page has room for version 2 at 3 px/module.
+    check(qrcodegen_encodeText("HTTPS://IEWWW.COM/TV/R/ABCDEFGHIJKLMNOPQR27", tmp, qr,
+                               qrcodegen_Ecc_LOW, 1, 3, qrcodegen_Mask_AUTO, true),
+          "remote URL encodes");
+    check(qrcodegen_getSize(qr) == 25, "remote URL is version 2");
 }
 
 static uint16_t pixel(const uint8_t *buf, int width, int x, int y)

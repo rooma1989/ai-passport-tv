@@ -167,5 +167,22 @@ class ConfigTests(unittest.TestCase):
         self.assertLess(size + 400, self.live.TV_CONTROL_MAX)
 
 
+class RemoteUrlTests(unittest.TestCase):
+    def test_limit_agrees_with_the_firmware(self):
+        import re
+        from server import tv_server
+        header = (Path(__file__).resolve().parents[1] / "main" / "av_protocol.h").read_text()
+        limit = int(re.search(r"#define AV_REMOTE_URL_MAX (\d+)u", header).group(1))
+        self.assertEqual(limit, tv_server.REMOTE_URL_MAX)
+
+    def test_relay_address_fits(self):
+        import re
+        from server import tv_server
+        from server.relay import state as relay_state
+        url = "HTTPS://IEWWW.COM/TV/R/" + "A" * relay_state.CODE_LENGTH
+        self.assertLessEqual(len(url), tv_server.REMOTE_URL_MAX)
+        self.assertTrue(tv_server._REMOTE_URL.match(url))
+
+
 if __name__ == "__main__":
     unittest.main()
