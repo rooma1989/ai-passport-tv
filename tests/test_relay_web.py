@@ -515,8 +515,11 @@ class PlaybackControlTests(unittest.TestCase):
         lag = web.PLAYBACK_LAG_S
         self.assertEqual((video["position"], video["duration"], video["paused"]), (42.0 - lag, 600, False),
                          "what the device shows, behind what the relay has sent")
+        self.assertTrue(video["moving"])
         self.mono = 50.0 + 1
-        self.assertEqual(self.relay.summary()["now"]["video"]["position"], 0.0, "never before the start")
+        video = self.relay.summary()["now"]["video"]
+        self.assertEqual((video["position"], video["moving"]), (0.0, False),
+                         "never before the start, and not moving while the TV server buffers")
         self.assertEqual(video["started"], self.now)
 
     def test_seek_cuts_and_reopens_at_the_target(self):
@@ -627,7 +630,7 @@ class PageFieldTests(unittest.TestCase):
         served = {"now", "groups", "creators", "cast", "history", "group_names", "youtube", "state",
                   "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
                   "site", "at", "since", "left", "total", "ok", "error", "creator",
-                  "video", "position", "duration", "paused", "started",
+                  "video", "position", "duration", "paused", "started", "moving",
                   "device", "volume", "brightness", "steps"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)

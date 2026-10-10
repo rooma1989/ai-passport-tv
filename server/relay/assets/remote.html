@@ -288,7 +288,7 @@ function renderPlayer() {
   // 跳转后先显示目标位置，等小智接上新流再按服务器的进度走。
   const seeking = pending && pending.kind === "seek" && pending.target != null;
   const position = seeking ? pending.target
-    : v.paused || !v.started ? v.position : v.position + (Date.now() - fetchedAt) / 1000;
+    : v.paused || !v.moving ? v.position : v.position + (Date.now() - fetchedAt) / 1000;
   const duration = v.duration || 0;
   const bar = $("seek");
   bar.disabled = !duration;

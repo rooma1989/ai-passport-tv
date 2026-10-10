@@ -331,7 +331,7 @@ class Relay:
         paused = self._paused_on(cid)
         if paused is not None:
             return {"position": round(paused["position"], 1), "duration": paused["video"].duration,
-                    "paused": True, "started": paused["at"]}
+                    "paused": True, "started": paused["at"], "moving": False}
         with self._active_lock:
             entry = self._active.get(cid)
         if entry is None:
@@ -340,9 +340,11 @@ class Relay:
                 return None
             # 新流还没起来：先报跳转目标；started 留在 0，手机上的「跳转中」等真正的新流。
             return {"position": round(bridge["target"], 1), "duration": bridge["video"].duration,
-                    "paused": False, "started": 0.0}
+                    "paused": False, "started": 0.0, "moving": False}
+        # moving：内容已经到了小智屏幕上、进度在走；新流刚起来的缓冲期里它是假，网页别自己往前推。
+        moving = self.monotonic() - entry["began"] >= PLAYBACK_LAG_S
         return {"position": round(self._position(entry), 1), "duration": entry["video"].duration,
-                "paused": False, "started": entry["at"]}
+                "paused": False, "started": entry["at"], "moving": moving}
 
     def seek(self, delta: float | None = None, position: float | None = None) -> dict:
         cid, video, current, entry = self._current()
