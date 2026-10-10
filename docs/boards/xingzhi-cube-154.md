@@ -231,6 +231,10 @@ firmware's own drawing code and font, for checking a layout without flashing.
   11 dBm by default (`sdkconfig.defaults.xingzhi-cube-154`; 20 dBm gave poor
   throughput near the router); the setup page's Advanced tab can raise it for a
   device far from its router, stored in NVS and applied after Wi-Fi starts.
+- HELLO also carries the uptime and the reset reason; the media server logs
+  `device boot reason=...` when the uptime is below what the last HELLO plus
+  the time since would give, so a reboot is told apart from a dropped link
+  even after a long session.
 - The status page carries the phone remote's QR code when the server sends
   one (`remote_url` in CONFIG, a version-2 code at 3 px a module); otherwise a
   small help-page QR code when `AV_HELP_URL` is set.

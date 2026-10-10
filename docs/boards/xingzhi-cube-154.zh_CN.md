@@ -160,6 +160,8 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
 - 状态页的信号显示 dBm。HELLO 报网络名、信号、信道和发射功率，STATUS 每 30 秒报一次信号，媒体服务记进日志（`device wifi ...`、
   `device rssi=...`）。发射功率默认 11 dBm（`sdkconfig.defaults.xingzhi-cube-154`；20 dBm 在路由器附近吞吐反而差）；
   离路由器远时可以在配网页「高级选项」调高，存在 NVS 里，Wi-Fi 启动后生效。
+- HELLO 还带开机时长和重启原因；开机时长比「上次 HELLO 的开机时长加上之后过去的时间」小时，媒体服务记一行 `device boot reason=...`，
+  所以即使中间放了很久，也能分清是设备重启还是网络断了一下。
 - 服务器下发了遥控地址时（CONFIG 里的 `remote_url`），状态页显示手机遥控的二维码（第 2 版，每个码点 3 像素）；
   否则在设置了 `AV_HELP_URL` 时显示说明页的小二维码。
 - `AV_HELP_URL` 来自被 git 忽略的 `main/av_private_config.h`，公开版为空。网址要短并用大写
