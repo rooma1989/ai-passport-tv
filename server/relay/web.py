@@ -161,12 +161,12 @@ class Relay:
             self.state.save_position(cid, video.bvid, offset + elapsed)
         self.state.save()
 
-    def _event(self, action: str, channel: str = "") -> None:
+    def _event(self, action: str, channel: str = "", value: int | None = None) -> None:
         if self.events_out is None:
             return
         try:
-            seq = events.write_event(self.events_out, action, channel=channel)
-            self.log(f"事件 {seq} {action} {channel}".rstrip())
+            seq = events.write_event(self.events_out, action, channel=channel, value=value)
+            self.log(f"事件 {seq} {action} {channel or ('' if value is None else value)}".rstrip())
         except OSError as error:
             self.log(f"写事件失败：{error}")
 
@@ -407,7 +407,28 @@ class Relay:
         return {"channel": cid, "online": playing["online"], "switch": playing["switch"],
                 "group": found[0] if found else "", "name": found[1]["name"] if found else "",
                 "n": found[1]["n"] if found else 0, "title": title, "since": playing["since"],
-                "video": self.video_progress(cid) if playing["online"] else None}
+                "video": self.video_progress(cid) if playing["online"] else None,
+                "device": playing["device"] if playing["online"] else None}
+
+    def device(self, volume=None, brightness=None) -> dict:
+        """手机调音量（0–100，按 10 取整）或亮度档位。"""
+        playing = now_playing.read(self.now_playing_in, self.clock())
+        if not playing["online"]:
+            return {"ok": False, "error": "小智没在线"}
+        status = playing["device"]
+        if status is None:
+            return {"ok": False, "error": "小电视的固件太旧，需要更新才能用手机调音量和亮度"}
+        if volume is not None:
+            if not 0 <= volume <= 100:
+                return {"ok": False, "error": "音量要在 0 到 100 之间"}
+            self._event("volume", value=int(round(volume / 10) * 10))
+        elif brightness is not None:
+            if not 0 <= brightness < status["steps"]:
+                return {"ok": False, "error": "没有这一档亮度"}
+            self._event("brightness", value=int(brightness))
+        else:
+            return {"ok": False, "error": "请求格式不对"}
+        return {"ok": True}
 
     def youtube_state(self) -> str:
         """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
@@ -705,6 +726,11 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/next":
                 self._json(relay.next())
+                return
+            if path == "/api/device":
+                volume, level = body.get("volume"), body.get("brightness")
+                self._json(relay.device(volume=volume if isinstance(volume, (int, float)) else None,
+                                        brightness=level if isinstance(level, int) else None))
                 return
             if path == "/api/pause":
                 self._json(relay.pause())

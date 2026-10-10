@@ -469,6 +469,12 @@ typedef struct {
     // applied by the main loop through request_switch(), like a key press.
     char remote_channel[AV_CHANNEL_ID_MAX];
     atomic_bool remote_switch;
+    // The phone's volume (percent) and backlight step, also carried in AV_SWITCH.
+    // Stored plus one, so zero means "nothing asked for". Applied in pump_keys.
+    atomic_int remote_volume, remote_brightness;
+    // Volume or backlight changed since the server was last told; the receive
+    // task, which owns the socket, sends AV_STATUS between packets.
+    atomic_bool status_dirty;
     // Set once the first PCM/JPEG arrives, which switches the idle watchdog
     // from the startup allowance to the normal inter-packet gap.
     atomic_bool media_started;
@@ -1013,11 +1019,19 @@ static void take_switch(char *buf, size_t n) {
     const char *end=NULL;
     cJSON *j=cJSON_ParseWithLengthOpts(buf,n+1,&end,true);
     const cJSON *channel=cJSON_GetObjectItemCaseSensitive(j,"channel");
+    const cJSON *volume=cJSON_GetObjectItemCaseSensitive(j,"volume");
+    const cJSON *level=cJSON_GetObjectItemCaseSensitive(j,"brightness");
     const char *id=cJSON_IsString(channel) ? channel->valuestring : NULL;
     size_t length=id ? strnlen(id,AV_CHANNEL_ID_MAX) : 0;
     if (length>0 && length<AV_CHANNEL_ID_MAX && !atomic_load(&s.remote_switch)) {
         memcpy(s.remote_channel,id,length+1);
         atomic_store(&s.remote_switch,true);
+    } else if (cJSON_IsNumber(volume) && volume->valuedouble>=0 && volume->valuedouble<=100) {
+        // The same packet sets the volume or the backlight from the phone.
+        atomic_store(&s.remote_volume,(int)volume->valuedouble+1);
+    } else if (cJSON_IsNumber(level) && level->valuedouble>=0 &&
+               level->valuedouble<(double)AV_BRIGHTNESS_COUNT) {
+        atomic_store(&s.remote_brightness,(int)level->valuedouble+1);
     } else {
         ESP_LOGW(TAG,"SWITCH ignored");
     }
@@ -1264,6 +1278,21 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
     cJSON_Delete(j);
     return ok;
 }
+// Report the volume and backlight (AV_STATUS). Best effort: a lost report only
+// leaves the phone showing an old value until the next change or session.
+static void send_status(int fd, uint32_t session) {
+    char body[48];
+    int n=snprintf(body,sizeof(body),"{\"volume\":%u,\"brightness\":%u}",
+                   (unsigned)s.volume,(unsigned)s.menu.brightness);
+    if (n<=0 || n>=(int)sizeof(body)) return;
+    uint8_t wire[AV_HEADER_BYTES];
+    av_header_t h={.type=AV_STATUS,.session=session,.length=(uint32_t)n};
+    av_header_encode(wire,&h);
+    if (!io_all(fd,wire,sizeof(wire),true,1000) || !io_all(fd,body,(size_t)n,true,1000)) {
+        ESP_LOGW(TAG,"STATUS not sent");
+    }
+}
+
 static bool hello(int fd) {
     cJSON *j=cJSON_CreateObject();
     if (!j) return false;
@@ -1281,6 +1310,11 @@ static bool hello(int fd) {
         // unknown kind and drops the session, so the server sends it only to a
         // device that announced it.
         cJSON_AddNumberToObject(j,"switch",1) &&
+        // The volume and backlight now, for the phone remote's sliders; their
+        // presence also says AV_SWITCH may carry "volume" and "brightness".
+        cJSON_AddNumberToObject(j,"volume",s.volume) &&
+        cJSON_AddNumberToObject(j,"brightness",s.menu.brightness) &&
+        cJSON_AddNumberToObject(j,"brightness_steps",AV_BRIGHTNESS_COUNT) &&
         (AV_PAIRING_TOKEN[0]=='\0' ||
          cJSON_AddStringToObject(j,"token",AV_PAIRING_TOKEN)!=NULL);
     char *body=ok ? cJSON_PrintUnformatted(j) : NULL;
@@ -1336,6 +1370,12 @@ static void receive_task(void *arg) {
     unsigned header_deadline_ms=2000;
     int64_t last_header_us=0;
     while (!stopping()) {
+        // Tell the server about a volume or backlight change, between packets:
+        // this task owns the socket, so nothing else writes to it mid-packet.
+        if (stream.configured && atomic_exchange(&s.status_dirty,false)) {
+            s_rx_stage="status-send";
+            send_status(fd,stream.session);
+        }
         s_rx_stage="header-read";
         memset(&h,0,sizeof(h));
         if (!io_all(fd,wire,sizeof(wire),false,header_deadline_ms)) break;
@@ -3474,6 +3514,7 @@ static void process_key(const key_ev_t *item) {
             // and writing to flash takes long enough to delay the next press.
             // The session loop picks the flag up when it is otherwise idle.
             atomic_store(&s.settings_dirty,true);
+            atomic_store(&s.status_dirty,true);
             // Keep the page up while the viewer is still adjusting, the same way
             // the list refreshes its own timeout on every scroll.
             ui_menu_keep_open(&s.menu);
@@ -3557,6 +3598,7 @@ static void process_key(const key_ev_t *item) {
         ui_menu_show_volume(&s.menu,s.volume);
         // Remember it, but not from here: see settings_dirty.
         atomic_store(&s.settings_dirty,true);
+        atomic_store(&s.status_dirty,true);
         return;
     }
     if (item->ev==BSP_BTN_DOUBLE) {
@@ -3987,6 +4029,22 @@ static bool pump_keys(uint32_t wait_ms) {
         process_key(&item);
     }
     char chosen[AV_CHANNEL_ID_MAX];
+    // The phone's volume and backlight, applied as a key press would be: the
+    // same indicator, saved the same way, and reported back.
+    int asked=atomic_exchange(&s.remote_volume,0);
+    if (asked>0) {
+        s.volume=(uint8_t)(asked-1);
+        ui_menu_show_volume(&s.menu,s.volume);
+        atomic_store(&s.settings_dirty,true);
+        atomic_store(&s.status_dirty,true);
+    }
+    asked=atomic_exchange(&s.remote_brightness,0);
+    if (asked>0 && (unsigned)(asked-1)<AV_BRIGHTNESS_COUNT) {
+        s.menu.brightness=(unsigned)(asked-1);
+        bsp_display_backlight(av_brightness_percent(s.menu.brightness));
+        atomic_store(&s.settings_dirty,true);
+        atomic_store(&s.status_dirty,true);
+    }
     // The server's request, applied exactly as if the viewer had picked the
     // channel from the list: same checks, same banner.
     if (atomic_load(&s.remote_switch)) {

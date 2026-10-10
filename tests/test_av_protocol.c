@@ -57,6 +57,8 @@ static void header_tests(void) {
                               AV_AUDIO_BYTES+1,
                               AV_CONTROL_MAX-1,AV_CONTROL_MAX,AV_CONTROL_MAX+1,
                               AV_VIDEO_MAX,UINT32_MAX};
+    // AV_STATUS goes the other way (device to server); it is only ever encoded.
+    assert(AV_STATUS==AV_SWITCH+1);
     // AV_SWITCH is a control packet: the same bounds as CONFIG.
     for(unsigned type=1;type<=AV_SWITCH;type++) {
         if(type==AV_END || type==AV_PALETTE) continue;

@@ -248,7 +248,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(names, ["我的投屏", "UP 主", "央视", "卫视", "其他"])
         self.assertEqual(state["now"], {"channel": "ch001", "online": True, "switch": True,
                                         "group": "卫视", "name": "湖南卫视", "n": 1, "title": "",
-                                        "since": self.now, "video": None})
+                                        "since": self.now, "video": None, "device": None})
         creators = next(g for g in state["groups"] if g["name"] == "UP 主")["channels"]
         self.assertEqual(creators, [{"id": "up01", "name": "UP42", "n": 1}])
 
@@ -261,6 +261,23 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/switch", {"channel": "nope"})["error"], "没有这个台")
         self.assertEqual(self.call("POST", "/api/switch", {"channel": "ch000"}), {"ok": True, "at": self.now})
         self.assertEqual(events.read_event(self.events), (1, "switch", "ch000", None))
+
+    def test_device_volume_and_brightness(self):
+        from server import now_playing
+        self.assertEqual(self.call("POST", "/api/device", {"volume": 50})["error"], "小智没在线")
+        now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now)
+        self.assertIn("固件", self.call("POST", "/api/device", {"volume": 50})["error"])
+        now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now,
+                          device={"volume": 70, "brightness": 2, "steps": 5})
+        self.assertEqual(self.call("GET", "/api/state")["now"]["device"],
+                         {"volume": 70, "brightness": 2, "steps": 5})
+        self.assertTrue(self.call("POST", "/api/device", {"volume": 47})["ok"])
+        self.assertEqual(events.read_event(self.events), (1, "volume", "", 50), "rounded to a step of 10")
+        self.assertTrue(self.call("POST", "/api/device", {"brightness": 4})["ok"])
+        self.assertEqual(events.read_event(self.events), (2, "brightness", "", 4))
+        self.assertFalse(self.call("POST", "/api/device", {"brightness": 5})["ok"])
+        self.assertFalse(self.call("POST", "/api/device", {"volume": 120})["ok"])
+        self.assertFalse(self.call("POST", "/api/device", {})["ok"])
 
     def test_move_a_channel_to_another_group(self):
         self.assertEqual(self.call("POST", "/api/groups", {"channel": "ch002", "group": "音乐"}), {"ok": True})
@@ -585,12 +602,13 @@ class PageFieldTests(unittest.TestCase):
 
     def test_page_fields_are_served(self):
         script = web.PAGE.split("<script>", 1)[1]
-        used = set(re.findall(r"\b(?:data|now|data\.now|data\.now\.video|data\.youtube|v|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
+        used = set(re.findall(r"\b(?:data|now|data\.now|data\.now\.video|data\.now\.device|data\.youtube|v|d|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
         used -= {"length", "find", "map", "includes"}
         served = {"now", "groups", "creators", "cast", "history", "group_names", "youtube", "state",
                   "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
                   "site", "at", "since", "left", "total", "ok", "error", "creator",
-                  "video", "position", "duration", "paused", "started"}
+                  "video", "position", "duration", "paused", "started",
+                  "device", "volume", "brightness", "steps"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

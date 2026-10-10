@@ -37,6 +37,8 @@ class Kind(IntEnum):
     PALETTE = 7
     # 服务端要求设备切到另一个频道（JSON {"channel": id}）；只发给 HELLO 里声明 "switch": 1 的设备。
     SWITCH = 8
+    # 设备上报自己的音量、亮度（JSON {"volume", "brightness"}），变化时发；方向与其他包相反。
+    STATUS = 9
 
 # 唯一使用的标志位，仅用于视频：本包是上一包所起始那一帧的后续条带。
 # 同一帧的多个包共用一个时间戳，需要此标志与重复帧区分。
@@ -71,7 +73,7 @@ class Packet:
 
 
 def validate_length(kind: Kind, size: int) -> None:
-    if kind in (Kind.HELLO, Kind.CONFIG, Kind.ERROR, Kind.SWITCH):
+    if kind in (Kind.HELLO, Kind.CONFIG, Kind.ERROR, Kind.SWITCH, Kind.STATUS):
         valid = 0 < size <= CONTROL_MAX
     elif kind == Kind.PCM:
         valid = (size == AUDIO_BYTES or size == AUDIO_PCM_BYTES)

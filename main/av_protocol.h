@@ -236,7 +236,9 @@
 // AV_SWITCH: the server asks the device to change to the channel named in its
 // JSON payload ({"channel": id}); sent only to a device whose HELLO carried
 // "switch": 1, because firmware without it refuses an unknown kind.
-enum { AV_HELLO=1, AV_CONFIG, AV_AUDIO, AV_VIDEO, AV_END, AV_ERROR, AV_PALETTE, AV_SWITCH };
+// AV_STATUS: device to server, {"volume", "brightness"}, sent when either changes
+// so the phone remote shows the device's real values. Never received here.
+enum { AV_HELLO=1, AV_CONFIG, AV_AUDIO, AV_VIDEO, AV_END, AV_ERROR, AV_PALETTE, AV_SWITCH, AV_STATUS };
 // The only flag in use, and only on AV_VIDEO: this packet carries further
 // stripes of the frame the previous one started, rather than a new frame. A
 // frame cut into several packets sends them all with the same timestamp, and

@@ -41,6 +41,12 @@
   .screen .ti { font: 14px/1.4 var(--serif); color: var(--dim); margin-top: 2px; }
   .screen.off .ch { color: var(--faint); text-shadow: none; }
 
+  .dials { margin: -2px 16px 10px; }
+  .dial { display: flex; align-items: center; gap: 10px; }
+  .dial span:first-child { flex: none; width: 34px; font: 14px var(--serif); color: var(--dim); }
+  .dial input { flex: 1; }
+  .dial b { flex: none; width: 44px; text-align: right; font: 600 13px var(--mono); color: var(--amber); }
+  .dials.off b { color: var(--faint); }
   .player { margin: -2px 14px 12px; }
   .player[hidden] { display: none; }
   input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; padding: 0; border: 0; }
@@ -141,6 +147,10 @@
         <div class="top"><span class="ch" id="ch">— —</span><span class="grp" id="grp"></span></div>
         <div class="nm" id="nm">正在连接…</div>
         <div class="ti" id="ti"></div>
+      </div>
+      <div class="dials" id="dials">
+        <label class="dial"><span>音量</span><input type="range" id="vol" min="0" max="100" step="10" value="0"><b id="volv">--</b></label>
+        <label class="dial"><span>亮度</span><input type="range" id="bri" min="0" max="4" step="1" value="0"><b id="briv">--</b></label>
       </div>
       <div class="player" id="player" hidden>
         <input type="range" id="seek" min="0" max="100" step="1" value="0">
@@ -449,10 +459,24 @@ function renderCreators() {
   }
 }
 
+// 滑条：小智报告的音量和亮度；拖动时不被刷新覆盖。
+let adjusting_dial = "";
+function renderDials() {
+  const d = data.now.online ? data.now.device : null;
+  $("dials").className = "dials" + (d ? "" : " off");
+  $("vol").disabled = !d;
+  $("bri").disabled = !d;
+  if (!d) { $("volv").textContent = "--"; $("briv").textContent = "--"; return; }
+  $("bri").max = String(Math.max(0, d.steps - 1));
+  if (adjusting_dial !== "vol") { $("vol").value = String(d.volume); $("volv").textContent = d.volume + "%"; }
+  if (adjusting_dial !== "bri") { $("bri").value = String(d.brightness); $("briv").textContent = (d.brightness + 1) + "/" + d.steps; }
+}
+
 function render() {
   if (!data) return;
   renderNotice();
   renderScreen();
+  renderDials();
   renderPlayer();
   renderGroups();
   renderChannels();
@@ -538,6 +562,27 @@ $("seek").addEventListener("change", () => {
   control("api/seek", { position: Number($("seek").value) });
 });
 setInterval(() => { if (data && !document.hidden) renderPlayer(); }, 1000);
+
+function dial(id, key, label) {
+  const input = $(id);
+  input.addEventListener("input", () => {
+    adjusting_dial = id;
+    $(id + "v").textContent = label(Number(input.value));
+  });
+  input.addEventListener("change", async () => {
+    const body = {};
+    body[key] = Number(input.value);
+    try {
+      const answer = await call("POST", "api/device", body);
+      if (!answer.ok) toast(answer.error, true);
+    } finally {
+      // 小智收到后会报回新值；先等一下再允许刷新覆盖。
+      setTimeout(() => { adjusting_dial = ""; refresh(); }, 1500);
+    }
+  });
+}
+dial("vol", "volume", (v) => v + "%");
+dial("bri", "brightness", (v) => (v + 1) + "/" + (data && data.now.device ? data.now.device.steps : "?"));
 
 refresh();
 schedule(5000);

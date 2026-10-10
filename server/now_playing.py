@@ -19,13 +19,14 @@ GRACE_S = 15.0
 
 
 def write(path: Path | None, channel: str, connected: bool, switch: bool,
-          now: float | None = None, since: float = 0.0) -> None:
-    """since：这次会话开始的时间。手机据此分辨小智是不是已经切到它要的台（新会话）。"""
+          now: float | None = None, since: float = 0.0, device: dict | None = None) -> None:
+    """since：这次会话开始的时间。手机据此分辨小智是不是已经切到它要的台（新会话）。
+    device：设备报告的 {"volume", "brightness", "steps"}；旧固件不报，为 None。"""
     if path is None:
         return
     path = Path(path)
     record = {"channel": channel, "connected": bool(connected), "switch": bool(switch),
-              "at": time.time() if now is None else now, "since": float(since)}
+              "at": time.time() if now is None else now, "since": float(since), "device": device}
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(json.dumps(record), encoding="utf-8")
@@ -50,5 +51,10 @@ def read(path: Path | None, now: float | None = None) -> dict:
         since = float(data.get("since") or 0.0)
     except (TypeError, ValueError):
         since = 0.0
+    device = data.get("device")
+    if not (isinstance(device, dict) and all(isinstance(device.get(k), int)
+                                             for k in ("volume", "brightness", "steps"))):
+        device = None
     return {"channel": str(data.get("channel") or ""), "online": online,
-            "switch": bool(data.get("switch")) and online, "since": since}
+            "switch": bool(data.get("switch")) and online, "since": since,
+            "device": {k: device[k] for k in ("volume", "brightness", "steps")} if device else None}

@@ -285,6 +285,7 @@ class AVServer:
         events_file = os.environ.get(RELAY_EVENTS_ENV)
         self.switch_watcher = SwitchWatcher(Path(events_file) if events_file else None)
         self.device_switches = False
+        self.device_status: dict | None = None
         # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
         self.pending_switch = ""
         # 给手机网页看的「正在播放」；不设则不写。
@@ -424,9 +425,25 @@ class AVServer:
         except EOFError:
             # 无 END 的断开原样抛出，由 serve() 分类。
             raise
+        if packet.kind == Kind.STATUS:
+            self._take_status(packet)
+            return False
         if packet.kind != Kind.END:
-            raise ProtocolError("only END allowed while playing")
+            raise ProtocolError("only END or STATUS allowed while playing")
         return True
+
+    def _take_status(self, packet: Packet) -> None:
+        """设备的音量或亮度变了：记下来给手机看，会话照常。"""
+        report = json_object(packet.payload)
+        if self.device_status is not None:
+            for key in ("volume", "brightness"):
+                if isinstance(report.get(key), int):
+                    self.device_status[key] = report[key]
+            self._write_now_playing(True)
+
+    def _write_now_playing(self, connected: bool) -> None:
+        now_playing.write(self.now_playing_path, self.channel_name, connected, self.device_switches,
+                          since=getattr(self, "_session_since", 0.0), device=self.device_status)
 
     def _wait_until(self, connection: socket.socket, target: float, session: int) -> bool:
         self.phase = "schedule_wait"
@@ -446,8 +463,13 @@ class AVServer:
                     # select 报告可读但数据尚不可取：不是对端错误，继续等待。
                     self.phase = "schedule_wait"
                     continue
+                if packet.kind == Kind.STATUS:
+                    # 等待、重连、暂停中也可能调音量：记下后接着等。
+                    self._take_status(packet)
+                    self.phase = "schedule_wait"
+                    continue
                 if packet.kind != Kind.END:
-                    raise ProtocolError("only END allowed after HELLO")
+                    raise ProtocolError("only END or STATUS allowed after HELLO")
                 return False
             if time.monotonic() >= target:
                 return True
@@ -563,8 +585,7 @@ class AVServer:
                                            channel.palette))
             self.logger(f"session={session} state=live channel={channel_id}")
             self._session_since = time.time()
-            now_playing.write(self.now_playing_path, channel_id, True, self.device_switches,
-                              since=self._session_since)
+            self._write_now_playing(True)
             self._now_playing_at = time.monotonic()
             self.phase = "live_prebuffer"
             deadline = time.monotonic() + STARTUP_WAIT_S
@@ -598,8 +619,7 @@ class AVServer:
             self.set_session_state(SessionState.PLAYING, session, reason="session_started")
             self._pace_live(connection, channel, session, resume)
         finally:
-            now_playing.write(self.now_playing_path, channel_id, False, self.device_switches,
-                              since=getattr(self, "_session_since", 0.0))
+            self._write_now_playing(False)
             self.set_session_state(SessionState.CLOSED, session, reason="session_closed",
                                    audio_sent=self.audio_sent, video_sent=self.video_sent)
             try:
@@ -776,12 +796,12 @@ class AVServer:
                 self._reject_waiting()
             if connection in readable:
                 self.phase = "control_receive"
-                self._device_left(connection, session)
-                return
+                # 设备发来的可能是 END（要走了）或 STATUS（音量、亮度变了，会话照常）。
+                if self._device_left(connection, session):
+                    return
             if now - getattr(self, "_now_playing_at", 0.0) >= now_playing.REFRESH_S:
                 self._now_playing_at = now
-                now_playing.write(self.now_playing_path, self.channel_name, True,
-                                  self.device_switches, since=getattr(self, "_session_since", 0.0))
+                self._write_now_playing(True)
             decision = self.switch_watcher.poll(self.channel_name, now)
             if decision is not None and self.device_switches:
                 kind, target = decision
@@ -801,6 +821,12 @@ class AVServer:
                     if not hold_on_notice(time.monotonic(), paused=True):
                         return
                     now = time.monotonic()
+                elif kind in ("volume", "brightness") and self.device_status is not None:
+                    # 手机调音量、亮度：借用 SWITCH 包，内容不同；只认识 channel 的固件会忽略它。
+                    self.phase = "control_send"
+                    send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
+                                                   json_bytes({kind: value})))
+                    seq += 1
             if getattr(self, "duration_ms", None) is not None and (now - origin) * 1000 >= self.duration_ms:
                 send_packet(connection, Packet(Kind.END, session, seq, 0))
                 return
@@ -1060,7 +1086,13 @@ class AVServer:
             # 视频中转增删 UP 主后会改写频道表；在会话之间重读，正在播放的会话不受影响。
             live.reload_channels_if_changed()
             # 旧固件不认识 SWITCH 包，收到会断开，所以只发给 HELLO 里声明了的设备。
-            self.device_switches = json_object(hello.payload).get("switch") == 1
+            greeting = json_object(hello.payload)
+            self.device_switches = greeting.get("switch") == 1
+            # 新固件在 HELLO 里报音量、亮度；报了的才接受手机的调节。
+            self.device_status = None
+            if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):
+                self.device_status = {"volume": greeting["volume"], "brightness": greeting["brightness"],
+                                      "steps": greeting["brightness_steps"]}
             # 设备按名选择频道，换频道即新连接；名称缺失或不在表内时回退到 --channel 指定的默认频道。
             # 重读后上次的频道可能已被删除，此时再退到表中的默认频道。
             requested = json_object(hello.payload).get("channel")

@@ -269,5 +269,90 @@ class PauseTests(unittest.TestCase):
         self.assertGreaterEqual(len(factory.created), 2, "resume started a new source")
 
 
+class DeviceControlTests(unittest.TestCase):
+    """Volume and brightness: the device reports them, the phone sets them."""
+
+    setUp = SessionTests.setUp
+    tearDown = SessionTests.tearDown
+
+    def session(self, hello_extra, script):
+        """Run a session; `script(client, session, elapsed)` may send packets. Returns SWITCH payloads."""
+        import json
+        import socket
+        import threading
+        import time
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_live_transcode import StubFactory
+        from server.protocol import Kind, Packet, json_bytes, receive_packet, send_packet
+        from server.tv_server import AVServer
+
+        token = b"t" * 32
+        self.playing = Path(self.tmp.name) / "now-playing.json"
+        import os
+        os.environ["TV_NOW_PLAYING_FILE"] = str(self.playing)
+        try:
+            server = AVServer(None, token, "127.0.0.1", 0, 60000, logger=lambda _m: None)
+        finally:
+            os.environ.pop("TV_NOW_PLAYING_FILE", None)
+        server.live_enabled = True
+        server.channel_factory = StubFactory()
+        thread = threading.Thread(target=server.serve, daemon=True)
+        thread.start()
+        self.assertTrue(server.ready.wait(5))
+        client = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+        client.setblocking(False)
+        hello = {"version": 1, "token": token.decode(), "channel": "ch000", "switch": 1}
+        hello.update(hello_extra)
+        payloads, session = [], None
+        start = time.monotonic()
+        try:
+            send_packet(client, Packet(Kind.HELLO, 0, 0, 0, json_bytes(hello)))
+            while time.monotonic() - start < 3.0:
+                if session:
+                    script(client, session, time.monotonic() - start)
+                try:
+                    packet = receive_packet(client, timeout=0.2, expected_session=session)
+                except TimeoutError:
+                    continue
+                session = packet.session
+                if packet.kind == Kind.SWITCH:
+                    payloads.append(json.loads(packet.payload))
+        except EOFError:
+            pass
+        finally:
+            server.stop.set()
+            client.close()
+            thread.join(timeout=3)
+        return payloads
+
+    def test_status_is_recorded_and_controls_are_sent(self):
+        from server import now_playing
+        from server.protocol import Kind, Packet, json_bytes, send_packet
+        sent = {"status": False, "events": False}
+
+        def script(client, session, elapsed):
+            if elapsed > 0.5 and not sent["status"]:
+                sent["status"] = True
+                send_packet(client, Packet(Kind.STATUS, session, 0, 0,
+                                           json_bytes({"volume": 40, "brightness": 1})))
+            if elapsed > 1.0 and not sent["events"]:
+                sent["events"] = True
+                self.seen_after_status = now_playing.read(self.playing)["device"]
+                events.write_event(self.events, "volume", value=90)
+                events.write_event(self.events, "brightness", value=3)
+
+        payloads = self.session({"volume": 70, "brightness": 2, "brightness_steps": 5}, script)
+        self.assertEqual(self.seen_after_status, {"volume": 40, "brightness": 1, "steps": 5})
+        self.assertIn({"volume": 90}, payloads)
+        self.assertIn({"brightness": 3}, payloads)
+
+    def test_no_controls_for_firmware_without_them(self):
+        def script(client, session, elapsed):
+            if elapsed > 0.5 and not getattr(self, "wrote", False):
+                self.wrote = True
+                events.write_event(self.events, "volume", value=90)
+        self.assertEqual(self.session({}, script), [])
+
+
 if __name__ == "__main__":
     unittest.main()
