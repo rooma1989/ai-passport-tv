@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import adpcm, frames, perceptual, pts
+from . import adpcm, channel_groups, frames, perceptual, pts
 from .timeline import (BASIS_COMMON_DECODE, ContentTimeline,
                        SessionClock, SourceState, VERDICT_IN_HOLE,
                        VERDICT_PLACED)
@@ -76,6 +76,8 @@ CHANNELS_FILE = "channels.txt"
 CHANNELS_ENV = "TV_CHANNELS_FILE"
 # 视频中转生成的频道表（UP 主频道），排在主表前面；见 server/relay/table.py。
 RELAY_CHANNELS_ENV = "TV_RELAY_CHANNELS_FILE"
+# 手机上调整过的频道分组（server/channel_groups.py），每次下发频道列表时读取。
+GROUPS_ENV = "TV_CHANNEL_GROUPS_FILE"
 # 内置兜底频道，取电视台自有的公开流。
 BUILTIN_CHANNELS = {
     "cgtn": ("CGTN", "https://english-livebkali.cgtn.com/live/encgtn.m3u8"),
@@ -144,7 +146,8 @@ def parse_channels(text: str) -> tuple[dict[str, str], dict[str, str]]:
         raise ValueError("channel table contains no channels")
     # 数量合规但列表超过 CONFIG 包上限时，设备收不到任何频道（JSON 转义后每个汉字占 6 字节）；
     # 与数量超限一样只告警，不拒绝启动。
-    packet = len(json.dumps({"channel_list": [{"id": k, "name": labels[k]}
+    packet = len(json.dumps({"groups": list(channel_groups.GROUPS),
+                             "channel_list": [{"id": k, "name": labels[k], "g": 0}
                                               for k in channels]},
                             ensure_ascii=True, separators=(",", ":")).encode("ascii"))
     if packet > TV_CONTROL_MAX or dropped:
@@ -258,6 +261,21 @@ def reload_channels_if_changed() -> bool:
 
 def channel_list() -> list[dict]:
     return [{"id": key, "name": CHANNEL_LABELS.get(key, key)} for key in CHANNELS]
+
+
+def channel_config() -> dict:
+    """下发给设备的频道列表：分组名只发一次（空组不发），每个台带分组编号 g。
+
+    每个台都带分组名会让列表超过 TV_CONTROL_MAX；编号只多几个字节。不认识 g 的旧固件会忽略它。
+    """
+    path = os.environ.get(GROUPS_ENV)
+    overrides = channel_groups.load_overrides(Path(path) if path else None)
+    entries = [(key, CHANNEL_LABELS.get(key, key)) for key in CHANNELS]
+    of = {key: channel_groups.group_of(key, name, overrides) for key, name in entries}
+    used = [g for g in channel_groups.GROUPS if g in of.values()]
+    index = {g: n for n, g in enumerate(used)}
+    return {"groups": used,
+            "channel_list": [{"id": key, "name": name, "g": index[of[key]]} for key, name in entries]}
 
 
 load_channels()

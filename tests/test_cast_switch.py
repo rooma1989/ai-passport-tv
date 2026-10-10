@@ -63,6 +63,14 @@ class WatcherTests(unittest.TestCase):
         events.write_event(self.path, "return")
         self.assertIsNone(watcher.poll("cast", 2.0))
 
+    def test_switch_from_the_phone(self):
+        watcher = SwitchWatcher(self.path)
+        watcher.poll("ch001", 1.0)
+        events.write_event(self.path, "switch", channel="ch013")
+        self.assertEqual(watcher.poll("ch001", 2.0), ("switch", "ch013"))
+        events.write_event(self.path, "switch", channel="ch013")
+        self.assertIsNone(watcher.poll("ch013", 3.0))
+
     def test_no_file_configured(self):
         self.assertIsNone(SwitchWatcher(None).poll("ch001", 5.0))
 

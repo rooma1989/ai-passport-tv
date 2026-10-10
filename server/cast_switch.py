@@ -18,7 +18,7 @@ class SwitchWatcher:
     def __init__(self, path: Path | None):
         self.path = Path(path) if path else None
         current = read_event(self.path) if self.path else None
-        self.seen = current[0] if current else 0
+        self.seen = current.seq if current else 0
         # 投屏前设备所在的台，投屏播完切回这里。
         self.previous = ""
         self._next_poll = 0.0
@@ -29,9 +29,12 @@ class SwitchWatcher:
             return None
         self._next_poll = now + POLL_INTERVAL_S
         event = read_event(self.path)
-        if event is None or event[0] <= self.seen:
+        if event is None or event.seq <= self.seen:
             return None
-        self.seen, action = event
+        self.seen, action = event.seq, event.action
+        if action == "switch":
+            # 手机遥控换台；已经在这个台就不动。
+            return ("switch", event.channel) if event.channel != current else None
         if action == "cast":
             if current == CAST_ID:
                 return ("restart", None)

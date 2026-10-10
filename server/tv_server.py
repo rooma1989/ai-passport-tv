@@ -7,6 +7,7 @@ import errno
 import hmac
 import ipaddress
 import os
+import re
 import secrets
 import select
 import signal
@@ -37,7 +38,7 @@ from .media import (AUDIO_CHUNK_MS, AUDIO_LEAD_MS, DURATION_MS, FPS,
 from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packet,
                        ProtocolError, json_bytes, json_object, receive_packet,
                        send_packet, _write_slice)
-from . import reconnect
+from . import now_playing, reconnect
 from .cast_switch import SwitchWatcher
 
 # 替代 --token-file 的环境变量名；只有令牌值需与固件一致，变量名无需一致。
@@ -88,6 +89,11 @@ def local_ipv4(address: str) -> bool:
 ALLOW_PUBLIC_ENV = "TV_ALLOW_PUBLIC"
 # 视频中转的投屏事件文件（server/relay/events.py）；不设则不做投屏切台。
 RELAY_EVENTS_ENV = "TV_RELAY_EVENTS_FILE"
+NOW_PLAYING_ENV = "TV_NOW_PLAYING_FILE"
+# 中转写的手机遥控地址（大写，二维码用字母数字模式），随 CONFIG 发给设备画在状态页上。
+REMOTE_URL_ENV = "TV_REMOTE_URL_FILE"
+REMOTE_URL_MAX = 64
+_REMOTE_URL = re.compile(r"^HTTPS?://[A-Z0-9.:/%-]+$")
 
 
 def peer_allowed(address: str, allow_public: bool) -> bool:
@@ -277,6 +283,11 @@ class AVServer:
         events_file = os.environ.get(RELAY_EVENTS_ENV)
         self.switch_watcher = SwitchWatcher(Path(events_file) if events_file else None)
         self.device_switches = False
+        # 给手机网页看的「正在播放」；不设则不写。
+        playing_file = os.environ.get(NOW_PLAYING_ENV)
+        self.now_playing_path = Path(playing_file) if playing_file else None
+        remote_file = os.environ.get(REMOTE_URL_ENV)
+        self.remote_url_path = Path(remote_file) if remote_file else None
         self.live_note = ""
         self.ffmpeg = "ffmpeg"
         # 可注入，便于不依赖 ffmpeg 和网络测试发送循环。
@@ -438,6 +449,18 @@ class AVServer:
                 return True
         return False
 
+    def _channel_payload(self) -> dict:
+        """CONFIG 里的频道部分：分组、频道列表，有遥控地址时再加 remote_url。"""
+        payload = live.channel_config()
+        if self.remote_url_path is not None:
+            try:
+                url = self.remote_url_path.read_text(encoding="ascii").strip()
+            except (OSError, UnicodeError):
+                url = ""
+            if len(url) <= REMOTE_URL_MAX and _REMOTE_URL.match(url):
+                payload["remote_url"] = url
+        return payload
+
     def make_channel(self) -> LiveChannel:
         """为会话的频道 id 创建新的未启动频道。"""
         return self.channel_factory(CHANNELS[self.channel_name], self.ffmpeg,
@@ -462,7 +485,7 @@ class AVServer:
             send_packet(connection, Packet(Kind.CONFIG, session, 0, 0,
                                            json_bytes(dict(CONFIG, session=session,
                                                            channel=channel_id,
-                                                           channel_list=channel_list()))))
+                                                           **self._channel_payload()))))
             self.phase = "live_palette"
             # 首帧前必须有调色板，缺失则设备无色可用，画面全黑。
             try:
@@ -497,6 +520,8 @@ class AVServer:
             send_packet(connection, Packet(Kind.PALETTE, session, 1, 0,
                                            channel.palette))
             self.logger(f"session={session} state=live channel={channel_id}")
+            now_playing.write(self.now_playing_path, channel_id, True, self.device_switches)
+            self._now_playing_at = time.monotonic()
             self.phase = "live_prebuffer"
             deadline = time.monotonic() + STARTUP_WAIT_S
             while not failed and not channel.prebuffered() and time.monotonic() < deadline:
@@ -527,6 +552,7 @@ class AVServer:
             self.set_session_state(SessionState.PLAYING, session, reason="session_started")
             self._pace_live(connection, channel, session, resume)
         finally:
+            now_playing.write(self.now_playing_path, channel_id, False, self.device_switches)
             self.set_session_state(SessionState.CLOSED, session, reason="session_closed",
                                    audio_sent=self.audio_sent, video_sent=self.video_sent)
             try:
@@ -704,6 +730,10 @@ class AVServer:
                 self.phase = "control_receive"
                 self._device_left(connection, session)
                 return
+            if now - getattr(self, "_now_playing_at", 0.0) >= now_playing.REFRESH_S:
+                self._now_playing_at = now
+                now_playing.write(self.now_playing_path, self.channel_name, True,
+                                  self.device_switches)
             decision = self.switch_watcher.poll(self.channel_name, now)
             if decision is not None and self.device_switches:
                 kind, target = decision
