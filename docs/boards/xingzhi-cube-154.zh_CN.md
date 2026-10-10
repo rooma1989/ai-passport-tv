@@ -124,6 +124,13 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
   媒体服务的单元加了 `TV_CHANNEL_GROUPS_FILE`、`TV_NOW_PLAYING_FILE`、`TV_REMOTE_URL_FILE`（两个模板里都有）。
   nginx 需要 `packaging/nginx/tv-relay.conf` 里的 `/tv/` 和 `/TV/R/` 两段。
 
+- **播放与设备控制**：UP 主台和投屏台上，「遥控」标签有进度条、退 / 进 30 秒、暂停 / 继续和下一个：中转掐断它在推的流，媒体服务的解码器
+  自己从新位置重新打开；暂停时设备停在 PAUSED 画面并持续静音，最长 30 分钟。音量、亮度滑条显示设备的当前值：固件在 HELLO 里、以及每次变化时用
+  STATUS 包（类型 9）上报，手机的调节由带 `volume` 或 `brightness` 的 AV_SWITCH 发给设备。设计见
+  [`docs/superpowers/specs/2026-10-10-playback-and-device-controls-design.zh_CN.md`](../superpowers/specs/2026-10-10-playback-and-device-controls-design.zh_CN.md)。
+- **自动保养**：YouTube 节点每 6 小时检查一次测试视频，cookies 需要更换时网页会提示；`packaging/yt-relay/yt-dlp-update.timer` 每周更新
+  yt-dlp，新版能解析测试视频才替换。
+
 拿到密钥链接、设备上的二维码或已登录手机的人，都能控制设备、增删 UP 主。
 
 ## 状态栏与配网画面

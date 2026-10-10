@@ -163,6 +163,18 @@ The relay's page is a remote for the device, at `https://<site>/tv/`. Design:
   (both templates have them). nginx needs the `/tv/` and `/TV/R/` locations in
   `packaging/nginx/tv-relay.conf`.
 
+- **Playback and device controls.** On creator channels and casts the Remote tab
+  has a progress bar, back/forward 30 s, pause/resume and next: the relay cuts
+  the stream it serves and the media server's decoder reopens it at the new
+  place; a pause holds the device on a PAUSED frame with silence for up to
+  30 minutes. Volume and brightness sliders show the device's values: the
+  firmware reports them in HELLO and in a STATUS packet (kind 9) on every change,
+  and takes the phone's values in an AV_SWITCH carrying `volume` or `brightness`.
+  Design: [`docs/superpowers/specs/2026-10-10-playback-and-device-controls-design.md`](../superpowers/specs/2026-10-10-playback-and-device-controls-design.md).
+- **Upkeep.** The YouTube node checks a test video every 6 hours and the page
+  warns when its cookies need replacing; `packaging/yt-relay/yt-dlp-update.timer`
+  installs a new yt-dlp weekly only after it resolves the test video.
+
 Anyone holding the key link, the device's code or a signed-in phone can control
 the device and edit its creators.
 
