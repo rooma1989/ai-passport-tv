@@ -171,6 +171,13 @@ The relay's page is a remote for the device, at `https://<site>/tv/`. Design:
   firmware reports them in HELLO and in a STATUS packet (kind 9) on every change,
   and takes the phone's values in an AV_SWITCH carrying `volume` or `brightness`.
   Design: [`docs/superpowers/specs/2026-10-10-playback-and-device-controls-design.md`](../superpowers/specs/2026-10-10-playback-and-device-controls-design.md).
+- **Pets.** The Pet line on the Remote tab opens the My pets page: pick one of the
+  eleven pets and apply it; the device stores it and shows it happy for two
+  seconds. `POST /api/pet` writes a `pet` event; the media server sends
+  `AV_SWITCH {"pet": i}` only to firmware whose HELLO carries `pet`, and the
+  firmware reports its pet in HELLO and STATUS. Seek and next also write
+  `seek`/`next` events, sent as `{"seek": s}`/`{"next": 1}` to firmware whose
+  HELLO says `"hint": 1`, which draws a box until the picture is back.
 - **Upkeep.** The YouTube node checks a test video every 6 hours and the page
   warns when its cookies need replacing; `packaging/yt-relay/yt-dlp-update.timer`
   installs a new yt-dlp weekly only after it resolves the test video.
@@ -178,17 +185,36 @@ The relay's page is a remote for the device, at `https://<site>/tv/`. Design:
 Anyone holding the key link, the device's code or a signed-in phone can control
 the device and edit its creators.
 
-## Status bar and setup screen
+## Screens
 
-- While playing, the top band shows signal bars, a battery icon and the charge;
-  the fill turns red below 20 % and a bolt appears while charging (GPIO38).
+The device UI follows a design handed over from Claude Design (a warm ink
+palette, pixel icons and eleven pets); the record of what was built is
+[`docs/superpowers/specs/2026-10-10-device-ui-redesign-design.md`](../superpowers/specs/2026-10-10-device-ui-redesign-design.md).
+`tools/render_ui/render_ui.sh out.png` draws every screen on a computer with the
+firmware's own drawing code and font, for checking a layout without flashing.
+
+- The top bar (rows 0-29) always shows a label at the left -- the channel number
+  and name while playing, otherwise the page's name -- and signal, battery and
+  charge at the right. The fill and number turn vermilion below 20 %, the
+  number blinks below 10 %, and a bolt appears while charging (GPIO38).
+- Menus and pages cover the whole picture area (rows 30-209) on an opaque panel;
+  the bottom bar (rows 210-239) carries the list's frame and receive rates or
+  the page's key hint.
+- Over the picture: the volume box (and the brightness box when the phone sets
+  it), the channel banner, the seek box and the pause band.
+- With no picture: joining Wi-Fi, connecting to the server (first time after
+  boot), opening a channel ("switching"), or the server did not answer. The pet
+  bobs on these screens.
+- The chosen pet is stored in NVS (`avsettings/pet`); the status page's long
+  press on the second key opens the picker.
 - Setup (status page, long-press the top key) is a set of pages turned with the
   top key (previous) and the second key (next); long-press OK leaves:
   1. a Wi-Fi QR code that a phone's **system camera** uses to join the hotspot
      (WeChat and Alipay cannot join Wi-Fi from a QR code);
   2. a QR code of the setup page `http://192.168.4.1`;
   3. a QR code of the help page, when `AV_HELP_URL` is set;
-  4. the hotspot, setup address, server and connection state as text.
+  4. the hotspot, setup address, server and connection state as text, and the
+     time left of the 15-minute setup window.
 - The status page carries the phone remote's QR code when the server sends
   one (`remote_url` in CONFIG, a version-2 code at 3 px a module); otherwise a
   small help-page QR code when `AV_HELP_URL` is set.
@@ -209,7 +235,7 @@ the device and edit its creators.
 | Top (printed VOL−) | volume +10% | next channel in the same group |
 | Second (printed VOL+) | volume −10% | previous channel in the same group |
 | Top 3 (BOOT) | channel list | brightness |
-| Any, double-click | status page (long-press the top key there for Wi-Fi setup) | |
+| Any, double-click | status page (there, long-press the top key for Wi-Fi setup, the second key for the pet picker) | |
 | Bottom | hardware reset; long press powers on/off | |
 
 The channel list has two levels when the server sends groups: it opens on the
