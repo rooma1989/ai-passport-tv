@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 
 STREAM_BASE = "http://127.0.0.1:8099/ch/"
+# 投屏台总在表里，排第一：设备只能被切到它频道列表里已有的 id。
+CAST_ID = "cast"
+CAST_LABEL = "我的投屏"
 # 频道名进设备的 CONFIG 包，每个汉字 JSON 转义后占 6 字节；截短以免整张表超过 TV_CONTROL_MAX。
 NAME_MAX = 10
 
@@ -16,7 +19,8 @@ def _label(creator) -> str:
 
 
 def render(creators) -> str:
-    lines = ["# 由视频中转生成，不要手改。每行： id | 显示名 | 地址"]
+    lines = ["# 由视频中转生成，不要手改。每行： id | 显示名 | 地址",
+             f"{CAST_ID} | {CAST_LABEL} | {STREAM_BASE}{CAST_ID}"]
     lines += [f"{c.id} | {_label(c)} | {STREAM_BASE}{c.id}" for c in creators]
     return "\n".join(lines) + "\n"
 

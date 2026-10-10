@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from server.relay import web
+from server.relay import events, web
 from server.relay.bilibili import BilibiliError
 from server.relay.state import State, Video
 
@@ -45,6 +45,15 @@ class FakeClient:
     def uploads(self, mid):
         return videos("new", "a", "b")
 
+    def video_id(self, text):
+        if self.down:
+            raise BilibiliError("offline")
+        match = re.search(r"/video/(BV\w{10})", text)
+        return match.group(1) if match else None
+
+    def video(self, bvid):
+        return Video(bvid=bvid, title=f"t{bvid}", duration=600, pubdate=0)
+
     def media_url(self, bvid):
         if self.down:
             raise BilibiliError("offline")
@@ -71,7 +80,9 @@ class WebTests(unittest.TestCase):
         self.started = []
         self.outcome = "ended"
         self.now = 1000.0
+        self.events = root / "relay-events.json"
         self.relay = web.Relay(self.state, self.client, self.table, "/opt/ff", KEY,
+                               events_out=self.events,
                                log=lambda _m: None, clock=lambda: self.now,
                                starter=self.fake_start, pumper=self.fake_pump)
         self.streams, self.manage = web.make_servers(self.relay, 0, 0)
@@ -199,6 +210,35 @@ class WebTests(unittest.TestCase):
         self.stream("up01")
         self.assertEqual(self.started[-1][0], "https://media.example/new.mp4")
 
+    # ---- cast ----
+
+    def test_cast_switches_plays_and_returns(self):
+        answer = self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
+        self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ"})
+        self.assertEqual(events.read_event(self.events), (1, "cast"))
+        self.assertEqual(self.call("GET", "/api/state")["cast"],
+                         {"title": "tBV1aZpw6DEKJ", "done": False})
+        self.outcome = "client_gone"
+        self.stream("cast")
+        self.assertEqual(self.started[-1], ("https://media.example/BV1aZpw6DEKJ.mp4", 0.0))
+        self.assertAlmostEqual(self.state.cast_position, 30.0, delta=1.0)
+        self.outcome = "ended"
+        self.stream("cast")
+        self.assertEqual(self.started[-1][1], 20.0)
+        self.assertTrue(self.state.cast_done)
+        self.assertEqual(events.read_event(self.events), (2, "return"))
+        # Chosen by hand afterwards, it plays again from the start.
+        self.stream("cast")
+        self.assertEqual(self.started[-1][1], 0.0)
+
+    def test_cast_errors(self):
+        self.assertFalse(self.call("POST", "/api/cast", {"url": "https://space.bilibili.com/42"})["ok"])
+        self.assertEqual(self.stream("cast")[0], 404)
+        self.assertIsNone(events.read_event(self.events))
+        self.client.down = True
+        offline = self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
+        self.assertIn("稍后", offline["error"])
+
     def test_unknown_channel(self):
         self.assertEqual(self.stream("up09")[0], 404)
         self.assertEqual(self.status(f"http://127.0.0.1:{self.streams.server_address[1]}/x")[0], 404)
@@ -209,8 +249,9 @@ class PageFieldTests(unittest.TestCase):
 
     def test_page_fields_are_served(self):
         script = web.PAGE.split("<script>", 1)[1]
-        used = set(re.findall(r"\b(?:c|data|answer|answer\.creator)\.(\w+)", script))
-        served = {"creators", "id", "name", "site", "left", "total", "ok", "error", "creator"}
+        used = set(re.findall(r"\b(?:c|data|answer|answer\.creator|data\.cast)\.(\w+)", script))
+        served = {"creators", "id", "name", "site", "left", "total", "ok", "error", "creator",
+                  "cast", "title", "done"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

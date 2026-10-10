@@ -16,9 +16,9 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import stream, table
+from . import events, stream, table
 from .bilibili import BilibiliError
-from .state import LIST_MAX_AGE_S, State
+from .state import LIST_MAX_AGE_S, RESUME_BACK_S, State
 
 # 一次请求里最多跳过几个放不了的视频，之后返回 503，让电视服务稍后再来。
 MAX_SKIPS = 3
@@ -26,7 +26,7 @@ MAX_SKIPS = 3
 MAX_QUICK_FAILURES = 3
 QUICK_FAILURE_S = 5.0
 MAX_BODY_BYTES = 4096
-_CHANNEL = re.compile(r"^/ch/(up\d\d)$")
+_CHANNEL = re.compile(r"^/ch/(up\d\d|cast)$")
 _CREATOR = re.compile(r"^/api/creators/(up\d\d)$")
 
 
@@ -34,9 +34,11 @@ class Relay:
     """播放与管理共用的逻辑；HTTP 处理类只做解析和回写。"""
 
     def __init__(self, state: State, client, channels_out: Path, ffmpeg: str, key: str,
+                 events_out: Path | None = None,
                  log=print, clock=time.time, monotonic=time.monotonic,
                  starter=stream.start, pumper=stream.pump):
         self.state = state
+        self.events_out = Path(events_out) if events_out is not None else None
         self.client = client
         self.channels_out = Path(channels_out)
         self.ffmpeg = ffmpeg
@@ -118,8 +120,42 @@ class Relay:
             self.state.save_position(cid, video.bvid, offset + elapsed)
         self.state.save()
 
+    def _event(self, action: str) -> None:
+        if self.events_out is None:
+            return
+        try:
+            seq = events.write_event(self.events_out, action)
+            self.log(f"事件 {seq} {action}")
+        except OSError as error:
+            self.log(f"写事件失败：{error}")
+
+    def open_cast(self):
+        """投屏视频：从保存的进度往回退一点续播；已播完的从头重播。"""
+        with self.state.lock:
+            video, done, position = self.state.cast, self.state.cast_done, self.state.cast_position
+        if video is None:
+            return 404
+        offset = 0.0 if done else max(0.0, position - RESUME_BACK_S)
+        try:
+            url = self.client.media_url(video.bvid)
+        except BilibiliError as error:
+            self.log(f"cast {video.bvid} 取不到地址：{error}")
+            return 503
+        return self.starter(self.ffmpeg, url, offset), video, offset
+
+    def finish_cast(self, video, offset: float, outcome: str, elapsed: float) -> None:
+        if outcome == "ended":
+            self.state.cast_ended(video.bvid)
+            self.state.save()
+            # 让电视服务把设备切回投屏前的台。
+            self._event("return")
+            return
+        self.state.save_cast_position(video.bvid, offset + elapsed)
+        self.state.save()
+
     def play(self, cid: str, handler) -> None:
-        opened = self.open_channel(cid)
+        cast = cid == table.CAST_ID
+        opened = self.open_cast() if cast else self.open_channel(cid)
         if isinstance(opened, int):
             handler.send_error(opened)
             return
@@ -140,12 +176,18 @@ class Relay:
 
         def tick(elapsed: float) -> None:
             ticked[0] = elapsed
-            self.state.save_position(cid, video.bvid, offset + elapsed)
+            if cast:
+                self.state.save_cast_position(video.bvid, offset + elapsed)
+            else:
+                self.state.save_position(cid, video.bvid, offset + elapsed)
             self.state.save()
 
         outcome = self.pumper(proc, handler.wfile.write, tick)
         elapsed = max(self.monotonic() - began, ticked[0])
-        self.finish(cid, video, offset, outcome, elapsed)
+        if cast:
+            self.finish_cast(video, offset, outcome, elapsed)
+        else:
+            self.finish(cid, video, offset, outcome, elapsed)
         self.log(f"{cid} 结束 {video.bvid} {outcome} 播了 {int(elapsed)} 秒")
 
     # ---- 管理 ----
@@ -158,7 +200,9 @@ class Relay:
             creators = [{"id": c.id, "name": c.name, "site": c.site,
                          "left": sum(v.bvid not in c.watched for v in c.videos),
                          "total": len(c.videos)} for c in self.state.creators]
-        return {"creators": creators}
+            cast = ({"title": self.state.cast.title, "done": self.state.cast_done}
+                    if self.state.cast is not None else None)
+        return {"creators": creators, "cast": cast}
 
     def add_creator(self, text: str) -> dict:
         text = (text or "").strip()
@@ -180,6 +224,27 @@ class Relay:
         self.write_table()
         self.log(f"添加 UP 主 {creator.id} {name}（mid {mid}，{len(videos)} 个投稿）")
         return {"ok": True, "creator": {"id": creator.id, "name": name}}
+
+    def cast(self, text: str) -> dict:
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "请先粘贴视频链接"}
+        try:
+            bvid = self.client.video_id(text)
+            if bvid is None:
+                return {"ok": False, "error": "看不懂这个链接。请粘贴 B 站视频链接（App 里“分享 → 复制链接”）"}
+            video = self.client.video(bvid)
+        except BilibiliError as error:
+            self.log(f"投屏失败：{error}")
+            if error.permanent:
+                return {"ok": False, "error": "这个视频放不了（可能已删除或需要会员）"}
+            return {"ok": False, "error": "B 站暂时连不上，请稍后再试"}
+        self.state.set_cast(video)
+        self.state.save()
+        self.write_table()
+        self.log(f"投屏 {bvid} 《{video.title}》")
+        self._event("cast")
+        return {"ok": True, "title": video.title}
 
     def remove_creator(self, cid: str) -> dict:
         if not self.state.remove(cid):
@@ -251,7 +316,8 @@ def _manage_handler(relay: Relay):
         def do_POST(self):
             if not self._authorized():
                 return
-            if self._path() != "/api/creators":
+            path = self._path()
+            if path not in ("/api/creators", "/api/cast"):
                 self._send(404, b"Not Found", "text/plain; charset=utf-8")
                 return
             try:
@@ -269,7 +335,7 @@ def _manage_handler(relay: Relay):
             if not isinstance(url, str):
                 self._json({"ok": False, "error": "请求格式不对"}, 400)
                 return
-            self._json(relay.add_creator(url))
+            self._json(relay.add_creator(url) if path == "/api/creators" else relay.cast(url))
 
         def do_DELETE(self):
             if not self._authorized():
@@ -300,7 +366,7 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>小智电视 UP 主</title>
+<title>小智电视 UP 主与投屏</title>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --text:#1d2129; --dim:#5c6370; --key:#0b6bcb; --rule:#e3e6eb; --bad:#c62828; }
   @media (prefers-color-scheme: dark) {
@@ -334,6 +400,14 @@ PAGE = """<!doctype html>
 <main>
   <h1>小智电视 UP 主</h1>
   <p class="sub">每个 UP 主是一个台，从最新的没看过的视频开始播。这个网址带着密钥，不要发给别人。</p>
+
+  <section>
+    <h2>投屏到小智</h2>
+    <textarea id="cast" placeholder="粘贴 B 站视频链接（App 里“分享 → 复制链接”即可）"></textarea>
+    <button class="primary" id="castbtn">在小智上播放</button>
+    <div class="msg" id="castmsg"></div>
+    <p class="sub" id="nowcast" style="margin:6px 0 0"></p>
+  </section>
 
   <section>
     <h2>添加 UP 主</h2>
@@ -382,6 +456,9 @@ async function refresh() {
     $("list").appendChild(li);
     return;
   }
+  $("nowcast").textContent = data.cast
+    ? (data.cast.done ? "上次投屏：《" : "正在投屏：《") + data.cast.title + "》"
+    : "";
   const list = $("list");
   list.innerHTML = "";
   if (!data.creators.length) {
@@ -411,6 +488,26 @@ async function refresh() {
     list.appendChild(li);
   }
 }
+
+$("castbtn").onclick = async () => {
+  const button = $("castbtn");
+  button.disabled = true;
+  show("castmsg", "正在发送…", false);
+  try {
+    const answer = await call("POST", "api/cast", { url: $("cast").value });
+    if (answer.ok) {
+      show("castmsg", "已发送，小智会自动切到「我的投屏」播放《" + answer.title + "》", false);
+      $("cast").value = "";
+      refresh();
+    } else {
+      show("castmsg", answer.error, true);
+    }
+  } catch (error) {
+    show("castmsg", error.message, true);
+  } finally {
+    button.disabled = false;
+  }
+};
 
 $("add").onclick = async () => {
   const button = $("add");

@@ -111,5 +111,33 @@ class StateTests(unittest.TestCase):
             State(self.path)
 
 
+    def test_cast_position_and_end(self):
+        video = Video(bvid="BVcast", title="cast", duration=300, pubdate=0)
+        self.state.set_cast(video)
+        self.assertEqual((self.state.cast, self.state.cast_position, self.state.cast_done),
+                         (video, 0.0, False))
+        self.state.save_cast_position("BVcast", 42.0)
+        self.state.save_cast_position("BVother", 99.0)
+        self.assertEqual(self.state.cast_position, 42.0)
+        self.state.cast_ended("BVother")
+        self.assertFalse(self.state.cast_done)
+        self.state.cast_ended("BVcast")
+        self.assertEqual((self.state.cast_position, self.state.cast_done), (0.0, True))
+        self.state.save()
+        again = State(self.path)
+        self.assertEqual((again.cast, again.cast_done), (video, True))
+
+    def test_new_cast_resets(self):
+        self.state.set_cast(Video(bvid="a", title="", duration=0, pubdate=0))
+        self.state.save_cast_position("a", 10.0)
+        self.state.cast_ended("a")
+        self.state.set_cast(Video(bvid="b", title="", duration=0, pubdate=0))
+        self.assertEqual((self.state.cast_position, self.state.cast_done), (0.0, False))
+
+    def test_old_file_without_cast_loads(self):
+        self.path.write_text('{"creators": []}')
+        self.assertIsNone(State(self.path).cast)
+
+
 if __name__ == "__main__":
     unittest.main()

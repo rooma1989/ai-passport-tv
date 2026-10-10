@@ -17,6 +17,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--channels-out", required=True, type=Path)
     parser.add_argument("--key-file", required=True, type=Path)
+    parser.add_argument("--events-out", type=Path,
+                        help="投屏事件文件，电视服务据此让设备切台")
     parser.add_argument("--ffmpeg", required=True)
     parser.add_argument("--stream-port", type=int, default=8099)
     parser.add_argument("--manage-port", type=int, default=8100)
@@ -29,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     state = State(args.state)
     relay = Relay(state, Bilibili(), args.channels_out, args.ffmpeg, key,
+                  events_out=args.events_out,
                   log=lambda message: print(message, flush=True))
     relay.write_table()
     # 只监听回环：播放流给本机电视服务，管理网页由 nginx 转进来。

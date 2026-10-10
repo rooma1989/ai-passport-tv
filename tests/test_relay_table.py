@@ -20,7 +20,9 @@ class TableTests(unittest.TestCase):
     def test_format_parses(self):
         text = table.render([creator("up01", "老番茄"), creator("up02", "影视飓风")])
         channels, labels, _ = live.parse_channels(text)
-        self.assertEqual(list(channels), ["up01", "up02"])
+        self.assertEqual(list(channels), ["cast", "up01", "up02"])
+        self.assertEqual(labels["cast"], "我的投屏")
+        self.assertEqual(channels["cast"], "http://127.0.0.1:8099/ch/cast")
         self.assertEqual(labels["up01"], "老番茄")
         self.assertEqual(channels["up02"], "http://127.0.0.1:8099/ch/up02")
 
@@ -32,8 +34,10 @@ class TableTests(unittest.TestCase):
         self.assertEqual(labels["up02"], "a b c")
         self.assertEqual(labels["up03"], "up03")
 
-    def test_empty_table_is_comment_only(self):
-        self.assertFalse([l for l in table.render([]).splitlines() if l and not l.startswith("#")])
+    def test_cast_is_always_listed(self):
+        """The device can only be switched to an id it already has in its list."""
+        lines = [l for l in table.render([]).splitlines() if l and not l.startswith("#")]
+        self.assertEqual(lines, ["cast | 我的投屏 | http://127.0.0.1:8099/ch/cast"])
 
     def test_write_if_changed(self):
         with tempfile.TemporaryDirectory() as tmp:

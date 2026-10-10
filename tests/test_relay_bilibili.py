@@ -116,5 +116,18 @@ class ClientTests(unittest.TestCase):
         self.assertIsNone(client.creator_id("https://example.com/"))
 
 
+    def test_video_lookup(self):
+        client = self.client()
+        video = client.video("BV1aZpw6DEKJ")
+        self.assertEqual((video.bvid, video.title, video.duration), ("BV1aZpw6DEKJ", "第一次去美国", 689))
+        self.assertEqual(client.video_id("看 https://www.bilibili.com/video/BV1aZpw6DEKJ"), "BV1aZpw6DEKJ")
+        self.assertIsNone(client.video_id("https://space.bilibili.com/546195"))
+
+    def test_video_id_from_short_link(self):
+        client = Bilibili(fetch_json=FakeFetch({}),
+                          resolve=lambda url: "https://www.bilibili.com/video/BV1feaH63Epk?x=1")
+        self.assertEqual(client.video_id("https://b23.tv/AbC123"), "BV1feaH63Epk")
+
+
 if __name__ == "__main__":
     unittest.main()

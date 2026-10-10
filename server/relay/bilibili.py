@@ -145,14 +145,30 @@ class Bilibili:
             raise BilibiliError(f"{bvid}: 没有可播放的地址", permanent=True)
         return durl[0]["url"]
 
+    def _expand(self, text: str) -> str:
+        """App 分享的 b23.tv 短链先换成真实地址。"""
+        short = short_link(text)
+        if not short:
+            return text
+        try:
+            return self._resolve(short)
+        except (OSError, ValueError) as error:
+            raise BilibiliError(f"短链解析失败：{error}") from None
+
+    def video_id(self, text: str) -> str | None:
+        return parse_video_link(self._expand(text))
+
+    def video(self, bvid: str) -> Video:
+        view = self._call("/x/web-interface/view", bvid=bvid)
+        try:
+            return Video(bvid=bvid, title=str(view.get("title", "")),
+                         duration=int(view.get("duration", 0)), pubdate=int(view.get("pubdate", 0)))
+        except (TypeError, ValueError):
+            raise BilibiliError(f"{bvid}: 视频信息格式不对", permanent=True) from None
+
     def creator_id(self, text: str) -> str | None:
         """主页链接、视频链接（取作者）或 b23.tv 短链 → mid。"""
-        short = short_link(text)
-        if short:
-            try:
-                text = self._resolve(short)
-            except (OSError, ValueError) as error:
-                raise BilibiliError(f"短链解析失败：{error}") from None
+        text = self._expand(text)
         mid = parse_creator_link(text)
         if mid:
             return mid

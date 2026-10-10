@@ -56,10 +56,19 @@ class State:
         self.path = Path(path)
         self.lock = threading.RLock()
         self.creators: list[Creator] = []
+        # 投屏只留一个视频：新的投屏替换旧的；播完后保留，手动选「我的投屏」可以重看。
+        self.cast: Video | None = None
+        self.cast_position = 0.0
+        self.cast_done = False
         if self.path.exists():
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
                 self.creators = [_creator_from(c) for c in data["creators"]]
+                cast = data.get("cast")
+                if cast:
+                    self.cast = Video(**cast["video"])
+                    self.cast_position = float(cast.get("position", 0.0))
+                    self.cast_done = bool(cast.get("done", False))
             except (ValueError, KeyError, TypeError) as error:
                 # 坏文件不自动清空：宁可服务起不来，也不丢掉用户的关注列表。
                 raise ValueError(f"{self.path}: 状态文件损坏：{error}") from None
@@ -67,6 +76,9 @@ class State:
     def save(self) -> None:
         with self.lock:
             data = {"creators": [dataclasses.asdict(c) for c in self.creators]}
+            if self.cast is not None:
+                data["cast"] = {"video": dataclasses.asdict(self.cast),
+                                "position": self.cast_position, "done": self.cast_done}
             text = json.dumps(data, ensure_ascii=False, indent=1)
             tmp = self.path.with_name(self.path.name + ".tmp")
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
@@ -140,3 +152,23 @@ class State:
             creator.positions.pop(bvid, None)
             if bvid not in creator.watched:
                 creator.watched.append(bvid)
+
+    # ---- 投屏 ----
+
+    def set_cast(self, video: Video) -> None:
+        with self.lock:
+            self.cast = video
+            self.cast_position = 0.0
+            self.cast_done = False
+
+    def save_cast_position(self, bvid: str, seconds: float) -> None:
+        """旧的投屏流在新投屏之后才断开，它的进度不能记到新视频上。"""
+        with self.lock:
+            if self.cast is not None and self.cast.bvid == bvid:
+                self.cast_position = float(seconds)
+
+    def cast_ended(self, bvid: str) -> None:
+        with self.lock:
+            if self.cast is not None and self.cast.bvid == bvid:
+                self.cast_position = 0.0
+                self.cast_done = True
