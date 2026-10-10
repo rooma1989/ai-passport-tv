@@ -426,6 +426,20 @@ void WifiConfigurationAp::StartWebServer()
             if (cJSON_IsString(password_item) && (password_item->valuestring != NULL) && (strlen(password_item->valuestring) < 65)) {
                 password_str = password_item->valuestring;
             }
+            // A remembered network submitted with the password left empty
+            // keeps its stored password, so changing only the server address
+            // or picking a network again does not mean retyping it. The page
+            // never receives stored passwords: the hotspot is open while setup
+            // runs, and anyone in range could read them.
+            if (password_str.empty()) {
+                for (const auto& saved : SsidManager::GetInstance().GetSsidList()) {
+                    if (saved.ssid == ssid_str && !saved.password.empty()) {
+                        password_str = saved.password;
+                        ESP_LOGI(TAG, "Using the stored password for a remembered network");
+                        break;
+                    }
+                }
+            }
 
             // 获取当前对象
             auto *this_ = static_cast<WifiConfigurationAp *>(req->user_ctx);

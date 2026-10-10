@@ -817,7 +817,8 @@
                 remember_bssid: 'Remember BSSID when connecting to Wi-Fi',
                 sleep_mode: 'Enable Sleep Mode',
                 save: 'Save',
-                config_success: 'Configuration successful!'
+                config_success: 'Configuration successful!',
+                saved_password: 'Saved before; leave empty to keep its password'
             },
             'es-ES': {
                 title: 'Configuración de red',
@@ -1341,7 +1342,8 @@
                 remember_bssid: '连接 Wi-Fi 时记住 BSSID',
                 sleep_mode: '启用睡眠模式',
                 save: '保存',
-                config_success: '配置成功！'
+                config_success: '配置成功！',
+                saved_password: '已保存过，密码没变就留空'
             },
             'zh-TW': {
                 title: '網路設定',
@@ -1517,7 +1519,30 @@
         /**
          * Render saved Wi-Fi list
          */
+        // Names of the remembered networks. Their passwords stay on the device:
+        // submitting one of these with the password left empty reuses the
+        // stored password there.
+        let savedNames = [];
+
+        function translate(key) {
+            const lang = document.getElementById('language').value;
+            return (translations[lang] && translations[lang][key]) || translations['en-US'][key] || '';
+        }
+
+        /**
+         * Put a network in the form; a remembered one says its password is kept.
+         */
+        function chooseNetwork(name) {
+            const password = document.getElementById('password');
+            ssid.value = name;
+            ssid.setAttribute('readonly', '');
+            ssid.blur();
+            password.value = '';
+            password.placeholder = savedNames.includes(name) ? translate('saved_password') : '';
+        }
+
         function renderSavedList(data) {
+            savedNames = data.slice();
             const savedListContainer = document.getElementById('saved_list_container');
             const savedList = document.getElementById('saved_list');
             savedList.innerHTML = '';
@@ -1537,6 +1562,11 @@
                 }
                 
                 li.innerHTML = html;
+                // Tapping the name picks this network, password and all.
+                const name = li.querySelector('span');
+                name.textContent = ssid;
+                name.style.cursor = 'pointer';
+                name.addEventListener('click', () => chooseNetwork(ssid));
                 savedList.appendChild(li);
             });
             
@@ -1623,9 +1653,7 @@
                         
                         link.addEventListener('click', event => {
                             event.preventDefault();
-                            ssid.value = ap.ssid;
-                            ssid.setAttribute('readonly', '');
-                            ssid.blur();
+                            chooseNetwork(ap.ssid);
                         });
                         
                         apList.appendChild(link);

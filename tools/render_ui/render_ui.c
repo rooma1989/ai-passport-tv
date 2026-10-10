@@ -182,11 +182,11 @@ int main(int argc, char **argv)
     static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(3)], tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
     qrcodegen_encodeText("https://iewww.com/tv/r/abcdef1234", tmp, qr, qrcodegen_Ecc_LOW, 1, 3,
                          qrcodegen_Mask_AUTO, true);
-    ui_status_page_t page = { "07", "CCTV-7 国防军事", 3, 76, 0, qr, "手机遥控" };
+    ui_status_page_t page = { "07", "CCTV-7 国防军事", 3, 76, 0, qr, "手机遥控", false };
     picture(); bars(NULL, "状态", 76, 0, 3);
     ui_draw_panel(whole(), 30, 210);
     ui_overlay_status(whole(), &page);
-    ui_overlay_bottom_text(whole(), 210, "任意键关闭", UI_FAINT);
+    ui_overlay_status_bottom(whole(), 210, false);
     place(n++);
 
     // 4.2 / 4.3 the waiting screens, and 4.15 the pet picker.
@@ -197,14 +197,16 @@ int main(int argc, char **argv)
         { UI_WAIT_CHANNEL, 0, "", 7, "CCTV-7 国防军事", "央视 \xC2\xB7 7/17", 4 },
         { UI_WAIT_CHANNEL, 0, "", 0, "", "", 9 },
         { UI_WAIT_FAILED, 0, "203.0.113.10:8098", 0, "", "", 0 },
-        { UI_WAIT_FAILED, 2, "203.0.113.10:8098", 0, "", "", 5 },
+        { UI_WAIT_LISTEN, 4, "", 0, "", "", 5 },
     };
     for (unsigned i = 0; i < sizeof(waits) / sizeof(waits[0]); i++) {
         ui_wait_page_t wait = { waits[i].kind, waits[i].pet, "", waits[i].number, "", "" };
         snprintf(wait.line, sizeof(wait.line), "%s", waits[i].line);
         snprintf(wait.name, sizeof(wait.name), "%s", waits[i].name);
         snprintf(wait.detail, sizeof(wait.detail), "%s", waits[i].detail);
-        picture(); bars(NULL, ui_overlay_wait_label(wait.kind), 76, 0, 3);
+        picture();
+        if (wait.kind == UI_WAIT_LISTEN) bars("07", " CCTV-7 国防军事", 76, 0, 3);
+        else bars(NULL, ui_overlay_wait_label(wait.kind), 76, 0, 3);
         ui_overlay_wait(whole(), &wait, waits[i].tick);
         place(n++);
     }

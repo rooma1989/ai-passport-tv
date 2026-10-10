@@ -190,3 +190,40 @@ bool av_store_save_pet(uint8_t pet)
     }
     return true;
 }
+
+// Audio-only mode, its own key like the pet: absent reads as off.
+#define AV_STORE_KEY_AUDIO "audio"
+
+bool av_store_load_audio_only(void)
+{
+    nvs_handle_t handle;
+    if (!open_readonly(&handle)) {
+        return false;
+    }
+    uint8_t on = 0;
+    if (nvs_get_u8(handle, AV_STORE_KEY_AUDIO, &on) != ESP_OK) {
+        on = 0;
+    }
+    nvs_close(handle);
+    return on != 0;
+}
+
+bool av_store_save_audio_only(bool on)
+{
+    nvs_handle_t handle;
+    esp_err_t e = nvs_open(AV_STORE_NAMESPACE, NVS_READWRITE, &handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot open settings store: %s", esp_err_to_name(e));
+        return false;
+    }
+    e = nvs_set_u8(handle, AV_STORE_KEY_AUDIO, on ? 1u : 0u);
+    if (e == ESP_OK) {
+        e = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Saving audio-only failed: %s", esp_err_to_name(e));
+        return false;
+    }
+    return true;
+}

@@ -30,6 +30,10 @@ bool av_store_save(uint8_t volume_percent, uint8_t brightness_percent);
 uint8_t av_store_load_pet(uint8_t count);
 bool av_store_save_pet(uint8_t pet);
 
+// Audio-only mode (sound, the pet on screen, no picture); off when unset.
+bool av_store_load_audio_only(void);
+bool av_store_save_audio_only(bool on);
+
 // Read where the streaming server is, as entered on the setup page.
 //
 // Returns false when nothing usable has been stored, which is the case for a

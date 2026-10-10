@@ -485,6 +485,16 @@ typedef struct {
     atomic_uint pet;
     // A pet the phone chose (SWITCH "pet"), plus one; applied by pump_keys.
     atomic_int remote_pet;
+    // Audio-only mode (stored); the phone's request for it, plus one; and
+    // mode_reconnect, which tells the session loop that a session ended
+    // because the mode changed rather than because the channel failed.
+    atomic_bool audio_only;
+    atomic_int remote_audio;
+    atomic_bool mode_reconnect;
+    // Sound as a sign of life, for audio-only mode: audio packets this
+    // session, and when the last one came (milliseconds since boot).
+    atomic_uint audio_rx;
+    atomic_uint last_audio_ms;
     // Paused from the phone: the panel keeps the last frame and a band across
     // the middle says so (paint_pause_band). pause_gen moves on every change so
     // the band is drawn once per change, not per pass.
@@ -575,6 +585,8 @@ static int64_t media_started_us;
 // ended, so the dead-channel policy gets to see it fail.
 #define NO_PICTURE_TIMEOUT_US 20000000
 static bool picture_live(void);
+static bool listening(void);
+static bool sound_live(void);
 // Whether the black bars above and below the picture currently carry readings,
 // and when they were last painted. The picture never covers the bars, so during
 // playback they are only touched by refresh_info_bars(). The top bar carries the
@@ -1077,6 +1089,9 @@ static void take_switch(char *buf, size_t n) {
     } else if (cJSON_IsNumber(level) && level->valuedouble>=0 &&
                level->valuedouble<(double)AV_BRIGHTNESS_COUNT) {
         atomic_store(&s.remote_brightness,(int)level->valuedouble+1);
+    } else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j,"audio_only"))) {
+        const double on=cJSON_GetObjectItemCaseSensitive(j,"audio_only")->valuedouble;
+        atomic_store(&s.remote_audio,on!=0 ? 2 : 1);
     } else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j,"pet"))) {
         const double pet=cJSON_GetObjectItemCaseSensitive(j,"pet")->valuedouble;
         if (pet>=0 && pet<(double)ui_pet_count()) atomic_store(&s.remote_pet,(int)pet+1);
@@ -1379,6 +1394,8 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"hint",1) &&
         // The pet in use; its presence also says SWITCH may carry "pet".
         cJSON_AddNumberToObject(j,"pet",(double)atomic_load(&s.pet)) &&
+        // Audio-only mode; its presence also says SWITCH may carry "audio_only".
+        cJSON_AddNumberToObject(j,"audio_only",atomic_load(&s.audio_only) ? 1 : 0) &&
         // How long since boot and why the last reset, so the server's log can
         // tell a device that restarted (and why) from one that lost Wi-Fi.
         cJSON_AddNumberToObject(j,"uptime_s",(double)(esp_timer_get_time()/1000000)) &&
@@ -1495,6 +1512,8 @@ static void receive_task(void *arg) {
             header_deadline_ms=AV_FIRST_MEDIA_TIMEOUT_MS;
         } else if (h.type==AV_AUDIO) {
             audio_t a={.pts=h.pts_ms};
+            atomic_fetch_add(&s.audio_rx,1u);
+            atomic_store(&s.last_audio_ms,(unsigned)(esp_timer_get_time()/1000));
             // The time first, then the flag: the session loop reads the time only
             // after seeing the flag, and the atomic store orders the two.
             if (!atomic_load(&s.media_started)) {
@@ -2012,7 +2031,7 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
             ui_overlay_bottom_rates(surface,bottom,atomic_load(&s.fps_x10),
                                     (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
         } else if (s.menu.view==UI_VIEW_STATUS) {
-            ui_overlay_bottom_text(surface,bottom,"任意键关闭",UI_FAINT);
+            ui_overlay_status_bottom(surface,bottom,atomic_load(&s.audio_only));
         } else if (s.menu.view==UI_VIEW_PET) {
             ui_overlay_pet_bottom(surface,bottom);
         }
@@ -2052,7 +2071,10 @@ static bool refresh_info_bars(void) {
     // The waiting screen owns the whole panel while no frames arrive. Mark the
     // bars for repainting -- the top one with the status group, the bottom one
     // blank -- for when frames return over the waiting screen's colour bars.
-    if (!picture_live()) {
+    // Listening, the bars are kept current as over a picture: the screen
+    // under them is still, and the battery and label still change.
+    const bool listen_screen=listening() && sound_live() && !atomic_load(&s.paused);
+    if (!picture_live() && !listen_screen) {
         top_drawn=false;
         bottom_drawn=true;
         return true;
@@ -2122,6 +2144,7 @@ static void refresh_status_page(void) {
     status_page.bars=wifi_bars();
     status_page.soc=atomic_load(&s.battery_soc);
     status_page.pet=atomic_load(&s.pet);
+    status_page.audio_only=atomic_load(&s.audio_only);
 
     // The phone remote's code when the server sent its address; otherwise the
     // help page's. A version-2 code at three pixels a module fills the design's
@@ -2969,8 +2992,38 @@ static bool picture_live(void)
     return av_channel_policy_picture_live(s.decoded,esp_timer_get_time(),last_frame_us,VIDEO_STALL_US);
 }
 
+// Audio-only mode: sound, not picture, is what says the channel is alive.
+static bool listening(void) { return atomic_load(&s.audio_only); }
+
+static bool sound_live(void)
+{
+    if (!atomic_load(&s.audio_rx)) return false;
+    const uint32_t now_ms=(uint32_t)(esp_timer_get_time()/1000);
+    return now_ms-(uint32_t)atomic_load(&s.last_audio_ms) < (uint32_t)(VIDEO_STALL_US/1000);
+}
+
+// Whether the channel has shown what this mode plays: enough frames, or in
+// audio-only mode enough sound. The dead-channel rules ask this.
+static bool showed_content(void)
+{
+    return listening() ? atomic_load(&s.audio_rx)>=AV_PICTURE_MIN_FRAMES
+                       : av_channel_policy_showed_picture(s.decoded);
+}
+
 static unsigned pause_seen=UINT_MAX;
 static unsigned waiting_hint_seq;
+static ui_wait_kind_t waiting_kind(void);
+static ui_wait_page_t waiting_page;
+// What the overlays over a waiting or listening screen show, so a volume box
+// or a banner appearing or going repaints it: there are no frames to carry it.
+static unsigned waiting_overlay_sig;
+static unsigned overlay_sig(void)
+{
+    return (ui_menu_volume_visible(&s.menu) ? 1u : 0u) | (s.menu.banner_ms>0 ? 2u : 0u) |
+           ((unsigned)s.menu.level<<2) | (s.menu.volume<<4) | (s.menu.brightness<<12);
+}
+// The pause band was drawn over a listening screen and has to be cleared.
+static bool pause_band_up;
 
 static bool waiting_screen_stale(void)
 {
@@ -2978,6 +3031,10 @@ static bool waiting_screen_stale(void)
     // drawn once per change and the frozen frame left alone.
     if (atomic_load(&s.paused) && s.menu.view==UI_VIEW_VIDEO) {
         return atomic_load(&s.pause_gen)!=pause_seen;
+    }
+    if (pause_band_up && listening()) {
+        pause_band_up=false;
+        return true;
     }
     // Frames own the panel while they arrive, and repainting the bars underneath
     // them would flash. When they stop -- or have not started, even though sound
@@ -2996,6 +3053,8 @@ static bool waiting_screen_stale(void)
     if ((int)s.menu.view!=waiting_view) return true;
     // A seek box came or went while the picture is away: the screen shows it.
     if (s.menu.hint_seq!=waiting_hint_seq) return true;
+    if (waiting_kind()!=waiting_page.kind) return true;
+    if (overlay_sig()!=waiting_overlay_sig) return true;
     if ((int)atomic_load(&s.link)!=waiting_link) return true;
     if (atomic_load(&s.count)!=waiting_count) return true;
     // While an overlay is up it is repainted on a slow timer: its readings
@@ -3022,6 +3081,7 @@ static bool waiting_screen_stale(void)
 static bool paint_pause_band(void)
 {
     pause_seen=atomic_load(&s.pause_gen);
+    pause_band_up=true;
     char title[sizeof(s.pause_title)];
     taskENTER_CRITICAL(&list_lock);
     memcpy(title,s.pause_title,sizeof(title));
@@ -3065,13 +3125,13 @@ static bool paint_pause_band(void)
 static ui_wait_kind_t waiting_kind(void) {
     const link_state_t link=(link_state_t)atomic_load(&s.link);
     if (link==LINK_NO_WIFI) return UI_WAIT_WIFI;
+    if (listening() && sound_live()) return UI_WAIT_LISTEN;
     if (link==LINK_DOWN && !atomic_load(&s.media_started)) return UI_WAIT_FAILED;
     if (link==LINK_TRYING && !atomic_load(&s_ever_served)) return UI_WAIT_SERVER;
     return UI_WAIT_CHANNEL;
 }
 
-// What the waiting screen shows, gathered once per full paint.
-static ui_wait_page_t waiting_page;
+// What the waiting screen shows, gathered once per full paint (declared above).
 
 static void build_waiting_page(void) {
     ui_wait_page_t *page=&waiting_page;
@@ -3111,9 +3171,14 @@ static unsigned waiting_frame=UINT_MAX;
 static bool paint_waiting_rows(unsigned y0, unsigned y1) {
     const unsigned tick=waiting_tick();
     ui_topbar_label_t label;
-    const char *texts[1]={ ui_overlay_wait_label(waiting_page.kind) };
-    const uint16_t colors[1]={ UI_MUTED };
-    ui_topbar_set_label(&label,texts,colors,1);
+    if (waiting_page.kind==UI_WAIT_LISTEN) {
+        // Listening: the bar names the channel, as over a picture.
+        build_topbar_label(&label);
+    } else {
+        const char *texts[1]={ ui_overlay_wait_label(waiting_page.kind) };
+        const uint16_t colors[1]={ UI_MUTED };
+        ui_topbar_set_label(&label,texts,colors,1);
+    }
     const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc), bsp_battery_charging(), false };
     for (unsigned y=(y0/AV_STRIPE_ROWS)*AV_STRIPE_ROWS;y<y1 && y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
         // The waiting screen runs when no video task is drawing, so it uses the
@@ -3147,6 +3212,7 @@ static bool paint_waiting_screen(void)
     waiting_hint_seq=s.menu.hint_seq;
     waiting_link=(int)atomic_load(&s.link);
     waiting_count=atomic_load(&s.count);
+    waiting_overlay_sig=overlay_sig();
     waiting_painted_us=esp_timer_get_time();
     snprintf(shown_channel,sizeof(shown_channel),"%s",s.channel);
     build_waiting_page();
@@ -3234,7 +3300,8 @@ static void video_task(void *arg) {
         }
         if(!s.skipping) {
             if(v.packet_start) { pkt_start_us=esp_timer_get_time(); pkt_ok=true; }
-            if(!v.dropped) {
+            // Audio-only: a server that still sends pictures is not drawn.
+            if(!v.dropped && !listening()) {
 #if AV_VIDEO_Y_OFFSET > 0
                 if(s.decoded == 0 && v.stripe == 0) {
                     ui_text_fill(stripe_surface(0, s.stripe[0]), 0, 0, (int)AV_WIDTH,
@@ -3404,6 +3471,47 @@ static bool request_switch(const char *id) {
     return true;
 }
 
+// Audio-only backlight: dimmed to the lowest step after this long untouched.
+#define LISTEN_DIM_US 10000000
+static int64_t last_activity_us;
+static bool backlight_dimmed;
+
+// Keep the backlight right for the mode: the viewer's level while they are
+// here or a page is open, the lowest step after LISTEN_DIM_US of audio-only
+// with nothing touched. The stored level is never changed.
+static void keep_backlight(bool acted)
+{
+    const int64_t now=esp_timer_get_time();
+    // Only the listening screen dims: setup, a waiting screen or a page keep
+    // the viewer's level.
+    if (acted || s.menu.view!=UI_VIEW_VIDEO || !listening() || !sound_live() ||
+        atomic_load(&s_setup_active)) {
+        last_activity_us=now;
+        if (backlight_dimmed) {
+            backlight_dimmed=false;
+            bsp_display_backlight(av_brightness_percent(s.menu.brightness));
+        }
+        return;
+    }
+    if (!backlight_dimmed && now-last_activity_us>=LISTEN_DIM_US) {
+        backlight_dimmed=true;
+        bsp_display_backlight(av_brightness_percent(AV_BRIGHTNESS_COUNT-1u));
+    }
+}
+
+// Turn audio-only mode on or off: stored at once, then the session ends and
+// the loop dials again, so the new HELLO tells the server whether to send
+// pictures. mode_reconnect keeps that from counting against the channel.
+static void set_audio_only(bool on)
+{
+    if (atomic_load(&s.audio_only)==on) return;
+    atomic_store(&s.audio_only,on);
+    av_store_save_audio_only(on);
+    ESP_LOGI(TAG,"Audio-only %s",on ? "on" : "off");
+    atomic_store(&s.mode_reconnect,true);
+    xEventGroupSetBits(s.events,STOP);
+}
+
 // Applies one gesture. Called only from the session owner (main loop), so it can
 // touch s.channel while no connection is being built.
 static void process_key(const key_ev_t *item) {
@@ -3449,6 +3557,10 @@ static void process_key(const key_ev_t *item) {
             if (item->ev==BSP_BTN_CLICK) {
                 if (s.menu.view==UI_VIEW_MENU) {
                     ui_menu_confirm(&s.menu);
+                } else if (s.menu.view==UI_VIEW_STATUS) {
+                    // OK on the status page switches audio-only mode.
+                    ui_menu_close(&s.menu);
+                    set_audio_only(!listening());
                 } else {
                     ui_menu_close(&s.menu);
                 }
@@ -3933,10 +4045,20 @@ static bool run_setup_mode(void)
 static bool pump_keys(uint32_t wait_ms) {
     key_ev_t item;
     bool first=true;
+    bool acted=false;
     while (xQueueReceive(s.keys,&item,first?pdMS_TO_TICKS(wait_ms):0)) {
         first=false;
+        acted=true;
         process_key(&item);
     }
+    // Anything the phone asks for counts as the viewer being here, for the
+    // audio-only backlight.
+    acted = acted || atomic_load(&s.remote_volume) || atomic_load(&s.remote_brightness) ||
+            atomic_load(&s.remote_pet) || atomic_load(&s.remote_hint) || atomic_load(&s.remote_audio);
+    // The phone's audio-only switch.
+    const int audio_asked=atomic_exchange(&s.remote_audio,0);
+    if (audio_asked>0) set_audio_only(audio_asked==2);
+    keep_backlight(acted);
     char chosen[AV_CHANNEL_ID_MAX];
     // The phone's volume and backlight, applied as a key press would be: the
     // same indicator, saved the same way, and reported back.
@@ -4114,6 +4236,7 @@ void av_player_main(void) {
     s.volume=stored_volume;
     s.menu.brightness=av_brightness_nearest_index(stored_brightness);
     atomic_store(&s.pet,(unsigned)av_store_load_pet((uint8_t)ui_pet_count()));
+    atomic_store(&s.audio_only,av_store_load_audio_only());
     bsp_display_backlight(av_brightness_percent(s.menu.brightness));
 
     // Both facts the setup page can supply, read the same way and for the same
@@ -4199,6 +4322,7 @@ void av_player_main(void) {
             if(!(xEventGroupGetBits(s.events)&WIFI_READY) || stopping()) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
         }
         s.submitted_samples=s.decoded=s.dropped=s.decode_max_ms=s.feed_gap_max_ms=0;
+        atomic_store(&s.audio_rx,0u);
         last_frame_us=0;
         picture_was_live=false;
         s.silence_samples=0;
@@ -4352,7 +4476,7 @@ void av_player_main(void) {
             // Sound but never a picture: the server is retrying a dead source and
             // keeps the session open meanwhile, so it would never end on its own.
             // Ending it lets the dead-channel policy count it and move on.
-            if(atomic_load(&s.media_started) && !av_channel_policy_showed_picture(s.decoded) &&
+            if(atomic_load(&s.media_started) && !showed_content() &&
                esp_timer_get_time()-media_started_us>NO_PICTURE_TIMEOUT_US) {
                 ESP_LOGW(TAG,"%s: sound but no picture for %u s; ending the session",
                          s.channel,(unsigned)(NO_PICTURE_TIMEOUT_US/1000000));
@@ -4645,8 +4769,9 @@ void av_player_main(void) {
         // restart.
         server_configured=server_address(&target);
         report_server_address(&target,server_configured);
-        if (atomic_load(&s.switch_pending)) {
-            // A channel switch was requested. The session that just ended was
+        const bool by_mode=atomic_exchange(&s.mode_reconnect,false);
+        if (atomic_load(&s.switch_pending) || by_mode) {
+            // A channel switch, or audio-only turned on or off, was requested. The session that just ended was
             // interrupted by the user; it did not fail on its own.
             // Do not evaluate dead-channel skip for the old channel, and preserve
             // s.chosen_by_user so the NEW channel gets its user-chosen allowance.
@@ -4659,7 +4784,7 @@ void av_player_main(void) {
             unsigned limit = atomic_load(&s.chosen_by_user)
                 ? DEAD_CHANNEL_TRIES_USER : DEAD_CHANNEL_TRIES;
             if (av_channel_policy_should_skip(&s.proven,s.channel,server_answered,
-                                              av_channel_policy_showed_picture(s.decoded),&s.dead_streak,
+                                              showed_content(),&s.dead_streak,
                                               limit,atomic_load(&s.count))) {
                 atomic_store(&s.chosen_by_user,false);
                 unsigned count=atomic_load(&s.count);

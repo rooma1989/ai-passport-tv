@@ -296,6 +296,12 @@ void ui_overlay_bottom_rates(ui_surface_t surface, int top, unsigned fps_x10, un
     ui_text_draw(surface, 226 - ui_text_width(text), top + 7, text, UI_MUTED, UI_DEEP);
 }
 
+void ui_overlay_status_bottom(ui_surface_t surface, int top, bool audio_only)
+{
+    const char *text = audio_only ? "OK看画面  其他键关闭" : "OK只听声音  其他键关闭";
+    ui_overlay_key_line(surface, (surface.width - ui_text_width(text)) / 2, top + 7, text, UI_DEEP);
+}
+
 void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uint16_t color)
 {
     if (!text) {
@@ -383,6 +389,10 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
         centred(surface, 180, "正在打开", UI_MUTED);
         break;
     }
+    case UI_WAIT_LISTEN:
+        // Just the pet, large and content, while the sound plays.
+        ui_draw_pet(surface, page->pet, 1, 84, 84 - bob, 3);
+        break;
     case UI_WAIT_FAILED: {
         ui_draw_pet(surface, page->pet, 3, 96, 40 - bob, 2);
         centred(surface, 90, "连不上服务器", UI_PAPER);
@@ -410,6 +420,9 @@ unsigned ui_overlay_wait_frame(ui_wait_kind_t kind, unsigned tick, int *y0, int 
     case UI_WAIT_CHANNEL:
         *y0 = 168; *y1 = 172;
         return bounce(tick, 15u);
+    case UI_WAIT_LISTEN:
+        *y0 = 82; *y1 = 158;
+        return bob;
     case UI_WAIT_FAILED:
     default:
         *y0 = 38; *y1 = 90;

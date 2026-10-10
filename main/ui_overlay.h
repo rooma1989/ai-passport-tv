@@ -53,6 +53,7 @@ typedef struct {
     unsigned pet;
     const uint8_t *qr;    // the remote's (or the help page's) code, or NULL
     const char *qr_caption;
+    bool audio_only;      // which way OK switches, for the bottom line
 } ui_status_page_t;
 
 void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page);
@@ -61,6 +62,8 @@ void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page);
 // receive rates, or one centred line.
 void ui_overlay_bottom_rates(ui_surface_t surface, int top, unsigned fps_x10, unsigned kbytes_per_s);
 void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uint16_t color);
+// The status page's bottom line: what OK does there, and that the rest close.
+void ui_overlay_status_bottom(ui_surface_t surface, int top, bool audio_only);
 
 // ---- Waiting screens (HANDOFF.md 4.2, 4.3) and the pet picker (4.15) ----
 
@@ -69,6 +72,7 @@ typedef enum {
     UI_WAIT_SERVER,     // first dial to the server since boot
     UI_WAIT_CHANNEL,    // opening a channel, or the picture stopped
     UI_WAIT_FAILED,     // the server did not answer
+    UI_WAIT_LISTEN,     // audio-only: sound is playing, the pet keeps it company
 } ui_wait_kind_t;
 
 typedef struct {
