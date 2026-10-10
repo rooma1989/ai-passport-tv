@@ -107,9 +107,9 @@ it stopped. Design and measurements:
    [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) into
    the site's nginx configuration (on a BT panel host, the site's
    `extension/<site>/` folder), test and reload nginx.
-4. Open `https://<site>/TV/cast/?k=<key>` on a phone and paste a creator's
-   space link or any of their video links. The channel appears after the
-   device's next channel change.
+4. Sign a phone in once (see Phone remote below) and paste a creator's space
+   link or any of their video links on the Creators tab. The channel appears
+   after the device's next channel change.
 
 The same page casts a single video: paste a Bilibili video link and the device
 switches to "My cast" (the first channel, always listed) within a second, plays
@@ -133,8 +133,38 @@ yt-dlp, deno (yt-dlp's JavaScript runtime) and ffmpeg, and in practice a cookies
 file from a secondary Google account exported in a private window: YouTube asked
 the overseas host to sign in for every client tried. Resolving a video takes about
 18 s on one core, so the node caches it for 30 minutes; the first picture of a
-new YouTube video takes 20-40 s. The key is the only
-protection: anyone with the link can add and remove creators.
+new YouTube video takes 20-40 s.
+
+## Phone remote
+
+The relay's page is a remote for the device, at `https://<site>/tv/`. Design:
+[`docs/superpowers/specs/2026-10-10-grouped-channels-and-remote-design.md`](../superpowers/specs/2026-10-10-grouped-channels-and-remote-design.md).
+
+- **Sign-in.** Open `https://<site>/tv/?k=<key>` once, or scan the code on the
+  device's status page (`https://<site>/TV/R/<code>`). Either sets a 180-day
+  session cookie; afterwards `https://<site>/tv/` opens directly. Add the page to
+  the home screen from the signed-in page (iPhone: Safari, Share, Add to Home
+  Screen); its address carries the session, because a home-screen app does not
+  share Safari's cookies. "Issue a new QR code" on the Creators tab ends every
+  session.
+- **Remote tab:** what is playing, the groups, the group's channels; a tap
+  switches the device within about a second. "Adjust groups" moves a live
+  channel to another group (`channel-groups.json`).
+- **Cast tab:** paste a Bilibili or YouTube link; the last 50 casts are kept on
+  the server and replay with a tap.
+- **Creators tab:** add and remove creators; the help page link.
+- **Groups** are worked out from channel names (`server/channel_groups.py`):
+  My cast, Creators, CCTV, Satellite, HK/Macau/Taiwan, International, Music,
+  Cartoons & films, Other. The media server sends the names once and an index
+  per channel in CONFIG.
+- **Server settings.** The relay unit adds `--main-channels`, `--groups-out`,
+  `--now-playing`, `--remote-url-out` and `--public-url`; the media server unit
+  adds `TV_CHANNEL_GROUPS_FILE`, `TV_NOW_PLAYING_FILE` and `TV_REMOTE_URL_FILE`
+  (both templates have them). nginx needs the `/tv/` and `/TV/R/` locations in
+  `packaging/nginx/tv-relay.conf`.
+
+Anyone holding the key link, the device's code or a signed-in phone can control
+the device and edit its creators.
 
 ## Status bar and setup screen
 
@@ -147,7 +177,9 @@ protection: anyone with the link can add and remove creators.
   2. a QR code of the setup page `http://192.168.4.1`;
   3. a QR code of the help page, when `AV_HELP_URL` is set;
   4. the hotspot, setup address, server and connection state as text.
-- The status page carries a small help-page QR code when `AV_HELP_URL` is set.
+- The status page carries the phone remote's QR code when the server sends
+  one (`remote_url` in CONFIG, a version-2 code at 3 px a module); otherwise a
+  small help-page QR code when `AV_HELP_URL` is set.
 - `AV_HELP_URL` comes from the git-ignored `main/av_private_config.h`; public
   builds leave it empty. Keep it short and upper case (for example
   `HTTPS://EXAMPLE.COM/TV/`): that keeps it in a version-1 QR code, the only size
@@ -162,11 +194,16 @@ protection: anyone with the link can add and remove creators.
 
 | Key | Click | Long press |
 | --- | --- | --- |
-| Top (printed VOL−) | volume +10% | next channel |
-| Second (printed VOL+) | volume −10% | previous channel |
+| Top (printed VOL−) | volume +10% | next channel in the same group |
+| Second (printed VOL+) | volume −10% | previous channel in the same group |
 | Top 3 (BOOT) | channel list | brightness |
 | Any, double-click | status page (long-press the top key there for Wi-Fi setup) | |
 | Bottom | hardware reset; long press powers on/off | |
+
+The channel list has two levels when the server sends groups: it opens on the
+groups at the playing channel's group; OK opens a group, a long press on OK goes
+back a level and then closes. A dead channel is skipped to the next one in its
+group.
 
 Click and long press are swapped relative to the Passport because these are the
 case's volume keys (`BSP_ARROW_CLICK_IS_VOLUME`). Up and down follow the keys'

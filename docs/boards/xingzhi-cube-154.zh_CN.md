@@ -92,7 +92,7 @@ Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核
 2. 媒体服务的单元里加 `TV_RELAY_CHANNELS_FILE`（模板里已有）；UP 主频道排在 `channels.txt` 前面。
 3. 由网站转发管理网页：把 [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) 放进站点的 nginx 配置
    （宝塔面板主机放在站点的 `extension/<站点>/` 目录），检查后重新加载 nginx。
-4. 手机打开 `https://<站点>/TV/cast/?k=<密钥>`，粘贴 UP 主主页链接或他的任意一个视频链接。设备下次换台后就能看到这个台。
+4. 手机登录一次（见下面的「手机遥控」），在「UP 主」标签粘贴 UP 主主页链接或他的任意一个视频链接。设备下次换台后就能看到这个台。
 
 同一个网页还能投屏单个视频：粘贴 B 站视频链接，设备在一秒内自动切到「我的投屏」（总在频道列表第一个），播完回到原来的台。
 中转把这件事写进 `relay-events.json`；媒体服务每秒读一次（`TV_RELAY_EVENTS_FILE`），发 `SWITCH` 包给设备，
@@ -106,7 +106,25 @@ B 站对云服务器地址的网页和带签名的接口返回 412，所以中�
 的 JSON）。节点端口只对中转所在主机开放。节点需要 yt-dlp、deno（yt-dlp 的 JavaScript 运行环境）和 ffmpeg，实际上还需要一个
 Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户端身份，YouTube 都要求海外主机登录。单核上解析一个视频约 18 秒，
 所以节点缓存 30 分钟；新 YouTube 视频第一次出画面要 20–40 秒。
-密钥是唯一的保护：拿到链接的人都能增删 UP 主。
+
+## 手机遥控
+
+中转的网页是设备的遥控器，地址 `https://<站点>/tv/`。设计见
+[`docs/superpowers/specs/2026-10-10-grouped-channels-and-remote-design.zh_CN.md`](../superpowers/specs/2026-10-10-grouped-channels-and-remote-design.zh_CN.md)。
+
+- **登录**：打开一次 `https://<站点>/tv/?k=<密钥>`，或扫设备状态页上的二维码（`https://<站点>/TV/R/<扫码码>`）。两者都会设置一个
+  180 天的会话 cookie，之后直接打开 `https://<站点>/tv/` 即可。在登录后的页面上加到桌面（iPhone：Safari →「分享」→「添加到主屏幕」）；
+  它的网址带着会话，因为桌面网页应用不和 Safari 共用 cookie。「UP 主」标签里的「换一个扫码码」会让所有会话失效。
+- **遥控**：正在播放、分组、该组的台；点一下设备约 1 秒后换台。「调整分组」可以把直播台移到别的组（`channel-groups.json`）。
+- **投屏**：粘贴 B 站或 YouTube 链接；最近 50 次投屏存在服务器上，点一下重播。
+- **UP 主**：增删 UP 主；使用说明的入口。
+- **分组**按台名自动归类（`server/channel_groups.py`）：我的投屏、UP 主、央视、卫视、港澳台、国际、音乐、动画影视、其他。
+  媒体服务在 CONFIG 里只发一次分组名，每个台带一个编号。
+- **服务端设置**：中转的单元加了 `--main-channels`、`--groups-out`、`--now-playing`、`--remote-url-out`、`--public-url`；
+  媒体服务的单元加了 `TV_CHANNEL_GROUPS_FILE`、`TV_NOW_PLAYING_FILE`、`TV_REMOTE_URL_FILE`（两个模板里都有）。
+  nginx 需要 `packaging/nginx/tv-relay.conf` 里的 `/tv/` 和 `/TV/R/` 两段。
+
+拿到密钥链接、设备上的二维码或已登录手机的人，都能控制设备、增删 UP 主。
 
 ## 状态栏与配网画面
 
@@ -116,7 +134,8 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
   2. 配网页 `http://192.168.4.1` 的二维码；
   3. 使用说明页的二维码（设置了 `AV_HELP_URL` 时才有）；
   4. 热点、配网地址、服务器、连接状态的文字。
-- 设置了 `AV_HELP_URL` 时，状态页右下角也有一个说明页的小二维码。
+- 服务器下发了遥控地址时（CONFIG 里的 `remote_url`），状态页显示手机遥控的二维码（第 2 版，每个码点 3 像素）；
+  否则在设置了 `AV_HELP_URL` 时显示说明页的小二维码。
 - `AV_HELP_URL` 来自被 git 忽略的 `main/av_private_config.h`，公开版为空。网址要短并用大写
   （例如 `HTTPS://EXAMPLE.COM/TV/`）：这样能放进版本 1 的二维码，状态页只放得下这么大。
   说明页本身是 [`packaging/help/index.html`](../../packaging/help/index.html)，复制到网站对应目录即可。
@@ -127,11 +146,14 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
 
 | 按键 | 短按 | 长按 |
 | --- | --- | --- |
-| 最上面的键（外壳印"音量−"） | 音量 +10% | 下一个台 |
-| 第二个键（外壳印"音量+"） | 音量 −10% | 上一个台 |
+| 最上面的键（外壳印"音量−"） | 音量 +10% | 同组的下一个台 |
+| 第二个键（外壳印"音量+"） | 音量 −10% | 同组的上一个台 |
 | 上3（BOOT） | 频道列表 | 亮度 |
 | 任意键双击 | 状态页（在状态页长按最上面的键进入 Wi-Fi 设置） | |
 | 最下面 | 硬件复位；长按开关机 | |
+
+服务器下发了分组时，频道列表分两级：打开时停在正在播的台所在的组；OK 进入一个组，长按 OK 返回上一级，再长按关闭。
+失效的台会自动跳到同组的下一个台。
 
 短按和长按与 Passport 相反，因为这两个键在外壳上就是音量键（`BSP_ARROW_CLICK_IS_VOLUME`）。
 上下按物理位置排列，不按外壳印的音量−/+，因为按印的字用起来是反的。

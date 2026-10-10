@@ -86,6 +86,8 @@ Supporting modules, each already host-testable and already covered by
 | [`server/usb_link.py`](../../server/usb_link.py) | Socket-shaped adapter over the USB-serial transport (measurement builds only). |
 | [`server/live_sender.py`](../../server/live_sender.py) | Opt-in v2 sender (`TV_LIVE_ENGINE=v2`); see [`docs/development/live-sender-v2.md`](../development/live-sender-v2.md) for scope/limits before touching it. |
 | [`server/relay/`](../../server/relay/web.py) | Video relay for creator channels: Bilibili client, watched/position state, generated channel table, MPEG-TS streams and the key-protected page. Separate service (`python3 -m server.relay`). |
+| [`server/channel_groups.py`](../../server/channel_groups.py) | Channel groups: classification by name, the phone's overrides, and the CONFIG group list. |
+| [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | What is playing (for the phone) and turning the relay's events into SWITCH packets or a channel at HELLO. |
 | [`server/fault.py`](../../server/fault.py) | Fault-injection harness for controlled device experiments (B02-R); not part of the shipped server path. |
 
 ## 4. Tools you will actually touch for a feature
@@ -129,6 +131,7 @@ first, since it is what a flashed device cannot renegotiate):
 | --- | --- |
 | Channel list, adding/removing/reordering channels | `channels.txt`, `tools/channel_config.py`, `server/live.py` (`CHANNELS`, `reload_channels_if_changed`), `main/av_channel_policy.c` |
 | Creator channels, video sites, the phone page | `server/relay/`, `packaging/systemd/tv-relay.service`, `packaging/nginx/tv-relay.conf` |
+| Phone remote, sign-in, groups, the device's channel list levels | `server/relay/web.py` + `assets/remote.html`, `server/channel_groups.py`, `main/ui_menu.c` |
 | Wire protocol / packet format change | `main/av_protocol.h`, `server/protocol.py`, `server/frames.py`, §5 above |
 | Picture quality, frame rate, stripe/geometry | `main/av_protocol.h` (`AV_VIDEO_*`, `AV_FPS`), `server/frames.py`, `server/rate.py`, `main/av_player.c` `video_task`/`push_stripe` |
 | A/V sync, drift, stutter, session reset | `server/timeline.py`, `server/pts.py`, `main/av_player.c` `audio_task`/`video_task`, `docs/development/state-20260916.md` |
