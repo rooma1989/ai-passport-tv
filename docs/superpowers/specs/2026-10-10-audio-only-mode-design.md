@@ -4,7 +4,7 @@
 
 # Audio-only mode — design
 
-Status: approved 2026-10-10. Follows
+Status: built and verified on the device, 2026-10-10. Follows
 [`2026-10-10-device-ui-redesign-design.md`](2026-10-10-device-ui-redesign-design.md).
 
 ## Goal
@@ -21,7 +21,8 @@ backlight dims.
   `AV_SWITCH {"audio_only": 0|1}`.
 - Turning the mode on or off stores it and ends the session; the device dials
   again at once with the new HELLO, the way a channel switch does. Sound stops
-  for about 1-2 s.
+  for about 4-5 s on the cloud server (measured: the redial, then the source
+  starting again), not the 1-2 s first estimated.
 
 ## Server
 
@@ -56,6 +57,13 @@ backlight dims.
   session limit and the dead-channel skip. Their place is taken by sound: the
   waiting screen appears when no audio has arrived for 1.5 s, and a channel that
   never delivers audio is skipped as a channel without a picture is now.
+
+## Also in this change
+
+- The setup page: tapping a remembered network fills its name and says the
+  stored password is kept; an empty password for a remembered network reuses
+  the stored one on the device. Stored passwords are never sent to the page,
+  because the setup hotspot is open.
 
 ## Testing
 
