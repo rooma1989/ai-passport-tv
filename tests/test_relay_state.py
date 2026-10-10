@@ -139,5 +139,64 @@ class StateTests(unittest.TestCase):
         self.assertIsNone(State(self.path).cast)
 
 
+class HistoryAndSessionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "relay-state.json"
+        self.state = State(self.path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def video(self, vid, site="bilibili"):
+        return Video(bvid=vid, title=f"t{vid}", duration=10, pubdate=0, site=site)
+
+    def test_history_newest_first_dedupe_and_limit(self):
+        for n in range(relay_state.HISTORY_SIZE + 5):
+            self.state.remember(self.video(f"v{n}"), at=float(n))
+        self.assertEqual(len(self.state.history), relay_state.HISTORY_SIZE)
+        self.assertEqual(self.state.history[0]["id"], f"v{relay_state.HISTORY_SIZE + 4}")
+        self.state.remember(self.video("v10"), at=999.0)
+        self.assertEqual([h["id"] for h in self.state.history].count("v10"), 1)
+        self.assertEqual(self.state.history[0], {"site": "bilibili", "id": "v10", "title": "tv10", "at": 999.0})
+        # Same id on another site is another entry.
+        self.state.remember(self.video("v10", "youtube"), at=1000.0)
+        self.assertEqual(self.state.history[0]["site"], "youtube")
+        self.assertTrue(self.state.forget("youtube", "v10"))
+        self.assertFalse(self.state.forget("youtube", "v10"))
+        self.assertEqual(self.state.history_entry("bilibili", "v10")["title"], "tv10")
+
+    def test_sessions(self):
+        token = self.state.new_session(now=100.0)
+        self.assertGreaterEqual(len(token), 32)
+        self.assertTrue(self.state.session_ok(token, now=100.0 + relay_state.SESSION_S - 1))
+        self.assertFalse(self.state.session_ok(token, now=100.0 + relay_state.SESSION_S + 1))
+        self.assertFalse(self.state.session_ok("nope", now=100.0))
+        self.assertFalse(self.state.session_ok("", now=100.0))
+        tokens = [self.state.new_session(now=float(n)) for n in range(relay_state.MAX_SESSIONS + 3)]
+        self.assertEqual(len(self.state.sessions), relay_state.MAX_SESSIONS)
+        self.assertFalse(self.state.session_ok(tokens[0], now=10.0))
+        self.assertTrue(self.state.session_ok(tokens[-1], now=10.0))
+
+    def test_code_issue_ends_sessions(self):
+        code = self.state.ensure_code()
+        self.assertRegex(code, r"^[A-Z2-7]{20}$")
+        self.assertEqual(self.state.ensure_code(), code)
+        token = self.state.new_session(now=1.0)
+        new = self.state.new_code()
+        self.assertNotEqual(new, code)
+        self.assertFalse(self.state.session_ok(token, now=2.0))
+
+    def test_persisted(self):
+        self.state.remember(self.video("v1"), at=1.0)
+        token = self.state.new_session(now=1.0)
+        code = self.state.ensure_code()
+        self.state.save()
+        again = State(self.path)
+        self.assertEqual(again.history, self.state.history)
+        self.assertTrue(again.session_ok(token, now=2.0))
+        self.assertEqual(again.ensure_code(), code)
+
+
 if __name__ == "__main__":
     unittest.main()

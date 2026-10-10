@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#1c1915">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="小智电视">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>小智电视</title>
+<style>
+  :root {
+    --ink: #1c1915; --ink-deep: #0f0d0b; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
+    --dim: #8c8170; --faint: #6e6455; --red: #d2553f; --amber: #ffb547; --amber-soft: #f3dfb4;
+    --serif: "Songti SC", "STSong", "Noto Serif SC", serif;
+    --mono: "Menlo", "SF Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--ink); color: var(--paper);
+               font: 15px/1.5 -apple-system, "PingFang SC", sans-serif; }
+  .app { display: flex; flex-direction: column; height: 100dvh; max-width: 560px; margin: 0 auto; }
+  main { flex: 1; overflow-y: auto; padding-top: env(safe-area-inset-top); }
+  .page { display: none; padding-bottom: 24px; }
+  .page.on { display: block; }
+
+  .mast { display: flex; justify-content: space-between; align-items: baseline; padding: 16px 16px 10px;
+          border-bottom: 1px solid var(--rule); }
+  .mast h1 { margin: 0; font: 700 22px/1 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
+  .mast .tag { font-size: 12px; color: var(--red); letter-spacing: 3px; }
+  .mast button { background: none; border: 0; color: var(--dim); font: 13px var(--serif); padding: 0; }
+  .mast button.on { color: var(--red); }
+
+  .screen { margin: 14px 14px 12px; background: var(--ink-deep); border: 1px solid var(--rule); padding: 12px 14px 11px; }
+  .screen .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .screen .ch { font: 600 32px/1 var(--mono); color: var(--amber); text-shadow: 0 0 8px rgba(255,181,71,.3); }
+  .screen .grp { font: 12px var(--mono); color: var(--red); }
+  .screen .nm { margin-top: 8px; font: 17px/1.4 var(--serif); color: var(--amber-soft); }
+  .screen .ti { font: 14px/1.4 var(--serif); color: var(--dim); margin-top: 2px; }
+  .screen.off .ch { color: var(--faint); text-shadow: none; }
+
+  .seg { display: flex; gap: 18px; overflow-x: auto; padding: 4px 16px 10px; scrollbar-width: none; }
+  .seg::-webkit-scrollbar { display: none; }
+  .seg button { flex: none; background: none; border: 0; padding: 4px 0 3px; color: var(--dim); font: 15px var(--serif); }
+  .seg button.on { color: var(--paper-hi); border-bottom: 2px solid var(--red); }
+
+  ol.rows { list-style: none; margin: 0; padding: 0; }
+  .rows li { position: relative; overflow: hidden; border-top: 1px dotted var(--rule); }
+  .rows li:last-child { border-bottom: 1px dotted var(--rule); }
+  .row { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px; background: var(--ink);
+         transition: transform .18s ease; }
+  .row .n { width: 26px; flex: none; font: 13px var(--mono); color: var(--red); opacity: .75; }
+  .row .t { flex: 1; min-width: 0; font: 17px/1.35 var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .src { flex: none; font: 11px var(--mono); color: var(--faint); letter-spacing: 1px; }
+  .row.air .t, .row.air .src { color: var(--amber); }
+  .row.air .n { opacity: 1; }
+  .row select { flex: none; background: var(--ink-deep); color: var(--paper); border: 1px solid var(--rule);
+                font: 13px var(--serif); padding: 3px 4px; }
+  .rows .del { position: absolute; top: 0; right: 0; bottom: 0; width: 76px; border: 0; background: var(--red);
+               color: #fff4e6; font: 15px var(--serif); }
+  .rows li.open .row { transform: translateX(-76px); }
+
+  .box { margin: 14px 14px 10px; }
+  textarea, input { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule); color: var(--paper);
+                    font: 15px/1.5 -apple-system, "PingFang SC", sans-serif; padding: 11px 12px; border-radius: 0; }
+  textarea { min-height: 76px; resize: vertical; }
+  textarea::placeholder, input::placeholder { color: var(--faint); }
+  .go { display: block; width: 100%; margin-top: 10px; background: var(--red); color: #fff4e6; border: 0;
+        padding: 11px; font: 17px var(--serif); letter-spacing: 4px; }
+  .go:disabled { opacity: .5; }
+  .inline { display: flex; gap: 8px; }
+  .inline .go { width: auto; margin: 0; padding: 0 16px; letter-spacing: 2px; flex: none; }
+  .h { margin: 18px 16px 0; padding-bottom: 6px; font: 16px var(--serif); color: var(--paper-hi);
+       border-bottom: 1px solid var(--rule); }
+  .empty { padding: 14px 16px; color: var(--faint); font: 15px var(--serif); }
+  .hint { padding: 8px 16px; color: var(--faint); font-size: 12px; }
+  .foot { margin: 22px 16px 0; display: flex; justify-content: space-between; font: 14px var(--serif); }
+  .foot a, .foot button { color: var(--dim); background: none; border: 0; padding: 0; font: inherit; text-decoration: none; }
+  .foot button { color: var(--red); }
+  .remove { flex: none; background: none; border: 0; color: var(--red); font: 14px var(--serif); padding: 0 0 0 8px; }
+
+  nav { display: flex; border-top: 1px solid var(--rule); background: #161310; padding-bottom: env(safe-area-inset-bottom); }
+  nav button { flex: 1; background: none; border: 0; padding: 12px 0 13px; color: var(--faint);
+               font: 16px var(--serif); letter-spacing: 2px; }
+  nav button.on { color: var(--paper-hi); box-shadow: inset 0 2px 0 var(--red); }
+
+  .toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+           background: var(--paper-hi); color: var(--ink); padding: 8px 16px; font: 14px var(--serif);
+           opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 86%; text-align: center; }
+  .toast.on { opacity: 1; }
+  .toast.bad { background: var(--red); color: #fff4e6; }
+  .gate { position: fixed; inset: 0; background: var(--ink); display: none; align-items: center; justify-content: center;
+          padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
+  .gate.on { display: flex; }
+</style>
+</head>
+<body>
+<div class="app">
+  <main>
+    <section class="page on" id="remote">
+      <div class="mast"><h1>小智电视</h1><button id="adjust">调整分组</button></div>
+      <div class="screen off" id="screen">
+        <div class="top"><span class="ch" id="ch">— —</span><span class="grp" id="grp"></span></div>
+        <div class="nm" id="nm">正在连接…</div>
+        <div class="ti" id="ti"></div>
+      </div>
+      <div class="seg" id="seg"></div>
+      <ol class="rows" id="channels"></ol>
+    </section>
+
+    <section class="page" id="cast">
+      <div class="mast"><h1>投屏</h1><span class="tag">粘贴即播</span></div>
+      <div class="box">
+        <textarea id="link" placeholder="粘贴 B 站或 YouTube 视频链接（App 里「分享 → 复制链接」）"></textarea>
+        <button class="go" id="play">在小智上播放</button>
+      </div>
+      <div class="h">放过的</div>
+      <ol class="rows" id="history"></ol>
+      <div class="hint">点一下重播，左滑删除。</div>
+    </section>
+
+    <section class="page" id="creators">
+      <div class="mast"><h1>UP 主</h1><span class="tag" id="count"></span></div>
+      <div class="box inline">
+        <input id="creator" placeholder="UP 主 / 频道主页或任意视频链接">
+        <button class="go" id="add">添加</button>
+      </div>
+      <ol class="rows" id="creatorList"></ol>
+      <div class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播。</div>
+      <div class="foot"><a href="/TV/" target="_blank" rel="noreferrer">使用说明</a><button id="newcode">换一个扫码码</button></div>
+    </section>
+  </main>
+  <nav>
+    <button class="on" data-page="remote">遥控</button>
+    <button data-page="cast">投屏</button>
+    <button data-page="creators">UP 主</button>
+  </nav>
+</div>
+<div class="toast" id="toast"></div>
+<div class="gate" id="gate">登录已失效。<br>请用小电视状态页上的二维码重新扫一下。</div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let data = null;
+let group = "";
+let adjusting = false;
+let toastTimer = 0;
+
+function toast(text, bad) {
+  const el = $("toast");
+  el.textContent = text;
+  el.className = "toast on" + (bad ? " bad" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = "toast"; }, 2600);
+}
+
+async function call(method, path, body) {
+  const options = { method, credentials: "same-origin", headers: {} };
+  if (body !== undefined) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  if (response.status === 404) {
+    $("gate").className = "gate on";
+    throw new Error("登录已失效");
+  }
+  return response.json();
+}
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function pad(n) { return String(n).padStart(2, "0"); }
+
+function siteTag(site) { return site === "youtube" ? "YT" : "B站"; }
+
+function dateLabel(at) {
+  const day = new Date(at * 1000);
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  if (day.getTime() >= start) return "今天";
+  if (day.getTime() >= start - 86400000) return "昨天";
+  return (day.getMonth() + 1) + "月" + day.getDate() + "日";
+}
+
+function renderScreen() {
+  const now = data.now;
+  const screen = $("screen");
+  if (now.online && now.channel) {
+    screen.className = "screen";
+    $("ch").textContent = "CH " + pad(now.n || 0);
+    $("grp").textContent = now.group;
+    $("nm").textContent = now.name || now.channel;
+    $("ti").textContent = now.title || "";
+  } else {
+    screen.className = "screen off";
+    $("ch").textContent = "— —";
+    $("grp").textContent = "";
+    $("nm").textContent = "小智没在线";
+    $("ti").textContent = "打开小电视后这里会显示正在播的台";
+  }
+}
+
+function renderGroups() {
+  const names = data.groups.map((g) => g.name);
+  if (!names.includes(group)) group = data.now.group && names.includes(data.now.group) ? data.now.group : names[0];
+  const seg = $("seg");
+  seg.innerHTML = "";
+  for (const g of data.groups) {
+    const button = el("button", g.name === group ? "on" : "", g.name);
+    button.onclick = () => { group = g.name; renderGroups(); renderChannels(); };
+    seg.appendChild(button);
+  }
+}
+
+function renderChannels() {
+  const list = $("channels");
+  list.innerHTML = "";
+  const current = data.groups.find((g) => g.name === group);
+  if (!current) return;
+  const sites = {};
+  for (const cr of data.creators) sites[cr.id] = cr.site;
+  const movable = !["我的投屏", "UP 主"].includes(group);
+  for (const c of current.channels) {
+    const li = el("li");
+    const row = el("div", "row" + (c.id === data.now.channel && data.now.online ? " air" : ""));
+    row.append(el("span", "n", pad(c.n)), el("span", "t", c.name));
+    if (adjusting && movable) {
+      const select = el("select");
+      for (const name of data.group_names) {
+        const option = el("option", "", name);
+        option.value = name;
+        option.selected = name === group;
+        select.appendChild(option);
+      }
+      select.onclick = (event) => event.stopPropagation();
+      select.onchange = async () => {
+        const answer = await call("POST", "api/groups", { channel: c.id, group: select.value });
+        if (!answer.ok) toast(answer.error, true); else toast("已移到「" + select.value + "」");
+        refresh();
+      };
+      row.appendChild(select);
+    } else {
+      const air = c.id === data.now.channel && data.now.online;
+      row.appendChild(el("span", "src", air ? "播放中" : sites[c.id] ? siteTag(sites[c.id]) : c.id === "cast" ? "投屏" : ""));
+      row.onclick = async () => {
+        if (air) return;
+        const answer = await call("POST", "api/switch", { channel: c.id });
+        if (answer.ok) { toast("正在切到「" + c.name + "」"); setTimeout(refresh, 1500); }
+        else toast(answer.error, true);
+      };
+    }
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+}
+
+function swipeToDelete(li, onDelete) {
+  let startX = 0;
+  li.addEventListener("touchstart", (event) => { startX = event.touches[0].clientX; }, { passive: true });
+  li.addEventListener("touchend", (event) => {
+    const dx = event.changedTouches[0].clientX - startX;
+    if (dx < -40) li.classList.add("open");
+    if (dx > 40) li.classList.remove("open");
+  });
+  const del = el("button", "del", "删除");
+  del.onclick = (event) => { event.stopPropagation(); onDelete(); };
+  li.appendChild(del);
+}
+
+function renderHistory() {
+  const list = $("history");
+  list.innerHTML = "";
+  if (!data.history.length) { list.appendChild(el("li", "empty", "还没有投过视频")); return; }
+  for (const h of data.history) {
+    const li = el("li");
+    const row = el("div", "row");
+    row.append(el("span", "t", h.title || h.id), el("span", "src", siteTag(h.site) + " · " + dateLabel(h.at)));
+    row.onclick = async () => {
+      if (li.classList.contains("open")) { li.classList.remove("open"); return; }
+      const answer = await call("POST", "api/history/play", { site: h.site, id: h.id });
+      if (answer.ok) { toast("小智马上播放《" + answer.title + "》"); setTimeout(refresh, 1500); }
+      else toast(answer.error, true);
+    };
+    li.appendChild(row);
+    swipeToDelete(li, async () => {
+      const answer = await call("DELETE", "api/history/" + h.site + "/" + encodeURIComponent(h.id));
+      if (!answer.ok) toast(answer.error, true);
+      refresh();
+    });
+    list.appendChild(li);
+  }
+}
+
+function renderCreators() {
+  const list = $("creatorList");
+  list.innerHTML = "";
+  $("count").textContent = data.creators.length + " / 12";
+  if (!data.creators.length) { list.appendChild(el("li", "empty", "还没有添加 UP 主")); return; }
+  for (const cr of data.creators) {
+    const li = el("li");
+    const row = el("div", "row");
+    const remove = el("button", "remove", "删除");
+    remove.onclick = async () => {
+      if (!confirm("删除「" + cr.name + "」这个台？")) return;
+      const answer = await call("DELETE", "api/creators/" + cr.id);
+      if (!answer.ok) toast(answer.error, true);
+      refresh();
+    };
+    row.append(el("span", "t", cr.name), el("span", "src", siteTag(cr.site) + " · 未看 " + cr.left + "/" + cr.total), remove);
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+}
+
+async function refresh() {
+  try { data = await call("GET", "api/state"); } catch (error) { return; }
+  renderScreen();
+  renderGroups();
+  renderChannels();
+  renderHistory();
+  renderCreators();
+}
+
+for (const button of document.querySelectorAll("nav button")) {
+  button.onclick = () => {
+    for (const other of document.querySelectorAll("nav button")) other.classList.toggle("on", other === button);
+    for (const page of document.querySelectorAll(".page")) page.classList.toggle("on", page.id === button.dataset.page);
+    try { localStorage.setItem("tab", button.dataset.page); } catch (error) {}
+  };
+}
+try {
+  const saved = localStorage.getItem("tab");
+  const button = document.querySelector('nav button[data-page="' + saved + '"]');
+  if (button) button.click();
+} catch (error) {}
+
+$("adjust").onclick = () => {
+  adjusting = !adjusting;
+  $("adjust").classList.toggle("on", adjusting);
+  $("adjust").textContent = adjusting ? "完成" : "调整分组";
+  if (data) renderChannels();
+};
+
+async function busy(button, work) {
+  button.disabled = true;
+  try { await work(); } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
+}
+
+$("play").onclick = () => busy($("play"), async () => {
+  toast("正在取视频…");
+  const answer = await call("POST", "api/cast", { url: $("link").value });
+  if (answer.ok) { $("link").value = ""; toast("小智马上播放《" + answer.title + "》"); setTimeout(refresh, 1500); }
+  else toast(answer.error, true);
+});
+
+$("add").onclick = () => busy($("add"), async () => {
+  toast("正在添加…");
+  const answer = await call("POST", "api/creators", { url: $("creator").value });
+  if (answer.ok) { $("creator").value = ""; toast("已添加「" + answer.creator.name + "」"); refresh(); }
+  else toast(answer.error, true);
+});
+
+$("newcode").onclick = async () => {
+  if (!confirm("换一个扫码码后，所有手机（包括这台）都要重新扫小电视上的码。确定？")) return;
+  const answer = await call("POST", "api/code", {});
+  if (answer.ok) toast("已换新码，小电视换台后显示新的二维码");
+};
+
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+</script>
+</body>
+</html>

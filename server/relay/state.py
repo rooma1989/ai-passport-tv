@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import secrets
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,14 @@ LIST_MAX_AGE_S = 30 * 60
 RESUME_BACK_S = 10
 # 频道名会进设备的 CONFIG 包，UP 主数量受包长限制。
 MAX_CREATORS = 12
+# 投屏历史条数。
+HISTORY_SIZE = 50
+# 手机登录一次管多久，以及最多同时记住几台手机。
+SESSION_S = 180 * 24 * 3600
+MAX_SESSIONS = 50
+# 扫码码：20 位 base32（100 位随机），全大写，二维码可用字母数字模式。
+CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+CODE_LENGTH = 20
 
 
 @dataclass
@@ -62,6 +71,9 @@ class State:
         self.cast: Video | None = None
         self.cast_position = 0.0
         self.cast_done = False
+        self.history: list[dict] = []
+        self.sessions: dict[str, float] = {}
+        self.code = ""
         if self.path.exists():
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -71,6 +83,9 @@ class State:
                     self.cast = Video(**cast["video"])
                     self.cast_position = float(cast.get("position", 0.0))
                     self.cast_done = bool(cast.get("done", False))
+                self.history = [dict(h) for h in data.get("history") or []][:HISTORY_SIZE]
+                self.sessions = {str(k): float(v) for k, v in (data.get("sessions") or {}).items()}
+                self.code = str(data.get("code") or "")
             except (ValueError, KeyError, TypeError) as error:
                 # 坏文件不自动清空：宁可服务起不来，也不丢掉用户的关注列表。
                 raise ValueError(f"{self.path}: 状态文件损坏：{error}") from None
@@ -81,6 +96,9 @@ class State:
             if self.cast is not None:
                 data["cast"] = {"video": dataclasses.asdict(self.cast),
                                 "position": self.cast_position, "done": self.cast_done}
+            data["history"] = self.history
+            data["sessions"] = self.sessions
+            data["code"] = self.code
             text = json.dumps(data, ensure_ascii=False, indent=1)
             tmp = self.path.with_name(self.path.name + ".tmp")
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
@@ -174,3 +192,56 @@ class State:
             if self.cast is not None and self.cast.bvid == bvid:
                 self.cast_position = 0.0
                 self.cast_done = True
+
+    # ---- 投屏历史 ----
+
+    def remember(self, video: Video, at: float) -> None:
+        """记一次投屏：新的在前，同一视频只留一条，最多 HISTORY_SIZE 条。"""
+        with self.lock:
+            entry = {"site": video.site, "id": video.bvid, "title": video.title, "at": at}
+            self.history = [h for h in self.history
+                            if (h.get("site"), h.get("id")) != (video.site, video.bvid)]
+            self.history.insert(0, entry)
+            del self.history[HISTORY_SIZE:]
+
+    def forget(self, site: str, video_id: str) -> bool:
+        with self.lock:
+            before = len(self.history)
+            self.history = [h for h in self.history if (h.get("site"), h.get("id")) != (site, video_id)]
+            return len(self.history) != before
+
+    def history_entry(self, site: str, video_id: str) -> dict | None:
+        with self.lock:
+            return next((dict(h) for h in self.history
+                         if (h.get("site"), h.get("id")) == (site, video_id)), None)
+
+    # ---- 手机登录 ----
+
+    def new_session(self, now: float) -> str:
+        with self.lock:
+            token = secrets.token_urlsafe(32)
+            self.sessions[token] = now
+            # 只留最近的 MAX_SESSIONS 个，最老的先丢。
+            for old in sorted(self.sessions, key=self.sessions.get)[:-MAX_SESSIONS]:
+                del self.sessions[old]
+            return token
+
+    def session_ok(self, token: str | None, now: float) -> bool:
+        if not token:
+            return False
+        with self.lock:
+            created = self.sessions.get(token)
+            return created is not None and now - created < SESSION_S
+
+    def ensure_code(self) -> str:
+        with self.lock:
+            if not self.code:
+                self.code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+            return self.code
+
+    def new_code(self) -> str:
+        """换扫码码：旧码失效，所有已登录的手机都要重新扫。"""
+        with self.lock:
+            self.code = ""
+            self.sessions = {}
+            return self.ensure_code()

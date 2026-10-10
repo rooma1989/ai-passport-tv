@@ -14,7 +14,8 @@ CAST_LABEL = "我的投屏"
 NAME_COLUMNS = 20
 
 
-def _label(creator) -> str:
+def label(creator) -> str:
+    """设备频道列表里显示的名字。"""
     name = " ".join(creator.name.replace("|", " ").split())
     kept, used = [], 0
     for char in name:
@@ -29,7 +30,7 @@ def _label(creator) -> str:
 def render(creators) -> str:
     lines = ["# 由视频中转生成，不要手改。每行： id | 显示名 | 地址",
              f"{CAST_ID} | {CAST_LABEL} | {STREAM_BASE}{CAST_ID}"]
-    lines += [f"{c.id} | {_label(c)} | {STREAM_BASE}{c.id}" for c in creators]
+    lines += [f"{c.id} | {label(c)} | {STREAM_BASE}{c.id}" for c in creators]
     return "\n".join(lines) + "\n"
 
 

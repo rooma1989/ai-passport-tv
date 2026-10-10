@@ -109,8 +109,17 @@ class WebTests(unittest.TestCase):
         self.now = 1000.0
         self.events = root / "relay-events.json"
         self.youtube = FakeYouTube()
+        self.main = root / "channels.txt"
+        self.main.write_text("ch000 | CCTV1 | https://x/1.m3u8\nch001 | 湖南卫视 | https://x/2.m3u8\n"
+                             "ch002 | 老高与小茉 | https://x/3.m3u8\n", encoding="utf-8")
+        self.groups_file = root / "channel-groups.json"
+        self.playing = root / "now-playing.json"
+        self.remote_url = root / "remote-url.txt"
         self.relay = web.Relay(self.state, self.client, self.table, "/opt/ff", KEY,
                                events_out=self.events, youtube=self.youtube,
+                               main_channels=self.main, groups_out=self.groups_file,
+                               now_playing_in=self.playing, remote_url_out=self.remote_url,
+                               public_url="https://iewww.com",
                                log=lambda _m: None, clock=lambda: self.now,
                                starter=self.fake_start, pumper=self.fake_pump)
         self.streams, self.manage = web.make_servers(self.relay, 0, 0)
@@ -166,10 +175,97 @@ class WebTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 404)
         self.assertEqual(self.status(self.manage_url("/"))[0], 404)
 
-    def test_page_with_key_in_query(self):
-        code, body = self.status(self.manage_url(f"/?k={KEY}"))
-        self.assertEqual(code, 200)
-        self.assertIn("小智电视 UP 主".encode(), body)
+    def raw(self, method, path, headers=None, body=None):
+        import http.client
+        connection = http.client.HTTPConnection("127.0.0.1", self.manage.server_address[1], timeout=5)
+        connection.request(method, path, body=body, headers=headers or {})
+        answer = connection.getresponse()
+        return answer, answer.read()
+
+    def login_cookie(self, path):
+        answer, _ = self.raw("GET", path)
+        self.assertEqual(answer.status, 302)
+        self.assertEqual(answer.getheader("Location"), "/tv/")
+        cookie = answer.getheader("Set-Cookie")
+        for part in ("HttpOnly", "Secure", "SameSite=Lax", "Path=/tv/", "Max-Age=15552000"):
+            self.assertIn(part, cookie)
+        return cookie.split(";")[0]
+
+    def test_key_link_logs_in_and_cookie_opens_the_page(self):
+        cookie = self.login_cookie(f"/?k={KEY}")
+        answer, body = self.raw("GET", "/tv/", {"Cookie": cookie})
+        self.assertEqual(answer.status, 200)
+        self.assertIn("小智电视".encode(), body)
+        answer, body = self.raw("GET", "/api/state", {"Cookie": cookie})
+        self.assertEqual(answer.status, 200)
+        self.assertEqual(self.raw("GET", "/tv/", {"Cookie": "tvs=forged"})[0].status, 404)
+
+    def test_code_link_and_new_code(self):
+        self.relay.write_remote_url()
+        code = self.state.ensure_code()
+        self.assertEqual(self.remote_url.read_text().strip(), f"HTTPS://IEWWW.COM/TV/R/{code}")
+        cookie = self.login_cookie(f"/r/{code}")
+        self.assertEqual(self.raw("GET", "/r/AAAAAAAAAAAAAAAAAAAA")[0].status, 404)
+        answer, body = self.raw("POST", "/api/code", {"Cookie": cookie, "Content-Type": "application/json"}, b"{}")
+        self.assertEqual(json.loads(body), {"ok": True})
+        self.assertNotIn(code, self.remote_url.read_text())
+        self.assertEqual(self.raw("GET", "/api/state", {"Cookie": cookie})[0].status, 404)
+        self.assertEqual(self.raw("GET", f"/r/{code}")[0].status, 404)
+
+    def test_assets_need_no_login(self):
+        answer, body = self.raw("GET", "/manifest.webmanifest")
+        self.assertEqual(answer.status, 200)
+        self.assertEqual(json.loads(body)["start_url"], "/tv/")
+        self.assertEqual(self.raw("GET", "/icon-180.png")[1][:4], b"\x89PNG")
+
+    # ---- remote ----
+
+    def test_state_groups_and_now_playing(self):
+        from server import now_playing
+        self.relay.add_creator("https://space.bilibili.com/42")
+        now_playing.write(self.playing, "ch001", True, True, now=self.now)
+        state = self.call("GET", "/api/state")
+        names = [g["name"] for g in state["groups"]]
+        self.assertEqual(names, ["我的投屏", "UP 主", "央视", "卫视", "其他"])
+        self.assertEqual(state["now"], {"channel": "ch001", "online": True, "switch": True,
+                                        "group": "卫视", "name": "湖南卫视", "n": 1, "title": ""})
+        creators = next(g for g in state["groups"] if g["name"] == "UP 主")["channels"]
+        self.assertEqual(creators, [{"id": "up01", "name": "UP42", "n": 1}])
+
+    def test_switch(self):
+        from server import now_playing
+        self.assertEqual(self.call("POST", "/api/switch", {"channel": "ch000"})["error"], "小智没在线")
+        now_playing.write(self.playing, "ch001", True, False, now=self.now)
+        self.assertIn("手动换台", self.call("POST", "/api/switch", {"channel": "ch000"})["error"])
+        now_playing.write(self.playing, "ch001", True, True, now=self.now)
+        self.assertEqual(self.call("POST", "/api/switch", {"channel": "nope"})["error"], "没有这个台")
+        self.assertEqual(self.call("POST", "/api/switch", {"channel": "ch000"}), {"ok": True})
+        self.assertEqual(events.read_event(self.events), (1, "switch", "ch000"))
+
+    def test_move_a_channel_to_another_group(self):
+        self.assertEqual(self.call("POST", "/api/groups", {"channel": "ch002", "group": "音乐"}), {"ok": True})
+        groups = {g["name"]: [c["id"] for c in g["channels"]] for g in self.call("GET", "/api/state")["groups"]}
+        self.assertEqual(groups["音乐"], ["ch002"])
+        self.assertNotIn("其他", groups)
+        self.call("POST", "/api/groups", {"channel": "ch002", "group": None})
+        self.assertEqual(json.loads(self.groups_file.read_text()), {})
+        self.assertFalse(self.call("POST", "/api/groups", {"channel": "cast", "group": "音乐"})["ok"])
+        self.assertFalse(self.call("POST", "/api/groups", {"channel": "ch002", "group": "UP 主"})["ok"])
+
+    def test_history_replay_and_delete(self):
+        self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
+        self.now += 10
+        self.call("POST", "/api/cast", {"url": "https://youtu.be/ytcast00001"})
+        history = self.call("GET", "/api/state")["history"]
+        self.assertEqual([(h["site"], h["id"]) for h in history],
+                         [("youtube", "ytcast00001"), ("bilibili", "BV1aZpw6DEKJ")])
+        answer = self.call("POST", "/api/history/play", {"site": "bilibili", "id": "BV1aZpw6DEKJ"})
+        self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ"})
+        self.assertEqual(self.state.cast.bvid, "BV1aZpw6DEKJ")
+        self.assertEqual(self.state.history[0]["id"], "BV1aZpw6DEKJ")
+        self.assertEqual(self.call("DELETE", "/api/history/youtube/ytcast00001"), {"ok": True})
+        self.assertEqual(len(self.state.history), 1)
+        self.assertFalse(self.call("POST", "/api/history/play", {"site": "youtube", "id": "ytcast00001"})["ok"])
 
     # ---- creators ----
 
@@ -243,7 +339,7 @@ class WebTests(unittest.TestCase):
     def test_cast_switches_plays_and_returns(self):
         answer = self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
         self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ"})
-        self.assertEqual(events.read_event(self.events), (1, "cast"))
+        self.assertEqual(events.read_event(self.events), (1, "cast", ""))
         self.assertEqual(self.call("GET", "/api/state")["cast"],
                          {"title": "tBV1aZpw6DEKJ", "done": False})
         self.outcome = "client_gone"
@@ -254,7 +350,7 @@ class WebTests(unittest.TestCase):
         self.stream("cast")
         self.assertEqual(self.started[-1][1], 20.0)
         self.assertTrue(self.state.cast_done)
-        self.assertEqual(events.read_event(self.events), (2, "return"))
+        self.assertEqual(events.read_event(self.events), (2, "return", ""))
         # Chosen by hand afterwards, it plays again from the start.
         self.stream("cast")
         self.assertEqual(self.started[-1][1], 0.0)
@@ -302,9 +398,11 @@ class PageFieldTests(unittest.TestCase):
 
     def test_page_fields_are_served(self):
         script = web.PAGE.split("<script>", 1)[1]
-        used = set(re.findall(r"\b(?:c|data|answer|answer\.creator|data\.cast)\.(\w+)", script))
-        served = {"creators", "id", "name", "site", "left", "total", "ok", "error", "creator",
-                  "cast", "title", "done"}
+        used = set(re.findall(r"\b(?:data|now|data\.now|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
+        used -= {"length", "find", "map", "includes"}
+        served = {"now", "groups", "creators", "cast", "history", "group_names",
+                  "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
+                  "site", "at", "left", "total", "ok", "error", "creator"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

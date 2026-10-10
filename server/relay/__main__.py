@@ -22,6 +22,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--events-out", type=Path,
                         help="投屏事件文件，电视服务据此让设备切台")
     parser.add_argument("--ffmpeg", required=True)
+    parser.add_argument("--main-channels", type=Path, help="直播频道表（只读），手机遥控按它列台")
+    parser.add_argument("--groups-out", type=Path, help="手机上调整的频道分组（电视服务读取）")
+    parser.add_argument("--now-playing", type=Path, help="电视服务写的「正在播放」")
+    parser.add_argument("--remote-url-out", type=Path, help="写给电视服务的遥控二维码地址")
+    parser.add_argument("--public-url", default="", help="手机访问的网站地址，例如 https://example.com")
     parser.add_argument("--cstone", type=Path,
                         help="YouTube 节点配置 JSON：{url, key, cert}；不给则只支持 B 站")
     parser.add_argument("--stream-port", type=int, default=8099)
@@ -40,8 +45,14 @@ def main(argv: list[str] | None = None) -> int:
         youtube = YouTube(config={k: config[k] for k in ("url", "key", "cert")})
     relay = Relay(state, Bilibili(), args.channels_out, args.ffmpeg, key,
                   events_out=args.events_out, youtube=youtube,
+                  main_channels=args.main_channels, groups_out=args.groups_out,
+                  now_playing_in=args.now_playing, remote_url_out=args.remote_url_out,
+                  public_url=args.public_url,
                   log=lambda message: print(message, flush=True))
     relay.write_table()
+    state.ensure_code()
+    state.save()
+    relay.write_remote_url()
     # 只监听回环：播放流给本机电视服务，管理网页由 nginx 转进来。
     streams, manage = make_servers(relay, args.stream_port, args.manage_port)
     threading.Thread(target=streams.serve_forever, daemon=True).start()

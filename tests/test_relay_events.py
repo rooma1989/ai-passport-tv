@@ -16,7 +16,9 @@ class EventTests(unittest.TestCase):
             self.assertIsNone(events.read_event(path))
             self.assertEqual(events.write_event(path, "cast"), 1)
             self.assertEqual(events.write_event(path, "return"), 2)
-            self.assertEqual(events.read_event(path), (2, "return"))
+            self.assertEqual(events.read_event(path), (2, "return", ""))
+            self.assertEqual(events.write_event(path, "switch", channel="ch013"), 3)
+            self.assertEqual(events.read_event(path), (3, "switch", "ch013"))
             self.assertEqual(path.stat().st_mode & 0o777, 0o644)
 
     def test_bad_file_reads_as_none_and_restarts_count(self):
@@ -30,6 +32,8 @@ class EventTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError):
                 events.write_event(Path(tmp) / "e.json", "reboot")
+            with self.assertRaises(ValueError):
+                events.write_event(Path(tmp) / "e.json", "switch")
 
 
 if __name__ == "__main__":
