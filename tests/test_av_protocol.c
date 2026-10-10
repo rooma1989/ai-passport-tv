@@ -41,8 +41,9 @@ static void header_tests(void) {
                  : type==AV_END ? 0u : 640u;
         if(type==AV_END) h.length=1u;
         h.flags=0; av_header_encode(wire,&h);
-        bool expect = type>=AV_HELLO && type<=AV_PALETTE
-                   && type!=AV_END && type!=AV_PALETTE;
+        bool expect = (type>=AV_HELLO && type<=AV_PALETTE
+                       && type!=AV_END && type!=AV_PALETTE)
+                   || type==AV_SWITCH;
         assert(av_header_decode(wire,&got)==expect);
     }
     h.type=AV_VIDEO; h.length=100; h.flags=AV_VIDEO_CONTINUES; av_header_encode(wire,&h);
@@ -56,7 +57,8 @@ static void header_tests(void) {
                               AV_AUDIO_BYTES+1,
                               AV_CONTROL_MAX-1,AV_CONTROL_MAX,AV_CONTROL_MAX+1,
                               AV_VIDEO_MAX,UINT32_MAX};
-    for(unsigned type=1;type<=AV_PALETTE;type++) {
+    // AV_SWITCH is a control packet: the same bounds as CONFIG.
+    for(unsigned type=1;type<=AV_SWITCH;type++) {
         if(type==AV_END || type==AV_PALETTE) continue;
         for(unsigned i=0;i<sizeof(lengths)/sizeof(*lengths);i++) {
             uint32_t n=lengths[i]; h.type=type; h.length=n; h.flags=0; av_header_encode(wire,&h);
@@ -100,7 +102,12 @@ static void stream_tests(void) {
     // A palette takes its place in the sequence and touches no timeline, so it
     // may arrive between any two packets.
     h=(av_header_t){AV_PALETTE,0,42,9,0,AV_PALETTE_BYTES}; assert(av_stream_accept(&s,&h));
-    h=(av_header_t){AV_END,0,42,10,10000,0}; assert(av_stream_accept(&s,&h));
+    // A switch request is the same: one place in the sequence, no timeline, and
+    // the stream goes on (the device ends the session itself when it acts).
+    h=(av_header_t){AV_SWITCH,0,42,10,0,20}; assert(av_stream_accept(&s,&h));
+    bad=h; bad.seq=12; assert(!av_stream_accept(&s,&bad));
+    assert(!s.ended);
+    h=(av_header_t){AV_END,0,42,11,10000,0}; assert(av_stream_accept(&s,&h));
     assert(!av_stream_accept(&s,&h));
     // A continuation with no frame under way has nothing to continue. Accepting
     // it would let a stream whose first packet was lost look like a valid one.

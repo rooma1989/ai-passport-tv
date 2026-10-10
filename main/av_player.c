@@ -453,6 +453,11 @@ typedef struct {
     // silently wrapped, which would have made a 300-channel list look like 44.
     atomic_uint count, index;
     atomic_bool switch_pending;
+    // A channel the server asked for (AV_SWITCH, sent when a video is cast from
+    // the phone and when it ends). Written by the receive task, then the flag;
+    // applied by the main loop through request_switch(), like a key press.
+    char remote_channel[AV_CHANNEL_ID_MAX];
+    atomic_bool remote_switch;
     // Set once the first PCM/JPEG arrives, which switches the idle watchdog
     // from the startup allowance to the normal inter-packet gap.
     atomic_bool media_started;
@@ -985,6 +990,29 @@ static bool json_string(const cJSON *j, const char *key, const char *expected) {
 #else
 #define AV_CONFIG_FPS_MAX 30
 #endif
+// Keep the channel an AV_SWITCH names for the main loop. A request that does not
+// parse or names nothing usable is logged and dropped: it is advice from the
+// server, and ignoring it leaves the device playing what it was.
+static void take_switch(char *buf, size_t n) {
+    if (!av_json_depth_safe(buf,n,2)) {
+        ESP_LOGW(TAG,"SWITCH ignored: json depth/parse guard");
+        return;
+    }
+    buf[n]=0;
+    const char *end=NULL;
+    cJSON *j=cJSON_ParseWithLengthOpts(buf,n+1,&end,true);
+    const cJSON *channel=cJSON_GetObjectItemCaseSensitive(j,"channel");
+    const char *id=cJSON_IsString(channel) ? channel->valuestring : NULL;
+    size_t length=id ? strnlen(id,AV_CHANNEL_ID_MAX) : 0;
+    if (length>0 && length<AV_CHANNEL_ID_MAX && !atomic_load(&s.remote_switch)) {
+        memcpy(s.remote_channel,id,length+1);
+        atomic_store(&s.remote_switch,true);
+    } else {
+        ESP_LOGW(TAG,"SWITCH ignored");
+    }
+    cJSON_Delete(j);
+}
+
 static bool config_valid(char *buf, size_t n, uint32_t session) {
     if (!av_json_depth_safe(buf,n,4)) {
         ESP_LOGW(TAG,"CONFIG rejected: json depth/parse guard");
@@ -1198,6 +1226,10 @@ static bool hello(int fd) {
     // token", so an empty one would be a claim rather than an absence.
     bool ok=cJSON_AddNumberToObject(j,"version",1) &&
         cJSON_AddStringToObject(j,"channel",s.channel) &&
+        // Says this firmware understands AV_SWITCH. Older firmware refuses an
+        // unknown kind and drops the session, so the server sends it only to a
+        // device that announced it.
+        cJSON_AddNumberToObject(j,"switch",1) &&
         (AV_PAIRING_TOKEN[0]=='\0' ||
          cJSON_AddStringToObject(j,"token",AV_PAIRING_TOKEN)!=NULL);
     char *body=ok ? cJSON_PrintUnformatted(j) : NULL;
@@ -1440,6 +1472,10 @@ static void receive_task(void *arg) {
             av_palette_decode(raw,s.palette);
             av_palette_wire_order(s.palette);
             s.palette_ready=true;
+        } else if (h.type==AV_SWITCH) {
+            s_rx_stage="switch-read";
+            if (!io_all(fd,control,h.length,false,AV_READ_DEADLINE_MS)) break;
+            take_switch(control,h.length);
         } else if (h.type==AV_END) { clean=true; break; }
     }
 done:
@@ -3839,6 +3875,21 @@ static bool pump_keys(uint32_t wait_ms) {
         process_key(&item);
     }
     char chosen[AV_CHANNEL_ID_MAX];
+    // The server's request, applied exactly as if the viewer had picked the
+    // channel from the list: same checks, same banner.
+    if (atomic_load(&s.remote_switch)) {
+        memcpy(chosen,s.remote_channel,sizeof(chosen));
+        atomic_store(&s.remote_switch,false);
+        if (request_switch(chosen)) {
+            ui_menu_close(&s.menu);
+            char name[UI_MENU_NAME_MAX];
+            channel_name_of(chosen,name,sizeof(name));
+            ui_menu_banner(&s.menu,name,NULL);
+            ESP_LOGI(TAG,"Switching to %s at the server's request",chosen);
+            return true;
+        }
+        ESP_LOGW(TAG,"Server asked for %s; not switching",chosen);
+    }
     ui_action_t action=ui_menu_take_action(&s.menu,chosen,sizeof(chosen));
     if (action==UI_ACTION_SWITCH) {
         if (request_switch(chosen)) {

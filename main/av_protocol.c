@@ -17,7 +17,7 @@ bool av_header_decode(const uint8_t p[AV_HEADER_BYTES], av_header_t *h) {
     h->type=p[5]; h->flags=p[7]; h->session=get32(p+8); h->seq=get32(p+12);
     h->pts_ms=get32(p+16); h->length=get32(p+20);
     switch(h->type) {
-    case AV_HELLO: case AV_CONFIG: case AV_ERROR:
+    case AV_HELLO: case AV_CONFIG: case AV_ERROR: case AV_SWITCH:
         if (h->flags) return false;
         return h->length>0 && h->length<=AV_CONTROL_MAX;
     case AV_END:
@@ -68,6 +68,10 @@ bool av_stream_accept(av_stream_t *s, const av_header_t *h) {
         // No timeline of its own; it takes its place in the sequence and
         // nothing else. The server sends one before the first frame, and may
         // send another at any point to retune the colours.
+        break;
+    case AV_SWITCH:
+        // Likewise: a request, not media. The stream carries on until the
+        // device acts on it and ends the session.
         break;
     case AV_END: case AV_ERROR: s->ended=true; break;
     default: return false;

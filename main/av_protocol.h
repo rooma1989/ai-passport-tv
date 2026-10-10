@@ -229,7 +229,10 @@
 // server willing to send one extra turns a boundary case into a dead session.
 #define AV_CHANNEL_MAX 128u
 #define AV_CHANNEL_ID_MAX 16u
-enum { AV_HELLO=1, AV_CONFIG, AV_AUDIO, AV_VIDEO, AV_END, AV_ERROR, AV_PALETTE };
+// AV_SWITCH: the server asks the device to change to the channel named in its
+// JSON payload ({"channel": id}); sent only to a device whose HELLO carried
+// "switch": 1, because firmware without it refuses an unknown kind.
+enum { AV_HELLO=1, AV_CONFIG, AV_AUDIO, AV_VIDEO, AV_END, AV_ERROR, AV_PALETTE, AV_SWITCH };
 // The only flag in use, and only on AV_VIDEO: this packet carries further
 // stripes of the frame the previous one started, rather than a new frame. A
 // frame cut into several packets sends them all with the same timestamp, and
