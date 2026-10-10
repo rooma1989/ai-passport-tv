@@ -11,6 +11,8 @@
 
 #define UI_TOPBAR_H 30
 #define UI_STATUS_LOW_SOC 20
+// Below this the percentage blinks once a second (`blink_off` hides it).
+#define UI_STATUS_CRITICAL_SOC 10
 
 // The label is a few runs of text, each in its own colour, drawn one after
 // another -- "07" in amber, then " CCTV-7 国防军事" in paper.
@@ -36,6 +38,8 @@ void ui_topbar_set_label(ui_topbar_label_t *label, const char *const texts[],
 // then the status group. `label` may be NULL. `bars` is 0..4 (0 = not
 // connected, all dim). `soc` is 0..100, or < 0 when unknown ("--", no fill).
 // `charging` is 1 to draw the bolt; 0 or -1 draws none. The label stops short
-// of the status group and ends in "…" when it does not fit.
+// of the status group and ends in "…" when it does not fit. `blink_off` hides
+// the percentage while the charge is below UI_STATUS_CRITICAL_SOC; the caller
+// flips it each second.
 void ui_status_draw(ui_surface_t surface, int panel_w, const ui_topbar_label_t *label,
-                    unsigned bars, int soc, int charging);
+                    unsigned bars, int soc, int charging, bool blink_off);

@@ -91,6 +91,14 @@ class WatcherTests(unittest.TestCase):
         self.assertIsNone(watcher.poll("up01", 2.0))
         self.assertEqual(watcher.take_controls(), [("pause", ""), ("brightness", 2), ("resume", None)])
 
+    def test_seek_and_next_are_controls(self):
+        watcher = SwitchWatcher(self.path)
+        watcher.poll("up01", 1.0)
+        events.write_event(self.path, "seek", value=-30)
+        events.write_event(self.path, "next")
+        self.assertIsNone(watcher.poll("up01", 2.0))
+        self.assertEqual(watcher.take_controls(), [("seek", -30), ("next", None)])
+
     def test_no_file_configured(self):
         self.assertIsNone(SwitchWatcher(None).poll("ch001", 5.0))
 
@@ -345,6 +353,18 @@ class DeviceControlTests(unittest.TestCase):
         self.assertEqual(self.seen_after_status, {"volume": 40, "brightness": 1, "steps": 5})
         self.assertIn({"volume": 90}, payloads)
         self.assertIn({"brightness": 3}, payloads)
+
+    def test_hints_only_for_firmware_that_draws_them(self):
+        def script(client, session, elapsed):
+            if elapsed > 0.5 and not getattr(self, "wrote_hint", False):
+                self.wrote_hint = True
+                events.write_event(self.events, "seek", value=30)
+                events.write_event(self.events, "next")
+        payloads = self.session({"hint": 1}, script)
+        self.assertIn({"seek": 30}, payloads)
+        self.assertIn({"next": 1}, payloads)
+        self.wrote_hint = False
+        self.assertEqual(self.session({}, script), [])
 
     def test_no_controls_for_firmware_without_them(self):
         def script(client, session, elapsed):

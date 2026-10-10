@@ -206,6 +206,24 @@ static void test_narrow_glyphs_start_at_the_pen(void)
     }
 }
 
+// The design's characters the font lacks are drawn from the built-in table,
+// and only when the font itself has nothing: with the test's empty CJK table,
+// they must still have ink.
+static void test_fallback_glyphs(void)
+{
+    const char *samples[] = { "\xE2\x96\xBC", "\xC2\xB7", "\xE2\x97\x80", "\xE2\x96\xB6" };
+    for (unsigned i = 0; i < 4; i++) {
+        ui_surface_t surface = surface_at(0, SURFACE_ROWS);
+        memset(surface.pixels, 0, (size_t)SURFACE_W * SURFACE_ROWS * 2u);
+        int end = ui_text_draw(surface, 40, 4, samples[i], UI_PAPER, UI_INK);
+        int ink = 0;
+        for (int y = 0; y < SURFACE_ROWS; y++)
+            for (int x = 0; x < SURFACE_W; x++) ink += pixel(surface, x, y) == UI_PAPER;
+        check(ink > 0, "a fallback glyph has ink");
+        check(end - 40 < (int)UI_GLYPH_W, "and a narrow advance");
+    }
+}
+
 static void test_ellipsize(void)
 {
     char out[64];
@@ -230,6 +248,7 @@ int main(void)
     test_scaled_text();
     test_narrow_glyphs_start_at_the_pen();
     test_ellipsize();
+    test_fallback_glyphs();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

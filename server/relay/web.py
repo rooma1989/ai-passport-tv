@@ -356,6 +356,8 @@ class Relay:
             return self.next()
         self._store_position(cid, video, target)
         self._bridge[cid] = {"video": video, "target": target, "at": self.clock()}
+        # 设备上画「快进 30 秒」之类的提示；秒数是相对现在的位置。
+        self._event("seek", value=int(round(target - current)))
         if entry is not None:
             self._cut(cid, entry, f"跳到 {int(target)} 秒")
         else:
@@ -367,6 +369,7 @@ class Relay:
         if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
         self._bridge.pop(cid, None)
+        self._event("next")
         if cid == table.CAST_ID:
             self.state.cast_ended(video.bvid)
             self.state.save()

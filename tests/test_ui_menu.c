@@ -424,6 +424,56 @@ static void test_group_names_are_bounded(void)
           "the stray entry joins the first group, and one non-empty group needs no group level");
 }
 
+// ---- the banner's place, the level indicator, the seek box ----
+
+static void test_banner_place(void)
+{
+    ui_menu_t menu = grouped("ch001");
+    ui_menu_banner_place(&menu, "ch001");
+    check(menu.banner_number == 5, "the number counts the whole list");
+    check(strcmp(menu.banner_detail, "央视 \xC2\xB7 2/3") == 0, "group, then place in the group");
+    ui_menu_banner_place(&menu, "nope");
+    check(menu.banner_number == 0 && menu.banner_detail[0] == '\0', "unknown id: nothing");
+    ui_menu_t flat = loaded("cctv9");
+    ui_menu_banner_place(&flat, "cctv9");
+    check(flat.banner_number == 3 && strcmp(flat.banner_detail, "频道 \xC2\xB7 3/5") == 0,
+          "one level: the list is the group");
+}
+
+static void test_level_indicator(void)
+{
+    ui_menu_t menu = loaded("cctv1");
+    ui_menu_show_volume(&menu, 70);
+    check(ui_menu_volume_visible(&menu) && menu.level == UI_LEVEL_VOLUME, "volume shows");
+    ui_menu_show_brightness(&menu);
+    check(ui_menu_volume_visible(&menu) && menu.level == UI_LEVEL_BRIGHTNESS, "brightness takes over");
+    check(ui_menu_tick(&menu, 1500) && !ui_menu_volume_visible(&menu), "and goes after 1.5 s");
+}
+
+static void test_seek_hint(void)
+{
+    ui_menu_t menu = loaded("cctv1");
+    char text[32];
+    ui_menu_hint_text(&menu, text, sizeof(text));
+    check(text[0] == '\0', "no box, no text");
+    const unsigned seq = menu.hint_seq;
+    ui_menu_show_hint(&menu, UI_HINT_FORWARD, 30);
+    ui_menu_hint_text(&menu, text, sizeof(text));
+    check(strcmp(text, "快进30秒") == 0 && menu.hint_seq != seq, "forward 30 s");
+    ui_menu_show_hint(&menu, UI_HINT_BACK, -150);
+    ui_menu_hint_text(&menu, text, sizeof(text));
+    check(strcmp(text, "快退3分") == 0, "long jumps in minutes");
+    ui_menu_show_hint(&menu, UI_HINT_NEXT, 0);
+    ui_menu_hint_text(&menu, text, sizeof(text));
+    check(strcmp(text, "下一个") == 0, "next");
+    check(!ui_menu_tick(&menu, 3000) && menu.hint == UI_HINT_NEXT, "stays while the picture is away");
+    ui_menu_hint_resumed(&menu);
+    check(!ui_menu_tick(&menu, 400), "half a second more after it is back");
+    check(ui_menu_tick(&menu, 200) && menu.hint == UI_HINT_NONE, "then it goes");
+    ui_menu_show_hint(&menu, UI_HINT_FORWARD, 30);
+    check(ui_menu_tick(&menu, 8000) && menu.hint == UI_HINT_NONE, "and never longer than 8 s");
+}
+
 int main(void)
 {
     test_open_selects_the_playing_channel();
@@ -444,6 +494,9 @@ int main(void)
     test_confirm_enters_the_group_and_back_returns();
     test_without_groups_the_list_is_one_level();
     test_group_names_are_bounded();
+    test_banner_place();
+    test_level_indicator();
+    test_seek_hint();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

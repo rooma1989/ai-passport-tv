@@ -549,6 +549,17 @@ class PlaybackControlTests(unittest.TestCase):
         self.now += web.SEEK_BRIDGE_S + 1
         self.assertIsNotNone(self.relay.summary()["now"]["video"], "the new stream reports itself")
 
+    def test_seek_and_next_tell_the_device(self):
+        thread = self.serve()
+        self.mono += 100 + web.PLAYBACK_LAG_S
+        self.relay.seek(delta=-30)
+        thread.join(2)
+        last = events.read_event(self.events)
+        self.assertEqual((last.action, last.value), ("seek", -30))
+        self.serve()
+        self.relay.next()
+        self.assertEqual(events.read_event(self.events).action, "next")
+
     def test_seek_bounds(self):
         self.serve()
         self.mono += 10

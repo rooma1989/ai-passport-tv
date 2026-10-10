@@ -21,6 +21,7 @@ idf_component_register(
          "ui_qr.c"
          "ui_status.c"
          "ui_draw.c"
+         "ui_overlay.c"
          "av_provision.cpp"
          "av_provision_policy.c"
          "av_settings.c"

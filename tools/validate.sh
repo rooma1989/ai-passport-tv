@@ -78,6 +78,13 @@ run_static_checks() {
         tests/test_ui_draw.c main/ui_draw.c main/ui_text.c \
         -o "${test_dir}/test_ui_draw"
     "${test_dir}/test_ui_draw"
+    # The overlays and the host renderer that draws them (tools/render_ui):
+    # built here so neither can drift from the firmware's drawing code.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tools/render_ui/render_ui.c tools/render_ui/font_blob.S \
+        main/ui_overlay.c main/ui_status.c main/ui_draw.c main/ui_text.c main/ui_menu.c \
+        -o "${test_dir}/render_ui"
+    "${test_dir}/render_ui" "${test_dir}/screens.ppm"
     # The server address arrives as text someone typed or pasted, so the cases
     # that matter are the messy ones. A wrong answer here is a device that
     # silently never connects, which is the hardest kind of fault to see.

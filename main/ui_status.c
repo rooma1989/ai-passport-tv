@@ -56,9 +56,9 @@ static void draw_label(ui_surface_t surface, const ui_topbar_label_t *label, int
         const ui_topbar_segment_t *segment = &label->segment[i];
         char fitted[UI_TOPBAR_SEGMENT_MAX + 4];
         const bool whole = ui_text_ellipsize(fitted, sizeof(fitted), segment->text, end - pen);
-        // The box's padding is the bar's own colour, so segments can sit
-        // edge to edge without a seam.
-        pen = ui_text_draw(surface, pen, TEXT_Y, fitted, segment->color, UI_DEEP);
+        // Glyph cells only, no padded box: a segment's box would reach 6 px
+        // back over the end of the one before it. The bar is already UI_DEEP.
+        pen = ui_text_draw_scaled(surface, pen, TEXT_Y, fitted, 1, segment->color, UI_DEEP);
         if (!whole) {
             break;
         }
@@ -66,7 +66,7 @@ static void draw_label(ui_surface_t surface, const ui_topbar_label_t *label, int
 }
 
 void ui_status_draw(ui_surface_t surface, int panel_w, const ui_topbar_label_t *label,
-                    unsigned bars, int soc, int charging)
+                    unsigned bars, int soc, int charging, bool blink_off)
 {
     if (surface.origin_y >= UI_TOPBAR_H) {
         return;
@@ -99,6 +99,9 @@ void ui_status_draw(ui_surface_t surface, int panel_w, const ui_topbar_label_t *
         text_color = color;
     } else {
         snprintf(text, sizeof(text), "--");
+    }
+    if (blink_off && soc >= 0 && soc < UI_STATUS_CRITICAL_SOC) {
+        return;
     }
     int text_x = PERCENT_END - ui_text_width(text);
     if (text_x > PERCENT_X) text_x = PERCENT_X;

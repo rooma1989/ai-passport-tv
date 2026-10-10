@@ -41,6 +41,20 @@ typedef struct {
     uint8_t group;
 } ui_menu_entry_t;
 
+// What the level indicator at the top of the picture is showing.
+typedef enum {
+    UI_LEVEL_VOLUME = 0,
+    UI_LEVEL_BRIGHTNESS,   // set from the phone; the keys use the brightness page
+} ui_level_t;
+
+// The box in the middle of the picture after a seek or "next" from the phone.
+typedef enum {
+    UI_HINT_NONE = 0,
+    UI_HINT_FORWARD,
+    UI_HINT_BACK,
+    UI_HINT_NEXT,
+} ui_hint_t;
+
 typedef struct {
     ui_view_t view;
     ui_menu_entry_t entries[UI_MENU_MAX];
@@ -63,11 +77,24 @@ typedef struct {
     // A banner shown over the video after a switch, and its remaining time.
     char banner[UI_MENU_NAME_MAX];
     int64_t banner_ms;
+    // Where that channel sits, for the banner: its number in the whole list
+    // (0 when unknown) and "group · n/total" ("" when unknown).
+    unsigned banner_number;
+    char banner_detail[UI_MENU_GROUP_NAME_MAX + 24];
     // The volume indicator shown while the volume is being changed, and its
     // remaining time. It carries the level rather than reading it back, so the
     // display shows what was asked for at the moment it was asked for.
     unsigned volume;
     int64_t volume_ms;
+    // Which level the indicator shows; the brightness comes from `brightness`.
+    ui_level_t level;
+    // The seek box: what was asked, the seconds for a seek, how long it may
+    // stay, and a count that moves on every new one so a still screen knows to
+    // repaint.
+    ui_hint_t hint;
+    int hint_seconds;
+    int64_t hint_ms;
+    unsigned hint_seq;
     // Which backlight step is in use, as an index into AV_BRIGHTNESS_LEVELS.
     // The menu carries it so the brightness page can be drawn from the same
     // state the key handler updates, with no second source of truth.
@@ -143,6 +170,23 @@ void ui_menu_show_volume(ui_menu_t *menu, unsigned level);
 
 // Whether the volume indicator should be drawn now.
 bool ui_menu_volume_visible(const ui_menu_t *menu);
+
+// Show the backlight in the same indicator, as the phone set it. Whichever of
+// the two came last is the one shown.
+void ui_menu_show_brightness(ui_menu_t *menu);
+
+// Fill banner_number and banner_detail for channel `id`, from the loaded list.
+// `id` not in the list leaves both empty.
+void ui_menu_banner_place(ui_menu_t *menu, const char *id);
+
+// Show the seek box. `seconds` is the jump, negative for back; ignored for
+// "next". The box stays until the picture comes back (ui_menu_hint_resumed) or
+// UI_MENU_HINT_MAX_MS passes, whichever is first.
+void ui_menu_show_hint(ui_menu_t *menu, ui_hint_t hint, int seconds);
+// The picture came back after stopping: the box stays half a second more.
+void ui_menu_hint_resumed(ui_menu_t *menu);
+// The box's first line: 快进30秒, 快退2分, 下一个. Empty when no box is up.
+void ui_menu_hint_text(const ui_menu_t *menu, char *out, size_t out_size);
 
 
 // The channel id currently highlighted, or NULL when the list is empty or the

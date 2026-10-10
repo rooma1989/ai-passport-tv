@@ -297,6 +297,7 @@ class AVServer:
         self.device_switches = False
         self.device_status: dict | None = None
         self.device_pause = False
+        self.device_hints = False
         # 上次握手时设备报的开机时长；变小说明设备重启过。
         self._device_uptime: int | None = None
         # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
@@ -857,6 +858,12 @@ class AVServer:
                     send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
                                                    json_bytes({kind: value})))
                     seq += 1
+                elif kind in ("seek", "next") and self.device_hints:
+                    # 手机快进、下一个：设备画提示框，画面要停一两秒是正常的。
+                    self.phase = "control_send"
+                    send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
+                                                   json_bytes({"seek": value} if kind == "seek" else {"next": 1})))
+                    seq += 1
             if getattr(self, "duration_ms", None) is not None and (now - origin) * 1000 >= self.duration_ms:
                 send_packet(connection, Packet(Kind.END, session, seq, 0))
                 return
@@ -1122,6 +1129,8 @@ class AVServer:
             # 新固件在 HELLO 里报音量、亮度；报了的才接受手机的调节。
             # 新固件自己画暂停横条（"pause": 1）；旧固件靠服务端发 PAUSED 画面。
             self.device_pause = greeting.get("pause") == 1
+            # 新固件自己画快进、下一个的提示（"hint": 1）；别的固件不发，免得它把包当成坏数据。
+            self.device_hints = greeting.get("hint") == 1
             self.device_status = None
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):
                 self.device_status = {"volume": greeting["volume"], "brightness": greeting["brightness"],

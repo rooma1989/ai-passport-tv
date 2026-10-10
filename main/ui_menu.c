@@ -7,6 +7,7 @@
 
 #include "ui_menu.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,6 +22,10 @@
 // How long the volume indicator stays up after the last change. Long enough to
 // read while the button is held, short enough not to sit over the picture.
 #define UI_MENU_VOLUME_MS 1500
+// The seek box: up to this long while the picture is away, then half a second
+// after it is back (HANDOFF.md 4.5).
+#define UI_MENU_HINT_MAX_MS 8000
+#define UI_MENU_HINT_AFTER_MS 500
 
 // A channel id must stay printable and short enough for the device table; the
 // name is only ever drawn, so it is bounded by the font and the screen.
@@ -500,6 +505,15 @@ bool ui_menu_tick(ui_menu_t *menu, int64_t elapsed_ms)
             changed = true;
         }
     }
+    if (menu->hint_ms > 0) {
+        menu->hint_ms -= elapsed_ms;
+        if (menu->hint_ms <= 0) {
+            menu->hint_ms = 0;
+            menu->hint = UI_HINT_NONE;
+            menu->hint_seq++;
+            changed = true;
+        }
+    }
     if (menu->view != UI_VIEW_VIDEO && menu->timeout_ms > 0) {
         menu->timeout_ms -= elapsed_ms;
         if (menu->timeout_ms <= 0) {
@@ -539,6 +553,87 @@ void ui_menu_show_volume(ui_menu_t *menu, unsigned level)
     }
     menu->volume = level > 100u ? 100u : level;
     menu->volume_ms = UI_MENU_VOLUME_MS;
+    menu->level = UI_LEVEL_VOLUME;
+}
+
+void ui_menu_show_brightness(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    menu->volume_ms = UI_MENU_VOLUME_MS;
+    menu->level = UI_LEVEL_BRIGHTNESS;
+}
+
+void ui_menu_banner_place(ui_menu_t *menu, const char *id)
+{
+    if (!menu) {
+        return;
+    }
+    menu->banner_number = 0;
+    menu->banner_detail[0] = '\0';
+    int found = find_entry(menu, id);
+    if (found < 0) {
+        return;
+    }
+    const unsigned g = entry_group(menu, (unsigned)found);
+    unsigned position = 0, total = 0;
+    for (unsigned i = 0; i < menu->count; i++) {
+        if (entry_group(menu, i) != g) {
+            continue;
+        }
+        total++;
+        if (i <= (unsigned)found) {
+            position++;
+        }
+    }
+    menu->banner_number = (unsigned)found + 1u;
+    // One level only: the group is the whole list, named as the list is.
+    const char *group = two_levels(menu) ? menu->groups[g] : "频道";
+    snprintf(menu->banner_detail, sizeof(menu->banner_detail), "%s \xC2\xB7 %u/%u",
+             group, position, total);
+}
+
+void ui_menu_show_hint(ui_menu_t *menu, ui_hint_t hint, int seconds)
+{
+    if (!menu || hint == UI_HINT_NONE) {
+        return;
+    }
+    menu->hint = hint;
+    menu->hint_seconds = seconds;
+    menu->hint_ms = UI_MENU_HINT_MAX_MS;
+    menu->hint_seq++;
+}
+
+void ui_menu_hint_resumed(ui_menu_t *menu)
+{
+    if (menu && menu->hint != UI_HINT_NONE && menu->hint_ms > UI_MENU_HINT_AFTER_MS) {
+        menu->hint_ms = UI_MENU_HINT_AFTER_MS;
+    }
+}
+
+void ui_menu_hint_text(const ui_menu_t *menu, char *out, size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+    out[0] = '\0';
+    if (!menu || menu->hint == UI_HINT_NONE) {
+        return;
+    }
+    if (menu->hint == UI_HINT_NEXT) {
+        snprintf(out, out_size, "下一个");
+        return;
+    }
+    const char *verb = menu->hint == UI_HINT_BACK ? "快退" : "快进";
+    unsigned seconds = (unsigned)abs(menu->hint_seconds);
+    if (seconds == 0) {
+        snprintf(out, out_size, "%s", verb);
+    } else if (seconds < 60u) {
+        snprintf(out, out_size, "%s%u秒", verb, seconds);
+    } else {
+        snprintf(out, out_size, "%s%u分", verb, (seconds + 30u) / 60u);
+    }
 }
 
 bool ui_menu_volume_visible(const ui_menu_t *menu)

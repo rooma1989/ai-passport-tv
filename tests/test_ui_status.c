@@ -34,7 +34,7 @@ static void draw_label(const ui_topbar_label_t *label, unsigned bars, int soc, i
 {
     memset(buf, 0, sizeof(buf));
     ui_surface_t surface = { buf, W, 0, H };
-    ui_status_draw(surface, W, label, bars, soc, charging);
+    ui_status_draw(surface, W, label, bars, soc, charging, false);
 }
 
 static void draw(unsigned bars, int soc, int charging)
@@ -129,6 +129,8 @@ static void test_label(void)
     check(count_in(0, 20, UI_AMBER) == 0 && count_in(0, 20, UI_PAPER) == 0,
           "nothing left of the label's glyphs");
     check(count_in(36, 100, UI_PAPER) > 0, "the name follows in paper");
+    // "07" is 16 px from x=20; the name's drawing must not paint over it.
+    check(count_in(28, 36, UI_AMBER) > 0, "the second digit survives the name after it");
 
     const char *long_texts[] = { "07", " ABCDEFGHIJKLMNOPQRSTUVWXYZ" };
     ui_topbar_set_label(&label, long_texts, colors, 2);
@@ -142,6 +144,17 @@ static void test_label(void)
     const char *many[] = { "a", "b", "c", "d", "e" };
     ui_topbar_set_label(&label, many, NULL, 5);
     check(label.count == UI_TOPBAR_SEGMENTS, "segments are capped");
+}
+
+static void test_critical_blink(void)
+{
+    memset(buf, 0, sizeof(buf));
+    ui_surface_t surface = { buf, W, 0, H };
+    ui_status_draw(surface, W, NULL, 4, 5, 0, true);
+    check(count_in(194, W, UI_VERM) == 0, "below 10% the number blinks off");
+    check(count_in(174, 190, UI_VERM) == 4, "but the fill stays");
+    ui_status_draw(surface, W, NULL, 4, 15, 0, true);
+    check(count_in(194, W, UI_VERM) > 0, "at 15% it does not blink");
 }
 
 static void test_stays_off_the_corner(void)
@@ -159,6 +172,7 @@ int main(void)
     test_bars();
     test_bolt();
     test_label();
+    test_critical_blink();
     test_stays_off_the_corner();
     if (failures) {
         printf("%d failure(s)\n", failures);

@@ -16,6 +16,7 @@
 #include "ui_text.h"
 #include "ui_status.h"
 #include "ui_draw.h"
+#include "ui_overlay.h"
 #include "ui_qr.h"
 #include "qrcodegen.h"
 // The ROM's copy of miniz: tinfl_decompress lives at a fixed address in the
@@ -473,6 +474,12 @@ typedef struct {
     // The phone's volume (percent) and backlight step, also carried in AV_SWITCH.
     // Stored plus one, so zero means "nothing asked for". Applied in pump_keys.
     atomic_int remote_volume, remote_brightness;
+    // A seek or "next" from the phone, for the box in the middle of the
+    // picture: the seconds first, then the kind (a ui_hint_t), which is the flag.
+    atomic_int remote_hint_seconds, remote_hint;
+    // Set by the video task when frames come back after a gap, so the seek box
+    // can go half a second later; taken by pump_keys, which owns the menu.
+    atomic_bool frames_resumed;
     // Paused from the phone: the panel keeps the last frame and a band across
     // the middle says so (paint_pause_band). pause_gen moves on every change so
     // the band is drawn once per change, not per pass.
@@ -1059,6 +1066,16 @@ static void take_switch(char *buf, size_t n) {
     } else if (cJSON_IsNumber(level) && level->valuedouble>=0 &&
                level->valuedouble<(double)AV_BRIGHTNESS_COUNT) {
         atomic_store(&s.remote_brightness,(int)level->valuedouble+1);
+    } else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j,"seek"))) {
+        // The phone jumped; the relay does the jumping, this only says so.
+        double seconds=cJSON_GetObjectItemCaseSensitive(j,"seek")->valuedouble;
+        if (seconds>86400) seconds=86400;
+        if (seconds<-86400) seconds=-86400;
+        atomic_store(&s.remote_hint_seconds,(int)seconds);
+        atomic_store(&s.remote_hint,seconds<0 ? (int)UI_HINT_BACK : (int)UI_HINT_FORWARD);
+    } else if (cJSON_GetObjectItemCaseSensitive(j,"next")) {
+        atomic_store(&s.remote_hint_seconds,0);
+        atomic_store(&s.remote_hint,(int)UI_HINT_NEXT);
     } else {
         ESP_LOGW(TAG,"SWITCH ignored");
     }
@@ -1344,6 +1361,8 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"brightness_steps",AV_BRIGHTNESS_COUNT) &&
         // This firmware draws its own pause band; the server then sends no frames.
         cJSON_AddNumberToObject(j,"pause",1) &&
+        // And the box for a seek or "next" from the phone (SWITCH "seek"/"next").
+        cJSON_AddNumberToObject(j,"hint",1) &&
         // How long since boot and why the last reset, so the server's log can
         // tell a device that restarted (and why) from one that lost Wi-Fi.
         cJSON_AddNumberToObject(j,"uptime_s",(double)(esp_timer_get_time()/1000000)) &&
@@ -1891,6 +1910,7 @@ typedef struct {
     unsigned bars;
     int soc;
     int charging;
+    bool blink_off;   // a critical charge's percentage is in its off second
 } band_reading_t;
 
 // The top bar's label for what is on screen (HANDOFF.md 4.1, 4.7-4.10): the
@@ -1966,7 +1986,8 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
     char text[24];
 
     if (first<bar) {
-        ui_status_draw(surface,(int)AV_WIDTH,&topbar_label,reading->bars,reading->soc,reading->charging);
+        ui_status_draw(surface,(int)AV_WIDTH,&topbar_label,reading->bars,reading->soc,reading->charging,
+                       reading->blink_off);
     }
 
     const int bottom=(int)AV_HEIGHT-bar;
@@ -2028,12 +2049,16 @@ static bool refresh_info_bars(void) {
     const bool want_bottom=s.menu.view==UI_VIEW_MENU;
     const int64_t now=esp_timer_get_time();
     build_topbar_label(&topbar_label);
-    const bool top_due=!top_drawn || now-top_painted_us>=2000000 ||
+    // Below 10% the percentage blinks, so the bar is repainted every second.
+    const int soc_now=atomic_load(&s.battery_soc);
+    const bool critical=soc_now>=0 && soc_now<UI_STATUS_CRITICAL_SOC;
+    const bool top_due=!top_drawn || now-top_painted_us>=(critical ? 1000000 : 2000000) ||
                        memcmp(&topbar_label,&topbar_painted,sizeof(topbar_label));
     const bool bottom_due=want_bottom ? (!bottom_drawn || now-bottom_painted_us>=1000000)
                                       : bottom_drawn;
     if (!top_due && !bottom_due) return true;
-    const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc), bsp_battery_charging() };
+    const band_reading_t reading={ wifi_bars(), soc_now, bsp_battery_charging(),
+                                   critical && (now/1000000)%2 };
     drain_display();
     if (top_due) {
         if (!paint_band(0,bar,&reading,false)) return false;
@@ -2102,52 +2127,11 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         ui_draw_panel(surface,(int)AV_VIDEO_Y_OFFSET,(int)(AV_HEIGHT-AV_VIDEO_Y_OFFSET));
     }
     if (s.menu.view==UI_VIEW_VIDEO) {
-        // The volume indicator, at the top of the screen while it is up.
-        //
-        // The top, not the bottom, because the channel banner already lives at
-        // the bottom and the two can be on screen together -- change channel,
-        // then reach for the volume before the banner has expired. Putting this
-        // above it would have hidden one of them, and neither is worth losing.
-        //
-        // It shows a number and a filled bar together: the number is the exact
-        // level, the bar is how much of the range is left, and a glance usually
-        // wants the second.
-        if (ui_menu_volume_visible(&s.menu)) {
-            // Laid out downwards from the text, not from a guessed band height:
-            // ui_text_draw paints a box of LINE_HEIGHT rows, and the bar has to
-            // start below that box's bottom edge or it draws over the glyphs.
-            // The band is then whatever that comes to.
-            const int box_top=(int)AV_VIDEO_Y_OFFSET;
-            const int text_bottom=box_top+LINE_TOP_PAD+LINE_HEIGHT;
-            const int bar_y=text_bottom+4, bar_h=4;
-            const int box_h=(bar_y+bar_h)-box_top;
-            if ((int)first<(unsigned)(box_top+box_h) && (int)last>(unsigned)box_top) {
-                char text[20];
-                snprintf(text,sizeof(text),"Volume %u%%",s.menu.volume);
-                // One block first, so the text and the bar sit on the same
-                // known colour rather than directly on the picture.
-                ui_text_fill(surface,0,box_top,(int)AV_WIDTH,box_h,UI_COLOR_BOX);
-                ui_text_draw(surface,12,box_top+LINE_TOP_PAD,text,UI_COLOR_TEXT,UI_COLOR_BOX);
-                const int bar_x=12;
-                const int bar_w=(int)AV_WIDTH-2*bar_x;
-                ui_text_fill(surface,bar_x,bar_y,bar_w,4,UI_COLOR_RULE);
-                const int filled=(int)((unsigned)bar_w*s.menu.volume/100u);
-                if (filled>0) ui_text_fill(surface,bar_x,bar_y,filled,4,UI_COLOR_SELECT);
-            }
-        }
-        // The banner sits at the bottom, just above the edge: it is the least
-        // disruptive place for something that appears on its own.
-        if (s.menu.banner_ms>0 && s.menu.banner[0]) {
-            int height=LINE_HEIGHT, top=(int)(AV_HEIGHT-AV_VIDEO_Y_OFFSET)-height;
-            if ((int)first<(int)(AV_HEIGHT-AV_VIDEO_Y_OFFSET) && (int)last>top) {
-                // A full-width bar reads as a caption rather than a stray box.
-                ui_text_fill(surface,0,top,(int)AV_WIDTH,height,UI_COLOR_BOX);
-                int width=ui_text_width(s.menu.banner);
-                int x=(width>=(int)AV_WIDTH)?0:((int)AV_WIDTH-width)/2;
-                ui_text_draw(surface,x,top+LINE_TOP_PAD,s.menu.banner,
-                             UI_COLOR_TEXT,UI_COLOR_BOX);
-            }
-        }
+        // HANDOFF.md 4.4 and 4.5, drawn by ui_overlay.c: the level box, the
+        // channel banner, the seek box.
+        ui_overlay_level(surface,&s.menu,av_brightness_percent(s.menu.brightness));
+        ui_overlay_banner(surface,&s.menu);
+        ui_overlay_hint(surface,&s.menu);
     } else if (s.menu.view==UI_VIEW_MENU) {
         // Header band, then one row per channel.
         const int header=MENU_HEADER_H, row=MENU_ROW_H;
@@ -2181,7 +2165,7 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         // the driver.
         if (first<(unsigned)AV_VIDEO_Y_OFFSET || last>(unsigned)(AV_HEIGHT-AV_VIDEO_Y_OFFSET)) {
             const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc),
-                                           bsp_battery_charging() };
+                                           bsp_battery_charging(), false };
             build_topbar_label(&topbar_label);
             info_bars_stripe(surface,&reading,true);
         }
@@ -3119,6 +3103,7 @@ static bool picture_live(void)
 }
 
 static unsigned pause_seen=UINT_MAX;
+static unsigned waiting_hint_seq;
 
 static bool waiting_screen_stale(void)
 {
@@ -3142,6 +3127,8 @@ static bool waiting_screen_stale(void)
     if (!waiting_drawn) return true;
     if (strcmp(s.channel,shown_channel)) return true;
     if ((int)s.menu.view!=waiting_view) return true;
+    // A seek box came or went while the picture is away: the screen shows it.
+    if (s.menu.hint_seq!=waiting_hint_seq) return true;
     if ((int)atomic_load(&s.link)!=waiting_link) return true;
     // While an overlay is up it is repainted on a slow timer: its readings
     // change and a key press has to show. The bars beneath it do not, which is
@@ -3175,25 +3162,30 @@ static bool paint_pause_band(void)
     const unsigned rows=AV_STRIPE_ROWS;
     const unsigned top=((AV_HEIGHT/2u-32u)/rows)*rows;
     const unsigned bottom=top+((64u+rows-1u)/rows)*rows;
-    // HANDOFF.md 4.6: the pet dozing at the left, the pause mark and the word
-    // beside it, the video's title under them. The rows come out at y=84..155
-    // as the design has them.
-    char fitted[sizeof(title)+4];
-    (void)ui_text_ellipsize(fitted,sizeof(fitted),title,226-80);
     for (unsigned y=top;y<bottom && !stopping();y+=rows) {
         ui_surface_t strip=stripe_surface(y,s.stripe[0]);
-        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,(int)(bottom-top),UI_INK);
-        ui_text_fill(strip,0,(int)top,(int)AV_WIDTH,1,UI_RULE);
-        ui_text_fill(strip,0,(int)bottom-1,(int)AV_WIDTH,1,UI_RULE);
-        ui_draw_pet(strip,0,2,20,(int)top+10,2);
-        ui_draw_icon(strip,UI_ICON_PAUSE,80,(int)top+16,1,UI_AMBER);
-        ui_text_draw(strip,100,(int)top+16,"已暂停",UI_PAPER,UI_INK);
-        ui_text_draw(strip,80,(int)top+42,fitted,UI_MUTED,UI_INK);
+        ui_overlay_pause(strip,(int)top,(int)bottom,0,title);
         if(bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
            bsp_display_raw_drain(1,200)!=ESP_OK) {
             fail("pause band DMA");
             return false;
         }
+    }
+    // The bottom bar says how to carry on. bottom_drawn makes the first
+    // refresh after the picture returns blank it again.
+    const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
+    if (bar>=UI_TEXT_LINE_H+2u*UI_TEXT_PAD_Y) {
+        for (unsigned y=AV_HEIGHT-bar;y<AV_HEIGHT && !stopping();y+=rows) {
+            unsigned n=AV_HEIGHT-y < rows ? AV_HEIGHT-y : rows;
+            ui_surface_t strip=stripe_surface(y,s.stripe[0]);
+            ui_overlay_pause_hint(strip,(int)(AV_HEIGHT-bar),(int)AV_HEIGHT);
+            if(bsp_display_raw_submit_nowait(y,n,s.stripe[0])!=ESP_OK ||
+               bsp_display_raw_drain(1,200)!=ESP_OK) {
+                fail("pause band DMA");
+                return false;
+            }
+        }
+        bottom_drawn=true;
     }
     return true;
 }
@@ -3203,6 +3195,7 @@ static bool paint_waiting_screen(void)
     if (atomic_load(&s.paused) && s.menu.view==UI_VIEW_VIDEO) return paint_pause_band();
     waiting_drawn=true;
     waiting_view=(int)s.menu.view;
+    waiting_hint_seq=s.menu.hint_seq;
     waiting_link=(int)atomic_load(&s.link);
     waiting_painted_us=esp_timer_get_time();
     snprintf(shown_channel,sizeof(shown_channel),"%s",s.channel);
@@ -3471,7 +3464,15 @@ static void video_task(void *arg) {
             }
             if(drawn && s.drawn_stripes>=AV_STRIPES) {
                 s.decoded++;
-                last_frame_us=esp_timer_get_time();
+                {
+                    // Frames back after a pause of their own -- a seek's cut,
+                    // a reopened source: the seek box can go.
+                    const int64_t frame_now=esp_timer_get_time();
+                    if (s.decoded>1 && frame_now-last_frame_us>400000) {
+                        atomic_store(&s.frames_resumed,true);
+                    }
+                    last_frame_us=frame_now;
+                }
                 s.drawn_stripes=0;
                 // A capture is taken from a whole frame, and only once the
                 // session has settled: the first seconds after a channel change
@@ -4182,9 +4183,15 @@ static bool pump_keys(uint32_t wait_ms) {
     if (asked>0 && (unsigned)(asked-1)<AV_BRIGHTNESS_COUNT) {
         s.menu.brightness=(unsigned)(asked-1);
         bsp_display_backlight(av_brightness_percent(s.menu.brightness));
+        ui_menu_show_brightness(&s.menu);
         atomic_store(&s.settings_dirty,true);
         atomic_store(&s.status_dirty,true);
     }
+    asked=atomic_exchange(&s.remote_hint,0);
+    if (asked>0) {
+        ui_menu_show_hint(&s.menu,(ui_hint_t)asked,atomic_load(&s.remote_hint_seconds));
+    }
+    if (atomic_exchange(&s.frames_resumed,false)) ui_menu_hint_resumed(&s.menu);
     // The server's request, applied exactly as if the viewer had picked the
     // channel from the list: same checks, same banner.
     if (atomic_load(&s.remote_switch)) {
@@ -4195,6 +4202,7 @@ static bool pump_keys(uint32_t wait_ms) {
             char name[UI_MENU_NAME_MAX];
             channel_name_of(chosen,name,sizeof(name));
             ui_menu_banner(&s.menu,name,NULL);
+            ui_menu_banner_place(&s.menu,chosen);
             ESP_LOGI(TAG,"Switching to %s at the server's request",chosen);
             return true;
         }
@@ -4209,6 +4217,7 @@ static bool pump_keys(uint32_t wait_ms) {
             char name[UI_MENU_NAME_MAX];
             channel_name_of(chosen,name,sizeof(name));
             ui_menu_banner(&s.menu,name,NULL);
+            ui_menu_banner_place(&s.menu,chosen);
             ESP_LOGI(TAG,"Switching to %s",chosen);
             return true;
         }
@@ -4656,6 +4665,7 @@ void av_player_main(void) {
                 current_channel_name(name,sizeof(name));
                 if (strcmp(name,last_announced)) {
                     ui_menu_banner(&s.menu,name,last_announced);
+                    ui_menu_banner_place(&s.menu,s.channel);
                     strncpy(last_announced,name,sizeof(last_announced)-1);
                     last_announced[sizeof(last_announced)-1]='\0';
                 }

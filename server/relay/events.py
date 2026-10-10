@@ -1,7 +1,8 @@
 """中转写给电视服务的事件。
 
 cast（投屏开始）、return（投屏播完）、switch（手机换台，带频道）、pause / resume（暂停、继续）、
-volume / brightness（手机调音量、亮度，带数值）。
+volume / brightness（手机调音量、亮度，带数值）、seek（手机快进快退，带秒数，负数是后退）、
+next（手机点下一个）。seek 和 next 只是让设备画提示，跳转本身由中转完成。
 
 文件保存最近 KEEP 条，seq 只增不减；电视服务按顺序处理比上次看到的 seq 更新的每一条，启动时已有的只记录
 不执行。只存一条时，拖滑条连续写出的音量事件会把紧挨着的换台覆盖掉，所以改成列表。旧的单条格式仍能读。
@@ -14,11 +15,11 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-ACTIONS = ("cast", "return", "switch", "pause", "resume", "volume", "brightness")
+ACTIONS = ("cast", "return", "switch", "pause", "resume", "volume", "brightness", "seek", "next")
 KEEP = 20
 TEXT_MAX = 64
 # 数值的合法范围；亮度档位序号由设备决定，这里只挡住明显不对的值。
-_VALUE_RANGE = {"volume": (0, 100), "brightness": (0, 15)}
+_VALUE_RANGE = {"volume": (0, 100), "brightness": (0, 15), "seek": (-86400, 86400)}
 
 
 class Event(NamedTuple):
