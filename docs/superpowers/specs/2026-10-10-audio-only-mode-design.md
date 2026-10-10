@@ -66,6 +66,13 @@ backlight dims.
   0.2 s.
 - A double-click on OK during playback turns the mode on or off, besides OK on
   the status page and the phone's switch.
+- The pet moves with the sound: the audio task measures each 40 ms chunk's
+  loudness as it goes to the speaker (the peak on a square-root scale; zero when
+  muted), and the screen, now repainted every 0.1 s, lifts the pet up to 10 px
+  with it and shows one to three notes. Twelve bars under the pet show the last
+  half second. When the backlight dims the pet takes its sleepy face (mood 2)
+  with Z z rising, and notes and bars rest; a key wakes it with a hop. Five
+  small stars twinkle at their own pace.
 
 ## Also in this change
 

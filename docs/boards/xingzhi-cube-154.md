@@ -210,7 +210,8 @@ firmware's own drawing code and font, for checking a layout without flashing.
 - **Audio-only mode** plays sound with the pet on screen and no picture
   ([design](../superpowers/specs/2026-10-10-audio-only-mode-design.md)). A
   double-click on OK, OK on the status page, or the phone's switch turns it on
-  or off; the screen shows the pet at 5x, breathing, with notes rising beside it; it is stored
+  or off; the screen shows the pet at 5x moving with the sound, with notes, loudness bars
+  and twinkling stars, and asleep once the screen dims; it is stored
   (`avsettings/audio`) and the device redials, so the server stops sending
   pictures (about 8 KB/s instead of 200). Sound is then what counts as a live
   channel, and the backlight dims to the lowest step after 10 s untouched.
