@@ -408,7 +408,7 @@ class Relay:
                 "group": found[0] if found else "", "name": found[1]["name"] if found else "",
                 "n": found[1]["n"] if found else 0, "title": title, "since": playing["since"],
                 "video": self.video_progress(cid) if playing["online"] else None,
-                "device": playing["device"] if playing["online"] else None}
+                "device": _phone_device(playing["device"]) if playing["online"] else None}
 
     def device(self, volume=None, brightness=None) -> dict:
         """手机调音量（0–100，按 10 取整）或亮度档位。"""
@@ -425,7 +425,8 @@ class Relay:
         elif brightness is not None:
             if not 0 <= brightness < status["steps"]:
                 return {"ok": False, "error": "没有这一档亮度"}
-            self._event("brightness", value=int(brightness))
+            # 手机上越大越亮；固件的第 0 档是最亮的，所以倒过来。
+            self._event("brightness", value=status["steps"] - 1 - int(brightness))
         else:
             return {"ok": False, "error": "请求格式不对"}
         return {"ok": True}
@@ -568,6 +569,14 @@ class Relay:
 
 
 _SITE_NAMES = {"bilibili": "B 站", "youtube": "YouTube "}
+
+
+def _phone_device(device: dict | None) -> dict | None:
+    """设备报告的亮度是固件的档位号（0 最亮）；给手机时换成越大越亮。"""
+    if device is None:
+        return None
+    return {"volume": device["volume"], "brightness": device["steps"] - 1 - device["brightness"],
+            "steps": device["steps"]}
 
 
 def _site_of(text: str) -> str:

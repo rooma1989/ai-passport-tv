@@ -267,14 +267,15 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.call("POST", "/api/device", {"volume": 50})["error"], "小智没在线")
         now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now)
         self.assertIn("固件", self.call("POST", "/api/device", {"volume": 50})["error"])
+        # The firmware's step 0 is its brightest; the phone counts upwards.
         now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now,
-                          device={"volume": 70, "brightness": 2, "steps": 5})
+                          device={"volume": 70, "brightness": 1, "steps": 5})
         self.assertEqual(self.call("GET", "/api/state")["now"]["device"],
-                         {"volume": 70, "brightness": 2, "steps": 5})
+                         {"volume": 70, "brightness": 3, "steps": 5})
         self.assertTrue(self.call("POST", "/api/device", {"volume": 47})["ok"])
         self.assertEqual(events.read_event(self.events), (1, "volume", "", 50), "rounded to a step of 10")
         self.assertTrue(self.call("POST", "/api/device", {"brightness": 4})["ok"])
-        self.assertEqual(events.read_event(self.events), (2, "brightness", "", 4))
+        self.assertEqual(events.read_event(self.events), (2, "brightness", "", 0), "the brightest step")
         self.assertFalse(self.call("POST", "/api/device", {"brightness": 5})["ok"])
         self.assertFalse(self.call("POST", "/api/device", {"volume": 120})["ok"])
         self.assertFalse(self.call("POST", "/api/device", {})["ok"])
