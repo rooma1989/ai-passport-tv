@@ -38,6 +38,7 @@ from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packe
                        ProtocolError, json_bytes, json_object, receive_packet,
                        send_packet, _write_slice)
 from . import reconnect
+from .cast_switch import SwitchWatcher
 
 # 替代 --token-file 的环境变量名；只有令牌值需与固件一致，变量名无需一致。
 TOKEN_ENV = "TV_PAIRING_TOKEN"
@@ -85,6 +86,8 @@ def local_ipv4(address: str) -> bool:
 # 公网接入开关。默认只服务局域网设备；部署在云服务器上时设为 1，也接受公网地址的设备。
 # 打开它必须同时配置配对令牌，否则服务拒绝启动：没有令牌的公网端口谁扫到谁就能用你的带宽。
 ALLOW_PUBLIC_ENV = "TV_ALLOW_PUBLIC"
+# 视频中转的投屏事件文件（server/relay/events.py）；不设则不做投屏切台。
+RELAY_EVENTS_ENV = "TV_RELAY_EVENTS_FILE"
 
 
 def peer_allowed(address: str, allow_public: bool) -> bool:
@@ -270,6 +273,10 @@ class AVServer:
         # 空串发送音视频；audio 或 video 仅用于诊断，见 _pace_live。
         self.media_filter = ""
         self.channel_name = ""
+        # 投屏切台：中转写事件文件，会话中每秒看一次；只对声明支持切台的设备发 SWITCH。
+        events_file = os.environ.get(RELAY_EVENTS_ENV)
+        self.switch_watcher = SwitchWatcher(Path(events_file) if events_file else None)
+        self.device_switches = False
         self.live_note = ""
         self.ffmpeg = "ffmpeg"
         # 可注入，便于不依赖 ffmpeg 和网络测试发送循环。
@@ -697,6 +704,18 @@ class AVServer:
                 self.phase = "control_receive"
                 self._device_left(connection, session)
                 return
+            decision = self.switch_watcher.poll(self.channel_name, now)
+            if decision is not None and self.device_switches:
+                kind, target = decision
+                self.logger(f"session={session} cast {kind} {target or self.channel_name}")
+                if kind == "restart":
+                    # 已在投屏台时来了新的投屏：结束会话，设备重连同一个台，中转给出新视频。
+                    return
+                if target in CHANNELS:
+                    self.phase = "switch_send"
+                    send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
+                                                   json_bytes({"channel": target})))
+                    seq += 1
             if getattr(self, "duration_ms", None) is not None and (now - origin) * 1000 >= self.duration_ms:
                 send_packet(connection, Packet(Kind.END, session, seq, 0))
                 return
@@ -955,6 +974,8 @@ class AVServer:
         if self.live_enabled:
             # 视频中转增删 UP 主后会改写频道表；在会话之间重读，正在播放的会话不受影响。
             live.reload_channels_if_changed()
+            # 旧固件不认识 SWITCH 包，收到会断开，所以只发给 HELLO 里声明了的设备。
+            self.device_switches = json_object(hello.payload).get("switch") == 1
             # 设备按名选择频道，换频道即新连接；名称缺失或不在表内时回退到 --channel 指定的默认频道。
             # 重读后上次的频道可能已被删除，此时再退到表中的默认频道。
             requested = json_object(hello.payload).get("channel")
