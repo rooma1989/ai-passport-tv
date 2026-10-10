@@ -3662,48 +3662,22 @@ static bool pump_keys(uint32_t wait_ms);
 // fit -- so there is nothing of the session's left to draw into. It must be
 // STRIPE_BYTES long: this writes a whole stripe into it, and a shorter buffer is
 // a silent overwrite of whatever follows it in memory.
-static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page)
+static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page,
+                               unsigned remaining_s, unsigned y0, unsigned y1)
 {
     char ssid[64] = {0};
     char url[64] = {0};
     av_provision_ap_name(ssid,sizeof(ssid));
     av_provision_ap_url(url,sizeof(url));
-    // The address without its scheme, for reading off the screen and typing.
-    const char *host=strncmp(url,"http://",7)==0 ? url+7 : url;
-
-    // The text on this screen, in reading order. Laid out as data because the
-    // stripe loop below has to know where every line is before it starts: a
-    // stripe can only draw the lines that intersect it.
-    // `centre` is the x a line is centred on, or -1 for the panel's centre.
-    typedef struct { int y; const char *text; uint16_t colour; int centre; } line_t;
-    char state[48];
-    snprintf(state,sizeof(state),"%s",client_ready ? "已连接设备" : "等待设备连接");
-    // Shown because setup opens for either of two reasons now: no network, or
-    // no server address. Without this line the second case looks identical to
-    // the first, and the viewer is left re-entering a password that was never
-    // the problem.
-    //
-    // Sized for the longest address that can be stored: the label, the host's
-    // full AV_SERVER_ADDR_MAX, and the widest port. A smaller buffer would
-    // truncate the address, and a truncated address on screen is worse than
-    // none -- it looks correct and sends the viewer to check the wrong thing.
-    // The label is three glyphs and a space, eight bytes in UTF-8.
-    char address[AV_SERVER_ADDR_MAX+8];
-    char fitted[AV_SERVER_ADDR_MAX+8];
-    char server[sizeof(fitted)+16] = {0};
+    // Shown because setup opens for either of two reasons: no network, or no
+    // server address. Without it the second case looks identical to the first,
+    // and the viewer is left re-entering a password that was never the problem.
+    char server[AV_SERVER_ADDR_MAX+8];
     av_server_addr_t stored;
     if (server_address(&stored)) {
-        snprintf(address,sizeof(address),"%s:%u",stored.host,(unsigned)stored.port);
-        // Trimmed to the width the row can show, so a long host is cut to
-        // something that still reads as an address rather than running off the
-        // panel. The stored value itself is untouched.
-        if (ui_text_truncate(fitted,sizeof(fitted),address,AV_WIDTH-24)) {
-            snprintf(server,sizeof(server),"服务器 %s",fitted);
-        } else {
-            snprintf(server,sizeof(server),"服务器 已设置");
-        }
+        snprintf(server,sizeof(server),"%s:%u",stored.host,(unsigned)stored.port);
     } else {
-        snprintf(server,sizeof(server),"服务器 未设置");
+        snprintf(server,sizeof(server),"未设置");
     }
     // One page at a time, turned with the arrows: a single code drawn large is
     // easier to scan than two small ones, and each page then has room to say
@@ -3712,77 +3686,44 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page
     if (page>=count) page=0;
     const unsigned kind=setup_page_kind(page);
     static const char *const titles[]={ "连接设备热点", "打开配网页", "使用说明", "当前状态" };
-    char title[48];
-    snprintf(title,sizeof(title),"%u/%u %s",page+1u,count,titles[kind]);
-    const int footer_y=(int)AV_HEIGHT-26;
 
     // The page's code, encoded into static buffers: this runs on the main task,
     // whose stack is 3.5 KB, and only when the page or its state changes.
     static uint8_t qr_code[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
     static uint8_t qr_temp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
     char payload[96]={0};
-    char caption[96]={0};
+    ui_setup_page_t view={ .index=page, .count=count, .status=kind==SETUP_PAGE_STATUS,
+                           .title=titles[kind], .pet=atomic_load(&s.pet), .mood=0,
+                           .ssid=ssid, .page_url=url, .server=server,
+                           .client_ready=client_ready, .remaining_s=remaining_s,
+                           .line2_color=UI_AMBER };
     if (kind==SETUP_PAGE_JOIN) {
         // A phone camera joins the hotspot from this form; WeChat's scanner
-        // cannot, which is why the caption names the camera.
+        // cannot, which is why the line names the camera.
         if (!ui_qr_wifi_text(payload,sizeof(payload),ssid)) payload[0]='\0';
-        snprintf(caption,sizeof(caption),"相机扫码，或连 %s",ssid);
+        view.line1="相机扫码，或连 Wi-Fi";
+        view.line2=ssid;
     } else if (kind==SETUP_PAGE_OPEN) {
         snprintf(payload,sizeof(payload),"%s",url);
-        snprintf(caption,sizeof(caption),"扫码，或打开 %s",host);
+        view.line1="扫码，或浏览器打开";
+        view.line2=url;
     } else if (kind==SETUP_PAGE_HELP) {
         snprintf(payload,sizeof(payload),"%s",AV_HELP_URL);
-        snprintf(caption,sizeof(caption),"扫码看按键说明，微信可扫");
+        view.line1="扫码看按键说明";
+        view.line2="微信也能扫";
+        view.line2_color=UI_MUTED;
+        view.mood=1;
     }
-    ui_qr_layout_t qr={0};
-    const bool have_qr=payload[0] &&
-        qrcodegen_encodeText(payload,qr_temp,qr_code,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true) &&
-        ui_qr_layout_single((int)AV_WIDTH,32,qrcodegen_getSize(qr_code),footer_y-32-34,&qr);
-    char caption_fit[sizeof(caption)];
-    if (!ui_text_truncate(caption_fit,sizeof(caption_fit),caption,(int)AV_WIDTH-24)) {
-        snprintf(caption_fit,sizeof(caption_fit),"%s",caption);
+    if (payload[0] &&
+        qrcodegen_encodeText(payload,qr_temp,qr_code,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true)) {
+        view.qr=qr_code;
     }
-    char hotspot[96], address_line[96];
-    snprintf(hotspot,sizeof(hotspot),"热点 %s",ssid);
-    snprintf(address_line,sizeof(address_line),"配网 %s",host);
+    // The waiting square blinks once a second until a phone joins.
+    const bool blink_on=(esp_timer_get_time()/1000000)%2==0;
 
-    line_t lines[7];
-    unsigned line_count=0;
-    lines[line_count++]=(line_t){ 4, title, UI_COLOR_TEXT, -1 };
-    if (have_qr) {
-        lines[line_count++]=(line_t){ qr.y+qr.side_a+6, caption_fit, UI_COLOR_TEXT, -1 };
-    } else {
-        // The status page, or a code that could not be made: the same facts as
-        // text, so the viewer still has a way in.
-        lines[line_count++]=(line_t){ 40, hotspot,      UI_COLOR_TEXT, -1 };
-        lines[line_count++]=(line_t){ 66, address_line, UI_COLOR_TEXT, -1 };
-        lines[line_count++]=(line_t){ 92, server,       UI_COLOR_DIM,  -1 };
-        lines[line_count++]=(line_t){ 118, state,       UI_COLOR_DIM,  -1 };
-    }
-    lines[line_count++]=(line_t){ footer_y, "上下翻页  长按OK退出", UI_COLOR_DIM, -1 };
-
-    for(unsigned y=0;y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
+    for(unsigned y=(y0/AV_STRIPE_ROWS)*AV_STRIPE_ROWS;y<y1 && y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
         ui_surface_t strip=stripe_surface(y,buffer);
-        ui_text_fill(strip,0,(int)y,(int)AV_WIDTH,(int)AV_STRIPE_ROWS,UI_INK);
-        if (have_qr) {
-            ui_qr_draw(strip,qr.x_a,qr.y,qr.scale,qr_code);
-        }
-        for (unsigned i=0;i<line_count;i++) {
-            const int line_top=lines[i].y;
-            const int line_bottom=line_top+(int)UI_TEXT_LINE_H+2*UI_TEXT_PAD_Y;
-            // Overlap, not containment. ui_text_draw paints a background box and
-            // then 16 rows of glyph, and a line usually straddles two stripes;
-            // testing whether the line *starts* inside this stripe drew only the
-            // rows above the boundary and left the rest to the stripe that never
-            // drew them at all, so every line came out cut in half. Every stripe
-            // that the line touches must draw it, which is what ui_text_fill's
-            // clipping makes safe.
-            if (line_bottom<=(int)y || line_top>=(int)(y+AV_STRIPE_ROWS)) continue;
-            int width=ui_text_width(lines[i].text);
-            int x=lines[i].centre>=0 ? lines[i].centre-width/2
-                 : (width>=(int)AV_WIDTH-24)?12:((int)AV_WIDTH-width)/2;
-            ui_text_draw(strip,x,line_top,lines[i].text,lines[i].colour,UI_COLOR_BACKDROP);
-        }
+        ui_overlay_setup(strip,&view,blink_on);
         if(bsp_display_raw_submit(y,AV_STRIPE_ROWS,buffer,200)!=ESP_OK ||
            bsp_display_raw_wait(200)!=ESP_OK) {
             fail("setup screen DMA");
@@ -3879,18 +3820,32 @@ static bool run_setup_mode(void)
     unsigned painted_page=0;
 
     bool paint_failed=false;
+    unsigned painted_second=UINT_MAX;
     for(;;) {
         pump_keys(200);
         bool ready=av_provision_client_ready();
         const unsigned page=atomic_load(&s_setup_page);
+        const uint32_t elapsed=(uint32_t)(esp_timer_get_time()/1000)-started;
+        const unsigned remaining=elapsed>=AV_SETUP_WINDOW_MS ? 0u
+                                 : (AV_SETUP_WINDOW_MS-elapsed+999u)/1000u;
+        // The status page counts down and blinks: each second only those rows.
+        if(painted && ready==painted_ready && page==painted_page &&
+           setup_page_kind(page)==SETUP_PAGE_STATUS && remaining!=painted_second) {
+            painted_second=remaining;
+            if(!paint_setup_screen(buffer,ready,page,remaining,UI_SETUP_TICK_Y0,UI_SETUP_TICK_Y1)) {
+                ESP_LOGE(TAG,"Setup screen could not be drawn; leaving setup");
+                paint_failed=true;
+                break;
+            }
+        }
         if(!painted || ready!=painted_ready || page!=painted_page) {
-            painted=true; painted_ready=ready; painted_page=page;
+            painted=true; painted_ready=ready; painted_page=page; painted_second=remaining;
             // A failed paint stops the loop. Retrying it would fail the same way
             // every time -- the panel or its DMA is gone -- and each attempt
             // routes through fail(), which logs and raises STOP, so the loop
             // would spin printing while nothing on screen changed. Leaving is
             // what gets the device back to a state it can recover from.
-            if(!paint_setup_screen(buffer,ready,page)) {
+            if(!paint_setup_screen(buffer,ready,page,remaining,0,AV_HEIGHT)) {
                 ESP_LOGE(TAG,"Setup screen could not be drawn; leaving setup");
                 paint_failed=true;
                 break;

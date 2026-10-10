@@ -96,3 +96,29 @@ unsigned ui_overlay_wait_frame(ui_wait_kind_t kind, unsigned tick, int *y0, int 
 // ui_overlay_pet_bottom.
 void ui_overlay_pets(ui_surface_t surface, const ui_menu_t *menu);
 void ui_overlay_pet_bottom(ui_surface_t surface, int top);
+
+// ---- Setup pages (HANDOFF.md 4.11-4.14), whole screen ----
+
+typedef struct {
+    unsigned index, count;  // this page, 0-based, of `count`
+    bool status;            // the 4/4 status page rather than a code page
+    const char *title;
+    const uint8_t *qr;      // a code page's code, or NULL
+    const char *line1;
+    const char *line2;
+    uint16_t line2_color;
+    unsigned pet, mood;
+    // The status page's rows.
+    const char *ssid, *page_url, *server;
+    bool client_ready;
+    unsigned remaining_s;   // of the setup window
+} ui_setup_page_t;
+
+// The whole page, top bar to bottom bar. `blink_on` is the status page's
+// waiting square in its lit second.
+void ui_overlay_setup(ui_surface_t surface, const ui_setup_page_t *page, bool blink_on);
+
+// The rows the status page changes each second: the waiting square and the
+// countdown.
+#define UI_SETUP_TICK_Y0 112
+#define UI_SETUP_TICK_Y1 208

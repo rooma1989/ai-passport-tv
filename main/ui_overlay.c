@@ -450,3 +450,67 @@ void ui_overlay_pet_bottom(ui_surface_t surface, int top)
     const char *text = "长按OK 返回";
     ui_overlay_key_line(surface, (surface.width - ui_text_width(text)) / 2, top + 7, text, UI_DEEP);
 }
+
+// ---- Setup pages ----
+
+static void setup_row(ui_surface_t surface, int y, const char *label, const char *value,
+                      uint16_t color)
+{
+    ui_text_draw_scaled(surface, 20, y, label, 1, UI_MUTED, UI_INK);
+    if (value) {
+        char fitted[96];
+        (void)ui_text_ellipsize(fitted, sizeof(fitted), value, 226 - 72);
+        ui_text_draw_scaled(surface, 72, y, fitted, 1, color, UI_INK);
+    }
+}
+
+void ui_overlay_setup(ui_surface_t surface, const ui_setup_page_t *page, bool blink_on)
+{
+    if (!page) {
+        return;
+    }
+    // The bar: page number and title at the left, page squares at the right.
+    ui_text_fill(surface, 0, 0, surface.width, 30, UI_DEEP);
+    ui_text_fill(surface, 0, 30, surface.width, 180, UI_INK);
+    ui_text_fill(surface, 0, 210, surface.width, 30, UI_DEEP);
+    char number[12];
+    snprintf(number, sizeof(number), "%u/%u", page->index + 1u, page->count);
+    int pen = ui_text_draw_scaled(surface, 20, 7, number, 1, UI_AMBER, UI_DEEP);
+    ui_text_draw_scaled(surface, pen + 6, 7, page->title ? page->title : "", 1, UI_PAPER, UI_DEEP);
+    for (unsigned k = 0; k < page->count && k < 4u; k++) {
+        ui_text_fill(surface, 196 + 8 * (int)k, 13, 4, 4, k == page->index ? UI_AMBER : UI_RULE);
+    }
+
+    if (!page->status) {
+        if (page->qr) {
+            // As large as fits the design's 120 px square, centred in it.
+            const int modules = qrcodegen_getSize(page->qr) + 2 * UI_QR_QUIET;
+            int scale = 120 / modules;
+            if (scale < UI_QR_MIN_SCALE) scale = UI_QR_MIN_SCALE;
+            const int side = modules * scale;
+            ui_qr_draw_colors(surface, 60 + (120 - side) / 2, 38 + (120 - side) / 2, scale, page->qr,
+                              UI_PAPER, UI_DEEP);
+        }
+        ui_draw_pet(surface, page->pet, page->mood, 28, 132, 1);
+        centred(surface, 164, page->line1, UI_PAPER);
+        centred(surface, 186, page->line2, page->line2_color);
+    } else {
+        setup_row(surface, 40, "热点", page->ssid, UI_PAPER);
+        setup_row(surface, 64, "配网", page->page_url, UI_PAPER);
+        setup_row(surface, 88, "服务器", page->server, UI_PAPER);
+        setup_row(surface, 112, "设备", page->client_ready ? "已连接设备" : "等待设备连接",
+                  page->client_ready ? UI_PAPER : UI_MUTED);
+        if (page->client_ready || blink_on) {
+            ui_text_fill(surface, 216, 117, 6, 6, UI_AMBER);
+        }
+        ui_draw_dotted_hline(surface, 16, 223, 140, UI_RULE);
+        ui_draw_pet(surface, page->pet, page->client_ready ? 1u : 0u, 22, 150, 2);
+        ui_text_draw_scaled(surface, 90, 152, "剩余时间", 1, UI_MUTED, UI_INK);
+        char left[8];
+        const unsigned s = page->remaining_s > 5999u ? 5999u : page->remaining_s;
+        snprintf(left, sizeof(left), "%02u:%02u", s / 60u, s % 60u);
+        ui_text_draw_scaled(surface, 90, 176, left, 2, UI_AMBER, UI_INK);
+    }
+    const char *keys = "\xE2\x96\xB2\xE2\x96\xBC翻页  长按OK退出";
+    ui_overlay_key_line(surface, (surface.width - ui_text_width(keys)) / 2, 217, keys, UI_DEEP);
+}

@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { W = 240, H = 240, SCALE = 2, COLS = 4, ROWS = 6, GAP = 8 };
+enum { W = 240, H = 240, SCALE = 2, COLS = 4, ROWS = 7, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -218,6 +218,29 @@ int main(int argc, char **argv)
         ui_overlay_pet_bottom(whole(), 210);
         place(n++);
         for (int k = 0; k < 5; k++) ui_menu_pet_step(&menu, 1);
+    }
+
+    // 4.11-4.14 the setup pages.
+    static uint8_t sq[qrcodegen_BUFFER_LEN_FOR_VERSION(6)], st[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+    static const char *const payloads[] = { "WIFI:T:nopass;S:FoloToy-A1B2;;", "http://192.168.4.1",
+                                            "HTTPS://IEWWW.COM/H" };
+    static const char *const titles[] = { "连接设备热点", "打开配网页", "使用说明", "当前状态" };
+    static const char *const line1[] = { "相机扫码，或连 Wi-Fi", "扫码，或浏览器打开", "扫码看按键说明" };
+    static const char *const line2[] = { "FoloToy-A1B2", "http://192.168.4.1", "微信也能扫" };
+    for (unsigned i = 0; i < 4; i++) {
+        ui_setup_page_t setup = { .index = i, .count = 4, .status = i == 3, .title = titles[i],
+                                  .pet = 0, .mood = i == 2, .ssid = "FoloToy-A1B2",
+                                  .page_url = "http://192.168.4.1", .server = "iewww.com:8098",
+                                  .client_ready = false, .remaining_s = 14 * 60 + 37,
+                                  .line2_color = i == 2 ? UI_MUTED : UI_AMBER };
+        if (i < 3) {
+            qrcodegen_encodeText(payloads[i], st, sq, qrcodegen_Ecc_LOW, 1, 6, qrcodegen_Mask_AUTO, true);
+            setup.qr = sq;
+            setup.line1 = line1[i];
+            setup.line2 = line2[i];
+        }
+        ui_overlay_setup(whole(), &setup, true);
+        place(n++);
     }
 
     FILE *out = fopen(argv[1], "wb");
