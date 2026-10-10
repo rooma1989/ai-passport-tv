@@ -34,6 +34,16 @@ class TableTests(unittest.TestCase):
         self.assertEqual(labels["up02"], "a b c")
         self.assertEqual(labels["up03"], "up03")
 
+    def test_latin_names_get_twice_the_letters(self):
+        """A Chinese character takes two columns on the panel and six bytes in CONFIG."""
+        text = table.render([creator("up01", "Dulaa Music"),
+                             creator("up02", "Linus Tech Tips Official Channel"),
+                             creator("up03", "老高与小茉 Mr & Mrs Gao")])
+        _, labels, _ = live.parse_channels(text)
+        self.assertEqual(labels["up01"], "Dulaa Music")
+        self.assertEqual(labels["up02"], "Linus Tech Tips Offi")
+        self.assertEqual(labels["up03"], "老高与小茉 Mr & Mrs")
+
     def test_cast_is_always_listed(self):
         """The device can only be switched to an id it already has in its list."""
         lines = [l for l in table.render([]).splitlines() if l and not l.startswith("#")]

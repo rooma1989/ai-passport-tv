@@ -10,12 +10,20 @@ STREAM_BASE = "http://127.0.0.1:8099/ch/"
 CAST_ID = "cast"
 CAST_LABEL = "我的投屏"
 # 频道名进设备的 CONFIG 包，每个汉字 JSON 转义后占 6 字节；截短以免整张表超过 TV_CONTROL_MAX。
-NAME_MAX = 10
+# 按显示宽度截：汉字等非 ASCII 字符算 2 格，ASCII 算 1 格，即 10 个汉字或 20 个字母。
+NAME_COLUMNS = 20
 
 
 def _label(creator) -> str:
-    name = " ".join(creator.name.replace("|", " ").split())[:NAME_MAX].strip()
-    return name or creator.id
+    name = " ".join(creator.name.replace("|", " ").split())
+    kept, used = [], 0
+    for char in name:
+        width = 1 if ord(char) < 128 else 2
+        if used + width > NAME_COLUMNS:
+            break
+        kept.append(char)
+        used += width
+    return "".join(kept).strip() or creator.id
 
 
 def render(creators) -> str:
