@@ -190,6 +190,9 @@ bool ui_menu_volume_visible(const ui_menu_t *menu);
 
 // Open the pet picker on `current`, one of `count` pets.
 void ui_menu_open_pets(ui_menu_t *menu, unsigned current, unsigned count);
+// Show `pet` as just chosen for two seconds -- the phone's choice, already
+// stored -- without raising an action.
+void ui_menu_show_pet(ui_menu_t *menu, unsigned pet, unsigned count);
 // Look at the previous (delta < 0) or next pet, wrapping.
 void ui_menu_pet_step(ui_menu_t *menu, int delta);
 // Choose the pet being looked at: UI_ACTION_PET is raised, and the page shows

@@ -366,6 +366,17 @@ class DeviceControlTests(unittest.TestCase):
         self.wrote_hint = False
         self.assertEqual(self.session({}, script), [])
 
+    def test_pet_only_for_firmware_that_reports_one(self):
+        def script(client, session, elapsed):
+            if elapsed > 0.5 and not getattr(self, "wrote_pet", False):
+                self.wrote_pet = True
+                events.write_event(self.events, "pet", value=4)
+        payloads = self.session({"volume": 70, "brightness": 2, "brightness_steps": 5, "pet": 0}, script)
+        self.assertIn({"pet": 4}, payloads)
+        self.wrote_pet = False
+        payloads = self.session({"volume": 70, "brightness": 2, "brightness_steps": 5}, script)
+        self.assertNotIn({"pet": 4}, payloads)
+
     def test_no_controls_for_firmware_without_them(self):
         def script(client, session, elapsed):
             if elapsed > 0.5 and not getattr(self, "wrote", False):

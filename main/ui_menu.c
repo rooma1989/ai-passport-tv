@@ -29,6 +29,8 @@
 // The pet picker closes after this long untouched, and this long after a choice.
 #define UI_MENU_PET_MS 20000
 #define UI_MENU_PET_CHOSEN_MS 1000
+// A pet chosen on the phone is shown happy this long.
+#define UI_MENU_PET_PHONE_MS 2000
 
 // A channel id must stay printable and short enough for the device table; the
 // name is only ever drawn, so it is bounded by the font and the screen.
@@ -601,6 +603,15 @@ void ui_menu_open_pets(ui_menu_t *menu, unsigned current, unsigned count)
     menu->pet_chosen = false;
     menu->timeout_ms = UI_MENU_PET_MS;
     menu->action = UI_ACTION_NONE;
+}
+
+void ui_menu_show_pet(ui_menu_t *menu, unsigned pet, unsigned count)
+{
+    ui_menu_open_pets(menu, pet, count);
+    if (menu && menu->view == UI_VIEW_PET) {
+        menu->pet_chosen = true;
+        menu->timeout_ms = UI_MENU_PET_PHONE_MS;
+    }
 }
 
 void ui_menu_pet_step(ui_menu_t *menu, int delta)

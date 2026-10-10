@@ -55,6 +55,11 @@ def read(path: Path | None, now: float | None = None) -> dict:
     if not (isinstance(device, dict) and all(isinstance(device.get(k), int)
                                              for k in ("volume", "brightness", "steps"))):
         device = None
+    kept = None
+    if device:
+        kept = {k: device[k] for k in ("volume", "brightness", "steps")}
+        # 宠物：会换宠物的固件才报。
+        if isinstance(device.get("pet"), int):
+            kept["pet"] = device["pet"]
     return {"channel": str(data.get("channel") or ""), "online": online,
-            "switch": bool(data.get("switch")) and online, "since": since,
-            "device": {k: device[k] for k in ("volume", "brightness", "steps")} if device else None}
+            "switch": bool(data.get("switch")) and online, "since": since, "device": kept}

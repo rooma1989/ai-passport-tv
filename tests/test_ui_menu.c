@@ -513,6 +513,10 @@ static void test_pet_picker(void)
     check(menu.pet_browse == 1, "no browsing once chosen");
     check(!ui_menu_tick(&menu, 900) && ui_menu_tick(&menu, 200) && menu.view == UI_VIEW_VIDEO,
           "shown a second, then closed");
+    ui_menu_show_pet(&menu, 7, 11);
+    check(menu.view == UI_VIEW_PET && menu.pet_current == 7 && menu.pet_chosen &&
+          ui_menu_take_action(&menu, out, sizeof(out)) == UI_ACTION_NONE, "the phone's pet, no action");
+    check(!ui_menu_tick(&menu, 1900) && ui_menu_tick(&menu, 200), "shown two seconds");
     ui_menu_open_pets(&menu, 1, 11);
     ui_menu_pet_step(&menu, 1);
     check(ui_menu_tick(&menu, 20000) && menu.view == UI_VIEW_VIDEO && menu.pet_current == 1,

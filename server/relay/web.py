@@ -465,6 +465,19 @@ class Relay:
             return {"ok": False, "error": "请求格式不对"}
         return {"ok": True}
 
+    def set_pet(self, pet) -> dict:
+        """手机换宠物：0..PET_COUNT-1。"""
+        playing = now_playing.read(self.now_playing_in, self.clock())
+        if not playing["online"]:
+            return {"ok": False, "error": "小智没在线"}
+        status = playing["device"]
+        if status is None or "pet" not in status:
+            return {"ok": False, "error": "小电视的固件太旧，需要更新才能换宠物"}
+        if not isinstance(pet, int) or isinstance(pet, bool) or not 0 <= pet < PET_COUNT:
+            return {"ok": False, "error": "没有这只宠物"}
+        self._event("pet", value=pet)
+        return {"ok": True}
+
     def youtube_state(self) -> str:
         """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
         now = self.clock()
@@ -609,8 +622,11 @@ def _phone_device(device: dict | None) -> dict | None:
     """设备报告的亮度是固件的档位号（0 最亮）；给手机时换成越大越亮。"""
     if device is None:
         return None
-    return {"volume": device["volume"], "brightness": device["steps"] - 1 - device["brightness"],
-            "steps": device["steps"]}
+    phone = {"volume": device["volume"], "brightness": device["steps"] - 1 - device["brightness"],
+             "steps": device["steps"]}
+    if "pet" in device:
+        phone["pet"] = device["pet"]
+    return phone
 
 
 def _site_of(text: str) -> str:
@@ -775,6 +791,9 @@ def _manage_handler(relay: Relay):
                 self._json(relay.device(volume=volume if isinstance(volume, (int, float)) else None,
                                         brightness=level if isinstance(level, int) else None))
                 return
+            if path == "/api/pet":
+                self._json(relay.set_pet(body.get("pet")))
+                return
             if path == "/api/pause":
                 self._json(relay.pause())
                 return
@@ -822,6 +841,8 @@ def make_servers(relay: Relay, stream_port: int, manage_port: int,
     return streams, manage
 
 
+# 设备上宠物的个数（固件 xiaozhi_tv_ui_assets.h 的 PET_COUNT）。
+PET_COUNT = 11
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 PAGE = (_ASSET_DIR / "remote.html").read_text(encoding="utf-8")
 # 清单和图标不带登录也要能取：浏览器取清单时不带 cookie。
@@ -831,6 +852,9 @@ ASSETS = {
     "/icon-180.png": ("image/png", (_ASSET_DIR / "icon-180.png").read_bytes()),
     "/icon-512.png": ("image/png", (_ASSET_DIR / "icon-512.png").read_bytes()),
 }
+# 宠物图（设计稿导出的 3 倍图），手机遥控页的「我的宠物」用。
+ASSETS.update({f"/pets/{p.name}": ("image/png", p.read_bytes())
+               for p in sorted((_ASSET_DIR / "pets").glob("*.png"))})
 NOT_FOUND = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
              "<body style='background:#1c1915;color:#e6dcc8;font:16px/1.6 serif;padding:24px'>"
              "<p>打不开。请用小电视状态页上的二维码重新扫一下。</p>")

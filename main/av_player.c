@@ -480,10 +480,11 @@ typedef struct {
     // Set by the video task when frames come back after a gap, so the seek box
     // can go half a second later; taken by pump_keys, which owns the menu.
     atomic_bool frames_resumed;
-    // The chosen pet (HANDOFF.md F5), 0..ui_pet_count()-1; pet_dirty asks the
-    // session loop to store it.
+    // The chosen pet (HANDOFF.md F5), 0..ui_pet_count()-1, stored as soon as it
+    // changes.
     atomic_uint pet;
-    atomic_bool pet_dirty;
+    // A pet the phone chose (SWITCH "pet"), plus one; applied by pump_keys.
+    atomic_int remote_pet;
     // Paused from the phone: the panel keeps the last frame and a band across
     // the middle says so (paint_pause_band). pause_gen moves on every change so
     // the band is drawn once per change, not per pass.
@@ -1076,6 +1077,9 @@ static void take_switch(char *buf, size_t n) {
     } else if (cJSON_IsNumber(level) && level->valuedouble>=0 &&
                level->valuedouble<(double)AV_BRIGHTNESS_COUNT) {
         atomic_store(&s.remote_brightness,(int)level->valuedouble+1);
+    } else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j,"pet"))) {
+        const double pet=cJSON_GetObjectItemCaseSensitive(j,"pet")->valuedouble;
+        if (pet>=0 && pet<(double)ui_pet_count()) atomic_store(&s.remote_pet,(int)pet+1);
     } else if (cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(j,"seek"))) {
         // The phone jumped; the relay does the jumping, this only says so.
         double seconds=cJSON_GetObjectItemCaseSensitive(j,"seek")->valuedouble;
@@ -1335,9 +1339,9 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
 // Report the volume and backlight (AV_STATUS). Best effort: a lost report only
 // leaves the phone showing an old value until the next change or session.
 static void send_status(int fd, uint32_t session) {
-    char body[48];
-    int n=snprintf(body,sizeof(body),"{\"volume\":%u,\"brightness\":%u}",
-                   (unsigned)s.volume,(unsigned)s.menu.brightness);
+    char body[64];
+    int n=snprintf(body,sizeof(body),"{\"volume\":%u,\"brightness\":%u,\"pet\":%u}",
+                   (unsigned)s.volume,(unsigned)s.menu.brightness,(unsigned)atomic_load(&s.pet));
     if (n<=0 || n>=(int)sizeof(body)) return;
     uint8_t wire[AV_HEADER_BYTES];
     av_header_t h={.type=AV_STATUS,.session=session,.length=(uint32_t)n};
@@ -1373,6 +1377,8 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"pause",1) &&
         // And the box for a seek or "next" from the phone (SWITCH "seek"/"next").
         cJSON_AddNumberToObject(j,"hint",1) &&
+        // The pet in use; its presence also says SWITCH may carry "pet".
+        cJSON_AddNumberToObject(j,"pet",(double)atomic_load(&s.pet)) &&
         // How long since boot and why the last reset, so the server's log can
         // tell a device that restarted (and why) from one that lost Wi-Fi.
         cJSON_AddNumberToObject(j,"uptime_s",(double)(esp_timer_get_time()/1000000)) &&
@@ -3949,6 +3955,16 @@ static bool pump_keys(uint32_t wait_ms) {
         atomic_store(&s.settings_dirty,true);
         atomic_store(&s.status_dirty,true);
     }
+    // The phone's pet: used and stored at once, then shown happy for two
+    // seconds over the picture (the picker in its chosen state), and reported.
+    asked=atomic_exchange(&s.remote_pet,0);
+    if (asked>0) {
+        const unsigned pet=(unsigned)(asked-1);
+        atomic_store(&s.pet,pet);
+        av_store_save_pet((uint8_t)pet);
+        atomic_store(&s.status_dirty,true);
+        if (s.menu.view==UI_VIEW_VIDEO) ui_menu_show_pet(&s.menu,pet,ui_pet_count());
+    }
     asked=atomic_exchange(&s.remote_hint,0);
     if (asked>0) {
         ui_menu_show_hint(&s.menu,(ui_hint_t)asked,atomic_load(&s.remote_hint_seconds));
@@ -3976,6 +3992,7 @@ static bool pump_keys(uint32_t wait_ms) {
         // rare, and the picker can be open with no session to write it later.
         atomic_store(&s.pet,s.menu.pet_current);
         av_store_save_pet((uint8_t)s.menu.pet_current);
+        atomic_store(&s.status_dirty,true);
         ESP_LOGI(TAG,"Pet %u (%s)",s.menu.pet_current,ui_pet_name(s.menu.pet_current));
         return false;
     }

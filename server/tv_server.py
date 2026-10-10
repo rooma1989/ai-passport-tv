@@ -460,7 +460,7 @@ class AVServer:
         """设备的音量或亮度变了：记下来给手机看，会话照常。"""
         report = json_object(packet.payload)
         if self.device_status is not None:
-            for key in ("volume", "brightness"):
+            for key in ("volume", "brightness", "pet"):
                 if isinstance(report.get(key), int):
                     self.device_status[key] = report[key]
             self._write_now_playing(True)
@@ -519,7 +519,7 @@ class AVServer:
         controls = self.switch_watcher.take_controls()
         resumed = any(kind == "resume" for kind, _ in controls)
         # 音量、亮度留到恢复播放后再发。
-        self.switch_watcher.requeue([c for c in controls if c[0] in ("volume", "brightness")])
+        self.switch_watcher.requeue([c for c in controls if c[0] in ("volume", "brightness", "pet")])
         if resumed:
             self.logger("resume")
             return "resume"
@@ -858,6 +858,11 @@ class AVServer:
                     send_packet(connection, Packet(Kind.SWITCH, session, seq, 0,
                                                    json_bytes({kind: value})))
                     seq += 1
+                elif kind == "pet" and self.device_status is not None and "pet" in self.device_status:
+                    # 手机换宠物：设备换上、让它开心 2 秒，再报回来。
+                    self.phase = "control_send"
+                    send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes({"pet": value})))
+                    seq += 1
                 elif kind in ("seek", "next") and self.device_hints:
                     # 手机快进、下一个：设备画提示框，画面要停一两秒是正常的。
                     self.phase = "control_send"
@@ -1135,6 +1140,9 @@ class AVServer:
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):
                 self.device_status = {"volume": greeting["volume"], "brightness": greeting["brightness"],
                                       "steps": greeting["brightness_steps"]}
+                # 会换宠物的固件在 HELLO 里报当前宠物。
+                if isinstance(greeting.get("pet"), int):
+                    self.device_status["pet"] = greeting["pet"]
             # 设备按名选择频道，换频道即新连接；名称缺失或不在表内时回退到 --channel 指定的默认频道。
             # 重读后上次的频道可能已被删除，此时再退到表中的默认频道。
             requested = json_object(hello.payload).get("channel")

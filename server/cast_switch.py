@@ -48,9 +48,9 @@ class SwitchWatcher:
                 continue
             self.seen = event.seq
             action = event.action
-            if action in ("pause", "resume", "volume", "brightness", "seek", "next"):
+            if action in ("pause", "resume", "volume", "brightness", "seek", "next", "pet"):
                 # 同类的数值只留最新的，免得拖滑条时一个个依次发过去。
-                if action in ("volume", "brightness"):
+                if action in ("volume", "brightness", "pet"):
                     self._controls = [c for c in self._controls if c[0] != action]
                 # 暂停带的是标题（text），其余带数值。
                 self._controls.append((action, event.text if action == "pause" else event.value))
