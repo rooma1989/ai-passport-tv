@@ -58,6 +58,15 @@ backlight dims.
   waiting screen appears when no audio has arrived for 1.5 s, and a channel that
   never delivers audio is skipped as a channel without a picture is now.
 
+## Added after the first build
+
+- The pet is drawn at 5x rather than 3x, breathing (a slow 3 px rise and
+  fall), with its plain face for a moment every 4 s like a blink, and music
+  notes rising and swaying on both sides; the picture area repaints every
+  0.2 s.
+- A double-click on OK during playback turns the mode on or off, besides OK on
+  the status page and the phone's switch.
+
 ## Also in this change
 
 - The setup page: tapping a remembered network fills its name and says the
