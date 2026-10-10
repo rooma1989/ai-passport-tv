@@ -35,6 +35,8 @@ void ui_overlay_pause_hint(ui_surface_t surface, int top, int bottom);
 // A hint line centred across the panel with its glyphs from row `y`: the key
 // names (▲ ▼ OK) in UI_AMBER, the rest in UI_MUTED.
 void ui_overlay_key_hint(ui_surface_t surface, int y, const char *text);
+// The same from `x`, on `background`; returns the x past it.
+int ui_overlay_key_line(ui_surface_t surface, int x, int y, const char *text, uint16_t background);
 
 // The channel list, either level: rows from y=36, the scroll bar at x=232.
 void ui_overlay_list(ui_surface_t surface, const ui_menu_t *menu);
@@ -59,3 +61,38 @@ void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page);
 // receive rates, or one centred line.
 void ui_overlay_bottom_rates(ui_surface_t surface, int top, unsigned fps_x10, unsigned kbytes_per_s);
 void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uint16_t color);
+
+// ---- Waiting screens (HANDOFF.md 4.2, 4.3) and the pet picker (4.15) ----
+
+typedef enum {
+    UI_WAIT_WIFI = 0,   // joining the Wi-Fi network
+    UI_WAIT_SERVER,     // first dial to the server since boot
+    UI_WAIT_CHANNEL,    // opening a channel, or the picture stopped
+    UI_WAIT_FAILED,     // the server did not answer
+} ui_wait_kind_t;
+
+typedef struct {
+    ui_wait_kind_t kind;
+    unsigned pet;
+    char line[64];      // the network's name, or the server's address
+    unsigned number;    // the channel's number in the list; 0 when unknown
+    char name[64];      // the channel's name; "" when unknown
+    char detail[48];    // "group · n/total"
+} ui_wait_page_t;
+
+// The top bar's label for a waiting screen: 小智电视, or 换台中.
+const char *ui_overlay_wait_label(ui_wait_kind_t kind);
+
+// The picture area of a waiting screen, rows 30..209, with its animation at
+// `tick` (tenths of a second): the pet bobs a pixel every half second, the
+// Wi-Fi dots take turns, the block runs between pet and globe, the bar sweeps.
+void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned tick);
+
+// The rows the animation changes, and a number that changes exactly when
+// what is drawn in them does: repaint [*y0, *y1) when it moves.
+unsigned ui_overlay_wait_frame(ui_wait_kind_t kind, unsigned tick, int *y0, int *y1);
+
+// The pet picker on the opaque panel; its bottom bar line is
+// ui_overlay_pet_bottom.
+void ui_overlay_pets(ui_surface_t surface, const ui_menu_t *menu);
+void ui_overlay_pet_bottom(ui_surface_t surface, int top);

@@ -98,6 +98,16 @@ const char *ui_pet_name(unsigned pet)
     return pet < PET_COUNT ? PETS[pet].name : NULL;
 }
 
+const char *ui_pet_kind(unsigned pet)
+{
+    // HANDOFF.md 4.15, in PETS[] order.
+    static const char *const kinds[PET_COUNT] = {
+        "小电视", "小收音机", "猫耳电视", "信号团子", "小磁带", "小灯泡",
+        "小掌机", "小机器人", "小幽灵", "破壳小鸡", "小仙人掌",
+    };
+    return pet < PET_COUNT ? kinds[pet] : NULL;
+}
+
 unsigned ui_pet_moods(unsigned pet)
 {
     return pet < PET_COUNT ? PETS[pet].mood_count : 0u;

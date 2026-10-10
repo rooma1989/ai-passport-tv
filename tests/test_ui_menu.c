@@ -490,6 +490,35 @@ static void test_seek_hint(void)
     check(ui_menu_tick(&menu, 8000) && menu.hint == UI_HINT_NONE, "and never longer than 8 s");
 }
 
+static void test_pet_picker(void)
+{
+    ui_menu_t menu = loaded("cctv1");
+    ui_menu_open_pets(&menu, 3, 11);
+    check(menu.view == UI_VIEW_PET && menu.pet_browse == 3, "opens on the pet in use");
+    ui_menu_pet_step(&menu, -1);
+    ui_menu_pet_step(&menu, -1);
+    ui_menu_pet_step(&menu, -1);
+    ui_menu_pet_step(&menu, -1);
+    check(menu.pet_browse == 10, "wraps backwards");
+    ui_menu_pet_step(&menu, 1);
+    check(menu.pet_browse == 0, "and forwards");
+    check(!ui_menu_tick(&menu, 19000) && menu.view == UI_VIEW_PET, "stays while looked at");
+    ui_menu_pet_step(&menu, 1);
+    check(!ui_menu_tick(&menu, 19000), "a step restarts the clock");
+    ui_menu_pet_confirm(&menu);
+    char out[8];
+    check(ui_menu_take_action(&menu, out, sizeof(out)) == UI_ACTION_PET && menu.pet_current == 1,
+          "OK chooses the pet looked at");
+    ui_menu_pet_step(&menu, 1);
+    check(menu.pet_browse == 1, "no browsing once chosen");
+    check(!ui_menu_tick(&menu, 900) && ui_menu_tick(&menu, 200) && menu.view == UI_VIEW_VIDEO,
+          "shown a second, then closed");
+    ui_menu_open_pets(&menu, 1, 11);
+    ui_menu_pet_step(&menu, 1);
+    check(ui_menu_tick(&menu, 20000) && menu.view == UI_VIEW_VIDEO && menu.pet_current == 1,
+          "left alone, it closes without changing the pet");
+}
+
 int main(void)
 {
     test_open_selects_the_playing_channel();
@@ -514,6 +543,7 @@ int main(void)
     test_banner_place();
     test_level_indicator();
     test_seek_hint();
+    test_pet_picker();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

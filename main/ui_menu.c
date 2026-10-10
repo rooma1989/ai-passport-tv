@@ -26,6 +26,9 @@
 // after it is back (HANDOFF.md 4.5).
 #define UI_MENU_HINT_MAX_MS 8000
 #define UI_MENU_HINT_AFTER_MS 500
+// The pet picker closes after this long untouched, and this long after a choice.
+#define UI_MENU_PET_MS 20000
+#define UI_MENU_PET_CHOSEN_MS 1000
 
 // A channel id must stay printable and short enough for the device table; the
 // name is only ever drawn, so it is bounded by the font and the screen.
@@ -586,6 +589,43 @@ void ui_menu_show_volume(ui_menu_t *menu, unsigned level)
     menu->level = UI_LEVEL_VOLUME;
 }
 
+void ui_menu_open_pets(ui_menu_t *menu, unsigned current, unsigned count)
+{
+    if (!menu || count == 0) {
+        return;
+    }
+    menu->view = UI_VIEW_PET;
+    menu->pet_count = count;
+    menu->pet_current = current < count ? current : 0;
+    menu->pet_browse = menu->pet_current;
+    menu->pet_chosen = false;
+    menu->timeout_ms = UI_MENU_PET_MS;
+    menu->action = UI_ACTION_NONE;
+}
+
+void ui_menu_pet_step(ui_menu_t *menu, int delta)
+{
+    if (!menu || menu->view != UI_VIEW_PET || menu->pet_chosen || menu->pet_count == 0) {
+        return;
+    }
+    const int count = (int)menu->pet_count;
+    int next = ((int)menu->pet_browse + delta) % count;
+    if (next < 0) next += count;
+    menu->pet_browse = (unsigned)next;
+    menu->timeout_ms = UI_MENU_PET_MS;
+}
+
+void ui_menu_pet_confirm(ui_menu_t *menu)
+{
+    if (!menu || menu->view != UI_VIEW_PET || menu->pet_chosen) {
+        return;
+    }
+    menu->pet_current = menu->pet_browse;
+    menu->pet_chosen = true;
+    menu->action = UI_ACTION_PET;
+    menu->timeout_ms = UI_MENU_PET_CHOSEN_MS;
+}
+
 void ui_menu_show_brightness(ui_menu_t *menu)
 {
     if (!menu) {
@@ -600,9 +640,16 @@ void ui_menu_banner_place(ui_menu_t *menu, const char *id)
     if (!menu) {
         return;
     }
-    menu->banner_number = 0;
-    menu->banner_detail[0] = '\0';
-    int found = find_entry(menu, id);
+    ui_menu_channel_place(menu, id, &menu->banner_number, menu->banner_detail,
+                          sizeof(menu->banner_detail));
+}
+
+void ui_menu_channel_place(const ui_menu_t *menu, const char *id, unsigned *number,
+                           char *detail, size_t detail_size)
+{
+    if (number) *number = 0;
+    if (detail && detail_size) detail[0] = '\0';
+    int found = menu ? find_entry(menu, id) : -1;
     if (found < 0) {
         return;
     }
@@ -617,11 +664,12 @@ void ui_menu_banner_place(ui_menu_t *menu, const char *id)
             position++;
         }
     }
-    menu->banner_number = (unsigned)found + 1u;
+    if (number) *number = (unsigned)found + 1u;
     // One level only: the group is the whole list, named as the list is.
     const char *group = two_levels(menu) ? menu->groups[g] : "频道";
-    snprintf(menu->banner_detail, sizeof(menu->banner_detail), "%s \xC2\xB7 %u/%u",
-             group, position, total);
+    if (detail && detail_size) {
+        snprintf(detail, detail_size, "%s \xC2\xB7 %u/%u", group, position, total);
+    }
 }
 
 void ui_menu_show_hint(ui_menu_t *menu, ui_hint_t hint, int seconds)

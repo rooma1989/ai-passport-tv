@@ -25,6 +25,7 @@ typedef enum {
     UI_VIEW_MENU,        // the channel list is open
     UI_VIEW_STATUS,      // the status page is up
     UI_VIEW_BRIGHTNESS,  // the backlight level is being set
+    UI_VIEW_PET,         // choosing the pet, from the status page
 } ui_view_t;
 
 // What the overlay wants the caller to do next.
@@ -32,6 +33,7 @@ typedef enum {
     UI_ACTION_NONE = 0,
     UI_ACTION_SWITCH,    // switch to ui_menu_selected()
     UI_ACTION_CLOSE,     // leave the overlay and resume the session
+    UI_ACTION_PET,       // save menu->pet_current as the pet
 } ui_action_t;
 
 typedef struct {
@@ -95,6 +97,12 @@ typedef struct {
     int hint_seconds;
     int64_t hint_ms;
     unsigned hint_seq;
+    // The pet picker: the pet in use, the one being looked at, how many there
+    // are, and whether OK has just chosen (the page then stays a second).
+    unsigned pet_current;
+    unsigned pet_browse;
+    unsigned pet_count;
+    bool pet_chosen;
     // Which backlight step is in use, as an index into AV_BRIGHTNESS_LEVELS.
     // The menu carries it so the brightness page can be drawn from the same
     // state the key handler updates, with no second source of truth.
@@ -180,6 +188,14 @@ void ui_menu_show_volume(ui_menu_t *menu, unsigned level);
 // Whether the volume indicator should be drawn now.
 bool ui_menu_volume_visible(const ui_menu_t *menu);
 
+// Open the pet picker on `current`, one of `count` pets.
+void ui_menu_open_pets(ui_menu_t *menu, unsigned current, unsigned count);
+// Look at the previous (delta < 0) or next pet, wrapping.
+void ui_menu_pet_step(ui_menu_t *menu, int delta);
+// Choose the pet being looked at: UI_ACTION_PET is raised, and the page shows
+// it in use for a second before it closes.
+void ui_menu_pet_confirm(ui_menu_t *menu);
+
 // Show the backlight in the same indicator, as the phone set it. Whichever of
 // the two came last is the one shown.
 void ui_menu_show_brightness(ui_menu_t *menu);
@@ -187,6 +203,9 @@ void ui_menu_show_brightness(ui_menu_t *menu);
 // Fill banner_number and banner_detail for channel `id`, from the loaded list.
 // `id` not in the list leaves both empty.
 void ui_menu_banner_place(ui_menu_t *menu, const char *id);
+// The same for any caller: `number` 0 and `detail` "" when `id` is not listed.
+void ui_menu_channel_place(const ui_menu_t *menu, const char *id, unsigned *number,
+                           char *detail, size_t detail_size);
 
 // Show the seek box. `seconds` is the jump, negative for back; ignored for
 // "next". The box stays until the picture comes back (ui_menu_hint_resumed) or

@@ -60,6 +60,7 @@ void ui_draw_icon_columns(ui_surface_t surface, ui_icon_t icon, int x, int y, in
 unsigned ui_pet_count(void);
 const char *ui_pet_name(unsigned pet);   // UTF-8, e.g. "电电"; NULL out of range
 unsigned ui_pet_moods(unsigned pet);
+const char *ui_pet_kind(unsigned pet);   // what it is, e.g. "小电视"; NULL out of range
 
 // One pet at `scale`, transparent dots left alone, so the background must
 // already be drawn. A mood past the pet's last falls back to its last (only

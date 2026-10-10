@@ -25,6 +25,11 @@ bool av_store_load(uint8_t *volume_percent, uint8_t *brightness_percent);
 // report but does not need to act on: the values still apply for this session.
 bool av_store_save(uint8_t volume_percent, uint8_t brightness_percent);
 
+// The chosen pet, 0..count-1; 0 (电电) when none is stored or the stored one
+// is out of range.
+uint8_t av_store_load_pet(uint8_t count);
+bool av_store_save_pet(uint8_t pet);
+
 // Read where the streaming server is, as entered on the setup page.
 //
 // Returns false when nothing usable has been stored, which is the case for a

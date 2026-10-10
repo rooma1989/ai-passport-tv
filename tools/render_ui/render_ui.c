@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { W = 240, H = 240, SCALE = 2, COLS = 4, ROWS = 4, GAP = 8 };
+enum { W = 240, H = 240, SCALE = 2, COLS = 4, ROWS = 6, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -188,6 +188,37 @@ int main(int argc, char **argv)
     ui_overlay_status(whole(), &page);
     ui_overlay_bottom_text(whole(), 210, "任意键关闭", UI_FAINT);
     place(n++);
+
+    // 4.2 / 4.3 the waiting screens, and 4.15 the pet picker.
+    static const struct { ui_wait_kind_t kind; unsigned pet; const char *line; unsigned number;
+                          const char *name; const char *detail; unsigned tick; } waits[] = {
+        { UI_WAIT_WIFI, 0, "PHP2.4G", 0, "", "", 7 },
+        { UI_WAIT_SERVER, 4, "iewww.com:8098", 0, "", "", 13 },
+        { UI_WAIT_CHANNEL, 0, "", 7, "CCTV-7 国防军事", "央视 \xC2\xB7 7/17", 4 },
+        { UI_WAIT_CHANNEL, 0, "", 0, "", "", 9 },
+        { UI_WAIT_FAILED, 0, "203.0.113.10:8098", 0, "", "", 0 },
+        { UI_WAIT_FAILED, 2, "203.0.113.10:8098", 0, "", "", 5 },
+    };
+    for (unsigned i = 0; i < sizeof(waits) / sizeof(waits[0]); i++) {
+        ui_wait_page_t wait = { waits[i].kind, waits[i].pet, "", waits[i].number, "", "" };
+        snprintf(wait.line, sizeof(wait.line), "%s", waits[i].line);
+        snprintf(wait.name, sizeof(wait.name), "%s", waits[i].name);
+        snprintf(wait.detail, sizeof(wait.detail), "%s", waits[i].detail);
+        picture(); bars(NULL, ui_overlay_wait_label(wait.kind), 76, 0, 3);
+        ui_overlay_wait(whole(), &wait, waits[i].tick);
+        place(n++);
+    }
+    menu = sample_menu();
+    ui_menu_open_pets(&menu, 0, ui_pet_count());
+    for (unsigned i = 0; i < 2; i++) {
+        picture(); bars(NULL, i ? "选择宠物 6/11" : "选择宠物 1/11", 76, 0, 3);
+        ui_draw_panel(whole(), 30, 210);
+        ui_overlay_pets(whole(), &menu);
+        ui_text_fill(whole(), 0, 210, W, 30, UI_DEEP);
+        ui_overlay_pet_bottom(whole(), 210);
+        place(n++);
+        for (int k = 0; k < 5; k++) ui_menu_pet_step(&menu, 1);
+    }
 
     FILE *out = fopen(argv[1], "wb");
     if (!out) {

@@ -116,10 +116,17 @@ void ui_overlay_pause_hint(ui_surface_t surface, int top, int bottom)
 
 void ui_overlay_key_hint(ui_surface_t surface, int y, const char *text)
 {
-    if (!text || !covers(surface, y, y + (int)UI_TEXT_LINE_H)) {
-        return;
+    if (text) {
+        ui_overlay_key_line(surface, (surface.width - ui_text_width(text)) / 2, y, text, UI_INK);
     }
-    int pen = (surface.width - ui_text_width(text)) / 2;
+}
+
+int ui_overlay_key_line(ui_surface_t surface, int x, int y, const char *text, uint16_t background)
+{
+    if (!text || !covers(surface, y, y + (int)UI_TEXT_LINE_H)) {
+        return x;
+    }
+    int pen = x;
     // Runs split at the key names; drawn as glyph cells only, so one run's
     // background never reaches over the last.
     static const char *const keys[] = { "\xE2\x96\xB2", "\xE2\x96\xBC", "OK" };
@@ -146,9 +153,10 @@ void ui_overlay_key_hint(ui_surface_t surface, int y, const char *text)
         if (len >= sizeof(run)) len = sizeof(run) - 1u;
         memcpy(run, cursor, len);
         run[len] = '\0';
-        pen = ui_text_draw_scaled(surface, pen, y, run, 1, key_len ? UI_AMBER : UI_MUTED, UI_INK);
+        pen = ui_text_draw_scaled(surface, pen, y, run, 1, key_len ? UI_AMBER : UI_MUTED, background);
         cursor += len;
     }
+    return pen;
 }
 
 static ui_icon_t group_icon(const char *name)
@@ -231,7 +239,7 @@ void ui_overlay_brightness(ui_surface_t surface, unsigned percent)
                         UI_AMBER, UI_INK);
     ui_draw_cells(surface, 140, 8, (percent + 5u) / 10u, UI_AMBER, UI_RULE);
     ui_draw_dotted_hline(surface, 16, 223, 166, UI_RULE);
-    ui_overlay_key_hint(surface, 180, "\xE2\x96\xB2亮  \xE2\x96\xBC暗  OK完成");
+    ui_overlay_key_hint(surface, 176, "\xE2\x96\xB2亮  \xE2\x96\xBC暗  OK完成");
 }
 
 void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page)
@@ -271,12 +279,12 @@ void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page)
         ui_qr_draw_colors(surface, 139 + (87 - side) / 2, 68 + (87 - side) / 2, scale, page->qr,
                           UI_PAPER, UI_DEEP);
         if (page->qr_caption) {
-            ui_text_draw_scaled(surface, 139 + (88 - ui_text_width(page->qr_caption)) / 2, 162,
+            ui_text_draw_scaled(surface, 139 + (88 - ui_text_width(page->qr_caption)) / 2, 158,
                                 page->qr_caption, 1, UI_MUTED, UI_INK);
         }
     }
     ui_draw_dotted_hline(surface, 16, 223, 184, UI_RULE);
-    ui_overlay_key_hint(surface, 190, "长按\xE2\x96\xB2配网  长按\xE2\x96\xBC宠物");
+    ui_overlay_key_hint(surface, 186, "长按\xE2\x96\xB2配网  长按\xE2\x96\xBC宠物");
 }
 
 void ui_overlay_bottom_rates(ui_surface_t surface, int top, unsigned fps_x10, unsigned kbytes_per_s)
@@ -294,4 +302,151 @@ void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uin
         return;
     }
     ui_text_draw(surface, (surface.width - ui_text_width(text)) / 2, top + 7, text, color, UI_DEEP);
+}
+
+// ---- Waiting screens and the pet picker ----
+
+const char *ui_overlay_wait_label(ui_wait_kind_t kind)
+{
+    return kind == UI_WAIT_CHANNEL ? "换台中" : "小智电视";
+}
+
+static void centred(ui_surface_t surface, int y, const char *text, uint16_t color)
+{
+    if (text && text[0]) {
+        char fitted[96];
+        (void)ui_text_ellipsize(fitted, sizeof(fitted), text, 208);
+        ui_text_draw_scaled(surface, (surface.width - ui_text_width(fitted)) / 2, y, fitted, 1,
+                            color, UI_INK);
+    }
+}
+
+// Back and forth over positions 0..last, one step per call of `step`.
+static unsigned bounce(unsigned step, unsigned last)
+{
+    const unsigned p = step % (2u * last);
+    return p <= last ? p : 2u * last - p;
+}
+
+void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned tick)
+{
+    if (!page || !covers(surface, 30, 210)) {
+        return;
+    }
+    ui_draw_panel(surface, 30, 210);
+    const int bob = (int)((tick / 5u) % 2u);   // a pixel up every other half second
+    switch (page->kind) {
+    case UI_WAIT_WIFI: {
+        ui_draw_pet(surface, page->pet, 0, 96, 50 - bob, 2);
+        ui_draw_icon(surface, UI_ICON_WIFI, 148, 44, 1, UI_AMBER);
+        centred(surface, 106, "正在连接 Wi-Fi", UI_PAPER);
+        centred(surface, 130, page->line, UI_MUTED);
+        const unsigned lit = (tick / 5u) % 3u;
+        for (unsigned i = 0; i < 3u; i++) {
+            ui_text_fill(surface, 103 + 14 * (int)i, 162, 6, 6, i == lit ? UI_AMBER : UI_RULE);
+        }
+        ui_draw_dotted_hline(surface, 16, 223, 186, UI_RULE);
+        ui_overlay_key_hint(surface, 194, "双击\xE2\x96\xB2 状态与配网");
+        break;
+    }
+    case UI_WAIT_SERVER: {
+        ui_draw_pet(surface, page->pet, 0, 36, 46 - bob, 2);
+        ui_draw_icon(surface, UI_ICON_GLOBE, 160, 58, 2, UI_PAPER);
+        ui_draw_dotted_hline(surface, 88, 151, 74, UI_FAINT);
+        ui_draw_dotted_hline(surface, 88, 151, 75, UI_FAINT);
+        ui_text_fill(surface, 88 + 4 * (int)bounce(tick / 2u, 14u), 72, 6, 6, UI_AMBER);
+        const char *pet_name = ui_pet_name(page->pet);
+        ui_text_draw_scaled(surface, 44, 100, pet_name ? pet_name : "", 1, UI_MUTED, UI_INK);
+        ui_text_draw_scaled(surface, 152, 100, "服务器", 1, UI_MUTED, UI_INK);
+        centred(surface, 126, "正在连接服务器", UI_PAPER);
+        centred(surface, 150, page->line, UI_MUTED);
+        ui_draw_dotted_hline(surface, 16, 223, 186, UI_RULE);
+        ui_overlay_key_hint(surface, 194, "双击\xE2\x96\xB2 状态与改地址");
+        break;
+    }
+    case UI_WAIT_CHANNEL: {
+        // "CH" and the number at 3x on one baseline, centred as a pair.
+        char number[8];
+        int scale = 3;
+        if (page->number) snprintf(number, sizeof(number), "%02u", page->number % 100u);
+        else { snprintf(number, sizeof(number), "\xC2\xB7\xC2\xB7"); scale = 2; }
+        const int ch_w = ui_text_width("CH"), num_w = ui_text_width(number) * scale;
+        const int x = (surface.width - (ch_w + 6 + num_w)) / 2;
+        const int num_top = 100 - (int)UI_TEXT_LINE_H * scale;
+        // The font's baseline is row 12 of its 16; both runs stand on it.
+        ui_text_draw_scaled(surface, x, num_top + 12 * scale - 12, "CH", 1, UI_AMBER, UI_INK);
+        ui_text_draw_scaled(surface, x + ch_w + 6, num_top, number, scale, UI_AMBER, UI_INK);
+        centred(surface, 108, page->name[0] ? page->name : "正在打开频道", UI_PAPER);
+        centred(surface, 132, page->detail, UI_MUTED);
+        ui_text_fill(surface, 40, 168, 160, 4, UI_RULE);
+        ui_text_fill(surface, 40 + 8 * (int)bounce(tick, 15u), 168, 40, 4, UI_AMBER);
+        centred(surface, 180, "正在打开", UI_MUTED);
+        break;
+    }
+    case UI_WAIT_FAILED: {
+        ui_draw_pet(surface, page->pet, 3, 96, 40 - bob, 2);
+        centred(surface, 90, "连不上服务器", UI_PAPER);
+        centred(surface, 114, page->line, UI_MUTED);
+        ui_draw_dotted_hline(surface, 16, 223, 150, UI_RULE);
+        int pen = ui_text_draw_scaled(surface, 46, 164, "1 ", 1, UI_AMBER, UI_INK);
+        ui_overlay_key_line(surface, pen, 164, "双击\xE2\x96\xB2 打开状态", UI_INK);
+        pen = ui_text_draw_scaled(surface, 46, 188, "2 ", 1, UI_AMBER, UI_INK);
+        ui_overlay_key_line(surface, pen, 188, "长按\xE2\x96\xB2 改地址", UI_INK);
+        break;
+    }
+    }
+}
+
+unsigned ui_overlay_wait_frame(ui_wait_kind_t kind, unsigned tick, int *y0, int *y1)
+{
+    const unsigned bob = (tick / 5u) % 2u;
+    switch (kind) {
+    case UI_WAIT_WIFI:
+        *y0 = 48; *y1 = 170;
+        return bob * 3u + (tick / 5u) % 3u;
+    case UI_WAIT_SERVER:
+        *y0 = 44; *y1 = 98;
+        return bob * 16u + bounce(tick / 2u, 14u);
+    case UI_WAIT_CHANNEL:
+        *y0 = 168; *y1 = 172;
+        return bounce(tick, 15u);
+    case UI_WAIT_FAILED:
+    default:
+        *y0 = 38; *y1 = 90;
+        return bob;
+    }
+}
+
+void ui_overlay_pets(ui_surface_t surface, const ui_menu_t *menu)
+{
+    if (!menu || menu->pet_count == 0) {
+        return;
+    }
+    const unsigned count = menu->pet_count, at = menu->pet_browse % count;
+    const unsigned prev = (at + count - 1u) % count, next = (at + 1u) % count;
+    ui_draw_pet(surface, prev, 0, 20, 66, 1);
+    ui_text_draw_scaled(surface, 14 + (37 - ui_text_width("\xE2\x96\xB2")) / 2, 94, "\xE2\x96\xB2", 1,
+                        UI_AMBER, UI_INK);
+    ui_draw_pet(surface, next, 0, 196, 66, 1);
+    ui_text_draw_scaled(surface, 190 + (37 - ui_text_width("\xE2\x96\xBC")) / 2, 94, "\xE2\x96\xBC", 1,
+                        UI_AMBER, UI_INK);
+    ui_draw_pet(surface, at, 1, 84, 38, 3);
+    centred(surface, 116, ui_pet_name(at), UI_PAPER);
+    centred(surface, 138, ui_pet_kind(at), UI_MUTED);
+    if (at == menu->pet_current) {
+        const char *used = "\xE2\x97\x8F 使用中";
+        ui_text_draw_scaled(surface, (surface.width - ui_text_width(used)) / 2, 164, used, 1,
+                            UI_AMBER, UI_INK);
+    } else {
+        ui_overlay_key_hint(surface, 164, "OK 选它");
+    }
+    for (unsigned k = 0; k < count && k < 16u; k++) {
+        ui_text_fill(surface, 78 + 8 * (int)k, 196, 4, 4, k == at ? UI_AMBER : UI_RULE);
+    }
+}
+
+void ui_overlay_pet_bottom(ui_surface_t surface, int top)
+{
+    const char *text = "长按OK 返回";
+    ui_overlay_key_line(surface, (surface.width - ui_text_width(text)) / 2, top + 7, text, UI_DEEP);
 }

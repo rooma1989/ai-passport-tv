@@ -480,6 +480,10 @@ typedef struct {
     // Set by the video task when frames come back after a gap, so the seek box
     // can go half a second later; taken by pump_keys, which owns the menu.
     atomic_bool frames_resumed;
+    // The chosen pet (HANDOFF.md F5), 0..ui_pet_count()-1; pet_dirty asks the
+    // session loop to store it.
+    atomic_uint pet;
+    atomic_bool pet_dirty;
     // Paused from the phone: the panel keeps the last frame and a band across
     // the middle says so (paint_pause_band). pause_gen moves on every change so
     // the band is drawn once per change, not per pass.
@@ -546,6 +550,12 @@ static char shown_channel[AV_CHANNEL_ID_MAX];
 // draw the waiting screen even though its channel id is still empty and equals
 // shown_channel. See the use site.
 static bool waiting_drawn;
+// Whether any session has reached the server since boot: before that a dial is
+// "connecting to the server", after it "opening a channel".
+static atomic_bool s_ever_served;
+// The channel count the waiting screen was drawn with: the list arriving
+// gives the channel a number and a name to show.
+static unsigned waiting_count;
 // When the video task last finished drawing a frame, and whether frames were
 // arriving the last time anyone asked. A session can carry sound and no picture
 // -- a dead source, for which the server sends silence and one placeholder frame
@@ -1416,6 +1426,7 @@ static void receive_task(void *arg) {
     // Reached only once the socket is up: from here the failure is the channel's,
     // not the server's.
     atomic_store(&s.link,(int)LINK_UP);
+    atomic_store(&s_ever_served,true);
     s_rx_stage="hello";
     if (!hello(fd)) goto done;
     uint8_t wire[AV_HEADER_BYTES];
@@ -1934,6 +1945,11 @@ static void build_topbar_label(ui_topbar_label_t *label) {
     case UI_VIEW_STATUS:
         texts[n]="状态"; colors[n++]=UI_PAPER;
         break;
+    case UI_VIEW_PET:
+        snprintf(count,sizeof(count)," %u/%u",s.menu.pet_browse+1u,s.menu.pet_count);
+        texts[n]="选择宠物"; colors[n++]=UI_PAPER;
+        texts[n]=count; colors[n++]=UI_MUTED;
+        break;
     default: {
         // The number is the channel's place in the whole list, as the phone
         // and the list rows count it.
@@ -1991,6 +2007,8 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
                                     (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
         } else if (s.menu.view==UI_VIEW_STATUS) {
             ui_overlay_bottom_text(surface,bottom,"任意键关闭",UI_FAINT);
+        } else if (s.menu.view==UI_VIEW_PET) {
+            ui_overlay_pet_bottom(surface,bottom);
         }
     }
 }
@@ -2035,7 +2053,8 @@ static bool refresh_info_bars(void) {
     }
     const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
     if (bar==0) return true;
-    const bool want_bottom=s.menu.view==UI_VIEW_MENU || s.menu.view==UI_VIEW_STATUS;
+    const bool want_bottom=s.menu.view==UI_VIEW_MENU || s.menu.view==UI_VIEW_STATUS ||
+                           s.menu.view==UI_VIEW_PET;
     const int64_t now=esp_timer_get_time();
     build_topbar_label(&topbar_label);
     // Below 10% the percentage blinks, so the bar is repainted every second.
@@ -2096,7 +2115,7 @@ static void refresh_status_page(void) {
     if (!found) snprintf(status_page.name,sizeof(status_page.name),"%s",s.channel[0] ? s.channel : "小智电视");
     status_page.bars=wifi_bars();
     status_page.soc=atomic_load(&s.battery_soc);
-    status_page.pet=0;
+    status_page.pet=atomic_load(&s.pet);
 
     // The phone remote's code when the server sent its address; otherwise the
     // help page's. A version-2 code at three pixels a module fills the design's
@@ -2156,6 +2175,8 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
     } else if (s.menu.view==UI_VIEW_MENU) {
         // HANDOFF.md 4.7 and 4.8; the title and position are the top bar's label.
         ui_overlay_list(surface,&s.menu);
+    } else if (s.menu.view==UI_VIEW_PET) {
+        ui_overlay_pets(surface,&s.menu);
     } else if (s.menu.view==UI_VIEW_BRIGHTNESS) {
         // 4.9. Drawn without a channel list, so the backlight is reachable on a
         // device that has not connected to a server yet.
@@ -2928,30 +2949,6 @@ static void hw_bench(void) {
     bsp_display_raw_release();
 }
 #endif
-// The SMPTE-style bars, in the order they are conventionally drawn: white,
-// yellow, cyan, green, magenta, red, blue. Seven equal vertical bars fill the
-// width exactly because 320/7 is not a whole number of pixels -- each bar takes
-// the pixels its share covers, so the last one absorbs the remainder rather than
-// leaving a strip of untouched memory at the right edge.
-static void draw_color_bars(ui_surface_t surface) {
-    static const uint16_t bars[7] = {
-        0xFFFFu, // white
-        0xFFE0u, // yellow
-        0x07FFu, // cyan
-        0x07E0u, // green
-        0xF81Fu, // magenta
-        0xF800u, // red
-        0x001Fu, // blue
-    };
-    // Filled from the surface's own origin: ui_text_fill clips to the rows this
-    // stripe covers, so a y of 0 would draw nothing on every stripe but the
-    // first.
-    for (unsigned i=0;i<7;i++) {
-        int left=(int)((unsigned)AV_WIDTH*i/7u);
-        int right=(int)((unsigned)AV_WIDTH*(i+1u)/7u);
-        ui_text_fill(surface,left,surface.origin_y,right-left,surface.rows,bars[i]);
-    }
-}
 // Whether the waiting screen needs painting again.
 //
 // Asked from the video task main loop rather than decided once when the session
@@ -2994,6 +2991,7 @@ static bool waiting_screen_stale(void)
     // A seek box came or went while the picture is away: the screen shows it.
     if (s.menu.hint_seq!=waiting_hint_seq) return true;
     if ((int)atomic_load(&s.link)!=waiting_link) return true;
+    if (atomic_load(&s.count)!=waiting_count) return true;
     // While an overlay is up it is repainted on a slow timer: its readings
     // change and a key press has to show. The bars beneath it do not, which is
     // why this is not simply every pass.
@@ -3028,7 +3026,7 @@ static bool paint_pause_band(void)
     const unsigned bottom=top+((64u+rows-1u)/rows)*rows;
     for (unsigned y=top;y<bottom && !stopping();y+=rows) {
         ui_surface_t strip=stripe_surface(y,s.stripe[0]);
-        ui_overlay_pause(strip,(int)top,(int)bottom,0,title);
+        ui_overlay_pause(strip,(int)top,(int)bottom,atomic_load(&s.pet),title);
         if(bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
            bsp_display_raw_drain(1,200)!=ESP_OK) {
             fail("pause band DMA");
@@ -3054,6 +3052,87 @@ static bool paint_pause_band(void)
     return true;
 }
 
+// Which waiting screen applies (HANDOFF.md 4.2, 4.3): joining Wi-Fi; the first
+// dial since boot; a server that did not answer; otherwise a channel opening.
+// A switch also dials, but after the first success it reads as "opening a
+// channel", so the screen does not flick to "connecting" on every switch.
+static ui_wait_kind_t waiting_kind(void) {
+    const link_state_t link=(link_state_t)atomic_load(&s.link);
+    if (link==LINK_NO_WIFI) return UI_WAIT_WIFI;
+    if (link==LINK_DOWN && !atomic_load(&s.media_started)) return UI_WAIT_FAILED;
+    if (link==LINK_TRYING && !atomic_load(&s_ever_served)) return UI_WAIT_SERVER;
+    return UI_WAIT_CHANNEL;
+}
+
+// What the waiting screen shows, gathered once per full paint.
+static ui_wait_page_t waiting_page;
+
+static void build_waiting_page(void) {
+    ui_wait_page_t *page=&waiting_page;
+    memset(page,0,sizeof(*page));
+    page->kind=waiting_kind();
+    page->pet=atomic_load(&s.pet);
+    if (page->kind==UI_WAIT_WIFI) {
+        av_provision_network_name(page->line,sizeof(page->line));
+    } else if (page->kind==UI_WAIT_CHANNEL) {
+        if (s.channel[0]) {
+            ui_menu_channel_place(&s.menu,s.channel,&page->number,page->detail,sizeof(page->detail));
+            if (page->number) current_channel_name(page->name,sizeof(page->name));
+        }
+    } else {
+        av_server_addr_t addr;
+        if (server_address(&addr)) {
+            // Cut to the line's room on purpose: the screen shows what fits.
+            char port[8];
+            snprintf(port,sizeof(port),":%u",(unsigned)addr.port);
+            size_t used=strnlen(addr.host,sizeof(page->line)-sizeof(port));
+            memcpy(page->line,addr.host,used);
+            memcpy(page->line+used,port,strlen(port)+1);
+        }
+    }
+}
+
+// Tenths of a second, for the waiting screens' animation.
+static unsigned waiting_tick(void) {
+    return (unsigned)(esp_timer_get_time()/100000);
+}
+
+// The animation frame last drawn, so only a change repaints.
+static unsigned waiting_frame=UINT_MAX;
+
+// Paint rows [y0, y1) of the waiting screen, whole stripes, with whatever
+// overlay is up.
+static bool paint_waiting_rows(unsigned y0, unsigned y1) {
+    const unsigned tick=waiting_tick();
+    ui_topbar_label_t label;
+    const char *texts[1]={ ui_overlay_wait_label(waiting_page.kind) };
+    const uint16_t colors[1]={ UI_MUTED };
+    ui_topbar_set_label(&label,texts,colors,1);
+    const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc), bsp_battery_charging(), false };
+    for (unsigned y=(y0/AV_STRIPE_ROWS)*AV_STRIPE_ROWS;y<y1 && y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
+        // The waiting screen runs when no video task is drawing, so it uses the
+        // first buffer and does not take turns with anyone.
+        ui_surface_t strip=stripe_surface(y,s.stripe[0]);
+        ui_text_fill(strip,0,(int)y,(int)AV_WIDTH,(int)AV_STRIPE_ROWS,UI_DEEP);
+        if (y<(unsigned)UI_TOPBAR_H) {
+            ui_status_draw(strip,(int)AV_WIDTH,&label,reading.bars,reading.soc,reading.charging,false);
+        }
+        ui_overlay_wait(strip,&waiting_page,tick);
+        // On top, so a page covers the screen rather than competing with it:
+        // the status page and the list paint their own panel and bars.
+        overlay_stripe(y,s.stripe[0]);
+        // Through the queueing entry point and drained in the same breath: the
+        // waiting screen redraws on its own schedule and wants the simple
+        // synchronous behaviour, not the overlap playback uses.
+        if(bsp_display_raw_submit_nowait(y,AV_STRIPE_ROWS,s.stripe[0])!=ESP_OK ||
+           bsp_display_raw_drain(1,200)!=ESP_OK) {  // one in flight at a time here
+            fail("waiting screen DMA");
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool paint_waiting_screen(void)
 {
     if (atomic_load(&s.paused) && s.menu.view==UI_VIEW_VIDEO) return paint_pause_band();
@@ -3061,173 +3140,28 @@ static bool paint_waiting_screen(void)
     waiting_view=(int)s.menu.view;
     waiting_hint_seq=s.menu.hint_seq;
     waiting_link=(int)atomic_load(&s.link);
+    waiting_count=atomic_load(&s.count);
     waiting_painted_us=esp_timer_get_time();
     snprintf(shown_channel,sizeof(shown_channel),"%s",s.channel);
-for(unsigned y=0;y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
-    // The waiting screen runs when no video task is drawing, so it uses the
-    // first buffer and does not take turns with anyone.
-    ui_surface_t strip=stripe_surface(y,s.stripe[0]);
-    draw_color_bars(strip);
-    // One panel holding both lines, drawn as a unit: the name, and below it
-    // the reason there is no picture when there is one worth giving.
-    //
-    // Laid out together rather than positioned one at a time, so the panel
-    // is centred on what it holds and both lines share a left edge. Sized to
-    // the wider line, and kept a margin from the screen edge so it reads as
-    // a card over the pattern rather than a band across it.
-    //
-    // The whole panel is drawn by every strip its box touches, not just the
-    // strip the first line starts in. Overlap is the test, and it is taken
-    // against the box each line occupies rather than its glyphs alone: a
-    // line begins above its glyphs (UI_TEXT_PAD_Y) and ends below them, so
-    // measuring glyphs leaves the strip holding the padding to skip the
-    // line, and testing where a line *starts* cuts it at the boundary. Lines
-    // straddle strips by construction -- strips are 16 rows and a line is 24
-    // -- so either mistake shows as text sliced through the middle.
-
-    // What the viewer is waiting for, and why.
-    //
-    // The connection has three states and the screen shows a different
-    // thing for each. The one that matters here is the middle: while the
-    // dial is in progress nothing has been concluded, and saying "cannot
-    // reach the server" during those seconds is not a premature verdict so
-    // much as a false one -- it sends the viewer to change a setting that
-    // was never the problem, and the connection usually succeeds a moment
-    // later. Failure is reported only once the attempt is over.
-    const link_state_t link=(link_state_t)atomic_load(&s.link);
-    const bool dialling = link==LINK_TRYING;
-    const bool failed   = link==LINK_DOWN && !atomic_load(&s.media_started);
-
-    // Keyed on whether the server answered rather than on whether an address is
-    // stored, because a stored address that is wrong -- a stale lease, a
-    // mistyped port -- leaves the device just as stuck and is the case most
-    // worth naming.
-    //
-    // There is deliberately no "no address set" wording. The setup page requires
-    // that field, so a device which got through setup always has one; a device
-    // that never went through it is in setup rather than here. The line would
-    // name a state that cannot be reached, and a message that cannot be true is
-    // worse than none: it sends the viewer to look for a setting they already
-    // have.
-    char heading[UI_MENU_NAME_MAX+16];
-    const char *reason=NULL;
-    static char wifi_name[33];
-    if (failed) {
-        reason="连不上服务器";
-    }
-    bool has_heading=s.channel[0]!=0;
-    if (link==LINK_NO_WIFI) {
-        // Named, because the usual cause is that this network is gone or has
-        // moved, and the viewer has to know which one the device is looking for.
-        snprintf(heading,sizeof(heading),"正在连接 Wi-Fi");
-        av_provision_network_name(wifi_name,sizeof(wifi_name));
-        reason=wifi_name[0] ? wifi_name : NULL;
-        has_heading=true;
-    } else if (has_heading) {
-        current_channel_name(heading,sizeof(heading));
-    } else {
-        // No channel named yet, so the line carries the state instead, which
-        // is worth saying only because the alternative is an empty panel.
-        //
-        // Both remaining cases are covered: still dialling, and connected
-        // but not yet sent a channel. They read differently because they are
-        // different -- the first is waiting on the network, the second on the
-        // server's transcoder, which takes seconds on a live channel -- and a
-        // viewer who sees the same words for both cannot tell whether the
-        // wait is normal.
-        snprintf(heading,sizeof(heading),
-                 dialling ? "正在连接" : "正在打开频道");
-        has_heading=true;
-    }
-
-    // How to get out of this state, shown whenever the device cannot reach
-    // its server.
-    //
-    // Without it the screen is a dead end: the way to the setup page is a
-    // long press on an arrow *on the status page*, and the status page is
-    // opened by double-clicking that same arrow. Nothing about the device
-    // suggests either gesture, so a viewer who does not already know them
-    // has no move to make -- and this is the screen where they need one. The
-    // other half of the fix is that the status page now draws over this
-    // screen; telling the viewer about a screen that cannot appear would be
-    // worse than saying nothing.
-    const char *hint=NULL;
-    if (link==LINK_NO_WIFI) {
-        hint="双击↑ 长按↑ 重新配网";
-    } else if (reason) {
-        hint="双击↑ 长按↑ 改地址";
-    }
-
-    // Measured with the padding each line is drawn with, not the glyphs
-    // alone: ui_text_draw paints its own box around the text, so a panel
-    // sized to the glyph run alone is a few pixels narrower than the text
-    // inside it and the two edges disagree.
-    //
-    // Bounded so a long channel name shrinks the panel rather than running
-    // off the screen; the lines themselves are clipped by the surface.
-    const int PANEL_MAX=(int)AV_WIDTH-24;
-    int text_w=0;
-    if (has_heading) text_w=ui_text_width(heading);
-    if (reason) {
-        int rw=ui_text_width(reason);
-        if (rw>text_w) text_w=rw;
-    }
-    if (hint) {
-        int hw=ui_text_width(hint);
-        if (hw>text_w) text_w=hw;
-    }
-    // The lines are stacked; the count is what the height follows.
-    int lines=0;
-    if (has_heading) lines++;
-    if (reason) lines++;
-    if (hint) lines++;
-    if (lines==0) lines=1;
-
-    int panel_w=text_w+2*UI_TEXT_PAD_X;
-    if (panel_w>PANEL_MAX) panel_w=PANEL_MAX;
-    int panel_x=((int)AV_WIDTH-panel_w)/2;
-    const int line_step=(int)UI_TEXT_LINE_H+2*(int)UI_TEXT_PAD_Y;
-    int panel_h=lines*line_step;
-    int panel_y=(int)AV_HEIGHT/2-panel_h/2;
-
-    if ((int)y<panel_y+panel_h && panel_y<(int)(y+AV_STRIPE_ROWS)) {
-        // The panel behind the lines. One rectangle, not one per line, so
-        // they read as a single object with a shared background, and every
-        // line starts at the same left edge -- centring each on its own made
-        // them disagree whenever their widths did.
-        ui_text_fill(strip,panel_x,panel_y,panel_w,panel_h,UI_COLOR_BOX);
-        int row=0;
-        if (has_heading) {
-            ui_text_draw(strip,panel_x+UI_TEXT_PAD_X,panel_y+row*line_step+UI_TEXT_PAD_Y,
-                         heading,UI_COLOR_TEXT,UI_COLOR_BOX);
-            row++;
-        }
-        if (reason) {
-            // Dimmer than a name, because it explains rather than
-            // identifies: the name is what the viewer is looking for, this
-            // is why it has not appeared.
-            ui_text_draw(strip,panel_x+UI_TEXT_PAD_X,panel_y+row*line_step+UI_TEXT_PAD_Y,
-                         reason,UI_COLOR_DIM,UI_COLOR_BOX);
-            row++;
-        }
-        if (hint) {
-            ui_text_draw(strip,panel_x+UI_TEXT_PAD_X,panel_y+row*line_step+UI_TEXT_PAD_Y,
-                         hint,UI_COLOR_DIM,UI_COLOR_BOX);
-        }
-    }
-    // On top of the panel, so an overlay covers it rather than competing
-    // with it: the status page and the channel list paint their own
-    // backgrounds across the full width for exactly this reason.
-    overlay_stripe(y,s.stripe[0]);
-    // Through the queueing entry point and drained in the same breath: the
-    // waiting screen redraws on its own schedule and wants the simple
-    // synchronous behaviour, not the overlap playback uses.
-    if(bsp_display_raw_submit_nowait(y,AV_STRIPE_ROWS,s.stripe[0])!=ESP_OK ||
-       bsp_display_raw_drain(1,200)!=ESP_OK) {  // one in flight at a time here
-        fail("waiting screen DMA"); break;
-    }
+    build_waiting_page();
+    int y0, y1;
+    waiting_frame=ui_overlay_wait_frame(waiting_page.kind,waiting_tick(),&y0,&y1);
+    return paint_waiting_rows(0,AV_HEIGHT);
 }
-    return true;
+
+// Move the waiting screen's animation on: repaint only the rows it changes,
+// and only when its frame does. Nothing moves under a page or over a picture.
+static bool animate_waiting_screen(void)
+{
+    if (!waiting_drawn || s.menu.view!=UI_VIEW_VIDEO || picture_live() ||
+        (atomic_load(&s.paused))) {
+        return true;
+    }
+    int y0, y1;
+    const unsigned frame=ui_overlay_wait_frame(waiting_page.kind,waiting_tick(),&y0,&y1);
+    if (frame==waiting_frame) return true;
+    waiting_frame=frame;
+    return paint_waiting_rows((unsigned)y0,(unsigned)y1);
 }
 
 static void video_task(void *arg) {
@@ -3247,6 +3181,7 @@ static void video_task(void *arg) {
         // only place its owner runs while it waits, so this is where the check
         // belongs.
         if (waiting_screen_stale() && !paint_waiting_screen()) break;
+        if (!animate_waiting_screen()) break;
         if (!refresh_info_bars()) break;
         video_t v;
         if(!xQueueReceive(s.video,&v,pdMS_TO_TICKS(20))) { if(rx_done()) break; continue; }
@@ -3492,6 +3427,17 @@ static void process_key(const key_ev_t *item) {
     // While the list, the status page or the backlight page is open the keys
     // belong to the overlay: a gesture must not both adjust something here and
     // change the channel behind it.
+    if (s.menu.view==UI_VIEW_PET) {
+        // The picker: arrows look (▲ back, ▼ on), OK chooses, OK held leaves
+        // without changing anything.
+        if (item->key==BSP_BTN_OK) {
+            if (item->ev==BSP_BTN_CLICK) ui_menu_pet_confirm(&s.menu);
+            else if (item->ev==BSP_BTN_LONG) ui_menu_close(&s.menu);
+        } else if (item->ev==BSP_BTN_CLICK) {
+            ui_menu_pet_step(&s.menu,up?-1:1);
+        }
+        return;
+    }
     if (s.menu.view!=UI_VIEW_VIDEO) {
         if (item->key==BSP_BTN_OK) {
             if (item->ev==BSP_BTN_CLICK) {
@@ -3536,6 +3482,11 @@ static void process_key(const key_ev_t *item) {
         // the one gesture the status page does not already use -- OK's long press
         // closes the page, and both clicks scroll or close -- so the setup screen
         // is reachable without taking a control away from anything else.
+        // The status page's other long press opens the pet picker.
+        if (s.menu.view==UI_VIEW_STATUS && item->ev==BSP_BTN_LONG && !up) {
+            ui_menu_open_pets(&s.menu,atomic_load(&s.pet),ui_pet_count());
+            return;
+        }
         if (s.menu.view==UI_VIEW_STATUS && item->ev==BSP_BTN_LONG && up) {
             atomic_store(&s_setup_request,true);
             // The session has to actually stop, and the workers only notice when
@@ -3812,15 +3763,7 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page
 
     for(unsigned y=0;y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
         ui_surface_t strip=stripe_surface(y,buffer);
-        // The same colour bars as the waiting screen, so the two screens that
-        // both mean "not playing yet" look like each other.
-        //
-        // There is no legibility problem to solve here: ui_text_draw paints an
-        // opaque box behind every label, so the bars only show in the gaps. An
-        // earlier attempt to fix unreadable text by removing the bars was
-        // treating the wrong cause -- the text was being drawn into one stripe
-        // out of the several it spans, which is fixed below.
-        draw_color_bars(strip);
+        ui_text_fill(strip,0,(int)y,(int)AV_WIDTH,(int)AV_STRIPE_ROWS,UI_INK);
         if (have_qr) {
             ui_qr_draw(strip,qr.x_a,qr.y,qr.scale,qr_code);
         }
@@ -4073,6 +4016,14 @@ static bool pump_keys(uint32_t wait_ms) {
         ESP_LOGW(TAG,"Server asked for %s; not switching",chosen);
     }
     ui_action_t action=ui_menu_take_action(&s.menu,chosen,sizeof(chosen));
+    if (action==UI_ACTION_PET) {
+        // Chosen on the picker: used everywhere at once, and stored now -- it is
+        // rare, and the picker can be open with no session to write it later.
+        atomic_store(&s.pet,s.menu.pet_current);
+        av_store_save_pet((uint8_t)s.menu.pet_current);
+        ESP_LOGI(TAG,"Pet %u (%s)",s.menu.pet_current,ui_pet_name(s.menu.pet_current));
+        return false;
+    }
     if (action==UI_ACTION_SWITCH) {
         if (request_switch(chosen)) {
             // Close the list first: the banner is drawn in the video view, and
@@ -4116,6 +4067,7 @@ static void wait_for_wifi(uint32_t timeout_ms)
           && !stopping() && !atomic_load(&s_setup_request)) {
         pump_keys(50);
         if (claimed && waiting_screen_stale() && !paint_waiting_screen()) break;
+        if (claimed && !animate_waiting_screen()) break;
     }
     if (claimed) bsp_display_raw_release();
     s.stripe[0]=NULL;
@@ -4189,6 +4141,7 @@ void av_player_main(void) {
     av_store_load(&stored_volume,&stored_brightness);
     s.volume=stored_volume;
     s.menu.brightness=av_brightness_nearest_index(stored_brightness);
+    atomic_store(&s.pet,(unsigned)av_store_load_pet((uint8_t)ui_pet_count()));
     bsp_display_backlight(av_brightness_percent(s.menu.brightness));
 
     // Both facts the setup page can supply, read the same way and for the same

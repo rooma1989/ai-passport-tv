@@ -152,3 +152,41 @@ bool av_store_save(uint8_t volume_percent, uint8_t brightness_percent)
     }
     return true;
 }
+
+// The pet is its own key, outside the volume/brightness record: a device
+// written before pets existed simply has none, which reads as the default.
+#define AV_STORE_KEY_PET "pet"
+
+uint8_t av_store_load_pet(uint8_t count)
+{
+    nvs_handle_t handle;
+    if (!open_readonly(&handle)) {
+        return 0;
+    }
+    uint8_t pet = 0;
+    if (nvs_get_u8(handle, AV_STORE_KEY_PET, &pet) != ESP_OK || pet >= count) {
+        pet = 0;
+    }
+    nvs_close(handle);
+    return pet;
+}
+
+bool av_store_save_pet(uint8_t pet)
+{
+    nvs_handle_t handle;
+    esp_err_t e = nvs_open(AV_STORE_NAMESPACE, NVS_READWRITE, &handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot open settings store: %s", esp_err_to_name(e));
+        return false;
+    }
+    e = nvs_set_u8(handle, AV_STORE_KEY_PET, pet);
+    if (e == ESP_OK) {
+        e = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Saving the pet failed: %s", esp_err_to_name(e));
+        return false;
+    }
+    return true;
+}
