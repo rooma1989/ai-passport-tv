@@ -104,6 +104,13 @@ class ClientTests(unittest.TestCase):
             client.video("jNQXAC9IVRw")
         self.assertTrue(caught.exception.permanent)
 
+    def test_health(self):
+        client = self.client({"/yt/health": {"state": "login", "at": 5.0, "version": "v"}})
+        self.assertEqual(client.health()["state"], "login")
+        client = self.client({"/yt/health": OSError("down")})
+        with self.assertRaises(BilibiliError):
+            client.health()
+
     def test_not_configured(self):
         client = YouTube(fetch_json=None, config=None)
         with self.assertRaises(BilibiliError):

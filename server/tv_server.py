@@ -539,7 +539,9 @@ class AVServer:
             send_packet(connection, Packet(Kind.PALETTE, session, 1, 0,
                                            channel.palette))
             self.logger(f"session={session} state=live channel={channel_id}")
-            now_playing.write(self.now_playing_path, channel_id, True, self.device_switches)
+            self._session_since = time.time()
+            now_playing.write(self.now_playing_path, channel_id, True, self.device_switches,
+                              since=self._session_since)
             self._now_playing_at = time.monotonic()
             self.phase = "live_prebuffer"
             deadline = time.monotonic() + STARTUP_WAIT_S
@@ -573,7 +575,8 @@ class AVServer:
             self.set_session_state(SessionState.PLAYING, session, reason="session_started")
             self._pace_live(connection, channel, session, resume)
         finally:
-            now_playing.write(self.now_playing_path, channel_id, False, self.device_switches)
+            now_playing.write(self.now_playing_path, channel_id, False, self.device_switches,
+                              since=getattr(self, "_session_since", 0.0))
             self.set_session_state(SessionState.CLOSED, session, reason="session_closed",
                                    audio_sent=self.audio_sent, video_sent=self.video_sent)
             try:
@@ -754,7 +757,7 @@ class AVServer:
             if now - getattr(self, "_now_playing_at", 0.0) >= now_playing.REFRESH_S:
                 self._now_playing_at = now
                 now_playing.write(self.now_playing_path, self.channel_name, True,
-                                  self.device_switches)
+                                  self.device_switches, since=getattr(self, "_session_since", 0.0))
             decision = self.switch_watcher.poll(self.channel_name, now)
             if decision is not None and self.device_switches:
                 kind, target = decision

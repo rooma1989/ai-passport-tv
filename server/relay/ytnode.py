@@ -34,6 +34,9 @@ RUN_TIMEOUT_S = 120
 # 解析一个视频在 1 核的 cstone 上要 18 秒左右，而一次起播会连两次（先采样调色板，再正式播放），
 # 投屏还会先查一次信息。视频地址能用几个小时，所以解析结果留 30 分钟。
 INFO_CACHE_S = 30 * 60
+# 后台每 6 小时不走缓存解析一次这个视频，没人在看时也能发现 cookies 过期。
+CHECK_VIDEO = "jNQXAC9IVRw"
+CHECK_EVERY_S = 6 * 3600
 CHUNK_BYTES = 64 * 1024
 # 先要 360p 的 H.264+AAC 合体格式（18），没有再取 360p 以内的最好的。
 FORMAT = "18/b[height<=360]/bv*[height<=360]+ba/b"
@@ -146,6 +149,17 @@ class Node:
         self._info: dict[str, tuple[float, dict]] = {}
         self._info_lock = threading.Lock()
         self.clock = time.monotonic
+        # 最近一次 YouTube 解析的结果，给中转判断 cookies 是否过期：
+        # unknown（还没解析过）、ok、login（要求登录）、error（其他失败）。
+        self.health = {"state": "unknown", "at": 0.0, "version": ""}
+
+    def _record(self, state: str, version: str = "") -> None:
+        self.health = {"state": state, "at": time.time(),
+                       "version": version or self.health.get("version", "")}
+
+    def check(self) -> None:
+        """不走缓存解析一次测试视频，只为更新健康状态。"""
+        self.ytdlp_json(info_args(self.tools, CHECK_VIDEO))
 
     def video_info(self, video_id: str) -> tuple[int, dict | str]:
         now = self.clock()
@@ -171,11 +185,18 @@ class Node:
         if code != 0:
             last = (err or "").strip().splitlines()[-1:] or [""]
             self.log(f"yt-dlp 失败：{last[0][:200]}")
-            return error_status(err), last[0][:200]
+            status = error_status(err)
+            # 404 是这个视频本身的问题（删了、私享）：YouTube 正常回答了，cookies 没问题。
+            self._record({503: "login", 404: "ok"}.get(status, "error"))
+            return status, last[0][:200]
         try:
-            return 200, json.loads(out)
+            data = json.loads(out)
         except ValueError:
+            self._record("error")
             return 502, "yt-dlp output is not JSON"
+        version = (data.get("_version") or {}).get("version", "") if isinstance(data, dict) else ""
+        self._record("ok", version)
+        return 200, data
 
 
 def _handler(node: Node):
@@ -203,6 +224,9 @@ def _handler(node: Node):
                 return
             parts = urllib.parse.urlsplit(self.path)
             query = {k: v[0] for k, v in urllib.parse.parse_qs(parts.query).items()}
+            if parts.path == "/yt/health":
+                self._json(200, dict(node.health))
+                return
             if parts.path == "/yt/list":
                 channel = query.get("channel", "")
                 if not valid_channel(channel):
@@ -305,6 +329,13 @@ def main(argv: list[str] | None = None) -> int:
     node = Node(Tools(args.ytdlp, args.deno, args.ffmpeg, cookies), key,
                 log=lambda message: print(message, flush=True))
     server = make_server(node, args.bind, args.port, context)
+
+    def checks():
+        while True:
+            node.check()
+            time.sleep(CHECK_EVERY_S)
+
+    threading.Thread(target=checks, daemon=True).start()
     print(f"YouTube 节点已启动：端口 {args.port}", flush=True)
     server.serve_forever()
     return 0

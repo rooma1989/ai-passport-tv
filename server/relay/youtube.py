@@ -176,6 +176,10 @@ class YouTube:
             return str(channel) if channel else None
         return None
 
+    def health(self) -> dict:
+        """节点最近一次解析 YouTube 的结果：{"state": ok|login|error|unknown, "at", "version"}。"""
+        return self._call("/yt/health")
+
     def open(self, video_id: str, offset: float) -> StreamProc:
         if self.config is None:
             raise SourceError("YouTube 还没配置（缺少 cstone 节点）")

@@ -19,7 +19,7 @@ KEY = "node-key-0123456789"
 TOOLS = ytnode.Tools(ytdlp="/opt/yt-relay/yt-dlp", deno="/opt/yt-relay/deno",
                      ffmpeg="/usr/bin/ffmpeg", cookies="/var/lib/yt-relay/cookies.txt")
 
-INFO = {"id": "jNQXAC9IVRw", "title": "Me at the zoo", "duration": 19,
+INFO = {"id": "jNQXAC9IVRw", "title": "Me at the zoo", "duration": 19, "_version": {"version": "2026.08.19"},
         "channel_url": "https://www.youtube.com/channel/UC4QobU6STFB0P71PMvOGN5A",
         "requested_formats": [
             {"url": "https://v.example/video", "http_headers": {"User-Agent": "UA", "Accept": "*/*"}},
@@ -106,12 +106,18 @@ class NodeTests(unittest.TestCase):
         self.runs = []
         self.stream_code = 0
 
+        self.bot = False
+
         def run(args):
             self.runs.append(args)
+            if self.bot:
+                return 1, "", "ERROR: [youtube] x: Sign in to confirm you’re not a bot."
             if "--flat-playlist" in args:
                 return 0, json.dumps(LISTING), ""
             if args[-1].endswith("v=gonegonegon"):
                 return 1, "", "ERROR: [youtube] gonegonegon: Video unavailable"
+            if args[-1].endswith("v=brokenbroke"):
+                return 1, "", "ERROR: something nobody expected"
             return 0, json.dumps(INFO), ""
 
         def popen(args):
@@ -119,6 +125,7 @@ class NodeTests(unittest.TestCase):
             return FakeProc(b"\x47" * 1000, self.stream_code)
 
         node = ytnode.Node(TOOLS, KEY, run=run, popen=popen, log=lambda _m: None)
+        self.node = node
         self.server = ytnode.make_server(node, "127.0.0.1", 0, context=None)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -165,6 +172,33 @@ class NodeTests(unittest.TestCase):
         self.get("/yt/stream?id=jNQXAC9IVRw&ss=10").read()
         resolves = [args for args in self.runs if args[0] == TOOLS.ytdlp]
         self.assertEqual(len(resolves), 1)
+
+    def health(self):
+        answer = self.get("/yt/health")
+        self.assertEqual(answer.status, 200)
+        return json.loads(answer.read())
+
+    def test_health_follows_the_last_resolve(self):
+        self.assertEqual(self.health()["state"], "unknown")
+        self.assertEqual(self.get("/yt/health", key=None).status, 404)
+        self.get("/yt/info?id=jNQXAC9IVRw").read()
+        health = self.health()
+        self.assertEqual((health["state"], health["version"]), ("ok", "2026.08.19"))
+        self.bot = True
+        self.get("/yt/info?id=bbbbbbbbbbb").read()
+        self.assertEqual(self.health()["state"], "login")
+        self.bot = False
+        self.get("/yt/info?id=brokenbroke").read()
+        self.assertEqual(self.health()["state"], "error")
+        # A missing video is YouTube answering normally: the cookies are fine.
+        self.get("/yt/info?id=gonegonegon").read()
+        self.assertEqual(self.health()["state"], "ok")
+
+    def test_background_check_skips_the_cache(self):
+        self.get("/yt/info?id=jNQXAC9IVRw").read()
+        self.bot = True
+        self.node.check()
+        self.assertEqual(self.health()["state"], "login")
 
     def test_stream_failure_is_cut(self):
         self.stream_code = 1

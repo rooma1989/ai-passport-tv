@@ -91,6 +91,16 @@
            opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 86%; text-align: center; }
   .toast.on { opacity: 1; }
   .toast.bad { background: var(--red); color: #fff4e6; }
+  .notice { background: var(--red); color: #fff4e6; padding: 10px 16px; font: 15px/1.5 var(--serif); }
+  .notice[hidden] { display: none; }
+  .notice b { font-weight: 600; }
+  .notice .more { display: none; margin-top: 6px; font: 13px/1.6 -apple-system, "PingFang SC", sans-serif; }
+  .notice.open .more { display: block; }
+  .notice ol { margin: 4px 0 0; padding-left: 18px; }
+  .notice code { font: 12px var(--mono); background: rgba(0,0,0,.18); padding: 1px 4px; }
+  .screen.switching .ch, .row.pending .src, .row.pending .t { color: var(--amber); }
+  .screen.switching .ch, .row.pending .src { animation: blink 1.2s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
   .gate { position: fixed; inset: 0; background: var(--ink); display: none; align-items: center; justify-content: center;
           padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
   .gate.on { display: flex; }
@@ -99,6 +109,16 @@
 <body>
 <div class="app">
   <main>
+    <div class="notice" id="notice" hidden>
+      <b id="noticeText"></b>
+      <div class="more" id="noticeMore">
+        <ol>
+          <li>电脑 Chrome 打开无痕窗口，用 YouTube 小号登录，随便播放一个视频。</li>
+          <li>同一个标签页打开 <code>youtube.com/robots.txt</code>，用扩展「Get cookies.txt LOCALLY」导出。</li>
+          <li>直接关掉无痕窗口（不要退出登录），把导出的文件上传到 YouTube 节点服务器，替换 <code>/var/lib/yt-relay/cookies.txt</code>。</li>
+        </ol>
+      </div>
+    </div>
     <section class="page on" id="remote">
       <div class="mast"><h1>小智电视</h1><button id="adjust">调整分组</button></div>
       <div class="screen off" id="screen">
@@ -145,6 +165,8 @@
 const $ = (id) => document.getElementById(id);
 let data = null;
 let group = "";
+// 点了换台 / 投屏之后，到小智真的切过去之前的那段时间。
+let pending = null;
 let adjusting = false;
 let toastTimer = 0;
 
@@ -190,10 +212,43 @@ function dateLabel(at) {
   return (day.getMonth() + 1) + "月" + day.getDate() + "日";
 }
 
+function startPending(channel, name, at, slow) {
+  pending = { channel, name, at, deadline: Date.now() + (slow ? 45000 : 20000) };
+  render();
+  schedule(800);
+}
+
+function settlePending() {
+  if (!pending) return;
+  const now = data.now;
+  if (now.online && now.channel === pending.channel && now.since >= pending.at - 1) {
+    pending = null;
+  } else if (Date.now() > pending.deadline) {
+    toast("切换好像没成功，再点一次试试", true);
+    pending = null;
+  }
+}
+
+function renderNotice() {
+  const state = data.youtube ? data.youtube.state : "";
+  const notice = $("notice");
+  const text = state === "login" ? "YouTube 需要更新 cookies，点这里看怎么做"
+    : state === "unreachable" ? "YouTube 暂时不可用（连不上海外节点）" : "";
+  notice.hidden = !text;
+  $("noticeText").textContent = text;
+  notice.onclick = state === "login" ? () => notice.classList.toggle("open") : null;
+}
+
 function renderScreen() {
   const now = data.now;
   const screen = $("screen");
-  if (now.online && now.channel) {
+  if (pending) {
+    screen.className = "screen switching";
+    $("ch").textContent = "CH ··";
+    $("grp").textContent = "";
+    $("nm").textContent = "正在切到「" + pending.name + "」";
+    $("ti").textContent = "切换中…";
+  } else if (now.online && now.channel) {
     screen.className = "screen";
     $("ch").textContent = "CH " + pad(now.n || 0);
     $("grp").textContent = now.group;
@@ -230,7 +285,9 @@ function renderChannels() {
   const movable = !["我的投屏", "UP 主"].includes(group);
   for (const c of current.channels) {
     const li = el("li");
-    const row = el("div", "row" + (c.id === data.now.channel && data.now.online ? " air" : ""));
+    const air = !pending && c.id === data.now.channel && data.now.online;
+    const going = pending && c.id === pending.channel;
+    const row = el("div", "row" + (air ? " air" : "") + (going ? " pending" : ""));
     row.append(el("span", "n", pad(c.n)), el("span", "t", c.name));
     if (adjusting && movable) {
       const select = el("select");
@@ -248,12 +305,12 @@ function renderChannels() {
       };
       row.appendChild(select);
     } else {
-      const air = c.id === data.now.channel && data.now.online;
-      row.appendChild(el("span", "src", air ? "播放中" : sites[c.id] ? siteTag(sites[c.id]) : c.id === "cast" ? "投屏" : ""));
+      row.appendChild(el("span", "src", going ? "切换中…" : air ? "播放中"
+        : sites[c.id] ? siteTag(sites[c.id]) : c.id === "cast" ? "投屏" : ""));
       row.onclick = async () => {
-        if (air) return;
+        if (air || going) return;
         const answer = await call("POST", "api/switch", { channel: c.id });
-        if (answer.ok) { toast("正在切到「" + c.name + "」"); setTimeout(refresh, 1500); }
+        if (answer.ok) startPending(c.id, c.name, answer.at, !movable);
         else toast(answer.error, true);
       };
     }
@@ -286,7 +343,7 @@ function renderHistory() {
     row.onclick = async () => {
       if (li.classList.contains("open")) { li.classList.remove("open"); return; }
       const answer = await call("POST", "api/history/play", { site: h.site, id: h.id });
-      if (answer.ok) { toast("小智马上播放《" + answer.title + "》"); setTimeout(refresh, 1500); }
+      if (answer.ok) { toast("小智马上播放《" + answer.title + "》"); startPending("cast", "我的投屏", answer.at, true); }
       else toast(answer.error, true);
     };
     li.appendChild(row);
@@ -320,13 +377,30 @@ function renderCreators() {
   }
 }
 
-async function refresh() {
-  try { data = await call("GET", "api/state"); } catch (error) { return; }
+function render() {
+  if (!data) return;
+  renderNotice();
   renderScreen();
   renderGroups();
   renderChannels();
   renderHistory();
   renderCreators();
+}
+
+async function refresh() {
+  try { data = await call("GET", "api/state"); } catch (error) { return; }
+  settlePending();
+  render();
+}
+
+// 平时每 5 秒刷新；切换中每秒刷新，好尽快看到小智切过去。
+let timer = 0;
+function schedule(delay) {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    if (!document.hidden) await refresh();
+    schedule(pending ? 1000 : 5000);
+  }, delay);
 }
 
 for (const button of document.querySelectorAll("nav button")) {
@@ -357,7 +431,7 @@ async function busy(button, work) {
 $("play").onclick = () => busy($("play"), async () => {
   toast("正在取视频…");
   const answer = await call("POST", "api/cast", { url: $("link").value });
-  if (answer.ok) { $("link").value = ""; toast("小智马上播放《" + answer.title + "》"); setTimeout(refresh, 1500); }
+  if (answer.ok) { $("link").value = ""; toast("小智马上播放《" + answer.title + "》"); startPending("cast", "我的投屏", answer.at, true); }
   else toast(answer.error, true);
 });
 
@@ -375,7 +449,7 @@ $("newcode").onclick = async () => {
 };
 
 refresh();
-setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+schedule(5000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 </script>
 </body>

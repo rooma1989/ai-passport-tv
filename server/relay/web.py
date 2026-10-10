@@ -33,6 +33,8 @@ _CREATOR = re.compile(r"^/api/creators/(up\d\d)$")
 _HISTORY = re.compile(r"^/api/history/(bilibili|youtube)/([A-Za-z0-9_-]{1,32})$")
 _CODE = re.compile(r"^/r/([A-Za-z2-7]{20})$")
 COOKIE = "tvs"
+# 最多每分钟问一次 YouTube 节点的健康状态。
+YOUTUBE_HEALTH_S = 60
 
 
 class Relay:
@@ -68,6 +70,8 @@ class Relay:
         self.public_url = public_url.rstrip("/")
         # 每个台最后起播的视频标题，给手机上的「正在播放」用。
         self._titles: dict[str, str] = {}
+        # YouTube 节点的健康状态，最多每分钟问一次。
+        self._youtube_health: tuple[float, str] | None = None
 
     # ---- 频道表 ----
 
@@ -277,7 +281,20 @@ class Relay:
             title = self._titles.get(cid, "")
         return {"channel": cid, "online": playing["online"], "switch": playing["switch"],
                 "group": found[0] if found else "", "name": found[1]["name"] if found else "",
-                "n": found[1]["n"] if found else 0, "title": title}
+                "n": found[1]["n"] if found else 0, "title": title, "since": playing["since"]}
+
+    def youtube_state(self) -> str:
+        """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
+        now = self.clock()
+        cached = self._youtube_health
+        if cached is not None and now - cached[0] < YOUTUBE_HEALTH_S:
+            return cached[1]
+        try:
+            state = str(self.clients["youtube"].health().get("state") or "unknown")
+        except SourceError:
+            state = "unreachable"
+        self._youtube_health = (now, state)
+        return state
 
     def switch(self, channel: str) -> dict:
         if channel not in {cid for cid, _ in self.channel_rows()}:
@@ -288,7 +305,8 @@ class Relay:
         if not playing["switch"]:
             return {"ok": False, "error": "小电视的固件不支持遥控，请在小电视上手动换台"}
         self._event("switch", channel=channel)
-        return {"ok": True}
+        # at：中转此刻的时间。手机等到小智报告的会话开始时间晚于它，才算切换完成。
+        return {"ok": True, "at": self.clock()}
 
     def set_group(self, channel: str, group) -> dict:
         names = dict(self.channel_rows())
@@ -319,9 +337,12 @@ class Relay:
             cast = ({"title": self.state.cast.title, "done": self.state.cast_done}
                     if self.state.cast is not None else None)
             history = [dict(h) for h in self.state.history]
-        return {"now": self.now(groups), "groups": groups, "creators": creators,
-                "cast": cast, "history": history,
-                "group_names": list(channel_groups.GROUPS[2:])}
+        summary = {"now": self.now(groups), "groups": groups, "creators": creators,
+                   "cast": cast, "history": history,
+                   "group_names": list(channel_groups.GROUPS[2:])}
+        if self.clients.get("youtube") is not None:
+            summary["youtube"] = {"state": self.youtube_state()}
+        return summary
 
     def add_creator(self, text: str) -> dict:
         text = (text or "").strip()
@@ -373,7 +394,7 @@ class Relay:
         self.write_table()
         self.log(f"投屏 {video.bvid} 《{video.title}》")
         self._event("cast")
-        return {"ok": True, "title": video.title}
+        return {"ok": True, "title": video.title, "at": self.clock()}
 
     def replay(self, site: str, video_id: str) -> dict:
         entry = self.state.history_entry(site, video_id)

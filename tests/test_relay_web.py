@@ -96,6 +96,13 @@ class FakeYouTube:
         self.opened.append((video_id, offset))
         return FakeProc()
 
+    state = "ok"
+
+    def health(self):
+        if self.state is None:
+            raise BilibiliError("node down")
+        return {"state": self.state, "at": 1.0, "version": "x"}
+
 
 class WebTests(unittest.TestCase):
     def setUp(self):
@@ -234,12 +241,13 @@ class WebTests(unittest.TestCase):
     def test_state_groups_and_now_playing(self):
         from server import now_playing
         self.relay.add_creator("https://space.bilibili.com/42")
-        now_playing.write(self.playing, "ch001", True, True, now=self.now)
+        now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now)
         state = self.call("GET", "/api/state")
         names = [g["name"] for g in state["groups"]]
         self.assertEqual(names, ["我的投屏", "UP 主", "央视", "卫视", "其他"])
         self.assertEqual(state["now"], {"channel": "ch001", "online": True, "switch": True,
-                                        "group": "卫视", "name": "湖南卫视", "n": 1, "title": ""})
+                                        "group": "卫视", "name": "湖南卫视", "n": 1, "title": "",
+                                        "since": self.now})
         creators = next(g for g in state["groups"] if g["name"] == "UP 主")["channels"]
         self.assertEqual(creators, [{"id": "up01", "name": "UP42", "n": 1}])
 
@@ -250,7 +258,7 @@ class WebTests(unittest.TestCase):
         self.assertIn("手动换台", self.call("POST", "/api/switch", {"channel": "ch000"})["error"])
         now_playing.write(self.playing, "ch001", True, True, now=self.now)
         self.assertEqual(self.call("POST", "/api/switch", {"channel": "nope"})["error"], "没有这个台")
-        self.assertEqual(self.call("POST", "/api/switch", {"channel": "ch000"}), {"ok": True})
+        self.assertEqual(self.call("POST", "/api/switch", {"channel": "ch000"}), {"ok": True, "at": self.now})
         self.assertEqual(events.read_event(self.events), (1, "switch", "ch000"))
 
     def test_move_a_channel_to_another_group(self):
@@ -271,7 +279,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual([(h["site"], h["id"]) for h in history],
                          [("youtube", "ytcast00001"), ("bilibili", "BV1aZpw6DEKJ")])
         answer = self.call("POST", "/api/history/play", {"site": "bilibili", "id": "BV1aZpw6DEKJ"})
-        self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ"})
+        self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ", "at": self.now})
         self.assertEqual(self.state.cast.bvid, "BV1aZpw6DEKJ")
         self.assertEqual(self.state.history[0]["id"], "BV1aZpw6DEKJ")
         self.assertEqual(self.call("DELETE", "/api/history/youtube/ytcast00001"), {"ok": True})
@@ -349,7 +357,7 @@ class WebTests(unittest.TestCase):
 
     def test_cast_switches_plays_and_returns(self):
         answer = self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
-        self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ"})
+        self.assertEqual(answer, {"ok": True, "title": "tBV1aZpw6DEKJ", "at": self.now})
         self.assertEqual(events.read_event(self.events), (1, "cast", ""))
         self.assertEqual(self.call("GET", "/api/state")["cast"],
                          {"title": "tBV1aZpw6DEKJ", "done": False})
@@ -388,10 +396,24 @@ class WebTests(unittest.TestCase):
 
     def test_youtube_cast(self):
         answer = self.call("POST", "/api/cast", {"url": "https://youtu.be/ytcast00001"})
-        self.assertEqual(answer, {"ok": True, "title": "yt cast"})
+        self.assertEqual(answer, {"ok": True, "title": "yt cast", "at": self.now})
         self.stream("cast")
         self.assertEqual(self.youtube.opened, [("ytcast00001", 0.0)])
         self.assertEqual(self.state.cast.site, "youtube")
+
+    def test_youtube_health_is_cached_and_reported(self):
+        self.youtube.state = "login"
+        self.assertEqual(self.call("GET", "/api/state")["youtube"], {"state": "login"})
+        self.youtube.state = "ok"
+        self.assertEqual(self.call("GET", "/api/state")["youtube"], {"state": "login"},
+                         "asked at most once a minute")
+        self.now += 61
+        self.assertEqual(self.call("GET", "/api/state")["youtube"], {"state": "ok"})
+        self.youtube.state = None
+        self.now += 61
+        self.assertEqual(self.call("GET", "/api/state")["youtube"], {"state": "unreachable"})
+        self.relay.clients["youtube"] = None
+        self.assertNotIn("youtube", self.call("GET", "/api/state"))
 
     def test_youtube_not_configured(self):
         self.relay.clients["youtube"] = None
@@ -409,11 +431,11 @@ class PageFieldTests(unittest.TestCase):
 
     def test_page_fields_are_served(self):
         script = web.PAGE.split("<script>", 1)[1]
-        used = set(re.findall(r"\b(?:data|now|data\.now|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
+        used = set(re.findall(r"\b(?:data|now|data\.now|data\.youtube|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
         used -= {"length", "find", "map", "includes"}
-        served = {"now", "groups", "creators", "cast", "history", "group_names",
+        served = {"now", "groups", "creators", "cast", "history", "group_names", "youtube", "state",
                   "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
-                  "site", "at", "left", "total", "ok", "error", "creator"}
+                  "site", "at", "since", "left", "total", "ok", "error", "creator"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

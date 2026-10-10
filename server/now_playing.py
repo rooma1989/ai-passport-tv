@@ -19,12 +19,13 @@ GRACE_S = 15.0
 
 
 def write(path: Path | None, channel: str, connected: bool, switch: bool,
-          now: float | None = None) -> None:
+          now: float | None = None, since: float = 0.0) -> None:
+    """since：这次会话开始的时间。手机据此分辨小智是不是已经切到它要的台（新会话）。"""
     if path is None:
         return
     path = Path(path)
     record = {"channel": channel, "connected": bool(connected), "switch": bool(switch),
-              "at": time.time() if now is None else now}
+              "at": time.time() if now is None else now, "since": float(since)}
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(json.dumps(record), encoding="utf-8")
@@ -36,7 +37,7 @@ def write(path: Path | None, channel: str, connected: bool, switch: bool,
 
 
 def read(path: Path | None, now: float | None = None) -> dict:
-    """{"channel", "online", "switch"}；读不到就是不在线。"""
+    """{"channel", "online", "switch", "since"}；读不到就是不在线。"""
     now = time.time() if now is None else now
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8")) if path else {}
@@ -45,5 +46,9 @@ def read(path: Path | None, now: float | None = None) -> dict:
         data, at = {}, 0.0
     age = now - at
     online = age < (STALE_S if data.get("connected") else GRACE_S)
+    try:
+        since = float(data.get("since") or 0.0)
+    except (TypeError, ValueError):
+        since = 0.0
     return {"channel": str(data.get("channel") or ""), "online": online,
-            "switch": bool(data.get("switch")) and online}
+            "switch": bool(data.get("switch")) and online, "since": since}

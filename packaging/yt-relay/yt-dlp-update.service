@@ -1,0 +1,10 @@
+# Template: install as /etc/systemd/system/yt-dlp-update.service on the YouTube node's host.
+[Unit]
+Description=Update yt-dlp for the YouTube node, keeping the old one if the new one fails
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/yt-relay/update-ytdlp.sh
+Nice=10

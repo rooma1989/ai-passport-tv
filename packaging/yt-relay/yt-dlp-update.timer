@@ -1,0 +1,11 @@
+# Template: install as /etc/systemd/system/yt-dlp-update.timer and enable it.
+[Unit]
+Description=Weekly yt-dlp update for the YouTube node
+
+[Timer]
+OnCalendar=Mon *-*-* 04:00:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
