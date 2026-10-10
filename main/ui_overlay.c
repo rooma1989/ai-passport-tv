@@ -336,6 +336,92 @@ static unsigned bounce(unsigned step, unsigned last)
     return p <= last ? p : 2u * last - p;
 }
 
+// A small plus-shaped star, brighter towards the middle of its twinkle.
+static void draw_star(ui_surface_t surface, int x, int y, unsigned phase)
+{
+    // 24 tenths a cycle: dark, glimmer, bright, glimmer, dark.
+    phase %= 24u;
+    if (phase < 8u) return;
+    const uint16_t color = phase >= 12u && phase < 16u ? UI_PAPER : UI_FAINT;
+    ui_text_fill(surface, x, y, 1, 1, color);
+    if (phase >= 10u && phase < 18u) {
+        ui_text_fill(surface, x - 2, y, 5, 1, color);
+        ui_text_fill(surface, x, y - 2, 1, 5, color);
+    }
+}
+
+// The listening screen (audio-only): stars, the pet moving with the sound,
+// notes, and the loudness bars; asleep when the screen has dimmed. `tick` is
+// in tenths of a second.
+static void draw_listen(ui_surface_t surface, const ui_wait_page_t *page, unsigned tick)
+{
+    static const struct { int x, y; unsigned offset; } stars[] = {
+        { 24, 48, 0 }, { 214, 44, 9 }, { 34, 138, 15 }, { 206, 140, 5 }, { 120, 38, 19 },
+    };
+    for (unsigned i = 0; i < sizeof(stars) / sizeof(stars[0]); i++) {
+        draw_star(surface, stars[i].x, stars[i].y, tick + stars[i].offset);
+    }
+
+    // Breathing: a slow 3 px rise and fall over 2 s (slower asleep).
+    static const int8_t breath[10] = { 0, 1, 2, 3, 3, 3, 2, 1, 0, 0 };
+    const int rest = breath[(page->asleep ? tick / 4u : tick / 2u) % 10u];
+    int lift = rest;
+    unsigned mood = 1u;
+    if (page->asleep) {
+        mood = 2u;   // each pet's own sleepy (or switched-off) face
+    } else if (page->since_wake < 8u) {
+        // Woken: one happy hop.
+        static const int8_t hop[8] = { 4, 9, 12, 12, 9, 5, 2, 0 };
+        lift += hop[page->since_wake];
+    } else {
+        // Up with the sound, and its plain face a moment every 4 s.
+        lift += page->level * 10 / 255;
+        if (tick % 40u >= 38u) mood = 0u;
+    }
+    if (page->asleep) {
+        // Z z rising from the top of its head; drawn first, because each
+        // letter brings its own ink background and the pet must stay whole.
+        // Three letters 8 tenths apart, each rising 2 px a tenth: always at
+        // least 16 rows apart, so their cells never overlap.
+        for (unsigned j = 0; j < 3u; j++) {
+            const unsigned age = (tick + j * 8u) % 24u;
+            // Clear of the pet's right edge (x=180): some pets' sleepy faces
+            // carry a little z of their own at the top corner.
+            const int y = 76 - (int)age * 2;
+            const int x = 184 + (int)age / 2;
+            if (y < 32) continue;
+            ui_text_draw_scaled(surface, x, y, "Z", 1, age > 14u ? UI_PAPER : UI_MUTED, UI_INK);
+        }
+    }
+    ui_draw_pet(surface, page->pet, mood, 60, 46 - lift, 5);
+
+    if (!page->asleep) {
+        // More notes the louder it is, each rising for 3 s, left and right in turn.
+        const unsigned notes = page->level < 60u ? 1u : page->level < 140u ? 2u : 3u;
+        for (unsigned i = 0; i < notes; i++) {
+            const unsigned age = (tick + i * 10u) % 30u;
+            const int y = 152 - (int)age * 4;
+            if (y < 36) continue;
+            const int sway = ((age / 4u) % 2u) ? 3 : 0;
+            const bool left = ((tick + i * 10u) / 30u + i) % 2u == 0u;
+            ui_draw_icon(surface, UI_ICON_NOTE, left ? 14 + sway : 194 - sway, y, 2,
+                         i == 1u ? UI_PAPER : UI_AMBER);
+        }
+    }
+
+    // The bars: the last 12 chunks' loudness, oldest at the left, as stacks of
+    // up to six 3 px cells; the top lit cell vermilion. A resting baseline
+    // when asleep or silent.
+    for (unsigned k = 0; k < UI_LISTEN_BARS; k++) {
+        const int x = 30 + (int)k * 15;
+        const unsigned cells = page->asleep ? 0u : (page->history[k] * 6u + 127u) / 255u;
+        ui_text_fill(surface, x, 203, 11, 3, UI_RULE);
+        for (unsigned c = 0; c < cells && c < 6u; c++) {
+            ui_text_fill(surface, x, 203 - (int)c * 4, 11, 3, c + 1u == cells ? UI_VERM : UI_AMBER);
+        }
+    }
+}
+
 void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned tick)
 {
     if (!page || !covers(surface, 30, 210)) {
@@ -391,27 +477,9 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
         centred(surface, 180, "正在打开", UI_MUTED);
         break;
     }
-    case UI_WAIT_LISTEN: {
-        // The pet, large and content, breathing to the sound, with notes
-        // floating up beside it. Steps of 0.2 s.
-        const unsigned step = tick / 2u;
-        static const int8_t breath[10] = { 0, 1, 2, 3, 3, 3, 2, 1, 0, 0 };
-        // Happy, with its plain face for one step every 4 s, like a blink.
-        const unsigned mood = step % 20u == 19u ? 0u : 1u;
-        ui_draw_pet(surface, page->pet, mood, 60, 58 - breath[step % 10u], 5);
-        // Three notes, each rising for 3 s from beside the pet's feet, a step
-        // apart, swaying a little; left and right in turn.
-        for (unsigned i = 0; i < 3u; i++) {
-            const unsigned age = (step + i * 5u) % 15u;
-            const int y = 152 - (int)age * 8;
-            if (y < 36) continue;
-            const int sway = ((age / 2u) % 2u) ? 3 : 0;
-            const bool left = ((step + i * 5u) / 15u + i) % 2u == 0u;
-            ui_draw_icon(surface, UI_ICON_NOTE, left ? 14 + sway : 194 - sway, y, 2,
-                         i == 1u ? UI_PAPER : UI_AMBER);
-        }
+    case UI_WAIT_LISTEN:
+        draw_listen(surface, page, tick);
         break;
-    }
     case UI_WAIT_FAILED: {
         ui_draw_pet(surface, page->pet, 3, 96, 40 - bob, 2);
         centred(surface, 90, "连不上服务器", UI_PAPER);
@@ -440,9 +508,9 @@ unsigned ui_overlay_wait_frame(ui_wait_kind_t kind, unsigned tick, int *y0, int 
         *y0 = 168; *y1 = 172;
         return bounce(tick, 15u);
     case UI_WAIT_LISTEN:
-        // The whole picture area moves (pet and notes), every 0.2 s.
+        // The whole picture area moves (pet, notes, bars, stars), every 0.1 s.
         *y0 = 30; *y1 = 210;
-        return tick / 2u;
+        return tick;
     case UI_WAIT_FAILED:
     default:
         *y0 = 38; *y1 = 90;

@@ -200,7 +200,9 @@ int main(int argc, char **argv)
         { UI_WAIT_LISTEN, 4, "", 0, "", "", 5 },
     };
     for (unsigned i = 0; i < sizeof(waits) / sizeof(waits[0]); i++) {
-        ui_wait_page_t wait = { waits[i].kind, waits[i].pet, "", waits[i].number, "", "" };
+        ui_wait_page_t wait = { .kind = waits[i].kind, .pet = waits[i].pet, .number = waits[i].number,
+                                .level = 150, .since_wake = 99 };
+        for (unsigned k = 0; k < UI_LISTEN_BARS; k++) wait.history[k] = (uint8_t)(60 + (k * 53u) % 190u);
         snprintf(wait.line, sizeof(wait.line), "%s", waits[i].line);
         snprintf(wait.name, sizeof(wait.name), "%s", waits[i].name);
         snprintf(wait.detail, sizeof(wait.detail), "%s", waits[i].detail);

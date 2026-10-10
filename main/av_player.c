@@ -495,6 +495,11 @@ typedef struct {
     // session, and when the last one came (milliseconds since boot).
     atomic_uint audio_rx;
     atomic_uint last_audio_ms;
+    // How loud each chunk was as it went to the speaker, 0..255, for the
+    // listening screen to move with: a ring of the latest SOUND_HISTORY
+    // chunks, written by the audio task only; sound_pos counts chunks.
+    uint8_t sound_hist[16];
+    atomic_uint sound_pos;
     // Paused from the phone: the panel keeps the last frame and a band across
     // the middle says so (paint_pause_band). pause_gen moves on every change so
     // the band is drawn once per change, not per pass.
@@ -1807,6 +1812,24 @@ static void audio_task(void *arg) {
             bsp_audio_set_mute(false);
         }
         if (volume!=s.volume) { volume=s.volume; bsp_audio_set_volume(volume); }
+        {
+            // The chunk's loudness for the listening screen: the peak, on a
+            // square-root scale so speech is not lost under music; nothing
+            // when muted, since nothing is heard.
+            unsigned peak=0;
+            for (unsigned i=0;i<AV_AUDIO_SAMPLES;i++) {
+                int v=pcm[i];
+                unsigned m=(unsigned)(v<0 ? -v : v);
+                if (m>peak) peak=m;
+            }
+            unsigned root=0;
+            while ((root+1u)*(root+1u)<=peak) root++;
+            unsigned level=volume ? root*255u/181u : 0u;
+            if (level>255u) level=255u;
+            const unsigned pos=atomic_load(&s.sound_pos);
+            s.sound_hist[pos%16u]=(uint8_t)level;
+            atomic_store(&s.sound_pos,pos+1u);
+        }
         int64_t before=esp_timer_get_time();
         if (!last_feed) {
             taskENTER_CRITICAL(&clock_lock);
@@ -3050,6 +3073,26 @@ static unsigned overlay_sig(void)
 }
 // The pause band was drawn over a listening screen and has to be cleared.
 static bool pause_band_up;
+// The audio-only backlight is dimmed (the pet sleeps), and when it last woke.
+// Written by the key pump, read when the listening screen is drawn.
+static bool backlight_dimmed;
+static int64_t woke_us;
+
+// The listening screen's live inputs: loudness now and over the last bars'
+// worth of chunks, asleep or not, and how long since it woke.
+static void refresh_listen_inputs(ui_wait_page_t *page)
+{
+    const unsigned pos=atomic_load(&s.sound_pos);
+    for (unsigned k=0;k<UI_LISTEN_BARS;k++) {
+        // Oldest at the left; a chunk not yet heard reads as silence.
+        const unsigned back=UI_LISTEN_BARS-k;
+        page->history[k]=pos>=back ? s.sound_hist[(pos-back)%16u] : 0u;
+    }
+    page->level=page->history[UI_LISTEN_BARS-1u];
+    page->asleep=backlight_dimmed;
+    const int64_t since=(esp_timer_get_time()-woke_us)/100000;
+    page->since_wake=since>1000 ? 1000u : (unsigned)since;
+}
 
 static bool waiting_screen_stale(void)
 {
@@ -3242,6 +3285,7 @@ static bool paint_waiting_screen(void)
     waiting_painted_us=esp_timer_get_time();
     snprintf(shown_channel,sizeof(shown_channel),"%s",s.channel);
     build_waiting_page();
+    refresh_listen_inputs(&waiting_page);
     int y0, y1;
     waiting_frame=ui_overlay_wait_frame(waiting_page.kind,waiting_tick(),&y0,&y1);
     return paint_waiting_rows(0,AV_HEIGHT);
@@ -3259,6 +3303,7 @@ static bool animate_waiting_screen(void)
     const unsigned frame=ui_overlay_wait_frame(waiting_page.kind,waiting_tick(),&y0,&y1);
     if (frame==waiting_frame) return true;
     waiting_frame=frame;
+    refresh_listen_inputs(&waiting_page);
     return paint_waiting_rows((unsigned)y0,(unsigned)y1);
 }
 
@@ -3500,7 +3545,6 @@ static bool request_switch(const char *id) {
 // Audio-only backlight: dimmed to the lowest step after this long untouched.
 #define LISTEN_DIM_US 10000000
 static int64_t last_activity_us;
-static bool backlight_dimmed;
 
 // Keep the backlight right for the mode: the viewer's level while they are
 // here or a page is open, the lowest step after LISTEN_DIM_US of audio-only
@@ -3515,6 +3559,7 @@ static void keep_backlight(bool acted)
         last_activity_us=now;
         if (backlight_dimmed) {
             backlight_dimmed=false;
+            woke_us=now;   // the pet hops awake
             bsp_display_backlight(av_brightness_percent(s.menu.brightness));
         }
         return;

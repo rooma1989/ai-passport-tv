@@ -83,7 +83,17 @@ typedef struct {
     unsigned number;    // the channel's number in the list; 0 when unknown
     char name[64];      // the channel's name; "" when unknown
     char detail[48];    // "group · n/total"
+    // The listening screen's live inputs, refreshed before each frame:
+    // loudness now and over the last UI_LISTEN_BARS chunks (oldest first),
+    // 0..255; whether the screen has dimmed (the pet sleeps); and tenths of
+    // a second since it woke (it hops when that is small).
+    uint8_t level;
+    uint8_t history[12];
+    bool asleep;
+    unsigned since_wake;
 } ui_wait_page_t;
+
+#define UI_LISTEN_BARS 12u
 
 // The top bar's label for a waiting screen: 小智电视, or 换台中.
 const char *ui_overlay_wait_label(ui_wait_kind_t kind);
