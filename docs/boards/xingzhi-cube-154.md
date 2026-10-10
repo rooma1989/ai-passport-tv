@@ -207,6 +207,12 @@ firmware's own drawing code and font, for checking a layout without flashing.
   bobs on these screens.
 - The chosen pet is stored in NVS (`avsettings/pet`); the status page's long
   press on the second key opens the picker.
+- **Audio-only mode** plays sound with the pet on screen and no picture
+  ([design](../superpowers/specs/2026-10-10-audio-only-mode-design.md)). OK on
+  the status page or the phone's switch turns it on or off; it is stored
+  (`avsettings/audio`) and the device redials, so the server stops sending
+  pictures (about 8 KB/s instead of 200). Sound is then what counts as a live
+  channel, and the backlight dims to the lowest step after 10 s untouched.
 - Setup (status page, long-press the top key) is a set of pages turned with the
   top key (previous) and the second key (next); long-press OK leaves:
   1. a Wi-Fi QR code that a phone's **system camera** uses to join the hotspot
@@ -215,6 +221,8 @@ firmware's own drawing code and font, for checking a layout without flashing.
   3. a QR code of the help page, when `AV_HELP_URL` is set;
   4. the hotspot, setup address, server and connection state as text, and the
      time left of the 15-minute setup window.
+- On the setup page, tapping a remembered network fills its name; leaving the
+  password empty keeps the stored one. Stored passwords stay on the device.
 - The status page carries the phone remote's QR code when the server sends
   one (`remote_url` in CONFIG, a version-2 code at 3 px a module); otherwise a
   small help-page QR code when `AV_HELP_URL` is set.
