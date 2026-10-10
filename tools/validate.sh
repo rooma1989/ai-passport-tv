@@ -80,9 +80,10 @@ run_static_checks() {
     "${test_dir}/test_ui_draw"
     # The overlays and the host renderer that draws them (tools/render_ui):
     # built here so neither can drift from the firmware's drawing code.
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Icomponents/qrcodegen \
         tools/render_ui/render_ui.c tools/render_ui/font_blob.S \
         main/ui_overlay.c main/ui_status.c main/ui_draw.c main/ui_text.c main/ui_menu.c \
+        main/ui_qr.c components/qrcodegen/qrcodegen.c \
         -o "${test_dir}/render_ui"
     "${test_dir}/render_ui" "${test_dir}/screens.ppm"
     # The server address arrives as text someone typed or pasted, so the cases

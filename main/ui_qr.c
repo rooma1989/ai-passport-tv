@@ -77,6 +77,12 @@ bool ui_qr_layout_single(int panel_w, int y, int modules, int max_side, ui_qr_la
 
 void ui_qr_draw(ui_surface_t surface, int x, int y, int scale, const uint8_t qrcode[])
 {
+    ui_qr_draw_colors(surface, x, y, scale, qrcode, 0xFFFFu, 0x0000u);
+}
+
+void ui_qr_draw_colors(ui_surface_t surface, int x, int y, int scale, const uint8_t qrcode[],
+                       uint16_t light, uint16_t dark)
+{
     const int size = qrcodegen_getSize(qrcode);
     const int quiet = UI_QR_QUIET * scale;
     const int side = size * scale + 2 * quiet;
@@ -85,7 +91,7 @@ void ui_qr_draw(ui_surface_t surface, int x, int y, int scale, const uint8_t qrc
     if (y + side <= surface.origin_y || y >= surface.origin_y + surface.rows) {
         return;
     }
-    ui_text_fill(surface, x, y, side, side, 0xFFFFu);
+    ui_text_fill(surface, x, y, side, side, light);
     for (int my = 0; my < size; my++) {
         const int py = y + quiet + my * scale;
         if (py + scale <= surface.origin_y || py >= surface.origin_y + surface.rows) {
@@ -102,7 +108,7 @@ void ui_qr_draw(ui_surface_t surface, int x, int y, int scale, const uint8_t qrc
             while (mx < size && qrcodegen_getModule(qrcode, mx, my)) {
                 mx++;
             }
-            ui_text_fill(surface, x + quiet + start * scale, py, (mx - start) * scale, scale, 0x0000u);
+            ui_text_fill(surface, x + quiet + start * scale, py, (mx - start) * scale, scale, dark);
         }
     }
 }

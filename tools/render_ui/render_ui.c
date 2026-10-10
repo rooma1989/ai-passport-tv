@@ -5,11 +5,12 @@
 #include "ui_menu.h"
 #include "ui_overlay.h"
 #include "ui_status.h"
+#include "qrcodegen.h"
 
 #include <stdio.h>
 #include <string.h>
 
-enum { W = 240, H = 240, SCALE = 2, COLS = 4, GAP = 8 };
+enum { W = 240, H = 240, SCALE = 2, COLS = 4, ROWS = 4, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -51,22 +52,28 @@ static void bars(const char *number, const char *name, int soc, int charging, un
 
 static ui_menu_t sample_menu(void)
 {
-    static const char groups[][UI_MENU_GROUP_NAME_MAX] = { "我的投屏", "UP 主", "央视" };
+    static const char groups[][UI_MENU_GROUP_NAME_MAX] = {
+        "我的投屏", "UP 主", "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "其他" };
     static const ui_menu_entry_t entries[] = {
         { "cast", "我的投屏", 0 }, { "up01", "小Lin说", 1 }, { "up02", "老高与小茉", 1 },
         { "ch1", "CCTV-1 综合", 2 }, { "ch2", "CCTV-2 财经", 2 }, { "ch3", "CCTV-3 综艺", 2 },
         { "ch4", "CCTV-4 中文国际", 2 }, { "ch7", "CCTV-7 国防军事", 2 },
+        { "ch8", "CCTV-8 电视剧", 2 }, { "ch9", "CCTV-9 纪录", 2 }, { "ch10", "CCTV-10 科教", 2 },
+        { "ch11", "CCTV-11 戏曲", 2 }, { "ch13", "CCTV-13 新闻", 2 },
+        { "ch14", "CCTV-14 少儿", 2 }, { "ch15", "CCTV-15 音乐", 2 },
+        { "ws1", "湖南卫视", 3 }, { "ws2", "浙江卫视", 3 }, { "hk1", "凤凰中文", 4 },
+        { "w1", "CGTN", 5 }, { "m1", "精选音乐", 6 }, { "f1", "猫和老鼠", 7 }, { "o1", "其他台", 8 },
     };
     ui_menu_t menu;
     ui_menu_init(&menu);
-    ui_menu_set_groups(&menu, groups, 3);
+    ui_menu_set_groups(&menu, groups, 9);
     ui_menu_load(&menu, entries, sizeof(entries) / sizeof(entries[0]), "ch7");
     return menu;
 }
 
 // The sheet, filled scene by scene.
-static uint8_t sheet[(COLS * (W * SCALE + GAP)) * (3 * (H * SCALE + GAP)) * 3];
-static int sheet_w = COLS * (W * SCALE + GAP), sheet_h = 3 * (H * SCALE + GAP);
+static uint8_t sheet[(COLS * (W * SCALE + GAP)) * (ROWS * (H * SCALE + GAP)) * 3];
+static int sheet_w = COLS * (W * SCALE + GAP), sheet_h = ROWS * (H * SCALE + GAP);
 
 static void place(int index)
 {
@@ -144,6 +151,42 @@ int main(int argc, char **argv)
     picture(); bars(NULL, "小智电视", -1, 0, 0);
     place(n++);
     picture(); bars("07", " CCTV-7 国防军事", 100, 0, 4);
+    place(n++);
+
+    // 4.7 the groups, 4.8 a group's channels, scrolled.
+    menu = sample_menu();
+    ui_menu_set_rows(&menu, UI_OVERLAY_LIST_ROWS);
+    ui_menu_open(&menu);
+    ui_menu_scroll_by(&menu, 1, UI_OVERLAY_LIST_ROWS);
+    picture(); bars(NULL, "频道分组 4/9", 76, 0, 3);
+    ui_draw_panel(whole(), 30, 210);
+    ui_overlay_list(whole(), &menu);
+    ui_overlay_bottom_rates(whole(), 210, 150, 52);
+    place(n++);
+    ui_menu_scroll_by(&menu, -1, UI_OVERLAY_LIST_ROWS);
+    ui_menu_confirm(&menu);
+    for (int i = 0; i < 6; i++) ui_menu_scroll_by(&menu, 1, UI_OVERLAY_LIST_ROWS);
+    picture(); bars(NULL, "< 央视 11/12", 76, 0, 3);
+    ui_draw_panel(whole(), 30, 210);
+    ui_overlay_list(whole(), &menu);
+    ui_overlay_bottom_rates(whole(), 210, 150, 52);
+    place(n++);
+
+    // 4.9 the backlight page.
+    picture(); bars(NULL, "亮度", 76, 0, 3);
+    ui_draw_panel(whole(), 30, 210);
+    ui_overlay_brightness(whole(), 50);
+    place(n++);
+
+    // 4.10 the status page with the remote's code.
+    static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(3)], tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
+    qrcodegen_encodeText("https://iewww.com/tv/r/abcdef1234", tmp, qr, qrcodegen_Ecc_LOW, 1, 3,
+                         qrcodegen_Mask_AUTO, true);
+    ui_status_page_t page = { "07", "CCTV-7 国防军事", 3, 76, 0, qr, "手机遥控" };
+    picture(); bars(NULL, "状态", 76, 0, 3);
+    ui_draw_panel(whole(), 30, 210);
+    ui_overlay_status(whole(), &page);
+    ui_overlay_bottom_text(whole(), 210, "任意键关闭", UI_FAINT);
     place(n++);
 
     FILE *out = fopen(argv[1], "wb");

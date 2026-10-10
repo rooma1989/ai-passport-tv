@@ -127,6 +127,15 @@ void ui_menu_back(ui_menu_t *menu);
 bool ui_menu_at_groups(const ui_menu_t *menu);
 // True while one group's channels are showing, so OK long press goes back.
 bool ui_menu_in_group(const ui_menu_t *menu);
+// What a row of the showing level is: a group index at the groups level, an
+// entry index otherwise; -1 for a row past the end or of the other level.
+int ui_menu_row_group(const ui_menu_t *menu, unsigned row);
+int ui_menu_row_entry(const ui_menu_t *menu, unsigned row);
+// Channels in group `g`.
+unsigned ui_menu_group_size(const ui_menu_t *menu, unsigned g);
+// The playing channel's entry and group, or -1 when it is not in the list.
+int ui_menu_playing_entry(const ui_menu_t *menu);
+int ui_menu_playing_group(const ui_menu_t *menu);
 unsigned ui_menu_row_count(const ui_menu_t *menu);
 const char *ui_menu_row_label(const ui_menu_t *menu, unsigned row);
 const char *ui_menu_title(const ui_menu_t *menu);

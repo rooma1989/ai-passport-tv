@@ -184,6 +184,36 @@ bool ui_menu_in_group(const ui_menu_t *menu)
     return menu && !menu->at_groups && two_levels(menu);
 }
 
+int ui_menu_row_group(const ui_menu_t *menu, unsigned row)
+{
+    return menu && menu->at_groups ? group_at_row(menu, row) : -1;
+}
+
+int ui_menu_row_entry(const ui_menu_t *menu, unsigned row)
+{
+    return menu && !menu->at_groups ? entry_at_row(menu, row) : -1;
+}
+
+unsigned ui_menu_group_size(const ui_menu_t *menu, unsigned g)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; menu && i < menu->count; i++) {
+        n += entry_group(menu, i) == g ? 1u : 0u;
+    }
+    return n;
+}
+
+int ui_menu_playing_entry(const ui_menu_t *menu)
+{
+    return menu ? find_entry(menu, menu->current) : -1;
+}
+
+int ui_menu_playing_group(const ui_menu_t *menu)
+{
+    const int i = ui_menu_playing_entry(menu);
+    return i < 0 ? -1 : (int)entry_group(menu, (unsigned)i);
+}
+
 unsigned ui_menu_row_count(const ui_menu_t *menu)
 {
     if (!menu) {

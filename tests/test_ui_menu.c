@@ -424,6 +424,22 @@ static void test_group_names_are_bounded(void)
           "the stray entry joins the first group, and one non-empty group needs no group level");
 }
 
+static void test_row_queries(void)
+{
+    ui_menu_t menu = grouped("up02");
+    ui_menu_open(&menu);
+    check(ui_menu_at_groups(&menu), "opens on the groups");
+    check(ui_menu_row_group(&menu, 0) == 0 && ui_menu_row_group(&menu, 2) == 2 &&
+          ui_menu_row_group(&menu, 3) == -1, "rows name the used groups only");
+    check(ui_menu_row_entry(&menu, 0) == -1, "no entries at the groups level");
+    check(ui_menu_group_size(&menu, 1) == 2 && ui_menu_group_size(&menu, 2) == 3 &&
+          ui_menu_group_size(&menu, 3) == 0, "group sizes");
+    check(ui_menu_playing_entry(&menu) == 2 && ui_menu_playing_group(&menu) == 1, "what is playing");
+    ui_menu_confirm(&menu);   // into UP 主, on the playing channel
+    check(ui_menu_row_entry(&menu, 0) == 1 && ui_menu_row_entry(&menu, 1) == 2 &&
+          ui_menu_row_entry(&menu, 2) == -1, "rows name the group's entries");
+}
+
 // ---- the banner's place, the level indicator, the seek box ----
 
 static void test_banner_place(void)
@@ -494,6 +510,7 @@ int main(void)
     test_confirm_enters_the_group_and_back_returns();
     test_without_groups_the_list_is_one_level();
     test_group_names_are_bounded();
+    test_row_queries();
     test_banner_place();
     test_level_indicator();
     test_seek_hint();

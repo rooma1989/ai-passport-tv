@@ -1793,15 +1793,11 @@ done:
 // the stripes already exist and are already the right size.
 // ---------------------------------------------------------------------------
 
-// Menu geometry. Both the drawing code and the scroll logic need the same
-// numbers: computing the row count only where it was drawn left the menu's own
-// idea of how many rows fit stuck at zero, so the list never scrolled.
-#define MENU_HEADER_H 26
-#define MENU_ROW_H    24
-
-// How many list rows fit under the header.
+// How many list rows are on screen. Both the drawing code and the scroll logic
+// need the same number: computing it only where it was drawn left the menu's
+// own idea of how many rows fit stuck at zero, so the list never scrolled.
 static unsigned menu_rows(void) {
-    return ui_menu_visible_rows((int)AV_HEIGHT-MENU_HEADER_H,MENU_ROW_H);
+    return UI_OVERLAY_LIST_ROWS;
 }
 
 // Rows of the panel a stripe covers, as a drawing surface.
@@ -1971,19 +1967,14 @@ static void build_topbar_label(ui_topbar_label_t *label) {
 // Readings for the black bars around the picture, drawn into whichever stripe
 // overlaps a bar and nothing else. The picture covers rows
 // [AV_VIDEO_Y_OFFSET, AV_HEIGHT-AV_VIDEO_Y_OFFSET), so these rows belong to the
-// overlay alone: the status group (signal, battery) in the top bar, frame rate
-// and receive rate in the bottom one when `bottom_info` asks for them. A bar too
-// thin to hold a line of text is left alone.
+// overlay alone: the label and the status group in the top bar, and in the
+// bottom one whatever the open page puts there when `bottom_info` asks for it.
+// A bar too thin to hold a line of text is left alone.
 static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading, bool bottom_info) {
-    // Text sits 16 px from each edge: the panel's corners are rounded, and the
-    // bars are exactly where they cut in.
-    const int edge=UI_TEXT_PAD_X+2+8;   // half a 16 px glyph
     const int bar=(int)AV_VIDEO_Y_OFFSET;
     const int box_h=(int)UI_TEXT_LINE_H+2*UI_TEXT_PAD_Y;
     if (bar<box_h) return;
     const int first=surface.origin_y, last=surface.origin_y+surface.rows;
-    const int pad=(bar-(int)UI_TEXT_LINE_H)/2;
-    char text[24];
 
     if (first<bar) {
         ui_status_draw(surface,(int)AV_WIDTH,&topbar_label,reading->bars,reading->soc,reading->charging,
@@ -1991,18 +1982,16 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
     }
 
     const int bottom=(int)AV_HEIGHT-bar;
-    const int bottom_y=bottom+pad;
     if (bottom_info && last>bottom) {
-        // Cleared first: the list's last row can run into this band on a screen
-        // that paints the whole height, and it must not show through.
+        // What the open page puts in the bottom bar: the list its frame and
+        // receive rates, the status page how to leave it.
         ui_text_fill(surface,0,bottom,(int)AV_WIDTH,bar,UI_DEEP);
-        uint32_t fps=atomic_load(&s.fps_x10);
-        snprintf(text,sizeof(text),"FPS %u.%u",(unsigned)(fps/10u),(unsigned)(fps%10u));
-        ui_text_draw(surface,edge,bottom_y,text,UI_COLOR_DIM,UI_DEEP);
-        snprintf(text,sizeof(text),"Net %u KB/s",
-                 (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
-        ui_text_draw(surface,(int)AV_WIDTH-edge-ui_text_width(text),bottom_y,
-                     text,UI_COLOR_DIM,UI_DEEP);
+        if (s.menu.view==UI_VIEW_MENU) {
+            ui_overlay_bottom_rates(surface,bottom,atomic_load(&s.fps_x10),
+                                    (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
+        } else if (s.menu.view==UI_VIEW_STATUS) {
+            ui_overlay_bottom_text(surface,bottom,"任意键关闭",UI_FAINT);
+        }
     }
 }
 
@@ -2046,7 +2035,7 @@ static bool refresh_info_bars(void) {
     }
     const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
     if (bar==0) return true;
-    const bool want_bottom=s.menu.view==UI_VIEW_MENU;
+    const bool want_bottom=s.menu.view==UI_VIEW_MENU || s.menu.view==UI_VIEW_STATUS;
     const int64_t now=esp_timer_get_time();
     build_topbar_label(&topbar_label);
     // Below 10% the percentage blinks, so the bar is repainted every second.
@@ -2074,38 +2063,75 @@ static bool refresh_info_bars(void) {
     return true;
 }
 
-// The status page's text, rebuilt at most once a second and read by every
+// The status page's readings, rebuilt at most once a second and read by every
 // stripe. Only the video task touches it: both callers of overlay_stripe run
-// there.
-#define STATUS_LINES 4u
-static char status_text[STATUS_LINES][UI_MENU_NAME_MAX+24];
-static int64_t status_text_us;
-static bool status_text_valid;
+// there. The codes are encoded here too, when their text changes, not per
+// stripe.
+static ui_status_page_t status_page;
+static int64_t status_page_us;
+static bool status_page_valid;
 
-static void refresh_status_text(void) {
+static void refresh_status_page(void) {
     const int64_t now=esp_timer_get_time();
-    if (status_text_valid && now-status_text_us<1000000) return;
-    status_text_valid=true;
-    status_text_us=now;
+    if (status_page_valid && now-status_page_us<1000000) return;
+    status_page_valid=true;
+    status_page_us=now;
 
     // Copied out under the table lock: the receive task may be replacing the
     // table while this runs.
-    char name[UI_MENU_NAME_MAX];
-    current_channel_name(name,sizeof(name));
-    snprintf(status_text[0],sizeof(status_text[0]),"Channel  %s",name);
+    status_page.number[0]='\0';
+    bool found=false;
+    taskENTER_CRITICAL(&list_lock);
+    unsigned count=atomic_load(&s.count);
+    for (unsigned i=0;i<count;i++) {
+        if (!strcmp(s.list[i].id,s.channel)) {
+            snprintf(status_page.number,sizeof(status_page.number),"%02u",(i+1u)%100u);
+            snprintf(status_page.name,sizeof(status_page.name),"%s",
+                     s.list[i].name[0] ? s.list[i].name : s.list[i].id);
+            found=true;
+            break;
+        }
+    }
+    taskEXIT_CRITICAL(&list_lock);
+    if (!found) snprintf(status_page.name,sizeof(status_page.name),"%s",s.channel[0] ? s.channel : "小智电视");
+    status_page.bars=wifi_bars();
+    status_page.soc=atomic_load(&s.battery_soc);
+    status_page.pet=0;
 
-    unsigned bars=wifi_bars();
-    if (bars) snprintf(status_text[1],sizeof(status_text[1]),"WiFi     %u/4",bars);
-    else snprintf(status_text[1],sizeof(status_text[1]),"WiFi     --");
-
-    int soc=atomic_load(&s.battery_soc);
-    if (soc>=0) snprintf(status_text[2],sizeof(status_text[2]),"Battery  %d%%",soc);
-    else snprintf(status_text[2],sizeof(status_text[2]),"Battery  --");
-
-    // It says "WiFi" rather than "network" because that is the word on the
-    // setup page the viewer will land on, and it says which arrow because the
-    // other one does nothing here.
-    snprintf(status_text[3],sizeof(status_text[3]),"Hold UP: set up WiFi");
+    // The phone remote's code when the server sent its address; otherwise the
+    // help page's. A version-2 code at three pixels a module fills the design's
+    // 87 px square.
+    static uint8_t remote_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
+    static uint8_t remote_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
+    static unsigned remote_seen=UINT_MAX;
+    static bool remote_ok;
+    const unsigned gen=atomic_load(&s.remote_gen);
+    if (gen!=remote_seen) {
+        char url[AV_REMOTE_URL_MAX+1];
+        taskENTER_CRITICAL(&list_lock);
+        memcpy(url,s.remote_url,sizeof(url));
+        taskEXIT_CRITICAL(&list_lock);
+        remote_ok=url[0] && qrcodegen_encodeText(url,remote_tmp,remote_qr,qrcodegen_Ecc_LOW,1,3,
+                                                 qrcodegen_Mask_AUTO,true);
+        remote_seen=gen;
+    }
+    static uint8_t help_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
+    static uint8_t help_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
+    static int help_state;   // 0 not tried, 1 encoded, -1 failed
+    if (!remote_ok && !help_state && AV_HELP_URL[0]) {
+        help_state=qrcodegen_encodeText(AV_HELP_URL,help_tmp,help_qr,qrcodegen_Ecc_LOW,1,3,
+                                        qrcodegen_Mask_AUTO,true) ? 1 : -1;
+    }
+    if (remote_ok) {
+        status_page.qr=remote_qr;
+        status_page.qr_caption="手机遥控";
+    } else if (help_state>0) {
+        status_page.qr=help_qr;
+        status_page.qr_caption="使用说明";
+    } else {
+        status_page.qr=NULL;
+        status_page.qr_caption=NULL;
+    }
 }
 
 // Draw one stripe's worth of overlay, if this stripe is one the overlay occupies.
@@ -2114,11 +2140,6 @@ static void refresh_status_text(void) {
 static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
     ui_surface_t surface=stripe_surface(stripe_y,pixels);
     unsigned first=stripe_y, last=stripe_y+AV_STRIPE_ROWS;   // [first,last)
-
-    // A helper for anchored drawing: place a line whose text top is `y`, only
-    // when this stripe overlaps the rows the text and its box occupy.
-    #define LINE_TOP_PAD UI_TEXT_PAD_Y
-    #define LINE_HEIGHT ((int)UI_TEXT_LINE_H + 2*UI_TEXT_PAD_Y)
 
     // F2: every menu and page sits on an opaque panel over the whole picture
     // area, so no video shows between or around its rows. The picture comes
@@ -2133,184 +2154,27 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         ui_overlay_banner(surface,&s.menu);
         ui_overlay_hint(surface,&s.menu);
     } else if (s.menu.view==UI_VIEW_MENU) {
-        // Header band, then one row per channel.
-        const int header=MENU_HEADER_H, row=MENU_ROW_H;
-        if (first<(unsigned)header) {
-            ui_text_fill(surface,0,0,(int)AV_WIDTH,header,UI_COLOR_BOX);
-        }
-        if (first<(unsigned)header+1u && last>(unsigned)header) {
-            ui_text_fill(surface,0,header,(int)AV_WIDTH,1,UI_COLOR_RULE);
-        }
-        // The header names the level -- the groups, or the group being
-        // browsed -- and where the highlight is in it. Left-aligned and as one
-        // string: on a board with a top band, the status icons are drawn over
-        // the right end of the header afterwards.
-        // The title and position are the top bar's label (build_topbar_label).
-        const unsigned total=ui_menu_row_count(&s.menu);
-        unsigned rows=menu_rows();
-        for (unsigned i=0;i<rows;i++) {
-            unsigned index=s.menu.scroll+i;
-            if (index>=total) break;
-            int y=header+(int)i*row+4;
-            if ((int)last<=y || (int)first>=y+row-2) continue;
-            bool chosen=index==s.menu.selected;
-            if (chosen) ui_text_fill(surface,0,y-4,(int)AV_WIDTH,row,UI_COLOR_SELECT);
-            const char *label=ui_menu_row_label(&s.menu,index);
-            if (!label) continue;
-            ui_text_draw(surface,14,y,label,
-                         chosen?UI_COLOR_SELECT_TEXT:UI_COLOR_TEXT,
-                         chosen?UI_COLOR_SELECT:UI_COLOR_BOX);
-        }
-        // Only stripes that reach a bar need the readings; the Wi-Fi one asks
-        // the driver.
-        if (first<(unsigned)AV_VIDEO_Y_OFFSET || last>(unsigned)(AV_HEIGHT-AV_VIDEO_Y_OFFSET)) {
-            const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc),
-                                           bsp_battery_charging(), false };
-            build_topbar_label(&topbar_label);
-            info_bars_stripe(surface,&reading,true);
-        }
+        // HANDOFF.md 4.7 and 4.8; the title and position are the top bar's label.
+        ui_overlay_list(surface,&s.menu);
     } else if (s.menu.view==UI_VIEW_BRIGHTNESS) {
-        // The backlight page. Deliberately the same shape as the volume
-        // indicator: a labelled level over a filled bar, because they are the
-        // same kind of thing and should not need to be learned twice.
-        //
-        // It is drawn on the video rather than as a list row, so it does not
-        // depend on a channel list having arrived: the backlight has to be
-        // reachable on a device that has not connected to a server yet.
-        const int header=MENU_HEADER_H;
-        if (first<(unsigned)header) {
-            ui_text_fill(surface,0,0,(int)AV_WIDTH,header,UI_COLOR_BOX);
-        }
-        if (first<(unsigned)header+1u && last>(unsigned)header) {
-            ui_text_fill(surface,0,header,(int)AV_WIDTH,1,UI_COLOR_RULE);
-        }
-        const int level_y=header+16;
-        if ((int)last>level_y-UI_TEXT_PAD_Y && (int)first<level_y+LINE_HEIGHT) {
-            char text[32];
-            snprintf(text,sizeof(text),"Brightness  %u%%",
-                     av_brightness_percent(s.menu.brightness));
-            ui_text_draw(surface,14,level_y,text,UI_COLOR_TEXT,UI_COLOR_BOX);
-            // The bar sits below the label, laid out from the label's own box so
-            // it cannot be drawn over the glyphs.
-            const int bar_x=14, bar_y=level_y+LINE_HEIGHT, bar_h=6;
-            const int bar_w=(int)AV_WIDTH-2*bar_x;
-            ui_text_fill(surface,bar_x,bar_y,bar_w,bar_h,UI_COLOR_RULE);
-            // Filled from the level itself, so the bar shows where this step
-            // sits in the range rather than which step number it is.
-            const unsigned percent=av_brightness_percent(s.menu.brightness);
-            const int filled=(int)((unsigned)bar_w*percent/100u);
-            if (filled>0) ui_text_fill(surface,bar_x,bar_y,filled,bar_h,UI_COLOR_SELECT);
-            // The hint, dimmed, one line under the bar.
-            const int hint_y=bar_y+bar_h+10;
-            if ((int)last>hint_y-UI_TEXT_PAD_Y && (int)first<hint_y+LINE_HEIGHT) {
-                ui_text_draw(surface,14,hint_y,"UP/DOWN to change, OK to finish",
-                             UI_COLOR_DIM,UI_COLOR_BACKDROP);
-            }
-        }
+        // 4.9. Drawn without a channel list, so the backlight is reachable on a
+        // device that has not connected to a server yet.
+        ui_overlay_brightness(surface,av_brightness_percent(s.menu.brightness));
     } else {
-        // Status page: three labelled lines, drawn straight onto the backdrop.
-        const int header=MENU_HEADER_H, line=MENU_ROW_H;
-        if (first<(unsigned)header) {
-            ui_text_fill(surface,0,0,(int)AV_WIDTH,header,UI_COLOR_BOX);
-        }
-        if (first<(unsigned)header+1u && last>(unsigned)header) {
-            ui_text_fill(surface,0,header,(int)AV_WIDTH,1,UI_COLOR_RULE);
-        }
-        // Four lines: three readings and the gesture that leaves for setup. The
-        // last is not decoration -- the setup gesture is a long press on an
-        // arrow, which nothing else on this page uses and which nobody would
-        // guess, so the page has to say it.
-        //
-        // The text is built once a second by refresh_status_text() and only
-        // drawn here. This runs for every stripe of every frame, and building
-        // the lines in place meant a WiFi driver call and a critical section
-        // several times a frame.
-        refresh_status_text();
-        // The phone remote's code, when the server sent its address. Encoded
-        // when the address changes, not per stripe; a version-2 code at three
-        // pixels a module is the size the help code proved scannable.
-        static uint8_t remote_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
-        static uint8_t remote_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(3)];
-        static unsigned remote_seen=UINT_MAX;
-        static bool remote_ok;
-        const unsigned gen=atomic_load(&s.remote_gen);
-        if (gen!=remote_seen) {
-            char url[AV_REMOTE_URL_MAX+1];
-            taskENTER_CRITICAL(&list_lock);
-            memcpy(url,s.remote_url,sizeof(url));
-            taskEXIT_CRITICAL(&list_lock);
-            remote_ok=url[0] && qrcodegen_encodeText(url,remote_tmp,remote_qr,qrcodegen_Ecc_LOW,1,3,
-                                                     qrcodegen_Mask_AUTO,true);
-            remote_seen=gen;
-        }
-        const int top=header+8;
-        const int limit=(int)AV_HEIGHT-(int)AV_VIDEO_Y_OFFSET;
-        int remote_side=0;
-        if (remote_ok) {
-            const int side=(qrcodegen_getSize(remote_qr)+2*UI_QR_QUIET)*3;
-            // Under the channel line, at the right, with the setup line below it.
-            if (top+line+side+line<=limit) remote_side=side;
-        }
-        if (remote_side) {
-            // Channel across the top; Wi-Fi, battery and the caption at the left
-            // of the code; the setup gesture under the code, where it has the
-            // whole width its longer text needs.
-            const int qr_top=top+line;
-            const int ys[STATUS_LINES]={ top, qr_top, qr_top+line, qr_top+remote_side+4 };
-            for (unsigned i=0;i<STATUS_LINES;i++) {
-                const int y=ys[i];
-                if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
-                ui_text_draw(surface,14,y,status_text[i],
-                             i==STATUS_LINES-1u?UI_COLOR_DIM:UI_COLOR_TEXT,UI_COLOR_BACKDROP);
-            }
-            ui_qr_draw(surface,(int)AV_WIDTH-14-remote_side,qr_top,3,remote_qr);
-            static const char *const caption[2]={ "扫码用", "手机遥控" };
-            for (unsigned i=0;i<2u;i++) {
-                const int y=qr_top+2*line+(int)i*line;
-                if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
-                ui_text_draw(surface,14,y,caption[i],UI_COLOR_DIM,UI_COLOR_BACKDROP);
-            }
-        } else {
-        for (unsigned i=0;i<STATUS_LINES;i++) {
-            int y=header+8+(int)i*line;
-            if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
-            // The instruction is dimmed, because it is not a reading.
-            ui_text_draw(surface,14,y,status_text[i],
-                         i==STATUS_LINES-1u?UI_COLOR_DIM:UI_COLOR_TEXT,UI_COLOR_BACKDROP);
-        }
-        // A code for the help page under the lines, at the right, with what it
-        // is for to its left. Encoded the first time the page is drawn and kept:
-        // the URL is a compile-time constant. Only a version-1 code fits above
-        // the bottom bar, which is why the URL is kept short and upper case.
-        // Shown only without the remote code: the remote page links to help.
-        if (AV_HELP_URL[0]) {
-            static uint8_t help_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
-            static uint8_t help_tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
-            static int help_state;   // 0 not tried, 1 encoded, -1 failed
-            if (!help_state) {
-                help_state=qrcodegen_encodeText(AV_HELP_URL,help_tmp,help_qr,qrcodegen_Ecc_LOW,1,6,
-                                                qrcodegen_Mask_AUTO,true) ? 1 : -1;
-            }
-            const int help_top=header+8+(int)STATUS_LINES*line;
-            if (help_state>0) {
-                const int modules=qrcodegen_getSize(help_qr)+2*UI_QR_QUIET;
-                const int scale=help_top+modules*3<=limit ? 3 : 2;
-                const int side=modules*scale;
-                if (help_top+side<=limit) {
-                    ui_qr_draw(surface,(int)AV_WIDTH-14-side,help_top,scale,help_qr);
-                    static const char *const caption[2]={ "扫码看", "使用说明" };
-                    for (unsigned i=0;i<2u;i++) {
-                        const int y=help_top+side/2-(int)UI_TEXT_LINE_H-UI_TEXT_PAD_Y+(int)i*line;
-                        if ((int)last<=y-UI_TEXT_PAD_Y || (int)first>=y+(UI_TEXT_LINE_H+UI_TEXT_PAD_Y)) continue;
-                        ui_text_draw(surface,14,y,caption[i],UI_COLOR_DIM,UI_COLOR_BACKDROP);
-                    }
-                }
-            }
-        }
-        }
+        // 4.10. The readings are rebuilt once a second, not per stripe: this runs
+        // for every stripe of every frame, and building them in place meant a
+        // Wi-Fi driver call and a critical section several times a frame.
+        refresh_status_page();
+        ui_overlay_status(surface,&status_page);
     }
-    #undef LINE_HEIGHT
-    #undef LINE_TOP_PAD
+    // In the waiting screen the overlay owns the whole panel, bars included.
+    if (s.menu.view!=UI_VIEW_VIDEO &&
+        (first<(unsigned)AV_VIDEO_Y_OFFSET || last>(unsigned)(AV_HEIGHT-AV_VIDEO_Y_OFFSET))) {
+        const band_reading_t reading={ wifi_bars(), atomic_load(&s.battery_soc),
+                                       bsp_battery_charging(), false };
+        build_topbar_label(&topbar_label);
+        info_bars_stripe(surface,&reading,true);
+    }
 }
 
 // Inflating one stripe, then expanding it in place, then handing it to the

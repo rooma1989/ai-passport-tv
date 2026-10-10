@@ -52,3 +52,7 @@ bool ui_qr_layout_single(int panel_w, int y, int modules, int max_side, ui_qr_la
 // Paint one encoded code (qrcodegen format) with its quiet zone, top-left at
 // (x, y), clipped to the rows `surface` covers.
 void ui_qr_draw(ui_surface_t surface, int x, int y, int scale, const uint8_t qrcode[]);
+// The same in the given colours; the design's pages use UI_PAPER on UI_DEEP,
+// which cameras read as well as white on black.
+void ui_qr_draw_colors(ui_surface_t surface, int x, int y, int scale, const uint8_t qrcode[],
+                       uint16_t light, uint16_t dark);
