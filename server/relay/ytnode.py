@@ -6,6 +6,9 @@
     GET /yt/list?channel=<频道地址>   最新 20 个投稿
     GET /yt/playlist?list=<列表 id>   播放列表的全部视频（剧集用，按列表顺序）
     GET /yt/info?id=<视频 id>         标题、时长、所属频道
+    GET /yt/search?q=<关键词>&n=<个数>[&kind=channel]
+                                      语音搜索：视频按 YouTube 的排序，去掉直播、预告和 Shorts；
+                                      kind=channel 搜频道（名字、订阅数）
     GET /yt/stream?id=<视频 id>&ss=<秒> 压成小码流的 MPEG-TS，实时速度输出
 
 流用分块编码发送：正常播完发结束块，转码出错则不发直接断开，对端据此分辨。
@@ -41,6 +44,19 @@ INFO_CACHE_S = 30 * 60
 CHECK_VIDEO = "jNQXAC9IVRw"
 CHECK_EVERY_S = 6 * 3600
 CHUNK_BYTES = 64 * 1024
+# 语音搜索：最多要几个；同一个词 10 分钟内直接用上次的结果（中转等不及时，节点仍把这次搜完，
+# 再说一遍就快了）；yt-dlp 正在解析别的视频（每个约 18 秒）时最多等这么久，等不到回答 503 busy：
+# 中转只等几秒，排长队没有意义。
+SEARCH_MAX = 20
+# 平铺搜索结果里会有直播、Shorts，多要几个，滤掉后仍够数。
+SEARCH_EXTRA = 5
+SEARCH_CACHE_S = 10 * 60
+SEARCH_WAIT_S = 3
+QUERY_MAX = 80
+SEARCH_KINDS = ("video", "channel")
+# YouTube 搜索页只看频道的筛选参数（sp=EgIQAg==）。
+CHANNEL_FILTER = "EgIQAg%3D%3D"
+_UCID = re.compile(r"^UC[0-9A-Za-z_-]{22}$")
 # 先要 360p 的 H.264+AAC 合体格式（18），没有再取 360p 以内的最好的。
 FORMAT = "18/b[height<=360]/bv*[height<=360]+ba/b"
 _ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -58,6 +74,14 @@ class Tools:
 
 def valid_channel(channel: str) -> bool:
     return bool(_CHANNEL.match(channel or ""))
+
+
+def clean_query(query: str) -> str | None:
+    """搜索词：去掉首尾和多余空白；空的、太长的、带控制字符的不收（返回 None）。"""
+    query = " ".join((query or "").split())
+    if not query or len(query) > QUERY_MAX or any(ord(ch) < 32 or ord(ch) == 127 for ch in query):
+        return None
+    return query
 
 
 def _base(tools: Tools) -> list[str]:
@@ -81,6 +105,56 @@ def playlist_args(tools: Tools, playlist: str) -> list[str]:
 def info_args(tools: Tools, video_id: str) -> list[str]:
     return _base(tools) + ["-J", "--no-playlist", "-f", FORMAT,
                            "--", f"https://www.youtube.com/watch?v={video_id}"]
+
+
+def search_args(tools: Tools, query: str, n: int, kind: str = "video") -> list[str]:
+    if kind == "channel":
+        # 搜索页加频道筛选；只取前 n 个（不然 yt-dlp 会一页页翻下去）。
+        url = (f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
+               f"&sp={CHANNEL_FILTER}")
+        return _base(tools) + ["--flat-playlist", "-J", "--playlist-end", str(n), "--", url]
+    # 「ytsearchN:」是 yt-dlp 的搜索前缀；放在「--」之后，搜索词以「-」开头也不会被当成参数。
+    return _base(tools) + ["--flat-playlist", "-J", "--", f"ytsearch{n + SEARCH_EXTRA}:{query}"]
+
+
+def channel_summary(listing: dict, n: int) -> dict:
+    """频道搜索的平铺结果 → {"channels": [{"id": UC…, "name", "fans", "videos"}]}。
+    订阅数、视频数 yt-dlp 给不出时为 0。"""
+    channels, seen = [], set()
+    for e in listing.get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        cid = str(e.get("channel_id") or e.get("id") or "")
+        name = " ".join(str(e.get("channel") or e.get("title") or "").split())
+        if not _UCID.match(cid) or cid in seen or not name:
+            continue
+        seen.add(cid)
+        fans, videos = e.get("channel_follower_count"), e.get("playlist_count")
+        channels.append({"id": cid, "name": name,
+                         "fans": fans if isinstance(fans, int) and not isinstance(fans, bool) else 0,
+                         "videos": videos if isinstance(videos, int) and not isinstance(videos, bool) else 0})
+    return {"channels": channels[:n]}
+
+
+def search_summary(listing: dict, n: int) -> dict:
+    """平铺的搜索结果 → 能投屏的视频：去掉直播中、预告、刚播完还在处理的直播、Shorts，
+    没有时长的（直播和预告都没有）。"""
+    videos = []
+    for e in listing.get("entries") or []:
+        if not isinstance(e, dict) or not _ID.match(str(e.get("id", ""))):
+            continue
+        if e.get("live_status") in ("is_live", "is_upcoming", "post_live") or "/shorts/" in str(e.get("url") or ""):
+            continue
+        try:
+            duration = int(e.get("duration") or 0)
+        except (TypeError, ValueError):
+            continue
+        title = e.get("title") or ""
+        if duration <= 0 or not title or title in ("[Deleted video]", "[Private video]"):
+            continue
+        videos.append({"id": e["id"], "title": title, "duration": duration,
+                       "uploader": e.get("channel") or e.get("uploader") or ""})
+    return {"videos": videos[:n]}
 
 
 def info_summary(info: dict) -> dict:
@@ -165,6 +239,8 @@ class Node:
         self.streams = threading.BoundedSemaphore(MAX_STREAMS)
         self._info: dict[str, tuple[float, dict]] = {}
         self._info_lock = threading.Lock()
+        # 搜索结果：(种类, 词, 个数) → (时刻, 回答)。
+        self._searches: dict[tuple[str, str, int], tuple[float, dict]] = {}
         # 一次只跑一个 yt-dlp：每个要带一个 deno，两个并发在 400M 的内存上限里会被 OOM 杀掉。
         # 设备每次起播连两次（先采样调色板），同一视频的第二个请求等第一个解析完直接用缓存。
         self._ytdlp = threading.Lock()
@@ -204,6 +280,29 @@ class Node:
                 self._info = {k: v for k, v in self._info.items() if now - v[0] < INFO_CACHE_S}
                 self._info[video_id] = (now, info)
         return code, info
+
+    def search(self, query: str, n: int, kind: str = "video") -> tuple[int, dict | str]:
+        key = (kind, query.lower(), n)
+        with self._info_lock:
+            cached = self._searches.get(key)
+            if cached and self.clock() - cached[0] < SEARCH_CACHE_S:
+                return 200, cached[1]
+        # 仍然一次只跑一个 yt-dlp；只是不像起播那样一直排队：语音那头只等几秒。
+        if not self._ytdlp.acquire(timeout=SEARCH_WAIT_S):
+            return 503, "busy"
+        try:
+            code, data = self._ytdlp_json(search_args(self.tools, query, n, kind))
+        finally:
+            self._ytdlp.release()
+        if code != 200:
+            return code, data
+        summarise = channel_summary if kind == "channel" else search_summary
+        summary = summarise(data if isinstance(data, dict) else {}, n)
+        now = self.clock()
+        with self._info_lock:
+            self._searches = {k: v for k, v in self._searches.items() if now - v[0] < SEARCH_CACHE_S}
+            self._searches[key] = (now, summary)
+        return 200, summary
 
     def key_ok(self, given: str | None) -> bool:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
@@ -283,6 +382,15 @@ def _handler(node: Node):
                     return
                 code, data = node.video_info(video_id)
                 self._json(code, info_summary(data) if code == 200 else data)
+            elif parts.path == "/yt/search":
+                text, n = clean_query(query.get("q", "")), query.get("n", "10")
+                kind = query.get("kind", "video")
+                if text is None or not n.isdigit() or not 1 <= int(n) <= SEARCH_MAX \
+                        or kind not in SEARCH_KINDS:
+                    self._json(400, "bad query")
+                    return
+                code, data = node.search(text, int(n), kind)
+                self._json(code, data)
             elif parts.path == "/yt/stream":
                 self._stream(query)
             else:

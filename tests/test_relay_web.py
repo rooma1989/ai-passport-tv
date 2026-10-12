@@ -816,6 +816,57 @@ class PlaybackControlTests(unittest.TestCase):
         self.relay.seek(position=599)
         self.assertIn("a", self.state.get("up01").watched, "past the end is next")
 
+    def test_voice_seek_targets(self):
+        """Voice: a fraction or the end of the playing video, and a spoken time past the end refused."""
+        thread = self.serve()
+        self.assertEqual(self.relay.seek(fraction=0.5)["position"], 300.0)
+        thread.join(2)
+        self.serve()
+        self.assertEqual(self.relay.seek(from_end=30)["position"], 570.0)
+        self.serve()
+        self.assertEqual(self.relay.seek(fraction=0.999)["position"], 590.0, "a fraction never becomes next")
+        self.serve()
+        self.assertEqual(self.relay.seek(position=700, within=True),
+                         {"ok": False, "error": "这个视频只有 10 分"})
+        self.assertEqual(self.relay.seek(position=598, within=True)["ok"], False)
+        self.assertEqual(self.state.get("up01").watched, [], "refused, not skipped to the next")
+        self.assertEqual(self.relay.seek(position=200, within=True)["position"], 200.0)
+
+    def test_voice_seek_needs_the_duration(self):
+        self.state.get("up01").videos[0].duration = 0
+        self.serve()
+        for given in ({"fraction": 0.5}, {"from_end": 30}):
+            self.assertEqual(self.relay.seek(**given),
+                             {"ok": False, "error": "不知道这个视频有多长，没法按比例跳"}, given)
+        self.assertEqual(self.relay.seek(position=700, within=True)["position"], 700.0)
+
+    def test_voice_seek_over_http(self):
+        import json as _json
+        import urllib.request as _request
+        streams, manage = web.make_servers(self.relay, 0, 0)
+        self._threading.Thread(target=manage.serve_forever, daemon=True).start()
+        try:
+            self.serve()
+
+            def post(body):
+                request = _request.Request(f"http://127.0.0.1:{manage.server_address[1]}/api/seek",
+                                           data=_json.dumps(body).encode(), method="POST",
+                                           headers={"X-Key": KEY, "Content-Type": "application/json"})
+                try:
+                    with _request.urlopen(request, timeout=5) as answer:
+                        return _json.loads(answer.read())
+                except urllib.error.HTTPError as error:
+                    return error.code
+            self.assertEqual(post({"fraction": 0.25})["position"], 150.0)
+            self.serve()
+            self.assertEqual(post({"position": 900, "within": True})["error"], "这个视频只有 10 分")
+            self.assertEqual(post({"fraction": True}), 400)
+            self.assertEqual(post({}), 400)
+        finally:
+            manage.shutdown()
+            manage.server_close()
+            streams.server_close()
+
     def test_next_marks_watched(self):
         thread = self.serve()
         self.assertTrue(self.relay.next()["ok"])

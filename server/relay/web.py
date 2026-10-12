@@ -53,9 +53,10 @@ _BIND_INFO = re.compile(r"^/api/bind/([A-Za-z2-7]{20})$")
 _DEVICE_API = re.compile(r"^/api/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})(?:/(unbind|repair))?$")
 # 只作用在一台设备上的遥控接口。多用户时，带密钥（X-Key）并点名设备的这些请求——电视服务替
 # 说话的那台设备发的语音命令——按那台设备的访客处理：只能动那一台，按设备主人的剧和进度来，
-# 碰不到任何账号数据。见 voice.py。
+# 碰不到账号数据（唯一的例外：语音搜到的 UP 主可以订阅到主人名下，用户决定的）。见 voice.py。
 _DEVICE_SCOPED = frozenset({"/api/switch", "/api/seek", "/api/next", "/api/previous", "/api/device",
-                            "/api/audio", "/api/pet", "/api/pause", "/api/resume", "/api/voice/catalog"})
+                            "/api/audio", "/api/pet", "/api/pause", "/api/resume", "/api/voice/catalog",
+                            "/api/voice/search", "/api/voice/cast", "/api/voice/creator"})
 COOKIE = "tvs"
 # 中转推出的内容要经电视服务缓冲约这么久才在小智屏幕上出现（实测音频领先约 2.7 秒，加上解码起步）。
 PLAYBACK_LAG_S = 4.0
@@ -645,12 +646,20 @@ class Relay:
                 "paused": False, "started": entry["at"], "moving": moving}
 
     def seek(self, delta: float | None = None, position: float | None = None,
-             caller: Caller = LEGACY, device: str | None = None) -> dict:
+             caller: Caller = LEGACY, device: str | None = None, fraction: float | None = None,
+             from_end: float | None = None, within: bool = False) -> dict:
+        """跳转：相对（delta）、到某一秒（position）、按比例（fraction，「跳到一半」）、到结尾前几秒
+        （from_end）。后两种和 within（语音说的时间超过结尾时不跳，说视频有多长）见 voice.seek_target。"""
         dev = self._pick(caller, device)
         cid, video, current, entry = self._current(dev)
         if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
-        target = position if position is not None else current + (delta or 0)
+        if fraction is not None or from_end is not None or within:
+            target, refusal = voice.seek_target(video.duration, position, fraction, from_end)
+            if refusal:
+                return {"ok": False, "error": refusal}
+        else:
+            target = position if position is not None else current + (delta or 0)
         target = max(0.0, float(target))
         if video.duration and target >= video.duration - 3:
             # 单用户时也点名这台：语音命令的设备不一定是 target()（手机遥控的那台）。
@@ -1113,7 +1122,11 @@ class Relay:
 
     def room(self, extra: str = "", caller: Caller = LEGACY) -> dict:
         """设备频道列表还剩多少：字节和台数。extra 是准备加的台名。"""
-        rows = self._rows_of(self._account(caller)) + ([("sr00", extra)] if extra else [])
+        return self.room_of(self._account(caller), extra)
+
+    def room_of(self, state: State, extra: str = "") -> dict:
+        """同 room()，按一份状态算（语音订阅按设备主人的状态，见 voice.py）。"""
+        rows = self._rows_of(state) + ([("sr00", extra)] if extra else [])
         used = channel_groups.config_bytes(rows) + CONFIG_SPARE_BYTES
         return {"bytes": max(0, channel_groups.CONFIG_MAX - used),
                 "channels": max(0, channel_groups.CHANNEL_MAX - len(rows)),
@@ -1563,6 +1576,11 @@ def _manage_handler(relay: Relay):
                 self._json(relay.episodes(_EPISODES.match(path).group(1), caller, device))
             elif path == "/api/voice/catalog":
                 self._json(voice.catalog(relay, device, caller))
+            elif path == "/api/voice/search":
+                # 语音搜索视频或 UP 主（server/relay/voice.py）。
+                query = self._query()
+                self._json(voice.search(relay, device, caller, query.get("site"), query.get("q"),
+                                        query.get("wait"), query.get("kind") or "video"))
             elif relay.tenant and path == "/api/devices":
                 self._json({"ok": True, "devices": relay.my_devices(caller)})
             elif relay.tenant and _BIND_INFO.match(path):
@@ -1662,13 +1680,13 @@ def _manage_handler(relay: Relay):
                                            group if isinstance(group, str) else None, caller))
                 return
             if path == "/api/seek":
-                delta, position = body.get("delta"), body.get("position")
-                if not isinstance(delta, (int, float)) and not isinstance(position, (int, float)):
+                # 语音还可能给 fraction、from_end 和 within（server/relay/voice.py 的 seek_target）。
+                given = {k: body.get(k) for k in ("delta", "position", "fraction", "from_end")}
+                given = {k: v for k, v in given.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+                if not given:
                     self._json({"ok": False, "error": "请求格式不对"}, 400)
                     return
-                self._json(relay.seek(delta=delta if isinstance(delta, (int, float)) else None,
-                                      position=position if isinstance(position, (int, float)) else None,
-                                      caller=caller, device=device))
+                self._json(relay.seek(**given, within=body.get("within") is True, caller=caller, device=device))
                 return
             if path == "/api/next":
                 self._json(relay.next(caller, device))
@@ -1701,6 +1719,11 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/resume":
                 self._json(relay.resume(caller, device))
+                return
+            if path in ("/api/voice/cast", "/api/voice/creator"):
+                # 语音搜到的视频投屏、UP 主订阅或播最新（server/relay/voice.py）；device 上面已经认过。
+                act = voice.cast if path == "/api/voice/cast" else voice.creator
+                self._json(act(relay, device, caller, body))
                 return
             if path == "/api/history/play":
                 self._json(relay.replay(str(body.get("site") or ""), str(body.get("id") or ""), caller, device))

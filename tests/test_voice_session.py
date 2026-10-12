@@ -80,6 +80,8 @@ class FakeRelay:
         self.down = False
         self.answers = {}
         self.playing = playing
+        self.slow = False
+        self.found = 8
 
     def catalog(self):
         if self.down:
@@ -110,8 +112,31 @@ class FakeRelay:
     def previous(self):
         return self._do("previous")
 
-    def seek(self, delta=None, position=None):
-        return self._do("seek", delta, position)
+    def seek(self, delta=None, position=None, **share):
+        return self._do("seek", delta, position, *([share] if share else []))
+
+    # ---- voice search (server/relay/voice.py) ----
+
+    def search(self, site, query, timeout, kind="video"):
+        if self.slow:
+            raise RelayError("relay timed out", slow=True)
+        answer = self._do("search", site, kind, query)
+        if "search" in self.answers:
+            return answer
+        if kind == "video":
+            results = [{"id": f"BV1{n:09d}", "title": f"{query} {n}", "uploader": "猫咪", "duration": 60 + n}
+                       for n in range(self.found)]
+        else:
+            results = [{"id": str(546195 + n), "name": f"{query}{n}", "fans": 20840107, "videos": 680,
+                        "latest": {"id": "BV1iqpt6cEMU", "title": "最新的", "duration": 2893} if n == 0 else None}
+                       for n in range(self.found)]
+        return {"ok": True, "site": site, "kind": kind, "results": results}
+
+    def cast_video(self, site, video_id, title="", duration=0):
+        return self._do("cast", site, video_id, title, duration)
+
+    def creator(self, site, creator_id, name, action, timeout):
+        return self._do(action, site, creator_id, name)
 
 
 class SessionTests(unittest.TestCase):
@@ -291,6 +316,26 @@ class SessionTests(unittest.TestCase):
         self.say(ctx=context("up01"))
         self.assertEqual(self.relay.calls, [("pause",), ("seek", 60, None)])
 
+    def test_seek_to_a_share_says_where(self):
+        self.relay.answers["seek"] = {"ok": True, "position": 742.5}
+        self.asr.text = "跳到一半"
+        result = self.say(ctx=context("up01"))[0]
+        self.assertEqual(self.relay.calls, [("seek", None, None, {"fraction": 0.5})])
+        self.assertEqual(result["reply"], "跳到 12 分 22 秒")
+        self.asr.text = "跳到最后"
+        self.say(uid=2, ctx=context("up01"))
+        self.assertEqual(self.relay.calls[-1], ("seek", None, None, {"from_end": 30}))
+        # A spoken time keeps its own reply; past the end the relay's refusal is shown.
+        self.asr.text = "跳到三分二十秒"
+        self.assertEqual(self.say(uid=3, ctx=context("up01"))[0]["reply"], "跳到 3 分 20 秒")
+        self.assertEqual(self.relay.calls[-1], ("seek", None, 200))
+        self.relay.answers["seek"] = {"ok": False, "error": "这个视频只有 23 分 40 秒"}
+        self.asr.text = "跳到一小时"
+        self.assertEqual(self.say(uid=4, ctx=context("up01"))[0]["reply"], "这个视频只有 23 分 40 秒")
+        self.relay.answers["seek"] = {"ok": False, "error": "不知道这个视频有多长，没法按比例跳"}
+        self.asr.text = "跳到三分之一"
+        self.assertEqual(self.say(uid=5, ctx=context("up01"))[0]["reply"], "不知道这个视频有多长，没法按比例跳")
+
     def test_relay_down(self):
         self.asr.text = "暂停"
         self.relay.down = True
@@ -350,13 +395,17 @@ class SessionTests(unittest.TestCase):
         def with_sites():
             data = catalog()
             for row in data["series"] + data["creators"]:
-                row["site"] = "youtube" if row["id"] == "sr02" else "bilibili"
+                row["site"] = "youtube" if row["id"] in ("up01", "sr02") else "bilibili"
             return data
 
         self.relay.catalog = with_sites
         self.asr.text = "我有哪些youtube频道告诉我。"
         result = self.say()[0]
+        # Only the site's creators; its series need 剧 / 剧集.
         self.assertEqual((result["intent"], result["reply"]), ("list", "YouTube 频道有 1 个"))
+        self.assertEqual(result["choices"], [{"label": "小Lin说", "lead": "02", "do": {"channel": "up01"}}])
+        self.asr.text = "YouTube有哪些剧集"
+        result = self.say(uid=3)[0]
         self.assertEqual(result["choices"], [{"label": "熊出没之探险日", "lead": "07", "do": {"channel": "sr02"}}])
         # An older relay without sites: say so instead of guessing.
         self.relay.catalog = catalog
@@ -447,6 +496,188 @@ class SessionTests(unittest.TestCase):
         voice.wait_idle()
         self.assertEqual(first.calls, [("pause",)])
         self.assertEqual(second.calls, [])
+
+
+class SearchSessionTests(unittest.TestCase):
+    """Voice search: results as choices, paging and picking by ref or by voice, the question when
+    it is unclear what to search for, and a creator's two actions. The relay is a fake."""
+
+    def setUp(self):
+        self.asr = FakeAsr()
+        self.relay = FakeRelay()
+        self.now = 100.0
+        self.voice = VoiceService(self.asr, self.relay, lambda _m: None, threaded=False, clock=lambda: self.now)
+        self.uid = 0
+
+    def say(self, text):
+        self.asr.text = text
+        self.uid += 1
+        ctx = context()
+        self.voice.take(ctl("begin", self.uid, rate=16000, codec="adpcm"), ctx)
+        self.voice.take(audio(tone_blocks(1)[0][0], 0), ctx)
+        self.voice.take(ctl("end", self.uid), ctx)
+        results = [json.loads(raw) for raw in self.voice.results()]
+        self.assertEqual(len(results), 1)
+        return results[0]
+
+    def pick(self, ref):
+        self.uid += 1
+        self.voice.take(ctl("pick", self.uid, ref=ref), context())
+        return json.loads(self.voice.results()[0])
+
+    def searches(self):
+        return [c for c in self.relay.calls if c[0] == "search"]
+
+    def test_results_page_by_page_then_cast(self):
+        result = self.say("搜视频猫和老鼠")
+        self.assertEqual(self.searches(), [("search", "bilibili", "video", "猫和老鼠")])
+        self.assertEqual((result["intent"], result["reply"]), ("search", "找到 8 个B站视频"))
+        self.assertNotIn("do", result)
+        self.assertEqual(result["choices"][0], {"label": "猫和老鼠 0 · 1:00", "lead": "01", "ref": "sv:1:0"})
+        self.assertEqual(result["choices"][5], {"label": "下一页 · 还有 3 个", "lead": "", "ref": "sp:1:5"})
+        page = self.pick("sp:1:5")
+        self.assertEqual(page["reply"], "第 6-8 个，共 8 个")
+        self.assertEqual([c["lead"] for c in page["choices"]], ["06", "07", "08"])
+        self.assertEqual(len(self.searches()), 1, "paging does not search again")
+        cast = self.pick("sv:1:6")
+        self.assertEqual(self.relay.calls[-1], ("cast", "bilibili", "BV1000000006", "猫和老鼠 6", 66))
+        self.assertEqual((cast["intent"], cast["reply"], cast["label"]), ("cast", "投屏中…", "猫和老鼠 6"))
+        self.assertNotIn("do", cast, "the relay's cast event switches the device, as for the phone")
+        # The first page's refs went with it.
+        self.assertEqual(self.pick("sp:1:5")["reply"], "这个选项已经过期了")
+
+    def test_pick_and_page_by_voice(self):
+        self.say("搜视频猫和老鼠")
+        page = self.say("下一页")
+        self.assertEqual(page["reply"], "第 6-8 个，共 8 个")
+        self.assertEqual(self.say("还有吗")["reply"], "已经是最后一页了")
+        self.say("搜视频猫和老鼠")
+        self.say("下一页")
+        # The leads count from the top (06…); the row on this page works too.
+        self.assertEqual(self.say("第七个")["intent"], "cast")
+        self.assertEqual(self.relay.calls[-1][2], "BV1000000006")
+        self.say("搜视频猫和老鼠")
+        self.say("播放第二个")
+        self.assertEqual(self.relay.calls[-1][2], "BV1000000001")
+        self.say("搜视频猫和老鼠")
+        self.assertEqual(self.say("第三十个")["reply"], "没有第 30 个")
+
+    def test_unclear_kind_asks_first(self):
+        result = self.say("搜索李子柒")
+        self.assertEqual(self.searches(), [], "it does not guess")
+        self.assertEqual((result["intent"], result["reply"]), ("ask", "要搜视频，还是搜 UP 主？"))
+        self.assertEqual([(c["label"], c["ref"]) for c in result["choices"]],
+                         [("搜视频", "sq:1:v"), ("搜 UP 主", "sq:1:u")])
+        result = self.pick("sq:1:u")
+        self.assertEqual(self.searches(), [("search", "bilibili", "up", "李子柒")])
+        self.assertEqual(result["reply"], "找到 8 个B站 UP 主")
+
+    def test_question_answered_by_voice_keeps_the_site(self):
+        self.say("油管搜一下lofi girl")
+        result = self.say("视频")
+        self.assertEqual(self.searches(), [("search", "youtube", "video", "lofi girl")])
+        self.assertEqual(result["reply"], "找到 8 个YouTube 视频")
+        self.say("搜索罗翔")
+        self.say("UP主")
+        self.assertEqual(self.searches()[-1], ("search", "bilibili", "up", "罗翔"))
+        self.say("搜索罗翔")
+        self.say("第二个")
+        self.assertEqual(self.searches()[-1], ("search", "bilibili", "up", "罗翔"))
+
+    def test_question_expires(self):
+        self.say("搜索罗翔")
+        self.now += voice_session.FOLLOW_UP_S + 1
+        result = self.say("视频")
+        self.assertEqual(self.searches(), [])
+        self.assertNotEqual(result["intent"], "search")
+
+    def test_saying_something_else_drops_the_question(self):
+        self.say("搜索罗翔")
+        self.assertEqual(self.say("湖南卫视")["do"], {"channel": "ch017"})
+        self.say("视频")
+        self.assertEqual(self.searches(), [])
+
+    def test_ordinals_mean_channels_without_results_on_screen(self):
+        self.assertEqual(self.say("第二个")["do"], {"channel": "up01"})
+        self.say("搜视频猫和老鼠")
+        self.say("湖南卫视")
+        self.assertEqual(self.say("第二个")["do"], {"channel": "up01"}, "the results are gone")
+
+    def test_creator_follow_and_latest(self):
+        self.say("搜UP主老番茄")
+        menu = self.pick("su:1:1")
+        self.assertEqual((menu["intent"], menu["reply"]), ("creator", "「老番茄1」：订阅还是看最新？"))
+        self.assertEqual([c["ref"] for c in menu["choices"]], ["sf:1:1", "sl:1:1"])
+        done = self.pick("sf:1:1")
+        self.assertEqual(self.relay.calls[-1], ("follow", "bilibili", "546196", "老番茄1"))
+        self.assertEqual((done["intent"], done["reply"]), ("follow", "已订阅「老番茄1」"))
+        # The newest upload came with the search: cast it straight away.
+        self.say("搜UP主老番茄")
+        self.say("第一个")
+        self.say("播放最新视频")
+        self.assertEqual(self.relay.calls[-1], ("cast", "bilibili", "BV1iqpt6cEMU", "最新的", 2893))
+        # Without it the relay finds it.
+        self.say("搜UP主老番茄")
+        self.pick("su:3:2")
+        self.relay.answers["latest"] = {"ok": True, "pending": True}
+        result = self.say("第二个")
+        self.assertEqual(self.relay.calls[-1], ("latest", "bilibili", "546197", "老番茄2"))
+        self.assertEqual(result["reply"], "正在找最新视频，找到就播")
+
+    def test_relay_refusals_are_shown(self):
+        self.say("搜UP主老番茄")
+        self.pick("su:1:0")
+        self.relay.answers["follow"] = {"ok": False, "error": "最多只能订阅 12 个 UP 主"}
+        result = self.pick("sf:1:0")
+        self.assertEqual((result["intent"], result["reply"]), ("none", "最多只能订阅 12 个 UP 主"))
+        self.relay.answers["search"] = {"ok": False, "error": "YouTube 搜索太慢了，稍后再试"}
+        self.assertEqual(self.say("油管搜视频lofi")["reply"], "YouTube 搜索太慢了，稍后再试")
+
+    def test_slow_or_missing_relay(self):
+        self.relay.slow = True
+        self.assertEqual(self.say("油管搜视频lofi")["reply"], "YouTube 搜索太慢了，稍后再试")
+        self.assertEqual(self.say("搜视频猫和老鼠")["reply"], "B站搜索太慢了，稍后再试")
+        self.relay.slow = False
+        self.relay.down = True
+        self.assertEqual(self.say("搜视频猫和老鼠")["reply"], voice_session.REPLY_RELAY_DOWN)
+        self.voice.relay = None
+        self.assertEqual(self.say("搜视频猫和老鼠")["reply"], voice_session.REPLY_NO_RELAY)
+
+    def test_no_time_left_does_not_search(self):
+        saved = voice_session.RESULT_BUDGET_S
+        voice_session.RESULT_BUDGET_S = 0.5
+        try:
+            self.assertEqual(self.say("搜视频猫和老鼠")["reply"], "B站搜索太慢了，稍后再试")
+        finally:
+            voice_session.RESULT_BUDGET_S = saved
+        self.assertEqual(self.searches(), [])
+
+    def test_nothing_found(self):
+        self.relay.found = 0
+        result = self.say("搜视频没有的东西")
+        self.assertEqual((result["intent"], result["reply"]), ("none", "B站没搜到「没有的东西」"))
+        self.assertNotIn("choices", result)
+
+    def test_stale_refs(self):
+        self.say("搜视频猫和老鼠")
+        self.say("搜视频熊出没")
+        self.assertEqual(self.pick("sv:1:0")["reply"], "这个选项已经过期了")
+        self.assertEqual(self.pick("sv:2:99")["reply"], "这个选项已经过期了")
+        self.voice.reset()
+        self.assertEqual(self.pick("sv:2:0")["reply"], "这个选项已经过期了")
+        self.assertEqual([c for c in self.relay.calls if c[0] == "cast"], [])
+
+    def test_results_fit_the_device(self):
+        self.relay.answers["search"] = {"ok": True, "results": [
+            {"id": f"BV1{n:09d}", "title": "很长的标题" * 20 + "🤓", "uploader": "长" * 50, "duration": 10 ** 6}
+            for n in range(20)]}
+        result = self.say("搜视频猫和老鼠")
+        self.assertEqual(len(result["choices"]), 6)
+        raw = encode_result(result)
+        self.assertLessEqual(len(raw), VOICE_RESULT_MAX)
+        for choice in result["choices"]:
+            self.assertLessEqual(len(choice["label"].encode("utf-8")), 47)
+            self.assertLessEqual(len(choice["ref"]), 31)
 
 
 class _AsrHandler(http.server.BaseHTTPRequestHandler):
@@ -546,6 +777,17 @@ class RelayClientTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 RelayClient(url, "key", "Passport")
         RelayClient("http://localhost:8100/", "key", "Passport")
+
+    def test_seek_bodies(self):
+        client = RelayClient("http://127.0.0.1:9", "key", "Passport")
+        sent = []
+        client.post = lambda path, body=None: sent.append((path, body)) or {"ok": True}
+        client.seek(delta=-30)
+        client.seek(position=200)
+        client.seek(fraction=0.5)
+        client.seek(from_end=30)
+        self.assertEqual(sent, [("/api/seek", {"delta": -30}), ("/api/seek", {"position": 200, "within": True}),
+                                ("/api/seek", {"fraction": 0.5}), ("/api/seek", {"from_end": 30})])
 
     def test_unreachable(self):
         client = RelayClient("http://127.0.0.1:9", "key", "Passport", timeout=0.5)

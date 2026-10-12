@@ -6,8 +6,10 @@ B 站对阿里云这个地址的视频网页和带签名（wbi）的列表接口
 
 from __future__ import annotations
 
+import html
 import json
 import re
+import time
 import urllib.parse
 import urllib.request
 
@@ -34,6 +36,10 @@ _NAME_NOISE = re.compile(r"【[^】]*】|\[[^\]]*\]|（[^）]*）|\([^)]*\)|《|
                          re.IGNORECASE)
 # 开头括号里是这些说明时不是剧名：「【4K/国产动画】」「【480P/美国/动画】」。
 _NAME_TAGS = ("动画", "国产", "上美", "字幕", "/")
+# 语音搜索：一次最多给几个结果（接口一页 20 个），每次等多久（语音结果设备只等 8 秒）。
+SEARCH_MAX = 20
+SEARCH_TIMEOUT_S = 4.0
+_TAGS = re.compile(r"<[^>]*>")
 
 
 class SourceError(RuntimeError):
@@ -43,9 +49,11 @@ class SourceError(RuntimeError):
     为假表示网络或解析问题，稍后可能恢复。
     """
 
-    def __init__(self, message: str, permanent: bool = False):
+    def __init__(self, message: str, permanent: bool = False, reason: str = ""):
         super().__init__(message)
         self.permanent = permanent
+        # 语音搜索要分开说的原因：slow（超时）、busy（YouTube 节点正忙）；其余为空。
+        self.reason = reason
 
 
 # 最早只有 B 站时的名字，保留给已有代码。
@@ -127,11 +135,98 @@ def short_link(text: str) -> str | None:
     return None
 
 
-def _fetch_json(url: str, cookie: str) -> dict:
+def _fetch_json(url: str, cookie: str, timeout: float = TIMEOUT_S) -> dict:
     request = urllib.request.Request(url, headers={
         "User-Agent": UA, "Referer": REFERER, "Cookie": cookie})
-    with urllib.request.urlopen(request, timeout=TIMEOUT_S) as answer:
+    with urllib.request.urlopen(request, timeout=timeout) as answer:
         return json.loads(answer.read(MAX_ANSWER_BYTES))
+
+
+def timed_out(error: BaseException) -> bool:
+    """超时（套接字超时，或 urllib 包着的超时）。"""
+    reason = getattr(error, "reason", None)
+    return isinstance(error, TimeoutError) or isinstance(reason, TimeoutError) \
+        or "timed out" in str(error)
+
+
+def parse_duration(value) -> int:
+    """搜索结果的时长：「12:34」「1704:3」（分可以过 60）「1:02:03」，或秒数。看不懂为 0。"""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    parts = str(value or "").strip().split(":")
+    if not 2 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        return 0
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds
+
+
+def clean_title(text) -> str:
+    """去掉搜索结果标题里的 <em class="keyword"> 高亮和 HTML 转义。"""
+    return " ".join(html.unescape(_TAGS.sub("", str(text or ""))).split())
+
+
+def search_hits(data: dict, limit: int = SEARCH_MAX) -> list[dict]:
+    """搜索接口的 data → [{"id", "title", "uploader", "duration"}]。
+
+    只留能投屏的普通视频：付费（is_pay、badgepay）、充电专属（is_charge_video）、课程（ketang）、
+    番剧和直播间不要；时长看不懂的也不要。"""
+    hits, seen = [], set()
+    for item in (data or {}).get("result") or []:
+        if not isinstance(item, dict) or item.get("type") != "video":
+            continue
+        bvid = str(item.get("bvid") or "")
+        if not _BVID.match(bvid) or bvid in seen or not _playable(item):
+            continue
+        title, duration = clean_title(item.get("title")), parse_duration(item.get("duration"))
+        if not title or duration <= 0:
+            continue
+        seen.add(bvid)
+        hits.append({"id": bvid, "title": title, "uploader": clean_title(item.get("author"))[:40],
+                     "duration": duration})
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+def _playable(item: dict) -> bool:
+    """搜索结果里的一个视频能不能投屏：付费、充电专属、番剧、课程、直播间都不行。"""
+    url = str(item.get("arcurl") or "")
+    return not (item.get("is_pay") or item.get("is_charge_video") or item.get("badgepay") is True
+                or item.get("is_live_room_inline") or "/bangumi/" in url or "/cheese/" in url
+                or "live.bilibili.com" in url)
+
+
+def creator_hits(data: dict, limit: int = SEARCH_MAX) -> list[dict]:
+    """UP 主搜索的 data → [{"id": mid, "name", "fans", "videos", "latest"}]。
+
+    没有投稿的不要（订阅了也没得播）。latest 是搜索结果顺带给的最新一个能投屏的投稿
+    （{"id", "title", "duration"}），「播放最新视频」用它就不必再问一次 B 站；没有时为 None。"""
+    hits, seen = [], set()
+    for item in (data or {}).get("result") or []:
+        if not isinstance(item, dict) or item.get("type") != "bili_user":
+            continue
+        mid, name = str(item.get("mid") or ""), clean_title(item.get("uname"))
+        videos, fans = item.get("videos"), item.get("fans")
+        if not mid.isdigit() or len(mid) > 20 or mid in seen or not name:
+            continue
+        if not isinstance(videos, int) or isinstance(videos, bool) or videos <= 0:
+            continue
+        latest = None
+        for video in item.get("res") or []:
+            if isinstance(video, dict) and _BVID.match(str(video.get("bvid") or "")) and _playable(video):
+                title, duration = clean_title(video.get("title")), parse_duration(video.get("duration"))
+                if title and duration > 0:
+                    latest = {"id": video["bvid"], "title": title, "duration": duration}
+                break
+        seen.add(mid)
+        hits.append({"id": mid, "name": name[:40], "videos": videos,
+                     "fans": fans if isinstance(fans, int) and not isinstance(fans, bool) else 0,
+                     "latest": latest})
+        if len(hits) >= limit:
+            break
+    return hits
 
 
 def _resolve(url: str) -> str:
@@ -146,17 +241,29 @@ class Bilibili:
         self._resolve = resolve or _resolve
         self._cookie = ""
 
-    def _call(self, path: str, **params) -> dict:
+    def _call(self, path: str, _timeout: float | None = None, **params) -> dict:
+        # 只有语音搜索给 _timeout：取 buvid3 和搜索两次请求加起来不超过它（设备只等 8 秒）；
+        # 其余用默认的 TIMEOUT_S。
+        fetch = self._fetch
+        if _timeout is not None:
+            deadline = time.monotonic() + _timeout
+
+            def fetch(url, cookie):
+                left = deadline - time.monotonic()
+                if left <= 0.05:
+                    raise TimeoutError("timed out")
+                return self._fetch(url, cookie, timeout=left)
         try:
             if not self._cookie:
-                spi = self._fetch(f"{API}/x/frontend/finger/spi", "")
+                spi = fetch(f"{API}/x/frontend/finger/spi", "")
                 self._cookie = f"buvid3={spi['data']['b_3']}"
             url = f"{API}{path}?{urllib.parse.urlencode(params)}"
-            answer = self._fetch(url, self._cookie)
+            answer = fetch(url, self._cookie)
         except (OSError, ValueError, KeyError, TypeError) as error:
             # 出错后换一个 buvid3 再试，旧的可能已被风控。
             self._cookie = ""
-            raise BilibiliError(f"{path}: {type(error).__name__}: {error}") from None
+            raise BilibiliError(f"{path}: {type(error).__name__}: {error}",
+                                reason="slow" if timed_out(error) else "") from None
         if not isinstance(answer, dict):
             answer = {}
         if answer.get("code") != 0:
@@ -282,6 +389,19 @@ class Bilibili:
 
     def video_id(self, text: str) -> str | None:
         return parse_video_link(self._expand(text))
+
+    def search(self, query: str, limit: int = SEARCH_MAX, timeout: float = SEARCH_TIMEOUT_S) -> list[dict]:
+        """语音搜索视频：综合排序的第一页（不带签名的搜索接口）。"""
+        data = self._call("/x/web-interface/search/type", _timeout=timeout, search_type="video",
+                          keyword=query, page=1)
+        return search_hits(data, limit)
+
+    def search_creators(self, query: str, limit: int = SEARCH_MAX,
+                        timeout: float = SEARCH_TIMEOUT_S) -> list[dict]:
+        """语音搜索 UP 主：[{"id": mid, "name", "fans", "videos", "latest"}]。"""
+        data = self._call("/x/web-interface/search/type", _timeout=timeout, search_type="bili_user",
+                          keyword=query, page=1)
+        return creator_hits(data, limit)
 
     def video(self, bvid: str) -> Video:
         view = self._call("/x/web-interface/view", bvid=bvid)

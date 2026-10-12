@@ -252,7 +252,8 @@ A result:
   `{"label","lead","do"}`, or `{"label","lead","ref"}` when choosing needs the
   server (`ep:<series>:<n>`, an episode of one of two series, through the relay;
   `ls:<site>.<kind>.<group>:<offset>`, the next page of a list or one group of
-  the overview); the device then sends `pick` with that `ref` and the server
+  the overview; `s<op>:<search>:<arg>`, a search result, its next page, the
+  question or a creator's action, see below); the device then sends `pick` with that `ref` and the server
   answers with a new result for the same `id`. Only the refs of the latest
   result are accepted. Wi-Fi setup always comes as two choices (enter setup /
   cancel), because it ends playback.
@@ -296,7 +297,8 @@ is exactly a channel's name or alias ("dian shi ju" stays CCTV-8). The answer
 is `intent` `list` (`choices` for a bare category) with a reply that counts
 them and the channels as choices (`do`); more than six are paged five at a time
 with a last "next page, N more" row (an `ls:` ref). A site and nothing else
-lists every channel from that site (creators and series). With no category
+("wo you na xie YouTube pin dao", "B zhan you na xie pin dao") lists that site's
+creators only; its series need "ju" / "ju ji" ("YouTube you na xie ju ji"). With no category
 ("dou you shen me tai", "you shen me ke yi kan de") the groups are listed, each
 row opening that group's list. An empty category is `none` with a clear reply
 ("no YouTube series yet"); a site asked for while the relay did not report
@@ -306,7 +308,99 @@ creator and series.
 
 A named series that does not exist ("Hu lu wa di 3 ji"), or a play verb
 followed by a name that matches nothing ("wo yao kan Hu lu wa"), replies "could
-not find" with that name, still with `intent` `none` for the low earcon.
+not find" with that name, still with `intent` `none` for the low earcon; the
+second case adds "you can say 'sou suo Hu lu wa'".
+
+### Seeking
+
+On creator, series and cast channels (live channels keep "a live channel cannot
+..."): restart ("cong tou bo", "hui dao kai tou", "cong di yi miao kai shi",
+"chong xin kan zhe ji"); a time with combined units ("tiao dao 3 fen 20 miao",
+"tiao dao yi ge xiao shi ling wu fen san shi miao", "12 fen ban", "ban xiao shi",
+"di 90 miao", "12:30" or "12 dian 30" as the recogniser writes it, "cong 5 fen
+zhong kai shi bo", "bo dao 10 fen zhong de di fang", "dao 3 fen 20"); a share of
+the video ("tiao dao yi ban" / "zhong jian", "san fen zhi yi", "si fen zhi san",
+"bai fen zhi liu shi" / "60%", "tiao dao zui hou" = 30 s before the end); and
+relative jumps with combined units ("kuai jin 1 fen 30 miao", "hou tui ban fen
+zhong", "wang hui dao 20 miao"). A share, or a time said without "tiao dao" /
+"dao" / "cong", is not a seek ("yi ban" alone, "di san ji" stays an episode).
+The parser normalises the transcript itself (`intent.seek_text`), because the
+shared normalisation drops the colon in "12:30" and the percent sign. The relay
+works out shares from the playing video's own duration (`POST /api/seek` takes
+`fraction` and `from_end` as well as `delta` and `position`), so it is never
+stale, and answers "bu zhi dao zhe ge shi pin you duo chang" when the duration
+is unknown; the reply then says where it went ("tiao dao 12 fen 22 miao"). A
+spoken time past the end (`within: true`, sent with every voice `position`) is
+refused with the video's length ("zhe ge shi pin zhi you 23 fen 40 miao")
+instead of skipping to the next video, as the phone's progress bar does.
+
+### Searching videos and creators
+
+Voice only (the phone page has no search box). A search is recognised only
+when the sentence starts with a search verb ("sou", "sou suo", "sou yi xia",
+"bang wo sou"; "zhao" only together with "video" or "UP zhu") or ends in "...
+de shi pin" ("wo xiang kan ... de shi pin", "fang yi ge ... de shi pin"), so
+"wo xiang kan Hunan wei shi", "wo yao kan Quan ye cha di 3 ji", "kan ti yu",
+list questions and playback or volume commands keep their meaning. It is
+checked right after the status page, before volume and playback, because the
+words searched for may contain "da sheng" and the like.
+
+- **Site**: Bilibili by default; YouTube when the sentence says YouTube / "you
+  guan" / "you tu" ("you guan sou lofi", "zai YouTube shang zhao lofi de shi
+  pin"). The site is remembered across the question below.
+- **Kind**: videos ("sou shi pin X", "sou suo X shi pin", "zhao X de shi pin",
+  "wo xiang kan X de shi pin") or creators ("sou UP zhu X", "sou bo zhu X",
+  "zhao X zhe ge UP zhu", "sou pin dao X", "sou you guan pin dao X", "YouTube
+  shang zhao X pin dao"). When it is unclear ("sou suo Li Zi Qi", "sou yi xia
+  Lao Fan Qie", "bang wo sou Luo Xiang") the server does not guess: the result
+  is `intent` `ask`, reply "search videos or UP zhu?" and two choices ("sou shi
+  pin" / "sou UP zhu", refs `sq:<n>:v` / `sq:<n>:u`). It stays on screen like
+  any list; the next utterance within 30 s may also answer it ("shi pin", "UP
+  zhu", "bo zhu", "YouTube de shi pin", "di yi ge"). Anything else drops the
+  question.
+- **Results** are choices, five per page plus "next page, N more" (`sp:<n>:<offset>`),
+  numbered from the top in `lead` (`01`...`20`). A video row is the title, then
+  " · duration" and " · uploader" when they fit the row (22 columns); a creator
+  row is the name and " · 2084 wan fen" (followers) or the video count. Labels
+  drop characters the device's font cannot draw (emoji) and are cut to 47 bytes.
+  Choosing a video (`sv:<n>:<i>`) casts it through the relay: the device switches
+  to "my cast", plays it and goes back to its channel at the end, exactly like a
+  phone cast. Choosing a creator (`su:<n>:<i>`) offers "subscribe as a channel"
+  (`sf:`) and "play the newest video" (`sl:`). While results are on screen,
+  "xia yi ye" pages and "di er ge" / "bo fang di san ge" picks by voice (the
+  number in the row's lead, or the row on the page); "ding yue" / "bo fang zui
+  xin" answer the creator's two choices. Without results on screen "di er ge"
+  keeps meaning channel 2. Only refs of the latest search are accepted.
+- **Filtering**: Bilibili drops paid (`is_pay`, `badgepay`), charge-only
+  (`is_charge_video`), bangumi and course pages, live rooms and entries without
+  a duration; creators without uploads are dropped. YouTube drops live,
+  upcoming and just-ended streams, Shorts, deleted or private entries and
+  entries without a duration. Members-only videos cannot be told from the
+  search data; they fail like a phone cast does.
+- **Latency**: the device waits 8 s for a result. The media server gives the
+  relay what is left of 7 s after recognition (`RESULT_BUDGET_S`) and the relay
+  asks the site for 0.7 s less, so a slow site answers "B zhan / YouTube sou
+  suo tai man le, shao hou zai shi" in time. Bilibili search is one unsigned
+  request (`/x/web-interface/search/type`, `search_type=video` or `bili_user`,
+  with the buvid3 cookie; no wbi signature needed), about 1 s. YouTube goes to
+  the node's `/yt/search` (yt-dlp, one at a time): the node waits at most 3 s for
+  a running yt-dlp and answers busy otherwise, and it finishes a search even
+  when the relay gave up, so saying it again is quick. Results are cached for 5
+  minutes on the relay and 10 minutes on the node.
+- **Subscribing** adds the creator like the phone's "add UP zhu" (same 12-creator
+  limit, and only when the device's channel list still fits CONFIG), to the
+  device owner's subscriptions; it is the one piece of account data a device
+  guest may change. "Play the newest" casts the newest upload (Bilibili's
+  search already carries it). Both may need the site for longer than a voice
+  result can wait (listing a YouTube channel takes 10-20 s); the relay then
+  answers "pending" and finishes in the background: the new channel appears in
+  the device's list, the cast switches the device as usual.
+
+Relay endpoints (always with `device`, served as that device's guest in
+multi-user mode): `GET /api/voice/search?device=&site=bilibili|youtube&kind=video|up&q=&wait=`,
+`POST /api/voice/cast {device, site, id, title, duration}`,
+`POST /api/voice/creator {device, site, id, name, action: follow|latest, wait}`.
+The node endpoint is `GET /yt/search?q=&n=&kind=video|channel`.
 
 Relay actions always carry `device`, so they act on the device that spoke, not
 on the one the phone is driving (`Relay.target()`). Which device that is depends
@@ -321,9 +415,10 @@ In multi-user mode the relay key is the admin, who controls only the admin's
 own devices, yet a media unit may serve anyone's device. So a request with the
 key (`X-Key`) that names a device on a single-device endpoint (`switch`, `seek`,
 `next`, `previous`, `pause`, `resume`, `device`, `audio`, `pet`,
-`series/<id>/play`, `series/<id>/episodes`, `voice/catalog`) is served as that
-device's **guest**: that one device, its owner's series and progress, no account
-data. Names are not accepted there (users choose them, so they are not unique),
+`series/<id>/play`, `series/<id>/episodes`, `voice/catalog`, `voice/search`,
+`voice/cast`, `voice/creator`) is served as that device's **guest**: that one
+device, its owner's series and progress, no account data except a voice
+subscription to the owner's creators. Names are not accepted there (users choose them, so they are not unique),
 and an unknown or unbound id answers 404. Phones (cookie sessions) keep their
 own rules. An unbound device gets neither `voice` in CONFIG nor a relay client.
 An utterance finishes with the relay client of the session it started in.
@@ -352,7 +447,10 @@ An utterance finishes with the relay client of the session it started in.
    not connected to the relay. The unit's user must be in the `tvserver` group
    (the socket) and able to read the key file.
 3. The relay needs this version (it accepts `device` on its POST endpoints and
-   serves `GET /api/voice/catalog`). Restart order: muse-asr, tv-relay, then the
+   serves `GET /api/voice/catalog` and the search endpoints); searching YouTube
+   also needs this version of the YouTube node (`server/relay/ytnode.py`, for
+   `/yt/search`); with an older node YouTube search answers that YouTube did not
+   respond, and Bilibili search works. Restart order: muse-asr, tv-relay, then the
    media servers. Multi-user mode adds nothing for voice: the drop-ins in
    `packaging/systemd/tenancy/` leave these variables alone
    ([runbook](../docs/development/tenancy-phase1-runbook.md#voice-control-in-both-modes)).

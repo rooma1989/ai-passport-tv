@@ -6,7 +6,9 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
+import urllib.parse
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -14,8 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from server import now_playing
-from server.relay import events, web
-from server.relay.state import State
+from server.relay import events, voice, web
+from server.relay.bilibili import BilibiliError
+from server.relay.state import MAX_CREATORS, State, Video
 from server.relay.tenants import Caller
 from server.tenancy import files as device_files
 from server.tenancy.accounts import Accounts
@@ -148,6 +151,186 @@ class VoiceRelayTests(unittest.TestCase):
             wrong.catalog()
 
 
+class SearchClient(FakeClient):
+    """FakeClient plus the voice search, the way bilibili.Bilibili answers it."""
+
+    def __init__(self):
+        super().__init__()
+        self.searches = []
+        self.error = None
+        self.creator_delay = 0.0
+
+    def search(self, query, limit=20, timeout=4.0):
+        self.searches.append(("video", query, timeout))
+        if self.error:
+            raise self.error
+        return [{"id": f"BV1{n:09d}", "title": f"{query} {n}", "uploader": "猫咪", "duration": 60 + n}
+                for n in range(8)]
+
+    def search_creators(self, query, limit=20, timeout=4.0):
+        self.searches.append(("up", query, timeout))
+        if self.error:
+            raise self.error
+        return [{"id": "546195", "name": "老番茄", "fans": 20840107, "videos": 680, "latest": None}]
+
+    def creator(self, mid):
+        time.sleep(self.creator_delay)
+        return super().creator(mid)
+
+
+class FakeYouTube:
+    def __init__(self):
+        self.asked = []
+
+    def creator(self, channel):
+        self.asked.append(channel)
+        return "Lofi Girl", [Video(bvid="n61ULEU7CO0", title="1 A.M Study Session", duration=3615, pubdate=0,
+                                   site="youtube")]
+
+    def uploads(self, channel):
+        return self.creator(channel)[1]
+
+
+class VoiceSearchRelayTests(unittest.TestCase):
+    """GET /api/voice/search, POST /api/voice/cast and /api/voice/creator: always for the named
+    device (the Passport here, while the phone follows the Xingzhi)."""
+
+    setUp = VoiceRelayTests.setUp
+    tearDown = VoiceRelayTests.tearDown
+    call = VoiceRelayTests.call
+
+    def client(self) -> SearchClient:
+        client = SearchClient()
+        self.relay.clients["bilibili"] = client
+        return client
+
+    def search(self, query="猫和老鼠", site="bilibili", kind="video", device="Passport", **extra):
+        params = urllib.parse.urlencode(dict(device=device, site=site, kind=kind, q=query, **extra))
+        return self.call("GET", f"/api/voice/search?{params}")[1]
+
+    def test_search_videos_and_creators(self):
+        client = self.client()
+        answer = self.search()
+        self.assertEqual((answer["ok"], answer["site"], answer["kind"]), (True, "bilibili", "video"))
+        self.assertEqual(answer["results"][0], {"id": "BV1000000000", "title": "猫和老鼠 0", "uploader": "猫咪",
+                                                "duration": 60})
+        answer = self.search("老番茄", kind="up")
+        self.assertEqual(answer["results"][0]["name"], "老番茄")
+        self.assertEqual([k for k, _, _ in client.searches], ["video", "up"])
+
+    def test_search_is_cached_briefly(self):
+        client = self.client()
+        self.search()
+        self.search("  猫和老鼠 ")
+        self.assertEqual(len(client.searches), 1)
+        self.now += voice.SEARCH_CACHE_S + 1
+        self.search()
+        self.assertEqual(len(client.searches), 2)
+
+    def test_search_waits_as_asked(self):
+        client = self.client()
+        for n, (wait, used) in enumerate((("2.5", 2.5), ("0.1", voice.WAIT_MIN_S), ("99", voice.WAIT_MAX_S),
+                                          ("nan", voice.WAIT_DEFAULT_S), ("x", voice.WAIT_DEFAULT_S))):
+            self.search(f"词{n}", wait=wait)
+            self.assertEqual(client.searches[-1][2], used, wait)
+
+    def test_search_failures(self):
+        client = self.client()
+        client.error = BilibiliError("timed out", reason="slow")
+        self.assertEqual(self.search(), {"ok": False, "error": "B站搜索太慢了，稍后再试", "reason": "slow"})
+        client.error = BilibiliError("code=-412", permanent=True)
+        self.assertEqual(self.search("别的")["error"], "B站没回应，稍后再试")
+        self.assertEqual(self.search(site="youtube")["error"], "YouTube 还没配置好")
+        for bad in (dict(site="tiktok"), dict(kind="playlist"), dict(query="   ")):
+            self.assertEqual(self.search(**bad)["error"], "请求格式不对", bad)
+        self.assertEqual(self.search(device="Nobody")["error"], "没有这台设备")
+
+    def test_cast_a_result_on_the_named_device(self):
+        status, answer = self.call("POST", "/api/voice/cast", {"device": "Passport", "site": "bilibili",
+                                                               "id": "BV1yi7rzDEWc", "title": "经典欣赏",
+                                                               "duration": 102243})
+        self.assertEqual((status, answer["ok"], answer["title"]), (200, True, "经典欣赏"))
+        self.assertEqual(events.read_event(self.pp_events).action, "cast")
+        self.assertIsNone(events.read_event(self.xz_events), "the phone's device is untouched")
+        self.assertEqual((self.relay.state.cast.bvid, self.relay.state.cast.duration), ("BV1yi7rzDEWc", 102243))
+        # Without a title the relay asks the site, like the phone's cast.
+        answer = self.call("POST", "/api/voice/cast", {"device": "Passport", "site": "bilibili",
+                                                       "id": "BV1EhAaeXEYu"})[1]
+        self.assertEqual(answer["title"], "tBV1EhAaeXEYu")
+        for bad in ({"site": "bilibili", "id": "BV1"}, {"site": "youtube", "id": "BV1yi7rzDEWc"},
+                    {"site": "bilibili", "id": 3}):
+            answer = self.call("POST", "/api/voice/cast", dict(bad, device="Passport"))[1]
+            self.assertFalse(answer["ok"], bad)
+
+    def test_follow_a_creator(self):
+        self.client()
+        body = {"device": "Passport", "site": "bilibili", "id": "546195", "name": "老番茄", "action": "follow"}
+        answer = self.call("POST", "/api/voice/creator", body)[1]
+        self.assertEqual(answer, {"ok": True, "creator": {"id": "up02", "name": "UP546195"}})
+        self.assertEqual(self.relay.state.get("up02").source, "546195")
+        self.assertIn("up02", (Path(self.tmp.name) / "relay.txt").read_text(encoding="utf-8"))
+        self.assertEqual(self.call("POST", "/api/voice/creator", body)[1],
+                         {"ok": False, "error": "已经订阅过「老番茄」了"})
+        # The creator from setUp (mid 42) too.
+        answer = self.call("POST", "/api/voice/creator", dict(body, id="42", name="UP42"))[1]
+        self.assertEqual(answer["error"], "已经订阅过「UP42」了")
+
+    def test_follow_respects_the_limits(self):
+        self.client()
+        body = {"device": "Passport", "site": "bilibili", "name": "x", "action": "follow"}
+        for mid in range(100, 100 + MAX_CREATORS - 1):
+            self.assertTrue(self.call("POST", "/api/voice/creator", dict(body, id=str(mid)))[1]["ok"], mid)
+        answer = self.call("POST", "/api/voice/creator", dict(body, id="999"))[1]
+        self.assertEqual(answer, {"ok": False, "error": f"最多只能订阅 {MAX_CREATORS} 个 UP 主"})
+        self.relay.state.remove("up05")
+        self.relay.room_of = lambda state, extra="": {"fits": False}
+        answer = self.call("POST", "/api/voice/creator", dict(body, id="999"))[1]
+        self.assertEqual(answer, {"ok": False, "error": "频道列表满了，先删掉几个台"})
+
+    def test_follow_a_youtube_channel(self):
+        yt = self.relay.clients["youtube"] = FakeYouTube()
+        answer = self.call("POST", "/api/voice/creator", {"device": "Passport", "site": "youtube",
+                                                          "id": "UCSJ4gkVC6NrvII8umztf0Ow", "name": "Lofi Girl",
+                                                          "action": "follow"})[1]
+        self.assertTrue(answer["ok"])
+        self.assertEqual(yt.asked, ["https://www.youtube.com/channel/UCSJ4gkVC6NrvII8umztf0Ow"])
+        self.assertEqual(self.relay.state.get(answer["creator"]["id"]).site, "youtube")
+        bad = self.call("POST", "/api/voice/creator", {"device": "Passport", "site": "youtube", "id": "@LofiGirl",
+                                                       "name": "x", "action": "follow"})[1]
+        self.assertEqual(bad["error"], "请求格式不对")
+
+    def test_newest_upload(self):
+        self.client()
+        answer = self.call("POST", "/api/voice/creator", {"device": "Passport", "site": "bilibili", "id": "77",
+                                                          "name": "x", "action": "latest"})[1]
+        self.assertEqual((answer["ok"], answer["title"]), (True, "tnew"))
+        self.assertEqual(events.read_event(self.pp_events).action, "cast")
+        self.assertIsNone(events.read_event(self.xz_events))
+
+    def test_slow_follow_finishes_in_the_background(self):
+        client = self.client()
+        client.creator_delay = 1.5
+        answer = self.call("POST", "/api/voice/creator", {"device": "Passport", "site": "bilibili", "id": "77",
+                                                          "name": "x", "action": "follow", "wait": 1})[1]
+        self.assertEqual(answer, {"ok": True, "pending": True})
+        self.assertIsNone(self.relay.state.get("up02"))
+        deadline = time.monotonic() + 5
+        while self.relay.state.get("up02") is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(self.relay.state.get("up02").source, "77")
+
+    def test_media_server_client(self):
+        self.client()
+        client = RelayClient(self.base, KEY, "Passport")
+        answer = client.search("bilibili", "猫和老鼠", 3.0, "video")
+        self.assertEqual(len(answer["results"]), 8)
+        self.assertTrue(client.cast_video("bilibili", "BV1000000003", "猫和老鼠 3", 63)["ok"])
+        self.assertEqual(self.relay.state.cast.title, "猫和老鼠 3")
+        answer = client.creator("bilibili", "546195", "老番茄", "follow", 3.0)
+        self.assertEqual(answer["creator"]["name"], "UP546195")
+        self.assertEqual(client.creator("bilibili", "546195", "老番茄", "follow", 3.0)["ok"], False)
+
+
 class TenantVoiceRelayTests(unittest.TestCase):
     """Multi-user relay (--db): the media server holds the relay key, which is the admin, but a
     device it serves may belong to anyone. A keyed request that names a device acts as that
@@ -246,6 +429,25 @@ class TenantVoiceRelayTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in answer["series"]], ["sr01"])
         status, answer = self.call("GET", f"/api/voice/catalog?device={ADMIN_DEVICE}")
         self.assertEqual(answer["series"], [], "the admin has no series")
+
+    def test_device_scoped_search_and_follow_are_the_owners(self):
+        self.relay.clients["bilibili"] = SearchClient()
+        status, answer = self.call("GET", f"/api/voice/search?device={BOB_DEVICE}&site=bilibili&kind=up&q=x")
+        self.assertEqual((status, answer["ok"]), (200, True))
+        status, answer = self.call("POST", "/api/voice/creator", {"device": BOB_DEVICE, "site": "bilibili",
+                                                                  "id": "546195", "name": "老番茄",
+                                                                  "action": "follow"})
+        self.assertEqual((status, answer["ok"]), (200, True))
+        self.assertEqual(self.relay.user_state(self.bob).get(answer["creator"]["id"]).source, "546195")
+        self.assertEqual([c.id for c in self.relay.user_state(self.admin).creators], [])
+        status, answer = self.call("POST", "/api/voice/cast", {"device": BOB_DEVICE, "site": "bilibili",
+                                                               "id": "BV1yi7rzDEWc", "title": "经典欣赏"})
+        self.assertEqual((status, answer["ok"]), (200, True))
+        self.assertEqual(events.read_event(self.files(BOB_DEVICE).events).action, "cast")
+        self.assertIsNone(events.read_event(self.files(ADMIN_DEVICE).events))
+        # Someone else's (or no) device is not reachable.
+        self.assertEqual(self.call("POST", "/api/voice/creator", {"device": "cccccccccccc", "site": "bilibili",
+                                                                  "id": "1", "action": "follow"})[0], 404)
 
     def test_media_server_client_per_device(self):
         factory = lambda device: RelayClient(self.base, KEY, device)

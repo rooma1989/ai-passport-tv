@@ -30,6 +30,39 @@ LISTING = {"channel": "Linus Tech Tips", "channel_url": "https://www.youtube.com
                        {"id": "bbbbbbbbbbb", "title": "old"}, {"id": "bad", "title": "x"}]}
 
 
+# Voice search: what `yt-dlp --flat-playlist -J ytsearchN:…` prints, trimmed: a live stream, an
+# upcoming premiere, a Short, a deleted entry and one without a duration among the videos.
+SEARCH_LISTING = {"id": "lofi", "title": "lofi", "_type": "playlist", "_version": {"version": "2026.08.19"},
+                  "entries": [
+    {"_type": "url", "ie_key": "Youtube", "id": "jfKfPfyJRdk", "url": "https://www.youtube.com/watch?v=jfKfPfyJRdk",
+     "title": "lofi hip hop radio 📚 beats to relax/study to", "duration": None, "channel": "Lofi Girl",
+     "live_status": "is_live"},
+    {"_type": "url", "ie_key": "Youtube", "id": "n61ULEU7CO0", "url": "https://www.youtube.com/watch?v=n61ULEU7CO0",
+     "title": "Lofi Girl - 1 A.M Study Session", "duration": 3615.0, "channel": "Lofi Girl", "live_status": None},
+    {"_type": "url", "ie_key": "Youtube", "id": "upcomingAAA", "url": "https://www.youtube.com/watch?v=upcomingAAA",
+     "title": "Premiere", "duration": None, "live_status": "is_upcoming"},
+    {"_type": "url", "ie_key": "Youtube", "id": "shortsAAAAA", "url": "https://www.youtube.com/shorts/shortsAAAAA",
+     "title": "a Short", "duration": 30},
+    {"_type": "url", "ie_key": "Youtube", "id": "postliveAAA", "title": "just ended", "duration": 7200,
+     "live_status": "post_live"},
+    {"_type": "url", "ie_key": "Youtube", "id": "deletedAAAA", "title": "[Deleted video]", "duration": 60},
+    {"_type": "url", "ie_key": "Youtube", "id": "bad", "title": "bad id", "duration": 60},
+    {"_type": "url", "ie_key": "Youtube", "id": "4xDzrJKXOOY", "title": "synthwave radio", "duration": 1801,
+     "uploader": "Lofi Girl"},
+]}
+# Channel search (the results page with the channel filter), trimmed.
+CHANNEL_LISTING = {"_type": "playlist", "entries": [
+    {"_type": "url", "ie_key": "YoutubeTab", "id": "UCSJ4gkVC6NrvII8umztf0Ow",
+     "url": "https://www.youtube.com/channel/UCSJ4gkVC6NrvII8umztf0Ow", "title": "Lofi Girl", "channel": "Lofi Girl",
+     "channel_id": "UCSJ4gkVC6NrvII8umztf0Ow", "channel_follower_count": 15200000, "playlist_count": None,
+     "uploader_id": "@LofiGirl"},
+    {"_type": "url", "ie_key": "YoutubeTab", "id": "UCSJ4gkVC6NrvII8umztf0Ow", "title": "Lofi Girl (again)"},
+    {"_type": "url", "ie_key": "YoutubeTab", "id": "UCOxqgCwgOqC2lMqC5PYz_Dg", "title": "lofi geek",
+     "channel_follower_count": None, "playlist_count": 120},
+    {"_type": "url", "ie_key": "Youtube", "id": "n61ULEU7CO0", "title": "a video, not a channel"},
+]}
+
+
 class CommandTests(unittest.TestCase):
     def test_channel_validation(self):
         for ok in ["https://www.youtube.com/@LinusTechTips", "https://www.youtube.com/@老高與小茉",
@@ -79,6 +112,27 @@ class CommandTests(unittest.TestCase):
         one = ytnode.ffmpeg_args(TOOLS, ytnode.stream_inputs(SINGLE), 0)
         self.assertEqual(one.count("-i"), 1)
         self.assertIn("0:a:0?", one)
+
+    def test_search_args_and_summaries(self):
+        args = ytnode.search_args(TOOLS, "-lofi", 5)
+        self.assertEqual(args[-2:], ["--", "ytsearch10:-lofi"], "the words come after --")
+        self.assertIn("--flat-playlist", args)
+        args = ytnode.search_args(TOOLS, "lofi girl", 5, "channel")
+        self.assertEqual(args[-2], "--")
+        self.assertEqual(args[-1], "https://www.youtube.com/results?search_query=lofi+girl&sp=EgIQAg%3D%3D")
+        self.assertEqual(args[args.index("--playlist-end") + 1], "5")
+        self.assertEqual(ytnode.search_summary(SEARCH_LISTING, 10), {"videos": [
+            {"id": "n61ULEU7CO0", "title": "Lofi Girl - 1 A.M Study Session", "duration": 3615, "uploader": "Lofi Girl"},
+            {"id": "4xDzrJKXOOY", "title": "synthwave radio", "duration": 1801, "uploader": "Lofi Girl"}]})
+        self.assertEqual(len(ytnode.search_summary(SEARCH_LISTING, 1)["videos"]), 1)
+        self.assertEqual(ytnode.channel_summary(CHANNEL_LISTING, 10), {"channels": [
+            {"id": "UCSJ4gkVC6NrvII8umztf0Ow", "name": "Lofi Girl", "fans": 15200000, "videos": 0},
+            {"id": "UCOxqgCwgOqC2lMqC5PYz_Dg", "name": "lofi geek", "fans": 0, "videos": 120}]})
+
+    def test_clean_query(self):
+        self.assertEqual(ytnode.clean_query("  lofi   girl "), "lofi girl")
+        for bad in ("", "   ", "x" * 81, "a\x01b", "a\x7fb"):
+            self.assertIsNone(ytnode.clean_query(bad), repr(bad))
 
     def test_error_classes(self):
         self.assertEqual(ytnode.error_status("ERROR: [youtube] x: Video unavailable"), 404)
@@ -137,6 +191,61 @@ class NodeTests(unittest.TestCase):
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=5)
         connection.request("GET", path, headers={"X-Key": key} if key else {})
         return connection.getresponse()
+
+    def search_runs(self):
+        def run(args):
+            self.runs.append(args)
+            if args[-1].startswith("ytsearch"):
+                return 0, json.dumps(SEARCH_LISTING), ""
+            if "/results?" in args[-1]:
+                return 0, json.dumps(CHANNEL_LISTING), ""
+            raise AssertionError(args)
+        self.node.run = run
+
+    def test_search(self):
+        self.search_runs()
+        answer = self.get("/yt/search?q=lofi&n=5")
+        self.assertEqual(answer.status, 200)
+        self.assertEqual([v["id"] for v in json.loads(answer.read())["videos"]], ["n61ULEU7CO0", "4xDzrJKXOOY"])
+        self.assertEqual(self.runs[-1][-1], "ytsearch10:lofi")
+        answer = self.get("/yt/search?q=lofi%20girl&n=5&kind=channel")
+        self.assertEqual([c["name"] for c in json.loads(answer.read())["channels"]], ["Lofi Girl", "lofi geek"])
+        self.assertEqual(self.node.health["state"], "ok")
+
+    def test_search_is_cached(self):
+        self.search_runs()
+        for _ in range(3):
+            self.get("/yt/search?q=Lofi&n=5").read()
+        self.get("/yt/search?q=lofi&n=5").read()
+        self.assertEqual(len(self.runs), 1, "the same words within ten minutes: no new yt-dlp")
+        self.get("/yt/search?q=lofi&n=5&kind=channel").read()
+        self.assertEqual(len(self.runs), 2)
+        self.node.clock = lambda: 1e12
+        self.get("/yt/search?q=lofi&n=5").read()
+        self.assertEqual(len(self.runs), 3, "an old answer is asked again")
+
+    def test_search_does_not_queue_behind_a_resolve(self):
+        self.search_runs()
+        saved, ytnode.SEARCH_WAIT_S = ytnode.SEARCH_WAIT_S, 0.1
+        try:
+            with self.node._ytdlp:
+                answer = self.get("/yt/search?q=lofi&n=5")
+                self.assertEqual((answer.status, json.loads(answer.read())), (503, {"error": "busy"}))
+        finally:
+            ytnode.SEARCH_WAIT_S = saved
+        self.assertEqual(self.runs, [])
+
+    def test_bad_search_never_reaches_yt_dlp(self):
+        for query in ("q=&n=5", "q=lofi&n=0", "q=lofi&n=21", "q=lofi&n=x", "q=lofi&n=5&kind=playlist",
+                      "q=" + "x" * 81 + "&n=5", "n=5"):
+            self.assertEqual(self.get(f"/yt/search?{query}").status, 400, query)
+        self.assertEqual(self.runs, [])
+        self.assertEqual(self.get("/yt/search?q=lofi&n=5", key="wrong").status, 404)
+
+    def test_search_failure_passes_on(self):
+        self.bot = True
+        answer = self.get("/yt/search?q=lofi&n=5")
+        self.assertEqual(answer.status, 503)
 
     def test_key_required(self):
         self.assertEqual(self.get("/yt/info?id=jNQXAC9IVRw", key=None).status, 404)
