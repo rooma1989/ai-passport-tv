@@ -150,7 +150,7 @@ TCP packets use the 24-byte network-order `!4sBBHIIII` header:
 | Field | Value |
 | --- | --- |
 | magic, version, flags | `FAV1`, 1, 0 |
-| type | HELLO=1, CONFIG=2, PCM=3, JPEG=4, END=5, ERROR=6 |
+| type | HELLO=1, CONFIG=2, PCM=3, JPEG=4, END=5, ERROR=6, PALETTE=7, SWITCH=8, STATUS=9, VOICE_CTL=10, VOICE=11, VOICE_RESULT=12 |
 | session | uint32; initial HELLO=0, server chooses a fresh nonzero value |
 | seq | uint32; HELLO=0, CONFIG=0, then one global increasing server sequence |
 | pts_ms | uint32 presentation timestamp on the shared media timeline |
@@ -182,6 +182,120 @@ allowed after HELLO. Invalid versions, flags, types, lengths, sessions or JSON
 terminate the connection without searching for another magic. ERROR is reserved
 and framing-supported; this server closes on errors rather than risking an ERROR
 appended after a partially sent packet.
+
+## Voice control
+
+Hold OK on the device, speak, let go: the device streams the utterance on its TV
+socket, the media server has it recognised by muse-asr (SenseVoice) on the same
+host, works out what was meant and answers. Design and the user's decisions:
+[`docs/superpowers/specs/2026-10-12-voice-control-design.md`](../docs/superpowers/specs/2026-10-12-voice-control-design.md).
+The code is in `server/voice/` (`session.py` packets and worker, `asr.py` the
+bridge, `intent.py` + `match.py` + `numbers.py` + `pinyin_table.py` the rules,
+`relay_client.py` the relay calls) and `server/relay/voice.py`.
+
+### Packets
+
+| Kind | Direction | Payload |
+| --- | --- | --- |
+| `VOICE_CTL = 10` | device to server | JSON, at most `CONTROL_MAX`: `{"op":"begin","id":n,"rate":16000,"codec":"adpcm"}`, `{"op":"end","id":n}`, `{"op":"cancel","id":n}`, `{"op":"pick","id":n,"ref":"..."}` |
+| `VOICE = 11` | device to server | exactly one 324-byte IMA ADPCM block (the downstream audio layout, 40 ms); `pts` = ms since begin; at most 250 per utterance (10 s), more are dropped |
+| `VOICE_RESULT = 12` | server to device | JSON, at most 2048 bytes (`VOICE_RESULT_MAX`), ASCII with `\u` escapes like every control packet |
+
+- Both upstream kinds are accepted in every phase after CONFIG, wherever STATUS
+  is (`AVServer._take_upstream()`, called from `_device_left()` and
+  `_wait_until()`, so also while waiting for the first media, reconnecting or
+  paused). Any other upstream kind still ends the session.
+- On `end` a worker thread decodes the ADPCM, asks muse-asr, decides and calls
+  the relay if needed. The send loop never waits for it.
+- Results are queued and sent by the live loop (`voice_flush()`) and by
+  `reconnect.hold()` while reconnecting or paused, each with the session's next
+  `seq` and `pts` 0, like a SWITCH. During the first prebuffer they wait.
+- A result answers the `id` it carries. `cancel`, a newer `begin` and a new
+  session make an unfinished result for an older `id` disappear.
+- CONFIG carries `"voice":{"max_s":10}` only when `TV_ASR_SOCKET` is set. HELLO's
+  `"voice":1` is not needed by the server.
+
+A result:
+
+```json
+{"id":7,"state":"final","intent":"channel","heard":"...","reply":"...",
+ "do":{"channel":"ch017"},"label":"...","lead":"25"}
+```
+
+- `state`: `final`, or `error` (recogniser down or timed out, wrong audio
+  format, voice off) with only `reply`. `partial` is not sent in phase 1.
+- `do` holds exactly one key that `AV_SWITCH` already understands (`channel`,
+  `volume` 0-100, `brightness` as the device's step index with 0 the brightest,
+  `audio_only` 0/1) or one of the new `page` (`"status"`, `"close"`) and `setup`
+  (1). A clear single match carries `do` and runs at once.
+- `choices` (at most 6) replaces `do` when several things fit:
+  `{"label","lead","do"}`, or `{"label","lead","ref"}` when choosing needs the
+  relay (an episode of one of two series); the device then sends `pick` with
+  that `ref`. Wi-Fi setup always comes as two choices (enter setup / cancel),
+  because it ends playback.
+- `intent`, `label` and `lead` are additions to the design's format: the kind of
+  decision (`none` is "not understood", for the low earcon), and the row the
+  panel shows for a single match (name, and the number the device lists it under).
+- No `do` and no `choices`: show `reply` (the relay already acted: pause, seek,
+  next episode; or nothing could be done, such as "a live channel cannot pause").
+
+### What it understands (rules, no LLM)
+
+Channel names with fillers and verbs stripped; aliases generated from names
+(CCTV-n as "zhongyang n tao", "yangshi n tai", "n tao", CCTV-5+ as "wu jia",
+the CCTV themes such as "yangshi tiyu"; satellite channels without "weishi";
+singers on the music channels); toneless-pinyin fuzzy matching for homophones
+(score = the larger of the character LCS ratio and the pinyin syllable
+edit-distance ratio; numbers must agree); "di N tai"; groups as candidates;
+next/previous channel within the group; series plus "di N ji" or "the latest
+episode" through the relay's episode picker; next/previous episode, pause,
+resume, seek and restart through the relay (on live channels the reply says it
+cannot); volume up/down/value/mute/unmute; brightness up/down/value; audio
+only on/off; the status page; Wi-Fi setup with confirmation; cancel; help.
+Auto-execute at score >= 0.85 and a lead of 0.15 (an exact alias always
+qualifies), or a single candidate >= 0.65; otherwise up to 6 candidates >= 0.5;
+otherwise "not understood". `tests/test_voice_intent.py` holds the phrasings.
+
+Relay actions always carry `device` = `TV_RELAY_DEVICE`, so they act on the
+device that spoke, not on the one the phone is driving (`Relay.target()`).
+
+### Enabling it (operator)
+
+1. muse-asr (repository `muse-gadget-sdk`, `esp32/tools/muse_asr`) with
+   `MUSE_ASR_SOCKET=/run/muse-asr/asr.sock`, `MUSE_ASR_SOCKET_GROUP=tvserver`,
+   `RuntimeDirectory=muse-asr`, `RuntimeDirectoryMode=0755` and
+   `SupplementaryGroups=tvserver` (its service template has them). The socket
+   is mode 0660, owner muse-asr, group tvserver: that permission is the only
+   credential, no key is shared. Check with
+   `sudo -u tvserver curl --unix-socket /run/muse-asr/asr.sock http://x/health`.
+2. Each media server unit:
+
+   | Variable | Value |
+   | --- | --- |
+   | `TV_ASR_SOCKET` | `/run/muse-asr/asr.sock`; unset means voice is off and CONFIG does not offer it |
+   | `TV_RELAY_KEY_FILE` | the relay's key file (same as `tv-relay.service`'s `--key-file`) |
+   | `TV_RELAY_DEVICE` | this server's device in the relay: `d0` / the `--device-name`, or the name in `--extra-device` (e.g. `Passport`) |
+   | `TV_RELAY_MANAGE_URL` | optional, default `http://127.0.0.1:8100`; only loopback is accepted, so the key never leaves the host |
+
+   Without the two relay variables, channels, volume, brightness, pages and
+   setup still work; series episodes, pause, seek and next/previous reply that
+   the TV is not connected to the relay.
+3. The relay needs this version (it accepts `device` on its POST endpoints and
+   serves `GET /api/voice/catalog`). Restart order: muse-asr, tv-relay, then the
+   media servers.
+
+Measure the recogniser on the host before promising latency: muse-asr logs
+`local ok: ... asr N ms` per request, and the media server logs
+`voice id=... intent=... audio_s=... asr_ms=... total_ms=...` per command.
+
+### Privacy and logging
+
+- Audio is never stored. The log has the intent kind, lengths and latency only.
+- `TV_VOICE_LOG_TEXT=1` adds the recognised words (`heard='...'`) to the log, for
+  tuning the thresholds. It is off by default; turn it off again afterwards.
+- `TV_VOICE_WAV_DIR=<dir>` (development only, off by default) saves every
+  utterance as a WAV file there, to build a test corpus. Never set it on a
+  shared host.
 
 ## Scheduling, bounds and shutdown
 

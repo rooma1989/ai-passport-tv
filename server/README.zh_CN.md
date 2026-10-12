@@ -115,7 +115,7 @@ python3 -m server.tv_server run --media-dir server/.local/media \
 | 字段 | 值 |
 | --- | --- |
 | magic、version、flags | `FAV1`、1、0 |
-| type | HELLO=1、CONFIG=2、PCM=3、JPEG=4、END=5、ERROR=6 |
+| type | HELLO=1、CONFIG=2、PCM=3、JPEG=4、END=5、ERROR=6、PALETTE=7、SWITCH=8、STATUS=9、VOICE_CTL=10、VOICE=11、VOICE_RESULT=12 |
 | session | uint32；初始 HELLO=0，服务端生成新的非零值 |
 | seq | uint32；HELLO=0、CONFIG=0，其后服务端发送序号全局递增 |
 | pts_ms | uint32，共享素材时间线上的呈现时间戳 |
@@ -142,6 +142,92 @@ CONFIG 包含 `width=160`、`height=120`、`fps=12`、`sample_rate=16000`、
 END 无载荷。客户端可以发送匹配会话的 END 或关闭连接停止；HELLO 后不允许上行媒体或其他控制命令。
 非法版本、flags、类型、长度、会话或 JSON 都直接断开，不搜索下一个 magic 恢复。
 ERROR 类型保留且支持拆包；服务器错误时关闭连接，不冒险在半包发送后插入 ERROR。
+
+## 语音控制
+
+在设备上按住 OK 说话，松开：设备在电视连接上把这句话传上来，媒体服务交给同一台主机上的
+muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决定见
+[`docs/superpowers/specs/2026-10-12-voice-control-design.zh_CN.md`](../docs/superpowers/specs/2026-10-12-voice-control-design.zh_CN.md)。
+代码在 `server/voice/`（`session.py` 收包和工作线程，`asr.py` 识别桥，`intent.py`、`match.py`、
+`numbers.py`、`pinyin_table.py` 规则，`relay_client.py` 调中转）和 `server/relay/voice.py`。
+
+### 包
+
+| 类型 | 方向 | 载荷 |
+| --- | --- | --- |
+| `VOICE_CTL = 10` | 设备 → 服务端 | JSON，不超过 `CONTROL_MAX`：`{"op":"begin","id":n,"rate":16000,"codec":"adpcm"}`、`{"op":"end","id":n}`、`{"op":"cancel","id":n}`、`{"op":"pick","id":n,"ref":"…"}` |
+| `VOICE = 11` | 设备 → 服务端 | 正好一个 324 字节的 IMA ADPCM 块（与下行音频同一布局，40 ms）；`pts` 是从 begin 起的毫秒数；一句话最多 250 块（10 秒），多的丢弃 |
+| `VOICE_RESULT = 12` | 服务端 → 设备 | JSON，不超过 2048 字节（`VOICE_RESULT_MAX`），与其他控制包一样是带 `\u` 转义的 ASCII |
+
+- 两种上行包在 CONFIG 之后的任何阶段都收，凡是收 STATUS 的地方都收（`AVServer._take_upstream()`，
+  由 `_device_left()` 和 `_wait_until()` 调用，所以起播等待、断流重连、暂停时也收）。其他上行类型仍然结束会话。
+- 收到 `end` 后，工作线程解码 ADPCM、请 muse-asr 识别、做决定，需要时调中转。发送循环从不等它。
+- 结果排队，由直播发送循环（`voice_flush()`）和断流重连 / 暂停中的 `reconnect.hold()` 发出，
+  像 SWITCH 一样占会话的下一个 `seq`，`pts` 为 0。第一次预缓冲期间先等着。
+- 结果回答它带的 `id`。`cancel`、新的 `begin` 和新会话会让旧 `id` 还没出来的结果作废。
+- 只有设置了 `TV_ASR_SOCKET`，CONFIG 才带 `"voice":{"max_s":10}`。服务端不需要 HELLO 里的 `"voice":1`。
+
+一个结果：
+
+```json
+{"id":7,"state":"final","intent":"channel","heard":"我要看湖南卫视","reply":"换台中…",
+ "do":{"channel":"ch017"},"label":"湖南卫视","lead":"25"}
+```
+
+- `state`：`final`；或 `error`（识别服务没开 / 超时、音频格式不对、语音没开），只带 `reply`。
+  第一期不发 `partial`。
+- `do` 里正好一个键：`AV_SWITCH` 已认识的 `channel`、`volume`（0–100）、`brightness`（设备的档位，
+  0 最亮）、`audio_only`（0/1），或新的 `page`（`"status"`、`"close"`）、`setup`（1）。
+  清楚的单个结果带 `do`，立即执行。
+- 有几个都可能时用 `choices`（最多 6 个）代替 `do`：`{"label","lead","do"}`，或者选中后要中转去做的
+  （两部剧里选一集）带 `{"label","lead","ref"}`，设备再用这个 `ref` 发 `pick`。配网总是两个选项
+  （进入配网 / 算了），因为它会停止播放。
+- `intent`、`label`、`lead` 是在设计格式之外加的：决定的种类（`none` 表示没听懂，用来放低音提示），
+  以及单个结果在面板上显示的那一行（名字和设备列表里的序号）。
+- 既没有 `do` 也没有 `choices`：显示 `reply`（中转已经做了：暂停、跳转、下一集；或者做不了，比如「直播台不能暂停」）。
+
+### 能听懂什么（规则，不用大模型）
+
+频道名（去掉「请」「帮我」「我要」「看」「切到」之类）；从名字生成的别名（CCTV-n 说成「中央 n 套」
+「央视 n 台」「n 套」，CCTV-5+ 说成「五加」，「央视体育」这类按内容的说法；卫视不带「卫视」也行；
+音乐台按歌手名）；无声调拼音模糊匹配同音字（分数取字的最长公共子序列比例和拼音音节编辑距离比例中
+较大的，数字必须一致）；「第 N 台」；分组给出候选；同组的上一个 / 下一个台；剧名加「第 N 集」或
+「最新一集」，经中转的选集；下一集 / 上一集、暂停、继续、快进快退、从头播交给中转（直播台回答做不了）；
+音量大 / 小 / 数值 / 静音 / 取消静音；亮度高 / 低 / 数值；只听声音开 / 关；状态页；配网（先确认）；
+取消；帮助。分数 ≥ 0.85 且领先 0.15 时直接执行（一字不差的别名总算），或只有一个 ≥ 0.65 的候选时执行；
+否则给出最多 6 个 ≥ 0.5 的候选；再否则「没听懂」。各种说法见 `tests/test_voice_intent.py`。
+
+调中转时总带 `device` = `TV_RELAY_DEVICE`，作用在说话的那台设备上，而不是手机正在遥控的那台（`Relay.target()`）。
+
+### 怎么打开（运维）
+
+1. muse-asr（`muse-gadget-sdk` 仓库的 `esp32/tools/muse_asr`）设置
+   `MUSE_ASR_SOCKET=/run/muse-asr/asr.sock`、`MUSE_ASR_SOCKET_GROUP=tvserver`、
+   `RuntimeDirectory=muse-asr`、`RuntimeDirectoryMode=0755` 和 `SupplementaryGroups=tvserver`
+   （它的服务模板里已经写好）。套接字权限 0660，属主 muse-asr，组 tvserver：这个权限就是唯一的凭据，
+   不共享密钥。检查：`sudo -u tvserver curl --unix-socket /run/muse-asr/asr.sock http://x/health`。
+2. 每个媒体服务的 unit：
+
+   | 变量 | 值 |
+   | --- | --- |
+   | `TV_ASR_SOCKET` | `/run/muse-asr/asr.sock`；不设就不开语音，CONFIG 不提供 |
+   | `TV_RELAY_KEY_FILE` | 中转的密钥文件（与 `tv-relay.service` 的 `--key-file` 相同） |
+   | `TV_RELAY_DEVICE` | 本服务在中转里对应的设备：`d0` / `--device-name` 的名字，或 `--extra-device` 里的名字（如 `Passport`） |
+   | `TV_RELAY_MANAGE_URL` | 可选，默认 `http://127.0.0.1:8100`；只接受本机地址，密钥不会离开这台主机 |
+
+   不设这两个中转变量时，换台、音量、亮度、页面和配网照常；选集、暂停、跳转、上一集 / 下一集
+   会回答「这台电视没有连到视频中转」。
+3. 中转要用这一版（POST 接口认 `device`，并提供 `GET /api/voice/catalog`）。重启顺序：muse-asr、
+   tv-relay，再是媒体服务。
+
+承诺延迟之前先在主机上量识别：muse-asr 每个请求记一行 `local ok: … asr N ms`，媒体服务每条命令记一行
+`voice id=… intent=… audio_s=… asr_ms=… total_ms=…`。
+
+### 隐私与日志
+
+- 从不保存音频。日志只有意图种类、长度和耗时。
+- `TV_VOICE_LOG_TEXT=1` 在日志里加上识别出的文字（`heard='…'`），用来调阈值。默认关闭，调完要关掉。
+- `TV_VOICE_WAV_DIR=<目录>`（仅开发用，默认关闭）把每句话存成 WAV，用来攒测试语料。共用的主机上不要设。
 
 ## 调度、边界与停止
 
