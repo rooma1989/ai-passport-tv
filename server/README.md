@@ -323,6 +323,20 @@ sites says the relay did not answer. The relay catalogue
 (`GET /api/voice/catalog`) carries `site` (`bilibili` / `youtube`) for every
 creator and series.
 
+**Site marks in the channel list.** The relay writes creator (`up..`) and
+series (`sr..`) channels into the device's list with their site after the name,
+in ASCII brackets: "Wang Zhi An(you guan)", "Xiong Chu Mo(B zhan)" (`channel_groups.mark`,
+`relay/table.label`; the name is cut to make room within the 20 columns, never
+the mark; the cast slot and live channels have none). The device only receives
+names, so this is the only place the site can go; brackets cost one JSON byte
+each, so a mark costs 9 (B zhan) or 14 (you guan) bytes of the CONFIG packet, and the
+room check for a new channel counts it. The voice catalogue takes the mark off
+again (`channel_groups.unmark`): names are matched bare ("Wang Zhi An", "Dulaa
+Music"), the relay's `site` is preferred, and with the relay down the mark alone
+tells the site, so "you na xie YouTube pin dao" still works. Voice lists show
+the mark unless the question named the site. The phone page lists bare names
+with its own site tag ("you guan" / "B zhan", series included).
+
 A named series that does not exist ("Hu lu wa di 3 ji"), or a play verb
 followed by a name that matches nothing ("wo yao kan Hu lu wa"), replies "could
 not find" with that name, still with `intent` `none` for the low earcon; the
@@ -362,9 +376,11 @@ list questions and playback or volume commands keep their meaning. It is
 checked right after the status page, before volume and playback, because the
 words searched for may contain "da sheng" and the like.
 
-- **Site**: Bilibili by default; YouTube when the sentence says YouTube / "you
+- **Site**: a named site is the only one searched: YouTube for YouTube / "you
   guan" / "you tu" ("you guan sou lofi", "zai YouTube shang zhao lofi de shi
-  pin"). The site is remembered across the question below.
+  pin"), Bilibili for "B zhan" / "bi li bi li". With no site named, videos are
+  searched on Bilibili and creators on **both sites at once** (see below). The
+  site (or its absence) is remembered across the question below.
 - **Kind**: videos ("sou shi pin X", "sou suo X shi pin", "zhao X de shi pin",
   "wo xiang kan X de shi pin") or creators ("sou UP zhu X", "sou bo zhu X",
   "zhao X zhe ge UP zhu", "sou pin dao X", "sou you guan pin dao X", "YouTube
@@ -377,9 +393,14 @@ words searched for may contain "da sheng" and the like.
   question.
 - **Results** are choices, five per page plus "next page, N more" (`sp:<n>:<offset>`),
   numbered from the top in `lead` (`01`...`20`). A video row is the title, then
-  " · duration" and " · uploader" when they fit the row (22 columns); a creator
-  row is the name and " · 2084 wan fen" (followers) or the video count. Labels
-  drop characters the device's font cannot draw (emoji) and are cut to 47 bytes.
+  " · duration" and " · uploader" when they fit the row; a creator row starts
+  with its site and is then the name and " · 2084 wan fen" (followers) or the
+  video count: "B zhan · Lao Fan Qie · 2084 wan fen", "you guan · Lofi Girl" (YouTube's channel
+  search has no counts). The site mark always stays; the extras are added only
+  while the row fits 180 px, measured with the firmware font's glyph advances
+  (`intent.pixels`, checked against `main/ui_font_data.h` by a test). Video rows
+  carry no site (a video search covers one site). Labels drop characters the
+  device's font cannot draw (emoji) and are cut to 47 bytes.
   Choosing a video (`sv:<n>:<i>`) casts it through the relay: the device switches
   to "my cast", plays it and goes back to its channel at the end, exactly like a
   phone cast. Choosing a creator (`su:<n>:<i>`) offers "subscribe as a channel"
@@ -404,6 +425,20 @@ words searched for may contain "da sheng" and the like.
   a running yt-dlp and answers busy otherwise, and it finishes a search even
   when the relay gave up, so saying it again is quick. Results are cached for 5
   minutes on the relay and 10 minutes on the node.
+- **Both sites** (a creator search with no site named): the media server sends
+  the two `GET /api/voice/search` requests at once with the same time limit and
+  interleaves what came back (Bilibili's first, YouTube's first, Bilibili's
+  second, ...; at most 20), reply "zhao dao 11 ge UP zhu: B zhan 8 ge, you guan
+  3 ge". A site that answered slow or busy, or did not answer in time, gets a
+  last row "you guan hai zai sou · zai sou yi ci" ("you guan zheng mang" when busy; ref
+  `sr:<n>:yt`), and the page holds one result fewer for it. Choosing it, or
+  saying "zai sou yi ci" / "chong shi" / "you guan" while the page is on screen,
+  searches only that site again; what it finds is merged in and listed from the
+  first page with new refs. With nothing on Bilibili yet the reply is "B zhan
+  mei sou dao, you guan hai zai sou, shao hou zai shuo yi ci". A site that
+  cannot search at all (YouTube not configured) is left out quietly and the
+  page reads as a one-site search. Asking the whole search again also works:
+  Bilibili comes from the relay's cache and YouTube from the node's.
 - **Subscribing** adds the creator like the phone's "add UP zhu" (same 12-creator
   limit, and only when the device's channel list still fits CONFIG), to the
   device owner's subscriptions; it is the one piece of account data a device

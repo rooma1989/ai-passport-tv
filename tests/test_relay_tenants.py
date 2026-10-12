@@ -173,7 +173,7 @@ class TenantWebTests(unittest.TestCase):
         status, answer = self.call("alice", "POST", "/api/creators", {"url": "https://space.bilibili.com/42"})
         self.assertTrue(answer["ok"])
         alice_table = self.files(ALICE_DEVICE).channels.read_text(encoding="utf-8")
-        self.assertIn(f"up01 | UP42 | http://127.0.0.1:8099/ch/{ALICE_DEVICE}/up01", alice_table)
+        self.assertIn(f"up01 | UP42(B站) | http://127.0.0.1:8099/ch/{ALICE_DEVICE}/up01", alice_table)
         self.assertNotIn("up01", self.files(BOB_DEVICE).channels.read_text(encoding="utf-8"))
         self.assertEqual(self.call("bob", "GET", "/api/state")[1]["creators"], [])
         self.assertEqual(self.stream(f"/ch/{ALICE_DEVICE}/up01"), 200)

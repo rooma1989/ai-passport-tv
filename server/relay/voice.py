@@ -16,7 +16,8 @@
 - GET  /api/voice/search?device=…&site=bilibili|youtube&kind=video|up&q=…&wait=秒
   搜一页视频或 UP 主（频道）；B 站走不带签名的搜索接口，YouTube 经节点的 /yt/search。wait 是这次
   最多等多久（设备只等语音结果 8 秒，识别已经用掉一些），超时回答 ok:false 和一句给设备看的话。
-  同一个词几分钟内直接用上次的结果。
+  同一个词几分钟内直接用上次的结果。没说网站的 UP 主搜索由媒体服务同时发两个请求（每个网站一个），
+  这里不用管（server/voice/session.py 的 _search_sites）。
 - POST /api/voice/cast {device, site, id, title, duration}  投屏一个搜到的视频：和手机投屏同一条路
   （设备切到「我的投屏」，播完回到原来的台）。
 - POST /api/voice/creator {device, site, id, name, action: follow|latest, wait}
@@ -238,7 +239,7 @@ def creator(relay, key, caller: Caller = LEGACY, body: dict | None = None) -> di
             return {"ok": False, "error": f"已经订阅过「{name}」了" if name else "已经订阅过了"}
         if len(ups) >= MAX_CREATORS:
             return {"ok": False, "error": f"最多只能订阅 {MAX_CREATORS} 个 UP 主"}
-    if not relay.room_of(state, table.label_text(name or cid))["fits"]:
+    if not relay.room_of(state, table.label_for(name, site, cid))["fits"]:
         return {"ok": False, "error": "频道列表满了，先删掉几个台"}
     return _within(relay, site, lambda: _follow(relay, state, client, site, source),
                    _wait(body.get("wait")))

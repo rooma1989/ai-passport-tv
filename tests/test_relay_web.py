@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from server import now_playing
+from server import channel_groups, now_playing
 from server.relay import events, web
 from server.relay.bilibili import BilibiliError
 from server.relay.state import State, Video
@@ -359,12 +359,30 @@ class WebTests(unittest.TestCase):
     def test_add_and_remove_update_the_table(self):
         answer = self.call("POST", "/api/creators", {"url": "https://space.bilibili.com/42"})
         self.assertEqual(answer, {"ok": True, "creator": {"id": "up01", "name": "UP42"}})
-        self.assertIn("up01 | UP42 | http://127.0.0.1:8099/ch/up01", self.table.read_text())
+        self.assertIn("up01 | UP42(B站) | http://127.0.0.1:8099/ch/up01", self.table.read_text())
         state = self.call("GET", "/api/state")
         self.assertEqual(state["creators"][0]["left"], 3)
         self.assertEqual(self.call("DELETE", "/api/creators/up01"), {"ok": True})
         self.assertNotIn("up01", self.table.read_text())
         self.assertFalse(self.call("DELETE", "/api/creators/up01")["ok"])
+
+    def test_site_marks_on_the_device_not_on_the_phone(self):
+        """The device's list carries the site after the name; the phone page shows the bare name
+        (it has its own site tag), and the room left is counted with the marks."""
+        before = self.relay.room()["bytes"]
+        self.call("POST", "/api/creators", {"url": "https://space.bilibili.com/42"})
+        self.call("POST", "/api/creators", {"url": "https://www.youtube.com/@ltt"})
+        table = self.table.read_text()
+        self.assertIn("up01 | UP42(B站) |", table)
+        self.assertIn("up02 | LTT(油管) |", table)
+        state = self.call("GET", "/api/state")
+        creators = next(g for g in state["groups"] if g["name"] == "UP 主")["channels"]
+        self.assertEqual([c["name"] for c in creators], ["UP42", "LTT"])
+        self.assertEqual([(c["id"], c["site"]) for c in state["creators"]], [("up01", "bilibili"), ("up02", "youtube")])
+        cast = [("cast", "我的投屏")]
+        used = channel_groups.config_bytes(cast + [("up01", "UP42(B站)"), ("up02", "LTT(油管)")]) - \
+            channel_groups.config_bytes(cast)
+        self.assertEqual(before - self.relay.room()["bytes"], used)
 
     def test_add_errors(self):
         self.assertFalse(self.call("POST", "/api/creators", {"url": "https://example.com/"})["ok"])
@@ -382,7 +400,7 @@ class WebTests(unittest.TestCase):
         answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7",
                                                    "name": " 海尔  兄弟 "})
         self.assertEqual(answer, {"ok": True, "series": {"id": "sr01", "name": "海尔 兄弟", "total": 3}})
-        self.assertIn("sr01 | 海尔 兄弟 | http://127.0.0.1:8099/ch/sr01", self.table.read_text())
+        self.assertIn("sr01 | 海尔 兄弟(B站) | http://127.0.0.1:8099/ch/sr01", self.table.read_text())
         state = self.call("GET", "/api/state")
         self.assertEqual(state["series"], [{"id": "sr01", "name": "海尔 兄弟", "site": "bilibili", "episode": 1, "total": 3}])
         self.assertEqual(state["creators"], [])

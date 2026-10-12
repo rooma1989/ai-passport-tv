@@ -10,7 +10,10 @@
 
 语音搜索（「搜视频猫和老鼠」「搜索李子柒」）在这里记住最近一次搜到的东西：结果页用 ref 翻页、
 选中（投屏视频、UP 主再选订阅或播最新），没说清搜什么时追问，面板还在时下一句话可以直接回答
-（「视频」「UP主」「第二个」「下一页」「订阅」）。中转那边的接口见 server/relay/voice.py。
+（「视频」「UP主」「第二个」「下一页」「订阅」）。没说网站的 UP 主搜索同时问 B 站和 YouTube
+（各一个请求，同一个时限），赶上的先列出来；没赶上的那个留一行「油管还在搜 · 再搜一次」（选它
+或说「再搜一次」只再搜那一个，YouTube 节点那时多半已经搜完缓存了）。中转那边的接口见
+server/relay/voice.py。
 
 另见 asr.py（识别）、intent.py（理解）、relay_client.py（中转）。
 """
@@ -26,7 +29,7 @@ import wave
 from pathlib import Path
 from typing import Callable
 
-from .. import adpcm
+from .. import adpcm, channel_groups
 from ..protocol import (AUDIO_BYTES, VOICE_MAX_BLOCKS, VOICE_MAX_S, VOICE_RESULT_MAX, Kind,
                         Packet, ProtocolError, json_object)
 from . import intent
@@ -57,6 +60,8 @@ SEARCH_MIN_S = 1.5
 # 追问、结果页、选中 UP 主之后这么久内，下一句话可以直接回答（「视频」「第二个」「下一页」「订阅」）。
 FOLLOW_UP_S = 30.0
 SEARCH_RESULTS_MAX = 20
+# 两个网站一起搜（没说网站的 UP 主搜索）时，等中转回答比给它的时间多等这么久就不等了。
+SEARCH_JOIN_GRACE_S = 0.3
 REPLY_SEARCH_SLOW = {"bilibili": "B站搜索太慢了，稍后再试", "youtube": "YouTube 搜索太慢了，稍后再试"}
 REPLY_SITE_SLOW = {"bilibili": "B站太慢了，稍后再试", "youtube": "YouTube 太慢了，稍后再试"}
 REPLY_CASTING = "投屏中…"
@@ -385,9 +390,12 @@ class VoiceService:
             g = row.get("g")
             group = groups[g] if isinstance(g, int) and 0 <= g < len(groups) else ""
             full = full_names.get(row["id"])
-            channels.append(intent.Channel(row["id"], str(row.get("name") or row["id"]), n, group,
+            # 中转的台在设备列表里带着网站标记（「王志安(油管)」）：拆开，名字照常匹配；中转没回应时
+            # 网站就看标记。
+            name, marked = channel_groups.unmark(row["id"], str(row.get("name") or row["id"]))
+            channels.append(intent.Channel(row["id"], name, n, group,
                                            full if isinstance(full, str) else "",
-                                           sites.get(row["id"], "")))
+                                           sites.get(row["id"]) or marked))
         listed_ids = {c.id for c in channels}
         series = [intent.Series(row["id"], str(row.get("name") or row["id"]),
                                 row.get("total") if isinstance(row.get("total"), int) else 0)
@@ -486,10 +494,13 @@ class VoiceService:
                                    "query": found["query"]})
         elif found["shown"] == "page":
             total, offset = len(found["results"]), found["offset"]
-            on_page = total - offset if total - offset <= intent.CHOICES_MAX else intent.PAGE_SIZE
+            on_page = intent.search_window(total, offset, len(found["late"]))
             n = intent.pick_number(text)
+            retry = intent.wants_retry(text) if found["late"] else None
             if intent.wants_next_page(text):
                 step = ("page", offset + on_page) if offset + on_page < total else ("last",)
+            elif retry is not None and (not retry or retry in found["late"]):
+                step = ("retry", retry or next(s for s in intent.SEARCH_SITES if s in found["late"]))
             elif n is not None:
                 # 行首的号是从头数的（第二页是 06…）；说本页第几个也行。
                 index = (n - 1 if offset < n <= offset + on_page else offset + n - 1 if n <= on_page
@@ -513,6 +524,9 @@ class VoiceService:
                 return None
             return ("search", {"site": found["site"], "kind": "video" if arg == "v" else "up",
                                "query": found["query"]})
+        if op == "r":
+            site = intent.site_of_ref(arg)
+            return ("retry", site) if site else None
         if not arg.isdigit():
             return None
         return {"p": "page", "v": "item", "u": "item", "f": "follow", "l": "latest"}[op], int(arg)
@@ -527,7 +541,7 @@ class VoiceService:
         found = self._current_search()
         if found is None:
             return intent.Decision("none", reply=REPLY_EXPIRED)
-        site, kind, results = found["site"], found["kind"], found["results"]
+        kind, results = found["kind"], found["results"]
         if op == "last":
             return intent.Decision("none", reply="已经是最后一页了")
         if op == "missing":
@@ -535,11 +549,14 @@ class VoiceService:
         if op == "page":
             offset = step[1] if 0 <= step[1] < len(results) else 0
             self._show(found, "page", offset=offset)
-            return intent.search_page(site, kind, found["query"], results, offset, found["gen"])
+            return self._page(found, offset)
+        if op == "retry":
+            return self._retry(uid, found, step[1], relay, deadline)
         index = step[1]
         if not 0 <= index < len(results):
             return intent.Decision("none", reply=REPLY_EXPIRED)
         item = results[index]
+        site = item.get("site") or found["site"]
         if op == "item" and kind == "video":
             self._show(found, "")
             return self._cast(uid, relay, site, item.get("id"), item.get("title"), item.get("duration"))
@@ -556,34 +573,109 @@ class VoiceService:
     def _run_search(self, uid: int, request: dict, relay: RelayClient, deadline: float) -> intent.Decision:
         site, kind, query = request["site"], request["kind"], request["query"]
         if not kind:
-            # 没说是视频还是 UP 主：追问，记住词和网站。
+            # 没说是视频还是 UP 主：追问，记住词和网站（没说网站时为空，回答后再定搜哪些）。
             with self._lock:
                 self._search_gen = self._search_gen % 9999 + 1
                 self._search = {"gen": self._search_gen, "site": site, "kind": "", "query": query,
-                                "results": [], "shown": "ask", "offset": 0, "index": 0, "at": self.clock()}
+                                "results": [], "by_site": {}, "late": {}, "found": {}, "shown": "ask",
+                                "offset": 0, "index": 0, "at": self.clock()}
                 generation = self._search_gen
             return intent.search_question(generation)
+        sites = intent.search_sites(site, kind)
+        left = deadline - time.monotonic()
+        if left < SEARCH_MIN_S:
+            return intent.Decision("none", reply=REPLY_SEARCH_SLOW[sites[0]])
+        outcomes = self._search_sites(uid, relay, sites, query, kind, left)
+        by_site = {s: outcome[1] for s, outcome in outcomes.items() if outcome[0] == "ok"}
+        late = {s: outcome[0] for s, outcome in outcomes.items() if outcome[0] in ("slow", "busy")}
+        if not by_site:
+            # 一个网站也没回答：说第一个的原因（单个网站时就是它的）。
+            return intent.Decision("none", reply=outcomes[sites[0]][1])
+        if len(by_site) == 1 and not late:
+            # 只搜了一个网站，或者另一个没法搜（YouTube 没配置）：和只搜一个网站一样列。
+            sites = tuple(by_site)
+        self.logger(f"voice id={uid} search site={'+'.join(sites)} kind={kind} "
+                    f"results={','.join(f'{s}:{len(r)}' for s, r in by_site.items())}"
+                    + (f" late={','.join(late)}" if late else ""))
+        with self._lock:
+            self._search_gen = self._search_gen % 9999 + 1
+            found = {"gen": self._search_gen, "site": sites[0] if len(sites) == 1 else "", "kind": kind,
+                     "query": query, "by_site": by_site, "late": late,
+                     "found": {s: len(r) for s, r in by_site.items()},
+                     "results": intent.merge_results(by_site)[:SEARCH_RESULTS_MAX],
+                     "shown": "", "offset": 0, "index": 0, "at": self.clock()}
+            found["shown"] = "page" if found["results"] or late else ""
+            self._search = found
+        return self._page(found, 0)
+
+    def _page(self, found: dict, offset: int) -> intent.Decision:
+        mixed = not found["site"]
+        return intent.search_page(found["site"], found["kind"], found["query"], found["results"], offset,
+                                  found["gen"], late=found["late"], found=found["found"] if mixed else None)
+
+    def _retry(self, uid: int, found: dict, site: str, relay: RelayClient, deadline: float) -> intent.Decision:
+        """再搜一次两个网站一起搜时没赶上的那个，搜到了就并进结果，从第一页列。"""
+        if site not in found["late"]:
+            return self._page(found, 0) if found["results"] else intent.Decision("none", reply=REPLY_EXPIRED)
         left = deadline - time.monotonic()
         if left < SEARCH_MIN_S:
             return intent.Decision("none", reply=REPLY_SEARCH_SLOW[site])
-        try:
-            answer = relay.search(site, query, left, kind)
-        except RelayError as error:
-            self.logger(f"voice id={uid} relay search error={error}")
-            return intent.Decision("none", reply=REPLY_SEARCH_SLOW[site] if error.slow else REPLY_RELAY_DOWN)
-        if not answer.get("ok"):
-            error = answer.get("error")
-            return intent.Decision("none", reply=error if isinstance(error, str) and error else "没搜成，稍后再试")
-        results = [r for r in answer.get("results") or []
-                   if isinstance(r, dict) and isinstance(r.get("id"), str) and r["id"]][:SEARCH_RESULTS_MAX]
-        self.logger(f"voice id={uid} search site={site} kind={kind} results={len(results)}")
+        outcome = self._search_sites(uid, relay, (site,), found["query"], found["kind"], left)[site]
+        self.logger(f"voice id={uid} search retry site={site} outcome={outcome[0]}")
         with self._lock:
-            self._search_gen = self._search_gen % 9999 + 1
-            self._search = {"gen": self._search_gen, "site": site, "kind": kind, "query": query,
-                            "results": results, "shown": "page" if results else "", "offset": 0,
-                            "index": 0, "at": self.clock()}
-            generation = self._search_gen
-        return intent.search_page(site, kind, query, results, 0, generation)
+            late = dict(found["late"])
+            if outcome[0] in ("slow", "busy"):
+                late[site] = outcome[0]
+                found.update(late=late)
+            else:
+                late.pop(site)
+                by_site = dict(found["by_site"])
+                counts = dict(found["found"])
+                if outcome[0] == "ok":
+                    by_site[site] = outcome[1]
+                    counts[site] = len(outcome[1])
+                self._search_gen = self._search_gen % 9999 + 1
+                # 结果的顺序变了：换一个 gen，上一页的选项作废。
+                found.update(gen=self._search_gen, by_site=by_site, late=late, found=counts,
+                             results=intent.merge_results(by_site)[:SEARCH_RESULTS_MAX])
+            found.update(shown="page", offset=0, at=self.clock())
+        return self._page(found, 0)
+
+    def _search_sites(self, uid: int, relay: RelayClient, sites: tuple, query: str, kind: str,
+                      timeout: float) -> dict[str, tuple[str, object]]:
+        """每个网站一个请求，同时发出，最多等 timeout：网站 → ("ok", 结果) 或 (slow / busy / down /
+        refused, 给设备看的话)。结果里每个都记上网站。"""
+        outcomes: dict[str, tuple[str, object]] = {}
+
+        def one(site: str) -> None:
+            try:
+                answer = relay.search(site, query, timeout, kind)
+            except RelayError as error:
+                self.logger(f"voice id={uid} relay search {site} error={error}")
+                outcomes[site] = (("slow", REPLY_SEARCH_SLOW[site]) if error.slow
+                                  else ("down", REPLY_RELAY_DOWN))
+                return
+            if not answer.get("ok"):
+                error, reason = answer.get("error"), answer.get("reason")
+                outcomes[site] = (reason if reason in ("slow", "busy") else "refused",
+                                  error if isinstance(error, str) and error else "没搜成，稍后再试")
+                return
+            results = [dict(r, site=site) for r in answer.get("results") or []
+                       if isinstance(r, dict) and isinstance(r.get("id"), str) and r["id"]]
+            outcomes[site] = ("ok", results[:SEARCH_RESULTS_MAX])
+
+        if len(sites) == 1:
+            one(sites[0])
+        else:
+            workers = [threading.Thread(target=one, args=(site,), name=f"voice-search-{site}", daemon=True)
+                       for site in sites]
+            for worker in workers:
+                worker.start()
+            end = time.monotonic() + timeout + SEARCH_JOIN_GRACE_S
+            for worker in workers:
+                worker.join(max(0.0, end - time.monotonic()))
+        # 到时候还没回答的（中转本该先回答「太慢了」）：当成太慢。
+        return {site: outcomes.get(site) or ("slow", REPLY_SEARCH_SLOW[site]) for site in sites}
 
     def _cast(self, uid: int, relay: RelayClient, site: str, video_id, title, duration) -> intent.Decision:
         """投屏搜到的视频：中转让设备切到「我的投屏」，播完回到原来的台（和手机投屏一样）。"""

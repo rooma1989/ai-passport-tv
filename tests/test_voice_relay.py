@@ -15,14 +15,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from server import now_playing
+from server import channel_groups, live, now_playing
 from server.relay import events, voice, web
-from server.relay.bilibili import BilibiliError
+from server.relay.bilibili import BilibiliError, SourceError
 from server.relay.state import MAX_CREATORS, State, Video
 from server.relay.tenants import Caller
 from server.tenancy import files as device_files
 from server.tenancy.accounts import Accounts
 from server.voice.relay_client import RelayClient
+from server.voice.session import VoiceService
 from test_relay_web import KEY, FakeClient
 
 ADMIN_DEVICE = "legacy-passport"
@@ -181,6 +182,16 @@ class SearchClient(FakeClient):
 class FakeYouTube:
     def __init__(self):
         self.asked = []
+        self.searches = []
+        # reason of a SourceError to raise from the channel search ("slow" as when the node takes
+        # longer than the relay waits), or None
+        self.failing = None
+
+    def search_creators(self, query, limit=12, timeout=5.0):
+        self.searches.append(query)
+        if self.failing:
+            raise SourceError("youtube /yt/search: timed out", reason=self.failing)
+        return [{"id": "UCSJ4gkVC6NrvII8umztf0Ow", "name": "Lofi Girl", "fans": 0, "videos": 0, "latest": None}]
 
     def creator(self, channel):
         self.asked.append(channel)
@@ -331,6 +342,83 @@ class VoiceSearchRelayTests(unittest.TestCase):
         self.assertEqual(client.creator("bilibili", "546195", "老番茄", "follow", 3.0)["ok"], False)
 
 
+class FakeAsr:
+    def __init__(self):
+        self.text = ""
+
+    def transcribe(self, pcm, rate):
+        return self.text
+
+
+def device_config(table_text: str, main: Path) -> dict:
+    """The CONFIG channel list a media server builds from the relay's table and its own."""
+    channels, labels, _ = live.parse_channels(table_text + "\n" + main.read_text(encoding="utf-8"))
+    groups = list(channel_groups.GROUPS)
+    return {"groups": groups, "channel_list": [
+        {"id": cid, "name": labels[cid], "g": groups.index(channel_groups.classify(cid, labels[cid]))}
+        for cid in channels]}
+
+
+class EndToEnd:
+    """The media server's voice service against the real relay over HTTP: two-site creator search
+    with every row labelled, and channels matched by their bare names although the device's list
+    carries the site marks. Run in both relay modes (subclasses give relay_device and table_text)."""
+
+    def voice(self):
+        from server.protocol import Kind, Packet, json_bytes
+        from test_voice_session import tone_blocks
+        asr = FakeAsr()
+        service = VoiceService(asr, RelayClient(self.base, KEY, self.relay_device), lambda _m: None,
+                               threaded=False)
+        config = device_config(self.table_text(), self.main)
+        uid = [0]
+
+        def say(text):
+            asr.text = text
+            uid[0] += 1
+            ctx = lambda: {"config": config, "current": "ch000", "device": {"volume": 50}}
+            service.take(Packet(Kind.VOICE_CTL, 1, 0, 0, json_bytes({"op": "begin", "id": uid[0], "rate": 16000,
+                                                                     "codec": "adpcm"})), ctx)
+            service.take(Packet(Kind.VOICE, 1, 0, 0, tone_blocks(1)[0][0]), ctx)
+            service.take(Packet(Kind.VOICE_CTL, 1, 0, 0, json_bytes({"op": "end", "id": uid[0]})), ctx)
+            return json.loads(service.results()[0])
+
+        return say, config
+
+    def test_two_site_creator_search_end_to_end(self):
+        self.relay.clients["bilibili"] = SearchClient()
+        youtube = self.relay.clients["youtube"] = FakeYouTube()
+        say, _ = self.voice()
+        result = say("搜UP主老番茄")
+        self.assertEqual(result["reply"], "找到 2 个UP 主：B站 1 个，油管 1 个")
+        self.assertEqual([c["label"] for c in result["choices"]], ["B站 · 老番茄 · 2084万粉", "油管 · Lofi Girl"])
+        # YouTube too slow for this ask: Bilibili's rows, and one to search YouTube again.
+        youtube.failing = "slow"
+        result = say("搜UP主李子柒")
+        self.assertEqual(result["reply"], "找到 1 个UP 主：B站 1 个，油管还在搜")
+        self.assertEqual([c["label"] for c in result["choices"]], ["B站 · 老番茄 · 2084万粉", "油管还在搜 · 再搜一次"])
+        youtube.failing = None
+        result = say("再搜一次")
+        self.assertEqual([c["label"] for c in result["choices"]], ["B站 · 老番茄 · 2084万粉", "油管 · Lofi Girl"])
+        self.assertEqual(youtube.searches, ["老番茄", "李子柒", "李子柒"])
+
+    def test_bare_names_match_marked_channels(self):
+        _, config = self.voice()
+        names = {row["id"]: row["name"] for row in config["channel_list"]}
+        self.assertEqual(names["sr01"], "番剧ss7(B站)")
+        wang = next(cid for cid, name in names.items() if name.startswith("王志安"))
+        self.assertEqual(names[wang], "王志安(油管)")
+        self.assertEqual(names["ch001"], "湖南卫视", "live channels unchanged")
+        say, _ = self.voice()
+        result = say("王志安")
+        self.assertEqual((result.get("do"), result.get("label")), ({"channel": wang}, "王志安"))
+        self.assertEqual(say("番剧ss7第2集")["intent"], "episode")
+        listed = say("有哪些YouTube频道")
+        self.assertEqual([c["label"] for c in listed["choices"]], ["王志安"])
+        listed = say("有哪些UP主")
+        self.assertIn("王志安(油管)", [c["label"] for c in listed["choices"]])
+
+
 class TenantVoiceRelayTests(unittest.TestCase):
     """Multi-user relay (--db): the media server holds the relay key, which is the admin, but a
     device it serves may belong to anyone. A keyed request that names a device acts as that
@@ -458,6 +546,43 @@ class TenantVoiceRelayTests(unittest.TestCase):
         self.assertEqual(self.relay.user_state(self.bob).episode("sr01"), 2)
         self.assertIsNone(events.read_event(self.files(ADMIN_DEVICE).events))
         self.assertEqual(client.resume(), {"ok": False, "error": "现在没有暂停"})
+
+
+def add_wang(relay, state, now):
+    """A YouTube creator, the way the phone or a voice follow adds one."""
+    state.add("youtube", "https://www.youtube.com/channel/UC" + "w" * 22, "王志安",
+              [Video(bvid="wangzhian01", title="w", duration=600, pubdate=0, site="youtube")], now)
+    state.save()
+    relay._tables_changed(state)
+
+
+class LegacyEndToEndTests(EndToEnd, unittest.TestCase):
+    relay_device = "Passport"
+
+    def setUp(self):
+        VoiceRelayTests.setUp(self)
+        self.addCleanup(VoiceRelayTests.tearDown, self)
+        self.main = Path(self.tmp.name) / "channels.txt"
+        add_wang(self.relay, self.relay.state, self.now)
+
+    def table_text(self):
+        return (Path(self.tmp.name) / "relay.txt").read_text(encoding="utf-8")
+
+
+class TenantEndToEndTests(EndToEnd, unittest.TestCase):
+    relay_device = BOB_DEVICE
+
+    def setUp(self):
+        TenantVoiceRelayTests.setUp(self)
+        self.addCleanup(TenantVoiceRelayTests.tearDown, self)
+        self.main = Path(self.tmp.name) / "channels.txt"
+        add_wang(self.relay, self.relay.user_state(self.bob), self.now)
+
+    def files(self, device):
+        return device_files.device_files(self.devices_dir, device)
+
+    def table_text(self):
+        return self.files(BOB_DEVICE).channels.read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":

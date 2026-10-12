@@ -20,6 +20,27 @@ SERIES = "动画影视"
 # AV_CONTROL_MAX、AV_CHANNEL_MAX 一致。中转加台前也按这个算，免得列表超长、设备一个台都收不到。
 CONFIG_MAX = 7168
 CHANNEL_MAX = 128
+# 中转的台（UP 主 up…、剧集 sr…）在设备列表里的名字后面带上网站：「王志安(油管)」「熊出没(B站)」。
+# 设备只拿到名字，只能这样标；括号是半角的（JSON 里各占 1 字节），整个标记 9 / 14 字节。
+# 括号里的说明匹配台名时本来就不算（server/voice/match.strip_parens），unmark() 再把它拆回网站。
+SITE_MARKS = {"bilibili": "B站", "youtube": "油管"}
+_RELAY_KINDS = ("up", "sr")
+
+
+def mark(site: str) -> str:
+    """名字后面接的网站标记，例如「(油管)」；不认识的网站为空。"""
+    word = SITE_MARKS.get(site, "")
+    return f"({word})" if word else ""
+
+
+def unmark(channel_id: str, name: str) -> tuple[str, str]:
+    """设备列表里的名字 → (不带标记的名字, 网站)；没有标记（直播台、旧版中转）时网站为空。"""
+    if channel_id[:2] in _RELAY_KINDS and channel_id[2:].isdigit():
+        for site in SITE_MARKS:
+            suffix = mark(site)
+            if name.endswith(suffix) and len(name) > len(suffix):
+                return name[:-len(suffix)].rstrip(), site
+    return name, ""
 
 # 港澳台电视台的名字片段；先于「卫视」判断，香港卫视因此归这里。
 _HK_TW = ("香港", "凤凰", "TVBS", "东森", "华视", "民视", "三立", "中视", "中天", "台视", "耀才")
