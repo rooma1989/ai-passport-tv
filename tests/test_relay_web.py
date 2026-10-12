@@ -461,6 +461,25 @@ class WebTests(unittest.TestCase):
         reloaded = State(self.state.path)
         self.assertIn("a", reloaded.get("up01").positions)
 
+    def test_source_failure_resumes_where_it_broke(self):
+        """A switch away comes back 10 s early; a broken source carries on where it broke."""
+        self.add()
+
+        def play_then(outcome):
+            def pump(proc, write, on_tick):
+                write(b"\x47" * 188)
+                on_tick(30.0)
+                return outcome
+            return pump
+
+        self.relay.pumper = play_then("failed")
+        self.stream("up01")
+        self.relay.pumper = play_then("client_gone")
+        self.stream("up01")
+        self.assertAlmostEqual(self.started[-1][1], 30.0, delta=1.0)
+        self.stream("up01")
+        self.assertAlmostEqual(self.started[-1][1], 50.0, delta=1.0)
+
     def test_gone_video_skipped_transient_not(self):
         self.add()
         self.client.gone = {"a"}

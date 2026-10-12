@@ -47,6 +47,16 @@ CONFIG_SPARE_BYTES = 512
 SERIES_NAME_MAX = 20
 
 
+def _resume_at(offset: float, outcome: str, elapsed: float) -> float:
+    """要存的进度。重新打开时从「存的进度 − RESUME_BACK_S」开始。
+
+    换台走开（client_gone）再回来，往回退一点好接上前情；片源中途断了（failed）时，电视服务
+    还在同一个会话里等着接上，画面不该倒回去重放，所以把回退量加回来，正好从断的地方接。
+    """
+    position = offset + elapsed
+    return position + RESUME_BACK_S if outcome == "failed" else position
+
+
 def _relay_channel(cid: str) -> bool:
     """中转推流的台：投屏、UP 主、剧集。"""
     return cid == table.CAST_ID or (cid[:2] in ("up", "sr") and cid[2:].isdigit())
@@ -190,7 +200,7 @@ class Relay:
                 self.state.mark_watched(cid, video.bvid)
         else:
             self._quick_failures.pop(key, None)
-            self.state.save_position(cid, video.bvid, offset + elapsed)
+            self.state.save_position(cid, video.bvid, _resume_at(offset, outcome, elapsed))
         self.state.save()
 
     def _event(self, action: str, channel: str = "", value: int | None = None, text: str = "") -> None:
@@ -226,7 +236,7 @@ class Relay:
             # 让电视服务把设备切回投屏前的台。
             self._event("return")
             return
-        self.state.save_cast_position(video.bvid, offset + elapsed)
+        self.state.save_cast_position(video.bvid, _resume_at(offset, outcome, elapsed))
         self.state.save()
 
     def play(self, cid: str, handler) -> None:

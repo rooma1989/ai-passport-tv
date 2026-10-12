@@ -53,6 +53,9 @@ class StreamTests(unittest.TestCase):
         self.assertIn("Referer: https://www.bilibili.com/\r\n", args)
         self.assertEqual(args[-3:], ["-f", "mpegts", "pipe:1"])
         self.assertEqual(args[args.index("-c") + 1], "copy")
+        # Reconnect options are input options: they must come before -i.
+        self.assertLess(args.index("-reconnect"), args.index("-i"))
+        self.assertEqual(args[args.index("-reconnect_on_network_error") + 1], "1")
 
     def run_pump(self, proc, write=None, step=3.0):
         out, ticks = bytearray(), []

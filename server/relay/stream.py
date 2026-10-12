@@ -14,9 +14,15 @@ from .bilibili import REFERER, UA
 CHUNK_BYTES = 64 * 1024
 
 
+# B 站的视频服务器偶尔在播到一半时断开连接；让 ffmpeg 自己按字节位置接着下载，
+# 而不是整路失败、由中转重开（那样电视上会跳一下）。读写 15 秒没动静也算断开。
+RECONNECT = ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_on_network_error", "1",
+             "-reconnect_delay_max", "5", "-rw_timeout", "15000000"]
+
+
 def ffmpeg_args(ffmpeg: str, url: str, offset: float) -> list[str]:
     return [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-re",
-            "-user_agent", UA, "-headers", f"Referer: {REFERER}\r\n",
+            "-user_agent", UA, "-headers", f"Referer: {REFERER}\r\n", *RECONNECT,
             "-ss", str(int(offset)), "-i", url,
             "-c", "copy", "-f", "mpegts", "pipe:1"]
 
