@@ -536,6 +536,19 @@ in between.
   socket like everything else on it (the pairing token keeps scanners out but
   is not encryption).
 
+## Decisions (2026-10-12)
+
+The user accepted the design's proposals:
+
+1. Xingzhi brightness: OK triple-click, plus voice commands such as "a bit brighter".
+2. Inside the panel, double-click OK goes back a level.
+3. Push-to-talk starts after holding OK for 0.45 s.
+4. A clear single match runs at once, without a confirmation.
+5. TV sound mutes from press-down. The short gap when OK is only clicked is accepted.
+6. Phase 1 replies on screen and with beeps; spoken TTS replies come later.
+7. Wake word and offline command words on the Xingzhi are a later optional phase, not phase 1.
+8. Transcripts may be logged on the server while thresholds are tuned. Turn this off afterwards.
+
 ## 10. Questions for the user
 
 1. **Xingzhi backlight.** Is a triple-click of OK the right replacement, plus

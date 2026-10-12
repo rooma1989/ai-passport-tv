@@ -73,6 +73,19 @@ Non-goals:
 - High availability or more than one media host in the first four phases.
 - Moving `muse-asr` (it stays; it is counted as a neighbour in capacity).
 
+## Decisions (2026-10-12)
+
+The user accepted every recommendation in section 3:
+
+- Q1, tenants: invite-only, family and friends, about ten devices.
+- Q2, sign-in: an invite link, then scanning with a signed-in phone and typing the code; the key link stays as the admin's break-glass.
+- Q3, roles: admin, user, and a guest limited to one device.
+- Q4, progress: per user; the cast slot per device.
+- Q5, live channels: one global table managed by the admin, which users can hide, reorder and regroup, with proposals for new sources.
+- Q6, concurrency: plan for four devices. The host upgrade and phase 4 are deferred until phases 1-3 are done.
+- Q7, server code: this fork's `server/` is canonical.
+- Q8, unbound devices: no transcoding, only a "scan to bind" still frame. A 15-minute demo allowance is optional.
+
 ## 3. Questions for you to decide
 
 Each has options and a recommendation. The rest of the document assumes the
