@@ -825,6 +825,91 @@ class SearchIntentTests(unittest.TestCase):
         self.assertEqual(listed_ids(decide("YouTube有哪些剧集", no_yt_up), no_yt_up), ["sr03"])
 
 
+# ---- seeking by voice on relay channels ----
+# (utterance, the relay's seek parameters, the reply)
+SEEK_CASES = [
+    # restart
+    ("从头播", {"position": 0}, "从头播放"), ("从头开始播", {"position": 0}, "从头播放"),
+    ("回到开头", {"position": 0}, "从头播放"), ("回到最开始", {"position": 0}, "从头播放"),
+    ("从第一秒开始", {"position": 0}, "从头播放"), ("重新看这集", {"position": 0}, "从头播放"),
+    ("跳到开头", {"position": 0}, "从头播放"), ("跳到百分之零", {"position": 0}, "从头播放"),
+    # a time, units combined
+    ("跳到3分20秒", {"position": 200}, "跳到 3 分 20 秒"),
+    ("跳转到三分二十秒", {"position": 200}, "跳到 3 分 20 秒"),
+    ("跳到1小时5分", {"position": 3900}, "跳到 1 小时 5 分"),
+    ("跳到一个小时零五分三十秒", {"position": 3930}, "跳到 1 小时 5 分 30 秒"),
+    ("跳到两个小时", {"position": 7200}, "跳到 2 小时"),
+    ("跳到1个半小时", {"position": 5400}, "跳到 1 小时 30 分"),
+    ("跳到12分半", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到半小时", {"position": 1800}, "跳到 30 分"),
+    ("跳到第90秒", {"position": 90}, "跳到 1 分 30 秒"),
+    ("跳到12:30", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到12：30。", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到1:02:03", {"position": 3723}, "跳到 1 小时 2 分 3 秒"),
+    ("跳到12点30", {"position": 750}, "跳到 12 分 30 秒"),
+    ("从5分钟开始播", {"position": 300}, "跳到 5 分"),
+    ("从五分钟开始", {"position": 300}, "跳到 5 分"),
+    ("播到10分钟的地方", {"position": 600}, "跳到 10 分"),
+    ("到3分20", {"position": 200}, "跳到 3 分 20 秒"),
+    ("跳到十二分三十秒的位置", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到3分钟左右", {"position": 180}, "跳到 3 分"),
+    ("跳到十分钟", {"position": 600}, "跳到 10 分"),
+    # a share of the video
+    ("跳到一半", {"fraction": 0.5}, None), ("跳到中间", {"fraction": 0.5}, None),
+    ("跳到三分之一", {"fraction": 0.3333}, None), ("跳到四分之三", {"fraction": 0.75}, None),
+    ("跳到百分之六十", {"fraction": 0.6}, None), ("跳到60%", {"fraction": 0.6}, None),
+    ("跳到最后", {"from_end": 30}, None), ("快到结尾", {"from_end": 30}, None),
+    ("快进到结尾", {"from_end": 30}, None), ("跳到100%", {"from_end": 30}, None),
+    # relative, units combined
+    ("快进1分30秒", {"delta": 90}, "快进 1 分 30 秒"), ("后退半分钟", {"delta": -30}, "后退 30 秒"),
+    ("往回倒20秒", {"delta": -20}, "后退 20 秒"), ("快进五分钟", {"delta": 300}, "快进 5 分钟"),
+    ("快退一分半", {"delta": -90}, "后退 1 分 30 秒"), ("后退1个小时", {"delta": -3600}, "后退 1 小时"),
+    ("往前20秒", {"delta": 20}, "快进 20 秒"), ("快进", {"delta": 30}, "快进 30 秒"),
+]
+# Not a seek: nothing to jump to, or another intent's words.
+NOT_SEEK = ["一半", "三分之一", "百分之六十", "三分二十秒", "跳到5", "快进一点", "到湖南卫视", "回到湖南卫视", "大声一点",
+            "音量百分之五十", "亮度百分之六十", "第三集", "跳到第三集", "12:30"]
+
+
+class SeekTests(unittest.TestCase):
+    def test_seek_phrasings(self):
+        for text, params, reply in SEEK_CASES:
+            for cat in (SERIES_PLAYING, CREATOR_PLAYING):
+                with self.subTest(text=text, current=cat.current):
+                    d = decide(text, cat)
+                    self.assertEqual((d.kind, d.relay, d.do), ("seek", ("seek", params), None))
+                    if reply:
+                        self.assertEqual(d.reply, reply)
+                    self.assertLessEqual(len(d.reply), 40)
+
+    def test_live_channels_cannot(self):
+        for text, params, _ in SEEK_CASES:
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.relay, d.do), (None, None))
+                self.assertIn(d.reply, ("直播台不能快进快退", "直播台不能从头播"))
+
+    def test_not_a_seek(self):
+        for text in NOT_SEEK:
+            for cat in (SERIES_PLAYING, LIVE):
+                with self.subTest(text=text, current=cat.current):
+                    d = decide(text, cat)
+                    self.assertNotEqual(d.kind, "seek")
+                    self.assertFalse(d.relay and d.relay[0] == "seek")
+        self.assertEqual(decide("跳到第三集", SERIES_PLAYING).relay, ("episode", {"series": "sr01", "episode": 3}))
+        self.assertEqual(decide("音量百分之五十", catalog(volume=30)).do, {"volume": 50})
+
+    def test_times(self):
+        for text, seconds in (("3分20秒", 200), ("3分20", 200), ("1小时5", 3900), ("半分钟", 30), ("半小时", 1800),
+                              ("第90秒", 90), ("12点30", 750), ("2分钟", 120), ("1个小时", 3600), ("90", 90)):
+            self.assertEqual(intent.seek_seconds(text), seconds, text)
+        for text in ("", "分", "3分20秒钟后", "abc", "25小时", "3分200秒x"):
+            self.assertIsNone(intent.seek_seconds(text), text)
+        for seconds, words in ((0, "0 秒"), (20, "20 秒"), (200, "3 分 20 秒"), (600, "10 分"), (3900, "1 小时 5 分"),
+                               (3930, "1 小时 5 分 30 秒"), (7200, "2 小时")):
+            self.assertEqual(intent.time_words(seconds), words)
+
+
 class NotFoundTests(unittest.TestCase):
     def test_a_named_series_or_channel_that_is_not_there(self):
         for text, name in (("葫芦娃第三集", "葫芦娃"), ("葫芦娃第3集", "葫芦娃"), ("葫芦娃最新一集", "葫芦娃")):

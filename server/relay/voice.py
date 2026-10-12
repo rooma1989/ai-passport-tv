@@ -264,3 +264,30 @@ def _latest(relay, device, caller, client, site: str, source: str) -> dict:
     newest = videos[0]
     return relay._cast_video(Video(bvid=newest.bvid, title=newest.title, duration=newest.duration,
                                    pubdate=newest.pubdate, site=site), caller, device)
+
+
+# ---- 语音跳转（Relay.seek 的 fraction、from_end、within） ----
+
+def duration_words(seconds: float) -> str:
+    """「23 分 40 秒」「1 小时 5 分」「40 秒」。"""
+    hours, rest = divmod(max(0, int(seconds)), 3600)
+    minutes, secs = divmod(rest, 60)
+    parts = ([f"{hours} 小时"] if hours else []) + ([f"{minutes} 分"] if minutes else []) + \
+        ([f"{secs} 秒"] if secs or not (hours or minutes) else [])
+    return " ".join(parts)
+
+
+def seek_target(duration: int, position=None, fraction=None, from_end=None) -> tuple[float, str]:
+    """(要跳到的秒, 拒绝的话)：按比例和到结尾要知道时长（总按正在播的视频算，不会过时）；
+    语音说的时间（position）超过结尾时不跳，回答这个视频有多长。"""
+    if fraction is not None or from_end is not None:
+        if not duration:
+            return 0.0, "不知道这个视频有多长，没法按比例跳"
+        if fraction is not None:
+            # 「跳到 99%」也停在结尾前，不让它变成下一个。
+            return min(max(0.0, float(fraction)) * duration, max(0.0, duration - 10.0)), ""
+        return max(0.0, duration - max(0.0, float(from_end))), ""
+    position = max(0.0, float(position or 0))
+    if duration and position >= duration - 3:
+        return 0.0, f"这个视频只有 {duration_words(duration)}"
+    return position, ""

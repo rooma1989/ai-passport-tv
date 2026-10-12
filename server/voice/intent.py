@@ -349,9 +349,9 @@ _BRIGHT_MAX = _rx(r"(最亮|亮度最大|亮度最高)")
 _BRIGHT_MIN = _rx(r"(最暗|亮度最小|亮度最低)")
 _PAUSE = _rx(r"^(暂停|暂停播放|停(1|一)?下|停1停|停一停|先停|停|停住|别放了|别播了|暂停1?下)$")
 _RESUME = _rx(r"^(继续|继续播放?|继续看|接着播|接着放|接着看|恢复播放|开始播放|播放|开始|取消暂停|放吧|接着来)$")
-_RESTART = _rx(r"^(从头播放?|从头看|从头开始|重新播放?|重播|重播这集|重看|从头放|重新开始|再看1遍|再放1遍)$")
-_SEEK = _rx(r"^(快进|前进|往前|往后快进|快退|后退|倒退|往回|退回|倒回去?|回退)(?:到)?(\d+)?(秒钟?|分钟?|分)?$")
-_SEEK_TO = _rx(r"^(?:跳到|跳转到|快进到|播到|从)(\d+)(分钟?|秒钟?|分)(?:开始)?(?:播放?|看)?$")
+_RESTART = _rx(r"^(从头播放?|从头看|从头开始|从头开始播放?|从头开始看|重新播放?|重播|重播这集|重看|从头放|"
+               r"重新开始|再看1遍|再放1遍|回到开头|回到最开始|回到开始|跳到开头|跳回开头|从第1秒开始(?:播放?|看)?|"
+               r"重新看这集|重新看1遍|重新看)$")
 _NEXT_EP = _rx(r"^(下1集|下一集|下集|播下一集|看下一集|下1个视频|下一个视频|换1个视频|换一个视频|下个视频|"
                r"跳过|跳过这集|跳过这个|下1个|下一个|下个)$")
 _PREV_EP = _rx(r"^(上1集|上一集|上集|播上一集|看上一集|上1个视频|上一个视频|上个视频|回上一集)$")
@@ -431,9 +431,138 @@ def _brightness(text: str, catalog: Catalog) -> Decision | None:
     return _device_says("brightness", f"亮度 {steps - target}", brightness=target)
 
 
-def _seek_seconds(amount: str | None, unit: str | None) -> int:
-    n = int(amount) if amount else SEEK_DEFAULT_S if not unit or unit.startswith("秒") else 1
-    return n * 60 if unit and unit.startswith("分") else n
+# ---- 跳转：「快进1分30秒」「跳到3分20秒」「跳到一半」「跳到百分之六十」「跳到最后」 ----
+#
+# 用自己的规范化（seek_text）：识别结果里的「12:30」规范化后会变成「1230」，「百分之六十」和「60%」
+# 会变成「60」，这里先把它们换成「12分30秒」和「‰60」再规范化。
+
+# 「跳到最后」停在结尾前这么多秒。
+SEEK_END_S = 30
+SEEK_MAX_S = 24 * 3600
+_PERCENT = "‰"
+_CLOCK3 = re.compile(r"(?<!\d)(\d{1,2})[:：](\d{2})[:：](\d{2})(?!\d)")
+_CLOCK2 = re.compile(r"(?<!\d)(\d{1,3})[:：](\d{2})(?!\d)")
+_HOURS = re.compile(r"^(?:(\d{1,2}|一)个?(半)?(?:小时|钟头)|半个?(?:小时|钟头))")
+_MINUTES = re.compile(r"^(?:(\d{1,4})(?:分钟|分)(半)?|半分钟?)")
+_CLOCK_MINUTES = re.compile(r"^(\d{1,3})点(?=\d)")
+_SECONDS = re.compile(r"^(\d{1,5})秒钟?")
+_SEEK_ABS = re.compile(r"^(?:直接)?(?:跳转到|跳转至|跳到|跳至|跳去|跳回|快进到|快退到|快到|播到|放到|拖到|定位到|"
+                       r"回到|退到|倒回到|倒到|从|到)")
+# 「跳到」后面：要跳到的地方，再加可有可无的「的地方」「开始播」。
+_SEEK_ABS_REST = re.compile(r"^(.+?)(?:的地方|的位置|位置|那里|那儿|处|左右)?(?:开始)?(?:播放?|放|看)?$")
+_SEEK_FORWARD = ("往后快进", "往前快进", "向前快进", "快进", "前进", "往前", "向前", "往后跳", "向后跳")
+_SEEK_BACK = ("往回倒", "往回退", "往后退", "向后退", "倒回去", "快退", "后退", "倒退", "往回", "退回", "倒回",
+              "回退", "倒带")
+_SEEK_REL = re.compile(rf"^({'|'.join(sorted(_SEEK_FORWARD + _SEEK_BACK, key=len, reverse=True))})(?:了|个)?(.*)$")
+_START_WORDS = ("开头", "最开始", "最开头", "开始", "头", "起点", "片头")
+_END_WORDS = ("最后", "最后面", "结尾", "末尾", "片尾", "快结束", "结束")
+_HALF_WORDS = ("1半", "一半", "中间", "正中间", "中间位置", "1半的地方")
+_FRACTION = re.compile(r"^(\d{1,2})分之(\d{1,2})$")
+_PERCENTAGE = re.compile(rf"^(?:{_PERCENT}(\d{{1,3}})|(\d{{1,3}}){_PERCENT})$")
+
+
+def seek_text(transcript: str) -> str:
+    text = _CLOCK3.sub(r"\1小时\2分\3秒", transcript or "")
+    text = _CLOCK2.sub(r"\1分\2秒", text)
+    for percent in ("百分之", "%", "％"):
+        text = text.replace(percent, _PERCENT)
+    return _strip_fillers(match.normalize(text))
+
+
+def _number(value: str) -> int:
+    return 1 if value == "一" else int(value)
+
+
+def seek_seconds(text: str) -> int | None:
+    """「3分20秒」「1个小时5分30秒」「12分半」「半小时」「第90秒」「3分20」「12点30」「90」→ 秒；看不懂为 None。"""
+    text = text.removeprefix("第")
+    total, last = 0, ""
+    found = _HOURS.match(text)
+    if found:
+        hours = _number(found.group(1)) if found.group(1) else 0
+        total += hours * 3600 + (1800 if found.group(2) or not found.group(1) else 0)
+        text, last = text[found.end():].removeprefix("零"), "h"
+    found = _MINUTES.match(text) or _CLOCK_MINUTES.match(text)
+    if found:
+        minutes = int(found.group(1)) if found.group(1) else 0
+        half = found.re is _MINUTES and (found.group(2) or not found.group(1))
+        total += minutes * 60 + (30 if half else 0)
+        text, last = text[found.end():].removeprefix("零"), "m"
+    found = _SECONDS.match(text)
+    if found:
+        total += int(found.group(1))
+        text, last = text[found.end():], "s"
+    elif text.isdigit() and len(text) <= 2 and last in ("h", "m"):
+        # 「3分20」「1小时5」：最后一个单位没说，就是下一级。
+        total += int(text) * (60 if last == "h" else 1)
+        text, last = "", "s"
+    elif text.isdigit() and len(text) <= 5 and not last:
+        total, text, last = int(text), "", "s"      # 只说数字：秒（「快进10」）
+    if text or not last or total > SEEK_MAX_S:
+        return None
+    return total
+
+
+def time_words(seconds: int) -> str:
+    """「3 分 20 秒」「1 小时 5 分」「20 秒」「10 分」。"""
+    hours, rest = divmod(max(0, int(seconds)), 3600)
+    minutes, secs = divmod(rest, 60)
+    parts = ([f"{hours} 小时"] if hours else []) + ([f"{minutes} 分"] if minutes else []) + \
+        ([f"{secs} 秒"] if secs or not (hours or minutes) else [])
+    return " ".join(parts)
+
+
+def _span_words(seconds: int) -> str:
+    """相对跳转说多少：整分钟说「N 分钟」，否则「1 分 30 秒」「20 秒」。"""
+    return f"{seconds // 60} 分钟" if 60 <= seconds < 3600 and seconds % 60 == 0 else time_words(seconds)
+
+
+def _seek_target(text: str) -> tuple | None:
+    """跳到哪：("restart",)、("position", 秒)、("fraction", 比例, 说法)、("from_end", 秒)；不是为 None。"""
+    if text in _START_WORDS:
+        return ("restart",)
+    if text in _END_WORDS:
+        return ("from_end", SEEK_END_S)
+    if text in _HALF_WORDS:
+        return ("fraction", 0.5, "一半")
+    found = _FRACTION.match(text)
+    if found:
+        whole, part = int(found.group(1)), int(found.group(2))
+        if 0 < part < whole:
+            return ("fraction", round(part / whole, 4), f"{part}/{whole}")
+        return None
+    found = _PERCENTAGE.match(text)
+    if found:
+        percent = int(found.group(1) or found.group(2))
+        if percent > 100:
+            return None
+        return (("restart",) if percent == 0 else ("from_end", SEEK_END_S) if percent == 100
+                else ("fraction", percent / 100, f"{percent}%"))
+    seconds = None if text.isdigit() else seek_seconds(text)     # 「跳到5」：不知道是秒还是分
+    if seconds is None:
+        return None
+    return ("restart",) if seconds == 0 else ("position", seconds)
+
+
+def seek_request(transcript: str) -> tuple | None:
+    """一句话里的跳转：("delta", 秒)、("restart",)、("position", 秒)、("fraction", 比例, 说法)、
+    ("from_end", 秒)；不是跳转为 None。「一半」「三分之一」单说不算，要有「跳到」「到」之类。"""
+    text = seek_text(transcript)
+    relative = _SEEK_REL.match(text)
+    if relative and not relative.group(2).startswith("到"):
+        verb, amount = relative.group(1), relative.group(2)
+        seconds = SEEK_DEFAULT_S if not amount else seek_seconds(amount)
+        if not seconds:
+            return None
+        return ("delta", -seconds if verb in _SEEK_BACK else seconds)
+    found = _SEEK_ABS.match(text)
+    if not found:
+        return None
+    rest = text[found.end():]
+    if not rest:
+        return None
+    target = _SEEK_ABS_REST.match(rest).group(1)
+    return _seek_target(target) or (_seek_target(rest) if target != rest else None)
 
 
 def _step_channel(catalog: Catalog, step: int) -> Channel | None:
@@ -535,13 +664,16 @@ def _relay_playing(catalog: Catalog) -> bool:
     return bool(_RELAY_ID.match(catalog.current or ""))
 
 
-def _playback(text: str, catalog: Catalog) -> Decision | None:
+def _playback(text: str, catalog: Catalog, transcript: str = "") -> Decision | None:
     """暂停、继续、跳转、上一集、下一集：交给中转；直播台做不了。"""
-    seek = _SEEK.match(text)
-    seek_to = _SEEK_TO.match(text)
     kind = ("pause" if _PAUSE.match(text) else "resume" if _RESUME.match(text)
-            else "restart" if _RESTART.match(text) else "seek" if seek or seek_to
-            else "next" if _NEXT_EP.match(text) else "previous" if _PREV_EP.match(text) else None)
+            else "restart" if _RESTART.match(text) else None)
+    jump = None
+    if kind is None:
+        jump = seek_request(transcript or text)
+        kind = None if jump is None else "restart" if jump[0] == "restart" else "seek"
+    if kind is None:
+        kind = "next" if _NEXT_EP.match(text) else "previous" if _PREV_EP.match(text) else None
     if kind is None:
         return None
     series = bool(_SERIES_ID.match(catalog.current or ""))
@@ -560,15 +692,17 @@ def _playback(text: str, catalog: Catalog) -> Decision | None:
     if kind == "restart":
         return Decision("seek", reply="从头播放", relay=("seek", {"position": 0}))
     if kind == "seek":
-        if seek_to:
-            seconds = _seek_seconds(seek_to.group(1), seek_to.group(2))
-            return Decision("seek", reply=f"跳到 {seconds // 60} 分 {seconds % 60} 秒",
-                            relay=("seek", {"position": seconds}))
-        seconds = _seek_seconds(seek.group(2), seek.group(3))
-        back = seek.group(1) in ("快退", "后退", "倒退", "往回", "退回", "倒回", "倒回去", "回退")
-        words = f"{seconds // 60} 分钟" if seconds >= 60 and seconds % 60 == 0 else f"{seconds} 秒"
-        return Decision("seek", reply=f"{'后退' if back else '快进'} {words}",
-                        relay=("seek", {"delta": -seconds if back else seconds}))
+        if jump[0] == "delta":
+            seconds = jump[1]
+            return Decision("seek", reply=f"{'后退' if seconds < 0 else '快进'} {_span_words(abs(seconds))}",
+                            relay=("seek", {"delta": seconds}))
+        if jump[0] == "position":
+            # 超过结尾时中转回答「这个视频只有 N 分钟」，不跳（session 调中转时带 within）。
+            return Decision("seek", reply=f"跳到 {time_words(jump[1])}", relay=("seek", {"position": jump[1]}))
+        if jump[0] == "fraction":
+            # 比例由中转按正在播的视频的时长算；回答里的时间由 session 按中转的回答改写。
+            return Decision("seek", reply=f"跳到{jump[2]}", relay=("seek", {"fraction": jump[1]}))
+        return Decision("seek", reply="跳到最后", relay=("seek", {"from_end": jump[1]}))
     if kind == "previous":
         if not series:
             return Decision("previous", reply="只有剧集台能回到上一集")
@@ -1136,7 +1270,7 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
         decision = handler(text, catalog)
         if decision is not None:
             return decision
-    decision = _playback(text, catalog)
+    decision = _playback(text, catalog, transcript)
     if decision is not None:
         return decision
     if _NEXT_CH.match(text) or _PREV_CH.match(text) or (_NEXT_EP.match(text) and not _relay_playing(catalog)):

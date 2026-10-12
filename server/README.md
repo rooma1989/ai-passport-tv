@@ -311,6 +311,29 @@ followed by a name that matches nothing ("wo yao kan Hu lu wa"), replies "could
 not find" with that name, still with `intent` `none` for the low earcon; the
 second case adds "you can say 'sou suo Hu lu wa'".
 
+### Seeking
+
+On creator, series and cast channels (live channels keep "a live channel cannot
+..."): restart ("cong tou bo", "hui dao kai tou", "cong di yi miao kai shi",
+"chong xin kan zhe ji"); a time with combined units ("tiao dao 3 fen 20 miao",
+"tiao dao yi ge xiao shi ling wu fen san shi miao", "12 fen ban", "ban xiao shi",
+"di 90 miao", "12:30" or "12 dian 30" as the recogniser writes it, "cong 5 fen
+zhong kai shi bo", "bo dao 10 fen zhong de di fang", "dao 3 fen 20"); a share of
+the video ("tiao dao yi ban" / "zhong jian", "san fen zhi yi", "si fen zhi san",
+"bai fen zhi liu shi" / "60%", "tiao dao zui hou" = 30 s before the end); and
+relative jumps with combined units ("kuai jin 1 fen 30 miao", "hou tui ban fen
+zhong", "wang hui dao 20 miao"). A share, or a time said without "tiao dao" /
+"dao" / "cong", is not a seek ("yi ban" alone, "di san ji" stays an episode).
+The parser normalises the transcript itself (`intent.seek_text`), because the
+shared normalisation drops the colon in "12:30" and the percent sign. The relay
+works out shares from the playing video's own duration (`POST /api/seek` takes
+`fraction` and `from_end` as well as `delta` and `position`), so it is never
+stale, and answers "bu zhi dao zhe ge shi pin you duo chang" when the duration
+is unknown; the reply then says where it went ("tiao dao 12 fen 22 miao"). A
+spoken time past the end (`within: true`, sent with every voice `position`) is
+refused with the video's length ("zhe ge shi pin zhi you 23 fen 40 miao")
+instead of skipping to the next video, as the phone's progress bar does.
+
 ### Searching videos and creators
 
 Voice only (the phone page has no search box). A search is recognised only

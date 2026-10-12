@@ -112,8 +112,8 @@ class FakeRelay:
     def previous(self):
         return self._do("previous")
 
-    def seek(self, delta=None, position=None):
-        return self._do("seek", delta, position)
+    def seek(self, delta=None, position=None, **share):
+        return self._do("seek", delta, position, *([share] if share else []))
 
     # ---- voice search (server/relay/voice.py) ----
 
@@ -315,6 +315,26 @@ class SessionTests(unittest.TestCase):
         self.asr.text = "快进一分钟"
         self.say(ctx=context("up01"))
         self.assertEqual(self.relay.calls, [("pause",), ("seek", 60, None)])
+
+    def test_seek_to_a_share_says_where(self):
+        self.relay.answers["seek"] = {"ok": True, "position": 742.5}
+        self.asr.text = "跳到一半"
+        result = self.say(ctx=context("up01"))[0]
+        self.assertEqual(self.relay.calls, [("seek", None, None, {"fraction": 0.5})])
+        self.assertEqual(result["reply"], "跳到 12 分 22 秒")
+        self.asr.text = "跳到最后"
+        self.say(uid=2, ctx=context("up01"))
+        self.assertEqual(self.relay.calls[-1], ("seek", None, None, {"from_end": 30}))
+        # A spoken time keeps its own reply; past the end the relay's refusal is shown.
+        self.asr.text = "跳到三分二十秒"
+        self.assertEqual(self.say(uid=3, ctx=context("up01"))[0]["reply"], "跳到 3 分 20 秒")
+        self.assertEqual(self.relay.calls[-1], ("seek", None, 200))
+        self.relay.answers["seek"] = {"ok": False, "error": "这个视频只有 23 分 40 秒"}
+        self.asr.text = "跳到一小时"
+        self.assertEqual(self.say(uid=4, ctx=context("up01"))[0]["reply"], "这个视频只有 23 分 40 秒")
+        self.relay.answers["seek"] = {"ok": False, "error": "不知道这个视频有多长，没法按比例跳"}
+        self.asr.text = "跳到三分之一"
+        self.assertEqual(self.say(uid=5, ctx=context("up01"))[0]["reply"], "不知道这个视频有多长，没法按比例跳")
 
     def test_relay_down(self):
         self.asr.text = "暂停"
@@ -757,6 +777,17 @@ class RelayClientTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 RelayClient(url, "key", "Passport")
         RelayClient("http://localhost:8100/", "key", "Passport")
+
+    def test_seek_bodies(self):
+        client = RelayClient("http://127.0.0.1:9", "key", "Passport")
+        sent = []
+        client.post = lambda path, body=None: sent.append((path, body)) or {"ok": True}
+        client.seek(delta=-30)
+        client.seek(position=200)
+        client.seek(fraction=0.5)
+        client.seek(from_end=30)
+        self.assertEqual(sent, [("/api/seek", {"delta": -30}), ("/api/seek", {"position": 200, "within": True}),
+                                ("/api/seek", {"fraction": 0.5}), ("/api/seek", {"from_end": 30})])
 
     def test_unreachable(self):
         client = RelayClient("http://127.0.0.1:9", "key", "Passport", timeout=0.5)

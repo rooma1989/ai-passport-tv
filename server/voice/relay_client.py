@@ -125,8 +125,16 @@ class RelayClient:
     def previous(self) -> dict:
         return self.post("/api/previous")
 
-    def seek(self, delta: float | None = None, position: float | None = None) -> dict:
-        return self.post("/api/seek", {"delta": delta} if position is None else {"position": position})
+    def seek(self, delta: float | None = None, position: float | None = None,
+             fraction: float | None = None, from_end: float | None = None) -> dict:
+        """相对跳、跳到某一秒（超过结尾时中转不跳，回答视频有多长）、按比例跳、跳到结尾前几秒。"""
+        if fraction is not None:
+            return self.post("/api/seek", {"fraction": fraction})
+        if from_end is not None:
+            return self.post("/api/seek", {"from_end": from_end})
+        if position is not None:
+            return self.post("/api/seek", {"position": position, "within": True})
+        return self.post("/api/seek", {"delta": delta})
 
     # ---- 语音搜索（server/relay/voice.py）：timeout 是这次最多等多久，中转那边少等一点（wait），
     # 好在这之前回答「太慢了」而不是让这边超时 ----

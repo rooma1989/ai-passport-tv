@@ -420,7 +420,8 @@ class VoiceService:
                 if action == "episode":
                     answer = relay.play_episode(params["series"], params["episode"])
                 elif action == "seek":
-                    answer = relay.seek(params.get("delta"), params.get("position"))
+                    extra = {k: params[k] for k in ("fraction", "from_end") if k in params}
+                    answer = relay.seek(params.get("delta"), params.get("position"), **extra)
                 else:
                     answer = getattr(relay, action)()
             except RelayError as error:
@@ -433,6 +434,11 @@ class VoiceService:
             note = answer.get("note")
             if action == "episode" and isinstance(note, str) and note:
                 reply = note
+            at = answer.get("position")
+            if action == "seek" and ("fraction" in params or "from_end" in params) \
+                    and isinstance(at, (int, float)) and not isinstance(at, bool):
+                # 「跳到一半」：中转按视频的时长算出了跳到哪，说出来。
+                reply = f"跳到 {intent.time_words(int(at))}"
             if decision.then_channel and not answer.get("cut"):
                 do = {"channel": decision.then_channel}
         result = self._final(uid, heard, reply, decision.kind)
