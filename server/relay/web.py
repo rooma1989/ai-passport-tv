@@ -30,6 +30,8 @@ QUICK_FAILURE_S = 5.0
 MAX_BODY_BYTES = 4096
 _CHANNEL = re.compile(r"^/ch/(up\d\d|sr\d\d|cast)$")
 _CREATOR = re.compile(r"^/api/(?:creators|series)/(up\d\d|sr\d\d)$")
+_EPISODES = re.compile(r"^/api/series/(sr\d\d)/episodes$")
+_EPISODE_PLAY = re.compile(r"^/api/series/(sr\d\d)/play$")
 _HISTORY = re.compile(r"^/api/history/(bilibili|youtube)/([A-Za-z0-9_-]{1,32})$")
 _CODE = re.compile(r"^/r/([A-Za-z2-7]{20})$")
 COOKIE = "tvs"
@@ -419,6 +421,104 @@ class Relay:
             self._cut(cid, entry, "下一个")
         return {"ok": True, "at": self.clock()}
 
+    # ---- 选集 ----
+
+    def _on_air(self, cid: str):
+        """遥控的设备此刻在 cid 台上播的视频：正在推的、暂停着的、或刚跳转还没起来的；不在这个台上为 None。"""
+        playing = self.playing()
+        if not playing["online"] or playing["channel"] != cid:
+            return None
+        paused = self._paused_on(cid)
+        if paused is not None:
+            return paused["video"]
+        return self._current()[1]
+
+    def _episode_of(self, cid: str, video) -> int:
+        """video 是剧集台 cid 的第几集（从 1 数）；不是这部剧的、或 video 为 None 时为 0。"""
+        creator = self.state.get(cid)
+        if video is None or creator is None or creator.kind != "series":
+            return 0
+        with self.state.lock:
+            return next((n for n, v in enumerate(creator.videos, 1) if v.bvid == video.bvid), 0)
+
+    def episodes(self, cid: str) -> dict:
+        """剧集的集数表：每集的状态（看过 / 下一次播的 / 没看）和进度，下一次播哪集，设备正在播哪集。"""
+        with self.state.lock:
+            creator = self.state.get(cid)
+            if creator is None or creator.kind != "series":
+                return {"ok": False, "error": "没有这部剧"}
+            upcoming = self.state.episode(cid)
+            watched = set(creator.watched)
+            rows = []
+            for n, video in enumerate(creator.videos, 1):
+                row = {"n": n, "title": video.title, "duration": video.duration,
+                       "state": "current" if n == upcoming else "watched" if video.bvid in watched else "left"}
+                if video.bvid in creator.positions:
+                    row["position"] = int(creator.positions[video.bvid])
+                rows.append(row)
+            name = creator.name
+        return {"ok": True, "id": cid, "name": name, "total": len(rows), "next": upcoming,
+                "playing": self._episode_of(cid, self._on_air(cid)), "episodes": rows}
+
+    def play_episode(self, cid: str, n: int) -> dict:
+        """从第 n 集接着播（见 State.play_from），并让设备播它。
+
+        设备已在这个台上：掐断当前的流，电视服务重新打开时就是第 n 集（暂停着的先结束暂停）；
+        在别的台上：发 switch 事件换过来。设备不在线或固件不能遥控时只记下选择，下次换到这个台生效，
+        回答里的 note 说明这一点。cut 为真表示在同一个台上换集（手机按跳转等新的一路流）。
+        """
+        creator = self.state.get(cid)
+        if creator is None or creator.kind != "series":
+            return {"ok": False, "error": "没有这部剧"}
+        if not 1 <= n <= len(creator.videos):
+            return {"ok": False, "error": f"没有第 {n} 集"}
+        chosen = creator.videos[n - 1]
+        playing = self.playing()
+        here = playing["online"] and playing["channel"] == cid
+        entry = None
+        if here:
+            _, video, _, entry = self._current()
+            if video is not None and video.bvid == chosen.bvid:
+                return {"ok": True, "episode": n, "title": chosen.title, "note": "正在播这一集"}
+            if entry is not None:
+                # 先标上，免得改状态的同时旧流的 tick 又把旧那集的进度存回去。
+                entry["abort"] = f"换到第 {n} 集"
+        self.state.play_from(cid, n)
+        self.state.save()
+        self._bridge.pop(cid, None)
+        self.log(f"{cid} 选集：第 {n} 集《{chosen.title}》")
+        answer = {"ok": True, "at": self.clock(), "episode": n, "title": chosen.title}
+        name = self.target()["name"]
+        if here:
+            if self._paused_on(cid) is not None:
+                self._paused = None
+                self._event("resume")
+            elif entry is not None:
+                self._cut(cid, entry, f"换到第 {n} 集")
+            answer["cut"] = True
+        elif not playing["online"]:
+            answer["note"] = f"{name}没在线，下次换到这个台从第 {n} 集播"
+        elif not playing["switch"]:
+            answer["note"] = f"{name}的固件不支持遥控，在{name}上换到这个台就从第 {n} 集播"
+        else:
+            self._event("switch", channel=cid)
+        return answer
+
+    def previous(self) -> dict:
+        """剧集台回到上一集，从头播（上一集已经看过，没有进度）。"""
+        playing = self.playing()
+        cid = playing["channel"]
+        video = self._on_air(cid)
+        if video is None:
+            return {"ok": False, "error": "现在没有在播视频"}
+        creator = self.state.get(cid)
+        if creator is None or creator.kind != "series":
+            return {"ok": False, "error": "只有剧集台能回到上一集"}
+        n = self._episode_of(cid, video)
+        if n <= 1:
+            return {"ok": False, "error": "已经是第 1 集"}
+        return self.play_episode(cid, n - 1)
+
     # ---- 管理 ----
 
     def key_ok(self, given: str | None) -> bool:
@@ -503,9 +603,18 @@ class Relay:
             title = self.state.cast.title
         elif _relay_channel(cid):
             title = self._titles.get(cid, "")
+        # 剧集台：正在播第几集、共几集；不是剧集台或还不知道播的是哪集时为 0。
+        episode = total = 0
+        creator = self.state.get(cid) if cid[:2] == "sr" else None
+        if creator is not None and creator.kind == "series":
+            video = self._on_air(cid)
+            episode, total = self._episode_of(cid, video), len(creator.videos)
+            if episode:
+                title = video.title
         return {"channel": cid, "online": playing["online"], "switch": playing["switch"],
                 "group": found[0] if found else "", "name": found[1]["name"] if found else "",
                 "n": found[1]["n"] if found else 0, "title": title, "since": playing["since"],
+                "episode": episode, "total": total,
                 "video": self.video_progress(cid) if playing["online"] else None,
                 "device": _phone_device(playing["device"]) if playing["online"] else None}
 
@@ -878,6 +987,8 @@ def _manage_handler(relay: Relay):
                 self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             elif path == "/api/state":
                 self._json(relay.summary())
+            elif _EPISODES.match(path):
+                self._json(relay.episodes(_EPISODES.match(path).group(1)))
             else:
                 self._not_found()
 
@@ -915,6 +1026,17 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/next":
                 self._json(relay.next())
+                return
+            if path == "/api/previous":
+                self._json(relay.previous())
+                return
+            match = _EPISODE_PLAY.match(path)
+            if match:
+                episode = body.get("episode")
+                if not isinstance(episode, int) or isinstance(episode, bool):
+                    self._json({"ok": False, "error": "请求格式不对"}, 400)
+                    return
+                self._json(relay.play_episode(match.group(1), episode))
                 return
             if path == "/api/device":
                 volume, level = body.get("volume"), body.get("brightness")

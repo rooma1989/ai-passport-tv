@@ -269,7 +269,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(names, ["我的投屏", "UP 主", "央视", "卫视", "其他"])
         self.assertEqual(state["now"], {"channel": "ch001", "online": True, "switch": True,
                                         "group": "卫视", "name": "湖南卫视", "n": 1, "title": "",
-                                        "since": self.now, "video": None, "device": None})
+                                        "since": self.now, "episode": 0, "total": 0,
+                                        "video": None, "device": None})
         creators = next(g for g in state["groups"] if g["name"] == "UP 主")["channels"]
         self.assertEqual(creators, [{"id": "up01", "name": "UP42", "n": 1}])
 
@@ -427,6 +428,55 @@ class WebTests(unittest.TestCase):
         answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7"})
         self.assertIn("满了", answer["error"])
         self.assertIsNone(self.state.get("sr01"))
+
+    def test_series_episode_list_and_choice(self):
+        self.relay.add_series("https://www.bilibili.com/bangumi/play/ss7")
+        listed = self.call("GET", "/api/series/sr01/episodes")
+        self.assertEqual(listed, {"ok": True, "id": "sr01", "name": "番剧ss7", "total": 3, "next": 1, "playing": 0,
+                                  "episodes": [{"n": 1, "title": "第1集", "duration": 600, "state": "current"},
+                                               {"n": 2, "title": "第2集", "duration": 600, "state": "left"},
+                                               {"n": 3, "title": "第3集", "duration": 600, "state": "left"}]})
+        self.stream("sr01")
+        self.outcome = "client_gone"
+        self.stream("sr01")
+        rows = self.call("GET", "/api/series/sr01/episodes")["episodes"]
+        self.assertEqual([r["state"] for r in rows], ["watched", "current", "left"])
+        self.assertEqual(rows[1]["position"], 30, "progress of the episode in progress")
+        # Device offline: the choice is kept for the next time the channel opens.
+        answer = self.call("POST", "/api/series/sr01/play", {"episode": 3})
+        self.assertEqual((answer["ok"], answer["episode"], answer["title"]), (True, 3, "第3集"))
+        self.assertIn("没在线", answer["note"])
+        self.assertIsNone(events.read_event(self.events))
+        self.assertEqual(self.call("GET", "/api/state")["series"][0]["episode"], 3)
+        self.started.clear()
+        self.stream("sr01")
+        self.assertEqual(self.started, [("https://media.example/ep3/3.mp4", 0.0)])
+        # Device on another channel: switched to the series, which starts at the chosen episode.
+        now_playing.write(self.playing, "ch001", True, True, now=self.now, since=self.now)
+        answer = self.call("POST", "/api/series/sr01/play", {"episode": 1})
+        self.assertEqual(answer, {"ok": True, "at": self.now, "episode": 1, "title": "第1集"})
+        self.assertEqual(events.read_event(self.events), (1, "switch", "sr01", None, ""))
+        self.assertEqual([r["state"] for r in self.call("GET", "/api/series/sr01/episodes")["episodes"]],
+                         ["current", "left", "left"], "later episodes are unwatched again")
+        # Firmware that cannot be switched from the phone.
+        now_playing.write(self.playing, "ch001", True, False, now=self.now, since=self.now)
+        self.assertIn("固件", self.call("POST", "/api/series/sr01/play", {"episode": 2})["note"])
+
+    def test_series_episode_errors(self):
+        self.relay.add_series("https://www.bilibili.com/bangumi/play/ss7")
+        self.add()
+        self.assertEqual(self.call("GET", "/api/series/sr09/episodes"), {"ok": False, "error": "没有这部剧"})
+        self.assertEqual(self.call("POST", "/api/series/sr01/play", {"episode": 4})["error"], "没有第 4 集")
+        self.assertEqual(self.call("POST", "/api/series/sr01/play", {"episode": 0})["error"], "没有第 0 集")
+        self.assertEqual(self.relay.play_episode("up01", 1)["error"], "没有这部剧")
+        self.assertEqual(self.relay.episodes("up01")["error"], "没有这部剧")
+        for bad in ("2", True, 1.5, None):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                self.call("POST", "/api/series/sr01/play", {"episode": bad})
+            self.assertEqual(caught.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.call("GET", "/api/series/sr01/episodes", key="wrong")
+        self.assertEqual(caught.exception.code, 404)
 
     def test_series_list_refreshed_twice_a_day(self):
         self.relay.add_series("https://www.bilibili.com/bangumi/play/ss7")
@@ -612,6 +662,13 @@ class DeviceTests(unittest.TestCase):
         self.relay.switch("ch000")
         self.assertEqual(events.read_event(self.xz_events).channel, "ch000")
 
+    def test_episode_choice_goes_to_the_device_in_use(self):
+        self.relay.add_series("https://www.bilibili.com/bangumi/play/ss7")
+        now_playing.write(self.pp_now, "ch000", True, True, now=self.now, since=self.now)
+        self.assertTrue(self.relay.play_episode("sr01", 2)["ok"])
+        self.assertEqual(events.read_event(self.pp_events).channel, "sr01")
+        self.assertIsNone(events.read_event(self.xz_events))
+
     def test_phone_picks_a_device(self):
         now_playing.write(self.xz_now, "ch001", True, True, now=self.now, since=self.now)
         now_playing.write(self.pp_now, "ch000", True, True, now=self.now, since=self.now - 50)
@@ -765,6 +822,72 @@ class PlaybackControlTests(unittest.TestCase):
         self.assertEqual(events.read_event(self.events).action, "return")
         self.assertTrue(self.state.cast_done)
 
+    def series(self):
+        from server import now_playing
+        self.relay.add_series("https://www.bilibili.com/bangumi/play/ss7")
+        now_playing.write(self.playing, "sr01", True, True, now=self.now, since=self.now)
+
+    def test_choosing_an_episode_on_the_channel_cuts_and_reopens_there(self):
+        self.series()
+        thread = self.serve("sr01")
+        now = self.relay.summary()["now"]
+        self.assertEqual((now["episode"], now["total"], now["title"]), (1, 3, "第1集"))
+        self.mono += 100 + web.PLAYBACK_LAG_S
+        answer = self.relay.play_episode("sr01", 3)
+        self.assertEqual((answer["ok"], answer["cut"], answer["episode"]), (True, True, 3))
+        self.assertNotIn("note", answer)
+        thread.join(2)
+        self.assertTrue(self.procs[0].killed.is_set())
+        self.assertIsNone(events.read_event(self.events), "no switch: the device is already there")
+        self.assertEqual(self.state.get("sr01").watched, ["ep1/1", "ep2/2"])
+        self.assertEqual(self.state.get("sr01").positions, {}, "the cut stream saved nothing")
+        self.serve("sr01")
+        self.assertEqual(self.started[-1], ("https://media.example/ep3/3.mp4", 0.0))
+        self.assertEqual(self.relay.episodes("sr01")["playing"], 3)
+        self.assertEqual(self.relay.summary()["now"]["episode"], 3)
+        # The episode already playing: nothing is cut.
+        answer = self.relay.play_episode("sr01", 3)
+        self.assertEqual(answer["note"], "正在播这一集")
+        self.assertFalse(self.procs[-1].killed.is_set())
+
+    def test_previous_episode(self):
+        self.series()
+        self.serve("sr01")
+        self.assertEqual(self.relay.previous()["error"], "已经是第 1 集")
+        self.relay.next()
+        self.serve("sr01")
+        self.assertEqual(self.started[-1][0], "https://media.example/ep2/2.mp4")
+        self.mono += 200
+        answer = self.relay.previous()
+        self.assertEqual((answer["ok"], answer["cut"], answer["episode"], answer["title"]), (True, True, 1, "第1集"))
+        self.serve("sr01")
+        self.assertEqual(self.started[-1], ("https://media.example/ep1/1.mp4", 0.0), "from the start")
+        self.assertEqual(self.state.get("sr01").watched, [])
+
+    def test_previous_only_on_series(self):
+        self.serve()
+        self.assertEqual(self.relay.previous()["error"], "只有剧集台能回到上一集")
+        from server import now_playing
+        now_playing.write(self.playing, "ch000", True, True, now=self.now, since=self.now)
+        self.assertEqual(self.relay.previous()["error"], "现在没有在播视频")
+
+    def test_choosing_an_episode_while_paused_resumes_on_it(self):
+        self.series()
+        thread = self.serve("sr01")
+        self.relay.next()
+        thread.join(2)
+        thread = self.serve("sr01")
+        self.mono += 50 + web.PLAYBACK_LAG_S
+        self.relay.pause()
+        thread.join(2)
+        self.assertEqual(self.relay.summary()["now"]["episode"], 2, "known while paused")
+        answer = self.relay.previous()
+        self.assertTrue(answer["cut"])
+        self.assertEqual(events.read_event(self.events).action, "resume")
+        self.assertIsNone(self.relay._paused)
+        self.serve("sr01")
+        self.assertEqual(self.started[-1], ("https://media.example/ep1/1.mp4", 0.0))
+
     def test_pause_and_resume_continue_exactly(self):
         thread = self.serve()
         self.mono += 50 + web.PLAYBACK_LAG_S
@@ -816,14 +939,15 @@ class PageFieldTests(unittest.TestCase):
 
     def test_page_fields_are_served(self):
         script = web.PAGE.split("<script>", 1)[1]
-        used = set(re.findall(r"\b(?:data|now|data\.now|data\.now\.video|data\.now\.device|data\.youtube|v|d|g|c|h|cr|sr|room|answer|answer\.creator|answer\.series)\.(\w+)", script))
+        used = set(re.findall(r"\b(?:data|now|data\.now|data\.now\.video|data\.now\.device|data\.youtube|v|d|g|c|h|cr|sr|room|answer|answer\.creator|answer\.series|eps|ep)\.(\w+)", script))
         used -= {"length", "find", "map", "includes"}
         served = {"now", "groups", "creators", "cast", "history", "group_names", "youtube", "state",
                   "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
                   "site", "at", "since", "left", "total", "ok", "error", "creator",
                   "video", "position", "duration", "paused", "started", "moving",
                   "device", "volume", "brightness", "steps", "pet", "audio_only",
-                  "series", "room", "fits", "episode", "devices", "auto", "target"}
+                  "series", "room", "fits", "episode", "devices", "auto", "target",
+                  "episodes", "next", "playing", "cut", "note"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

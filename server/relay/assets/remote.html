@@ -70,6 +70,8 @@
   .controls button:active { border-color: var(--red); color: var(--red); }
   .controls button.main { color: var(--amber); border-color: #5a4a2c; }
   .controls button:disabled { opacity: .35; }
+  .controls.five { gap: 6px; }
+  .controls.five button { font-size: 13px; letter-spacing: 0; }
   .seg { display: flex; gap: 18px; overflow-x: auto; padding: 4px 16px 10px; scrollbar-width: none; }
   .seg::-webkit-scrollbar { display: none; }
   .seg button { flex: none; background: none; border: 0; padding: 4px 0 3px; color: var(--dim); font: 15px var(--serif); }
@@ -135,6 +137,8 @@
              font: 14px var(--serif); text-align: left; }
   .petline b { flex: 1; font-weight: 400; color: var(--paper); }
   .petline i { font-style: normal; color: var(--faint); }
+  .petline[hidden] { display: none; }
+  .petline b.clip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .pethead { padding: 20px 20px 14px; border-bottom: 1px solid var(--rule); }
   .pethead .crumb { display: flex; justify-content: space-between; align-items: baseline; }
@@ -166,6 +170,19 @@
                   letter-spacing: 2px; }
   .apply button.go2 { background: var(--red); color: var(--ink-deep); }
   .apply p { margin: 8px 0 0; font-size: 11px; color: var(--faint); text-align: center; }
+  .rows .more { flex: none; font: 13px var(--mono); color: var(--faint); }
+  .row.tap { cursor: pointer; }
+  /* 选集：几百集也只画看得见的那几行。 */
+  .eps li { content-visibility: auto; contain-intrinsic-size: auto 47px; }
+  .eps .row { padding: 11px 16px; }
+  .eps .row .n { width: 34px; }
+  .eps .row .t { font-size: 16px; }
+  .eps .row .src { font-size: 12px; }
+  .eps .row.seen .t { color: var(--faint); }
+  .eps .row.seen .n { color: var(--faint); opacity: .6; }
+  .eps .row.cur { background: #231f19; box-shadow: inset 2px 0 0 var(--red); }
+  .eps .row.cur .t, .eps .row.cur .src { color: var(--amber); }
+  .eps .row.cur .n { opacity: 1; }
   .gate { position: fixed; inset: 0; background: var(--ink); display: none; align-items: center; justify-content: center;
           padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
   .gate.on { display: flex; }
@@ -201,13 +218,15 @@
       <div class="player" id="player" hidden>
         <input type="range" id="seek" min="0" max="100" step="1" value="0">
         <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
-        <div class="controls">
+        <div class="controls" id="controls">
           <button id="back">退 30 秒</button>
           <button id="pause" class="main">暂停</button>
           <button id="fwd">进 30 秒</button>
+          <button id="prev" hidden>上一集</button>
           <button id="next">下一个</button>
         </div>
       </div>
+      <button class="petline" id="epline" hidden><span>选集</span><b class="clip" id="epnow"></b><i>›</i></button>
       <div class="seg" id="seg"></div>
       <ol class="rows" id="channels"></ol>
     </section>
@@ -226,6 +245,16 @@
       <div class="dots"></div>
       <div class="petgrid" id="petgrid"></div>
       <div class="apply"><button id="petapply">正在使用</button><p>换上后电视会让它开心 2 秒，再回到节目</p></div>
+    </section>
+
+    <section class="page" id="episodes">
+      <div class="pethead">
+        <div class="crumb"><button id="epback">‹ 订阅</button><span id="epch"></span></div>
+        <h1 id="epname"></h1>
+        <p id="epsum"></p>
+      </div>
+      <ol class="rows eps" id="eplist"></ol>
+      <div class="hint">点一集，小智就从这一集开始播：前面的算看过，后面的接着按顺序播。</div>
     </section>
 
     <section class="page" id="cast">
@@ -256,7 +285,7 @@
         </div>
       </div>
       <ol class="rows" id="seriesList"></ol>
-      <div class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。番剧只播免费的集；YouTube 每集第一次播要等 20～40 秒。</div>
+      <div class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。点一部剧可以选集。番剧只播免费的集；YouTube 每集第一次播要等 20～40 秒。</div>
       <div class="foot"><a href="/TV/" target="_blank" rel="noreferrer">使用说明</a><button id="newcode">换一个扫码码</button></div>
     </section>
   </main>
@@ -320,8 +349,9 @@ function dateLabel(at) {
   return (day.getMonth() + 1) + "月" + day.getDate() + "日";
 }
 
-function startPending(channel, name, at, slow, kind, target) {
-  pending = { kind: kind || "switch", channel, name, at, target,
+// label：跳转类等待时台号屏上的说明（默认「跳转中…」）。
+function startPending(channel, name, at, slow, kind, target, label) {
+  pending = { kind: kind || "switch", channel, name, at, target, label,
               deadline: Date.now() + (slow ? 45000 : 20000) };
   render();
   schedule(800);
@@ -356,7 +386,15 @@ let dragging = false;
 function renderPlayer() {
   const v = data.now.online ? data.now.video : null;
   $("player").hidden = !v;
+  // 剧集台：多一个「上一集」，「下一个」叫「下一集」，下面一行「选集」。
+  const series = data.now.online && data.now.total > 0;
+  $("epline").hidden = !series;
+  if (series) $("epnow").textContent = data.now.episode ? "第 " + data.now.episode + " / " + data.now.total + " 集" : "共 " + data.now.total + " 集";
   if (!v) return;
+  $("prev").hidden = !series;
+  $("prev").disabled = data.now.episode === 1;
+  $("next").textContent = series ? "下一集" : "下一个";
+  $("controls").classList.toggle("five", series);
   // 跳转后先显示目标位置，等小智接上新流再按服务器的进度走。
   const seeking = pending && pending.kind === "seek" && pending.target != null;
   const position = seeking ? pending.target
@@ -383,6 +421,12 @@ function renderNotice() {
   notice.onclick = state === "login" ? () => notice.classList.toggle("open") : null;
 }
 
+// 剧集台在标题前加「第 n / N 集」。
+function nowTitle(now) {
+  if (!now.episode) return now.title || "";
+  return "第 " + now.episode + " / " + now.total + " 集" + (now.title ? " · " + now.title : "");
+}
+
 function renderScreen() {
   const now = data.now;
   const screen = $("screen");
@@ -391,7 +435,7 @@ function renderScreen() {
     $("ch").textContent = "CH " + pad(now.n || 0);
     $("grp").textContent = now.group;
     $("nm").textContent = now.name || now.channel;
-    $("ti").textContent = "跳转中…";
+    $("ti").textContent = pending.label || "跳转中…";
   } else if (pending) {
     screen.className = "screen switching";
     $("ch").textContent = "CH ··";
@@ -403,13 +447,13 @@ function renderScreen() {
     $("ch").textContent = "CH " + pad(now.n || 0);
     $("grp").textContent = now.group;
     $("nm").textContent = now.name || now.channel;
-    $("ti").textContent = "已暂停 · " + (now.title || "");
+    $("ti").textContent = "已暂停 · " + nowTitle(now);
   } else if (now.online && now.channel) {
     screen.className = "screen";
     $("ch").textContent = "CH " + pad(now.n || 0);
     $("grp").textContent = now.group;
     $("nm").textContent = now.name || now.channel;
-    $("ti").textContent = now.title || "";
+    $("ti").textContent = nowTitle(now);
   } else {
     screen.className = "screen off";
     $("ch").textContent = "— —";
@@ -569,19 +613,123 @@ function renderSeries() {
   if (!(data.series || []).length) { list.appendChild(el("li", "empty", "还没有添加剧集")); return; }
   for (const sr of data.series) {
     const li = el("li");
-    const row = el("div", "row");
+    const row = el("div", "row tap");
+    row.onclick = () => openEpisodes(sr.id, "creators");
     const remove = el("button", "remove", "删除");
-    remove.onclick = async () => {
+    remove.onclick = async (event) => {
+      event.stopPropagation();
       if (!confirm("删除「" + sr.name + "」这个台？看到哪一集也会忘掉。")) return;
       const answer = await call("DELETE", "api/series/" + sr.id);
       if (!answer.ok) toast(answer.error, true);
       refresh();
     };
-    row.append(el("span", "t", sr.name), el("span", "src", siteTag(sr.site) + " · 第 " + sr.episode + " / " + sr.total + " 集"), remove);
+    row.append(el("span", "t", sr.name), el("span", "src", siteTag(sr.site) + " · 第 " + sr.episode + " / " + sr.total + " 集"),
+               el("span", "more", "›"), remove);
     li.appendChild(row);
     list.appendChild(li);
   }
 }
+
+// 选集页：打开时取一次集数表；之后只在「下一次播哪集」或「正在播哪集」变了时重新取。
+let eps = null;            // 最近取到的集数表
+let epFrom = "creators";   // 从哪一页打开的，返回时回去
+let epPending = 0;         // 点了、服务器还没回答的那一集
+let epLoading = false;
+
+async function openEpisodes(id, from) {
+  epFrom = from;
+  eps = null;
+  epPending = 0;
+  const sr = (data.series || []).find((x) => x.id === id);
+  $("epback").textContent = from === "remote" ? "‹ 遥控" : "‹ 订阅";
+  $("epch").textContent = id.toUpperCase();
+  $("epname").textContent = sr ? sr.name : "";
+  $("epsum").textContent = "正在取集数…";
+  $("eplist").replaceChildren();
+  showPage("episodes");
+  document.querySelector("main").scrollTop = 0;
+  await loadEpisodes(id, true);
+}
+
+async function loadEpisodes(id, scroll) {
+  epLoading = true;
+  let answer;
+  try { answer = await call("GET", "api/series/" + id + "/episodes"); }
+  catch (error) { return; }
+  finally { epLoading = false; }
+  if (!$("episodes").classList.contains("on")) return;
+  if (!answer.ok) { toast(answer.error, true); showPage(epFrom); return; }
+  eps = answer;
+  renderEpisodes(scroll);
+}
+
+function episodeLabel(ep) {
+  if (ep.n === epPending) return "切换中…";
+  if (ep.n === eps.playing) return "播放中";
+  if (ep.state === "current") return ep.position ? "看到 " + clock(ep.position) : "接着播";
+  if (ep.state === "watched") return "看过";
+  return ep.duration ? clock(ep.duration) : "";
+}
+
+// 一次画完：几百行用一个 DocumentFragment 换上去，点击由列表统一接。
+function renderEpisodes(scroll) {
+  const list = $("eplist");
+  const mark = eps.playing || eps.next;
+  const frag = document.createDocumentFragment();
+  for (const ep of eps.episodes) {
+    const li = el("li");
+    const row = el("div", "row tap" + (ep.state === "watched" && ep.n !== mark ? " seen" : "")
+      + (ep.n === mark ? " cur" : "") + (ep.n === epPending ? " pending" : ""));
+    row.dataset.n = String(ep.n);
+    row.append(el("span", "n", pad(ep.n)), el("span", "t", ep.title || "第 " + ep.n + " 集"),
+               el("span", "src", episodeLabel(ep)));
+    li.appendChild(row);
+    frag.appendChild(li);
+  }
+  list.replaceChildren(frag);
+  $("epname").textContent = eps.name;
+  $("epsum").textContent = "共 " + eps.total + " 集 · " + (eps.playing ? "正在播第 " + eps.playing + " 集"
+    : "下次从第 " + eps.next + " 集播") + " · 点一集就播";
+  if (scroll) {
+    const current = list.querySelector(".row.cur");
+    if (current) current.scrollIntoView({ block: "center" });
+  }
+}
+
+// 每次刷新时看一眼：正在看的那部剧换了集，就重新取集数表（不动滚动位置）。
+function followEpisodes() {
+  if (!eps || epLoading || epPending || !$("episodes").classList.contains("on")) return;
+  const sr = (data.series || []).find((x) => x.id === eps.id);
+  const playing = data.now.online && data.now.channel === eps.id ? data.now.episode : 0;
+  if ((sr && sr.episode !== eps.next) || playing !== eps.playing) loadEpisodes(eps.id, false);
+}
+
+async function playEpisode(n) {
+  if (!eps || epPending) return;
+  if (n === eps.playing) { toast("正在播这一集"); return; }
+  const id = eps.id, name = eps.name;
+  epPending = n;
+  renderEpisodes(false);
+  try {
+    const answer = await call("POST", "api/series/" + id + "/play", { episode: n });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    if (answer.note) { toast(answer.note); return; }
+    toast("小智马上播第 " + answer.episode + " 集");
+    startPending(id, name, answer.at, true, answer.cut ? "seek" : "switch", null, "换到第 " + answer.episode + " 集…");
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    epPending = 0;
+    await loadEpisodes(id, false);
+  }
+}
+
+$("eplist").onclick = (event) => {
+  const row = event.target.closest(".row");
+  if (row) playEpisode(Number(row.dataset.n));
+};
+$("epback").onclick = () => showPage(epFrom);
+$("epline").onclick = () => { if (data && data.now.total) openEpisodes(data.now.channel, "remote"); };
 
 // 滑条：小智报告的音量和亮度；拖动时不被刷新覆盖。
 let adjusting_dial = "";
@@ -681,6 +829,7 @@ function render() {
   renderHistory();
   renderCreators();
   renderSeries();
+  followEpisodes();
 }
 
 async function refresh() {
@@ -787,8 +936,14 @@ async function control(path, body) {
   if (path === "api/pause") { toast("已暂停"); refresh(); return; }
   if (path === "api/resume") { toast("继续播放"); refresh(); return; }
   if (path === "api/next") {
-    toast("下一个");
+    toast(data.now.total ? "下一集" : "下一个");
     startPending(data.now.channel, data.now.name, answer.at, true, "seek");
+    return;
+  }
+  if (path === "api/previous") {
+    if (answer.note) { toast(answer.note); return; }
+    toast("上一集：第 " + answer.episode + " 集");
+    startPending(data.now.channel, data.now.name, answer.at, true, "seek", null, "换到第 " + answer.episode + " 集…");
     return;
   }
   toast("已跳到 " + clock(answer.position) + "，小智马上接上");
@@ -797,6 +952,7 @@ async function control(path, body) {
 $("back").onclick = () => control("api/seek", { delta: -30 });
 $("fwd").onclick = () => control("api/seek", { delta: 30 });
 $("next").onclick = () => control("api/next");
+$("prev").onclick = () => control("api/previous");
 $("pause").onclick = () => control(data.now.video && data.now.video.paused ? "api/resume" : "api/pause");
 $("seek").addEventListener("input", () => { dragging = true; $("pos").textContent = clock(Number($("seek").value)); });
 $("seek").addEventListener("change", () => {

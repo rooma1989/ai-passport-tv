@@ -126,6 +126,26 @@ plays the episodes in order and comes back to the episode it left. Bangumi keep
 only their free episodes. The relay refuses a new channel when the device's
 channel list would outgrow its CONFIG packet; remove a channel first.
 
+**Picking an episode.** Tapping a series on that tab (or "Episodes" under the
+player while a series plays) lists its episodes: watched ones dimmed, the one in
+progress highlighted and scrolled to. Tapping an episode makes the series carry
+on from there: earlier episodes count as watched, that one and the later ones as
+unwatched, and other episodes' progress is dropped. The episode starts from the
+beginning unless it is the one already in progress, which resumes. If the device
+is on that channel, the relay cuts the stream and the media server reopens it at
+the chosen episode; on another channel it gets a `switch` event; offline, the
+choice waits for the next time the channel opens. While a series plays, the
+player has "Previous episode" (from the beginning) and its "Next" is the next
+episode; the screen shows the episode number (n of N) before the title. API:
+`GET /api/series/<sr id>/episodes` returns `{ok, id, name, total, next, playing,
+episodes: [{n, title, duration, state: watched|current|left, position?}]}`
+(`next` is the episode the channel opens at, `playing` the one on the device or
+0); `POST /api/series/<sr id>/play {"episode": n}` and `POST /api/previous` answer
+`{ok, at, episode, title}` plus `cut: true` when the device was already on the
+channel, or a `note` instead of switching (device offline, firmware without
+remote switching, or that episode already playing). No firmware change: the
+device draws no hint box for an episode change.
+
 Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
 relay uses the unsigned web API rather than yt-dlp.
 
