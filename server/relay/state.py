@@ -215,6 +215,17 @@ class State:
             creator.watched = []
             return creator.videos[0], 0.0
 
+    def peek_video(self, cid: str) -> Video | None:
+        """next_video 下一次会选的视频，只看不改（都看过时不清标记）。给设备「正在加载」用。"""
+        with self.lock:
+            creator = self.get(cid)
+            if creator is None or not creator.videos:
+                return None
+            for video in creator.videos:
+                if video.bvid in creator.positions:
+                    return video
+            return next((v for v in creator.videos if v.bvid not in creator.watched), creator.videos[0])
+
     def episode(self, cid: str) -> int:
         """剧集台下一次播第几集（从 1 数），只看不改；都看完了算第 1 集。"""
         with self.lock:

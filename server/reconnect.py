@@ -142,6 +142,25 @@ def _flush_voice(server, connection, session: int, wire: WireState) -> None:
         wire.seq = flush(connection, session, wire.seq)
 
 
+def _flush_info(server, connection, session: int, wire: WireState, fetch=None):
+    """「正在加载」：中转说要换的（事件），或片源重开时后台问到的（fetch 完成时）。返回仍在问的 fetch。"""
+    flush = getattr(server, "info_flush", None)
+    if flush is not None:
+        wire.seq = flush(connection, session, wire.seq)
+    if fetch is not None and fetch.done:
+        wire.seq = server.info_loading(connection, session, wire.seq, fetch.result)
+        return None
+    return fetch
+
+
+def _resumed(server, connection, session: int, wire: WireState, channel):
+    """接着推流之前：设备上的「正在加载」该收了（新片源的画面紧接着就来）。"""
+    done = getattr(server, "info_done", None)
+    if done is not None:
+        wire.seq = done(connection, session, wire.seq)
+    return channel
+
+
 def hold(server, connection, session: int, channel: LiveChannel, wire: WireState,
          origin: float, since: float, restart_reason: str = "",
          paused: bool = False, pause_title: str = "") -> LiveChannel | None:
@@ -157,6 +176,8 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
     """
     deadline = since + RECONNECT_TIMEOUT_S
     restart: Restart | None = None
+    # 片源重开时问中转新片源是哪一集（server.info_fetch，只对会画的固件、中转的台）。
+    fetch = None
     attempts = 0
     retry_at = 0.0
     pending = restart_reason
@@ -185,6 +206,9 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 now = time.monotonic()
                 _flush_voice(server, connection, session, wire)
                 verdict = server.pause_verdict(paused_at)
+                # 暂停中选了别的集：继续之前就画「正在加载」。
+                if verdict == "resume":
+                    _flush_info(server, connection, session, wire)
                 if verdict == "leave":
                     return None
                 if verdict == "resume":
@@ -209,6 +233,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 raise LiveError(f"source unavailable for {RECONNECT_TIMEOUT_S:.0f} s")
             _send_silence(server, connection, session, wire, origin)
             _flush_voice(server, connection, session, wire)
+            fetch = _flush_info(server, connection, session, wire, fetch)
 
             if restart is None:
                 if channel is not None and not pending:
@@ -217,7 +242,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                     elif now - since > STALL_RESTART_S:
                         pending = "stalled"
                     elif channel.video_pending() and len(channel.audio) >= 4:
-                        return channel
+                        return _resumed(server, connection, session, wire, channel)
                 elif channel is None and not pending:
                     pending = "start_failed"
                 if pending and now >= retry_at:
@@ -229,6 +254,8 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                         channel = None
                     restart = Restart(make)
                     pending = ""
+                    if fetch is None and getattr(server, "info_fetch", None) is not None:
+                        fetch = server.info_fetch()
             else:
                 failed = ""
                 if restart.done and restart.error is not None:
@@ -245,7 +272,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                     retry_at = now + RETRY_DELAY_S
                 elif restart.done and restart.channel.prebuffered():
                     winner, restart = restart.channel, None
-                    return winner
+                    return _resumed(server, connection, session, wire, winner)
 
             getattr(server, "keep_now_playing", lambda: None)()
             # 手机要换台：结束会话，设备重连时拿到新台（AVServer.switch_waiting）。

@@ -38,7 +38,7 @@ from .media import (AUDIO_CHUNK_MS, AUDIO_LEAD_MS, DURATION_MS, FPS,
 from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packet,
                        ProtocolError, json_bytes, json_object, receive_packet,
                        send_packet, _write_slice)
-from . import now_playing, reconnect
+from . import episode_info, now_playing, reconnect
 from .cast_switch import SwitchWatcher
 from .voice.session import VoiceService
 from .tenancy import gate as tenancy_gate, unbound as tenancy_unbound
@@ -303,6 +303,10 @@ class AVServer:
         self.device_status: dict | None = None
         self.device_pause = False
         self.device_hints = False
+        # 自己画「正在加载 第 n 集」的固件（HELLO 里 "info": 1），见 server/episode_info.py。
+        # _loading_shown：这次会话里设备上正挂着的「正在加载」，新片源起来时发 {"loading": 0} 收掉。
+        self.device_info = False
+        self._loading_shown: dict | None = None
         # 只听声音的设备：这次会话不发画面（HELLO 里 "audio_only": 1）。
         self.device_audio_only = False
         # 上次握手时设备报的开机时长；变小说明设备重启过。
@@ -508,6 +512,47 @@ class AVServer:
             seq += 1
         return seq
 
+    def info_flush(self, connection: socket.socket, session: int, seq: int) -> int:
+        """中转说片源要换（下一个、上一集、选集）：让会画的固件立刻画「正在加载」。返回下一个序号。"""
+        if not self.device_info:
+            return seq
+        taken = self.switch_watcher.take_loading()
+        if taken is None or taken[0] != self.channel_name:
+            return seq
+        return self.info_loading(connection, session, seq, taken[1])
+
+    def info_loading(self, connection: socket.socket, session: int, seq: int, info: dict | None) -> int:
+        """发 SWITCH {"loading": info}；和设备上已经挂着的一样就不重发。"""
+        if not self.device_info or not info or info == self._loading_shown:
+            return seq
+        self.phase = "info_send"
+        send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes({"loading": info})))
+        self._loading_shown = info
+        self.logger(f"session={session} loading episode={info.get('episode', 0)}")
+        return seq + 1
+
+    def info_done(self, connection: socket.socket, session: int, seq: int) -> int:
+        """新片源的画面要来了：发 {"loading": 0}，设备在下一帧画出来时收掉「正在加载」。"""
+        if self._loading_shown is None:
+            return seq
+        self._loading_shown = None
+        self.phase = "info_send"
+        send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes({"loading": 0})))
+        return seq + 1
+
+    def info_fetch(self) -> "episode_info.Fetch | None":
+        """片源重开时在后台问中转新片源是什么（播完自动接下一集也要画）；不是中转的台为 None。"""
+        if not self.device_info:
+            return None
+        url = episode_info.info_url(CHANNELS.get(self.channel_name))
+        return episode_info.Fetch(url) if url else None
+
+    def _playing_info(self, channel_id: str) -> dict | None:
+        """会话开始时 CONFIG 里的 "playing"：只给会画的固件、只对中转的台。"""
+        if not self.device_info:
+            return None
+        return episode_info.fetch(episode_info.info_url(CHANNELS.get(channel_id)))
+
     def _take_status(self, packet: Packet) -> None:
         """设备的音量或亮度变了：记下来给手机看，会话照常。也每 30 秒报一次信号。"""
         report = json_object(packet.payload)
@@ -573,7 +618,8 @@ class AVServer:
         controls = self.switch_watcher.take_controls()
         resumed = any(kind == "resume" for kind, _ in controls)
         # 音量、亮度留到恢复播放后再发。
-        self.switch_watcher.requeue([c for c in controls if c[0] in ("volume", "brightness", "pet", "audio")])
+        self.switch_watcher.requeue([c for c in controls
+                                     if c[0] in ("volume", "brightness", "pet", "audio", "loading")])
         if resumed:
             self.logger("resume")
             return "resume"
@@ -627,15 +673,19 @@ class AVServer:
         channel = self.channel_factory(CHANNELS[channel_id], self.ffmpeg,
                                        CHANNEL_AGENTS.get(channel_id, ""))
         self.channel_name = channel_id
+        self._loading_shown = None
         try:
             session = secrets.randbelow(0xFFFFFFFF) + 1
             self.session_id = session
+            # 中转的台：放的是哪一集、什么标题，设备画在「正在打开」和台标横幅上。本机回环，至多 0.5 秒。
+            playing = self._playing_info(channel_id)
             # 先发 CONFIG 再向源请求数据：设备握手只给约 2 秒，先采样调色板会使握手超时。
             # CONFIG 只描述格式，与调色板无关。
             send_packet(connection, Packet(Kind.CONFIG, session, 0, 0,
                                            json_bytes(dict(CONFIG, session=session,
                                                            channel=channel_id,
                                                            **self._channel_payload(),
+                                                           **({"playing": playing} if playing else {}),
                                                            **self.voice.config()))))
             self.phase = "live_palette"
             # 首帧前必须有调色板，缺失则设备无色可用，画面全黑。
@@ -890,6 +940,8 @@ class AVServer:
             self.keep_now_playing()
             seq = self.voice_flush(connection, session, seq)
             decision = self.switch_watcher.poll(self.channel_name, now)
+            # 先于下面的控制：取走「正在加载」时连同「下一个」提示一起取走。
+            seq = self.info_flush(connection, session, seq)
             if decision is not None and self.device_switches:
                 kind, target = decision
                 self.logger(f"session={session} cast {kind} {target or self.channel_name}")
@@ -1223,6 +1275,8 @@ class AVServer:
             self.device_pause = greeting.get("pause") == 1
             # 新固件自己画快进、下一个的提示（"hint": 1）；别的固件不发，免得它把包当成坏数据。
             self.device_hints = greeting.get("hint") == 1
+            # 新固件自己画「正在加载 第 n 集 · 标题」（"info": 1）：CONFIG 带 playing，SWITCH 带 loading。
+            self.device_info = greeting.get("info") == 1
             self.device_audio_only = greeting.get("audio_only") == 1
             self.voice.reset()
             self.device_status = None

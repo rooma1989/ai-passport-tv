@@ -180,6 +180,12 @@ class TenantWebTests(unittest.TestCase):
         self.assertEqual(self.relay.user_state(self.alice).get("up01").watched, ["a"])
         self.assertEqual(self.stream(f"/ch/{BOB_DEVICE}/up01"), 404, "Bob has no up01")
         self.assertEqual(self.stream("/ch/up01"), 404, "the single-user address is gone")
+        # What a stream plays, per device, for the TV server's loading screen.
+        url = f"http://127.0.0.1:{self.streams.server_address[1]}/info/{ALICE_DEVICE}/up01"
+        with urllib.request.urlopen(url, timeout=5) as answer:
+            self.assertEqual(json.loads(answer.read())["channel"], "up01")
+        self.assertEqual(self.stream(f"/info/{BOB_DEVICE}/up01"), 404, "Bob has no up01")
+        self.assertEqual(self.stream("/info/up01"), 404)
         # Stored in the database, not only in memory.
         stored = self.accounts.load_user_state(self.alice)
         self.assertEqual(stored["creators"][0]["watched"], ["a"])

@@ -37,6 +37,9 @@ MAX_BODY_BYTES = 4096
 _CHANNEL = re.compile(r"^/ch/(up\d\d|sr\d\d|cast)$")
 # 多用户：/ch/<设备 id>/<台>
 _DEVICE_CHANNEL = re.compile(r"^/ch/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|cast)$")
+# 电视服务问「这一路流放的是什么」（标题、第几集）：播放流地址把 /ch/ 换成 /info/。
+_INFO = re.compile(r"^/info/(up\d\d|sr\d\d|cast)$")
+_DEVICE_INFO = re.compile(r"^/info/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|cast)$")
 _CREATOR = re.compile(r"^/api/(?:creators|series)/(up\d\d|sr\d\d)$")
 _EPISODES = re.compile(r"^/api/series/(sr\d\d)/episodes$")
 _EPISODE_PLAY = re.compile(r"^/api/series/(sr\d\d)/play$")
@@ -402,15 +405,55 @@ class Relay:
         state.save()
 
     def _event(self, dev: dict | None, action: str, channel: str = "", value: int | None = None,
-               text: str = "") -> None:
+               text: str = "", total: int = 0) -> None:
         if dev is None or dev["events"] is None:
             return
         try:
-            seq = events.write_event(dev["events"], action, channel=channel, value=value, text=text)
+            seq = events.write_event(dev["events"], action, channel=channel, value=value, text=text,
+                                     total=total)
             self.log(f"事件 {seq} {dev['name']} {action} "
                      f"{channel or ('' if value is None else value)}".rstrip())
         except OSError as error:
             self.log(f"写事件失败：{error}")
+
+    def _describe(self, state: State, cid: str, video) -> dict | None:
+        """设备上「正在加载 / 正在播」要画的：台、标题；剧集再加第几集、共几集。"""
+        if video is None:
+            return None
+        info = {"channel": cid, "title": video.title}
+        creator = state.get(cid) if cid != table.CAST_ID else None
+        if creator is not None and creator.kind == "series":
+            n = self._episode_of(state, cid, video)
+            if n:
+                with state.lock:
+                    info.update(episode=n, total=len(creator.videos))
+        return info
+
+    def stream_info(self, cid: str, slot: str = "") -> dict | None:
+        """这一路流放的是什么：正在推的那个视频；还没推（或刚被跳转、下一个掐断）时，是现在打开
+        会选的那个（只看不改、不访问网站）。电视服务在会话开始、片源重开时问，转给设备。"""
+        dev = self._stream_device(slot)
+        if dev is None:
+            return None
+        state = self._state_of(dev)
+        if cid == table.CAST_ID:
+            cast = self._cast_of(dev)
+            with cast.lock:
+                video = cast.cast
+            return self._describe(state, cid, video)
+        if state.get(cid) is None:
+            return None
+        with self._active_lock:
+            entry = self._active.get((slot, cid))
+        video = entry["video"] if entry is not None and not entry["abort"] else state.peek_video(cid)
+        return self._describe(state, cid, video)
+
+    def _loading(self, dev: dict, cid: str, state: State, video) -> None:
+        """设备正在播的台马上换片源（下一个、上一集、选集）：先告诉它要加载什么。"""
+        info = self._describe(state, cid, video)
+        if info is not None:
+            self._event(dev, "loading", channel=cid, value=info.get("episode", 0),
+                        text=info["title"], total=info.get("total", 0))
 
     def open_cast(self, slot: str = ""):
         """投屏视频：从保存的进度往回退一点续播；已播完的从头重播。"""
@@ -625,8 +668,8 @@ class Relay:
         if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
         self._bridge.pop((dev["slot"], cid), None)
-        self._event(dev, "next")
         if cid == table.CAST_ID:
+            self._event(dev, "next")
             cast = self._cast_of(dev)
             cast.cast_ended(video.bvid)
             cast.save()
@@ -635,6 +678,9 @@ class Relay:
             state = self._state_of(dev)
             state.mark_watched(cid, video.bvid)
             state.save()
+            # 「正在加载」在「下一个」之前：会画它的固件就不再画「下一个」的提示框。
+            self._loading(dev, cid, state, state.peek_video(cid))
+            self._event(dev, "next")
         if entry is not None:
             self._cut(cid, entry, "下一个")
         return {"ok": True, "at": self.clock()}
@@ -722,6 +768,8 @@ class Relay:
         if not own_device:
             answer["note"] = f"已记下：下次从第 {n} 集播（{name}上没有这部剧）"
         elif here:
+            # 先说要加载哪一集，再继续或掐断：电视服务据此立刻让设备画「正在加载 第 n 集」。
+            self._loading(dev, cid, state, chosen)
             if self._paused_on(dev, cid) is not None:
                 self._paused.pop(dev["slot"], None)
                 self._event(dev, "resume")
@@ -1277,6 +1325,9 @@ def _stream_handler(relay: Relay):
 
         def do_GET(self):
             path = urllib.parse.urlsplit(self.path).path
+            if path.startswith("/info/"):
+                self._info(path)
+                return
             if relay.tenant:
                 match = _DEVICE_CHANNEL.match(path)
                 if not match:
@@ -1289,6 +1340,24 @@ def _stream_handler(relay: Relay):
                 self.send_error(404)
                 return
             relay.play(match.group(1), self)
+
+        def _info(self, path: str) -> None:
+            if relay.tenant:
+                match = _DEVICE_INFO.match(path)
+                info = relay.stream_info(match.group(2), slot=match.group(1)) if match else None
+            else:
+                match = _INFO.match(path)
+                info = relay.stream_info(match.group(1)) if match else None
+            if info is None:
+                self.send_error(404)
+                return
+            body = json.dumps(info, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
 
         def log_message(self, *_args):
             pass
