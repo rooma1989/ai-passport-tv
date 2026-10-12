@@ -14,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .bilibili import SourceError, _urls
+from .bilibili import SourceError, _urls, timed_out
 from .state import Video
 
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
@@ -28,6 +28,21 @@ JSON_TIMEOUT_S = 90
 # 流在节点起播前要先取地址、开转码，之后每次读之间不应超过这个时间。
 STREAM_TIMEOUT_S = 60
 MAX_ANSWER_BYTES = 1024 * 1024
+# 语音搜索：要几个结果，等节点多久。节点一次只跑一个 yt-dlp，正在解析别的视频时会回答 busy。
+SEARCH_MAX = 12
+SEARCH_TIMEOUT_S = 5.0
+
+
+# 频道 id（UC 加 22 位）：语音搜到的频道按它订阅，地址是 /channel/<id>。
+_UCID = re.compile(r"^UC[0-9A-Za-z_-]{22}$")
+
+
+def channel_url(channel_id: str) -> str:
+    return f"https://www.youtube.com/channel/{channel_id}"
+
+
+def _count(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 class NodeError(Exception):
@@ -132,24 +147,31 @@ class YouTube:
         url = f"{self.config['url'].rstrip('/')}{path}?{urllib.parse.urlencode(params)}"
         return urllib.request.Request(url, headers={"X-Key": self.config["key"]})
 
-    def _fetch_json(self, path: str, params: dict) -> dict:
+    def _fetch_json(self, path: str, params: dict, timeout: float = JSON_TIMEOUT_S) -> dict:
         try:
-            with urllib.request.urlopen(self._request(path, params), timeout=JSON_TIMEOUT_S,
+            with urllib.request.urlopen(self._request(path, params), timeout=timeout,
                                         context=self._context) as answer:
                 return json.loads(answer.read(MAX_ANSWER_BYTES))
         except urllib.error.HTTPError as error:
             raise NodeError(error.code, error.read(2000).decode("utf-8", "replace")) from None
 
-    def _call(self, path: str, **params) -> dict:
+    def _call(self, path: str, _timeout: float | None = None, **params) -> dict:
         if self._fetch is None:
             raise SourceError("YouTube 还没配置（缺少 cstone 节点）")
         try:
-            answer = self._fetch(path, params)
+            # 只有语音搜索给 _timeout；其余用 JSON_TIMEOUT_S（列投稿要十几秒）。
+            answer = (self._fetch(path, params) if _timeout is None
+                      else self._fetch(path, params, timeout=_timeout))
         except NodeError as error:
             # 404：视频或频道不存在、不可看；其余（含 503 被 YouTube 拦）稍后可能恢复。
-            raise SourceError(f"youtube {path}: {error}", permanent=error.status == 404) from None
+            # 503 busy：节点正在跑别的 yt-dlp（搜索不排队等太久）；504：yt-dlp 超时。
+            reason = ("busy" if error.status == 503 and "busy" in str(error)
+                      else "slow" if error.status == 504 else "")
+            raise SourceError(f"youtube {path}: {error}", permanent=error.status == 404,
+                              reason=reason) from None
         except (OSError, ValueError) as error:
-            raise SourceError(f"youtube {path}: {type(error).__name__}: {error}") from None
+            raise SourceError(f"youtube {path}: {type(error).__name__}: {error}",
+                              reason="slow" if timed_out(error) else "") from None
         if not isinstance(answer, dict):
             raise SourceError(f"youtube {path}: 回答格式不对")
         return answer
@@ -169,6 +191,39 @@ class YouTube:
 
     def video_id(self, text: str) -> str | None:
         return parse_video_link(text)
+
+    def search(self, query: str, limit: int = SEARCH_MAX, timeout: float = SEARCH_TIMEOUT_S) -> list[dict]:
+        """语音搜索，经节点的 /yt/search：[{"id", "title", "uploader", "duration"}]。
+        直播、预告和 Shorts 节点已经滤掉了。"""
+        answer = self._call("/yt/search", _timeout=timeout, q=query, n=limit)
+        hits = []
+        for v in answer.get("videos") or []:
+            if not isinstance(v, dict) or not _ID.match(str(v.get("id", ""))):
+                continue
+            try:
+                duration = int(v.get("duration") or 0)
+            except (TypeError, ValueError):
+                continue
+            title = " ".join(str(v.get("title") or "").split())
+            if title and duration > 0:
+                hits.append({"id": v["id"], "title": title,
+                             "uploader": " ".join(str(v.get("uploader") or "").split())[:40],
+                             "duration": duration})
+        return hits[:limit]
+
+    def search_creators(self, query: str, limit: int = SEARCH_MAX,
+                        timeout: float = SEARCH_TIMEOUT_S) -> list[dict]:
+        """语音搜索频道，经节点的 /yt/search?kind=channel：[{"id": UC…, "name", "fans", "videos"}]。"""
+        answer = self._call("/yt/search", _timeout=timeout, q=query, n=limit, kind="channel")
+        hits = []
+        for c in answer.get("channels") or []:
+            if not isinstance(c, dict) or not _UCID.match(str(c.get("id", ""))):
+                continue
+            name = " ".join(str(c.get("name") or "").split())[:40]
+            if name:
+                hits.append({"id": c["id"], "name": name, "fans": _count(c.get("fans")),
+                             "videos": _count(c.get("videos")), "latest": None})
+        return hits[:limit]
 
     def series_id(self, text: str) -> str | None:
         return parse_playlist_link(text)

@@ -3,6 +3,7 @@
 #include "bsp_button.h"
 #include "bsp_pins.h"
 #include "iot_button.h"
+#include "bsp_button_events.h"
 #include "button_adc.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
@@ -14,8 +15,6 @@ static const char *TAG = "bsp_btn";
 static const uint16_t BTN_MV[BSP_BTN_COUNT][2] = BSP_BTN_MV_TABLE;
 
 static button_handle_t s_btn[BSP_BTN_COUNT];
-static bsp_btn_cb_t    s_cb;
-static void           *s_user;
 
 // ADC1 是 unit 级独占资源:iot_button 与 bsp_button_read_mv() 必须共用同一个 oneshot
 // 句柄。谁第二个调 adc_oneshot_new_unit() 谁就拿到 "adc1 is already in use"。
@@ -27,19 +26,8 @@ static adc_cali_handle_t         s_cali;
 // managed_components/espressif__button/button_adc.c:26 在 C3 上取 ADC_ATTEN_DB_6+1。
 #define BSP_BTN_ATTEN  ADC_ATTEN_DB_12       // 量程约 0~3100mV,覆盖松开态
 
-// 每个按键把"哪个键"随回调带回来。button 组件的回调签名固定,故用 usr_data 传索引。
-static void on_event(void *arg, void *usr_data, bsp_btn_ev_t ev) {
-    (void)arg;
-    if (!s_cb) return;
-    s_cb((bsp_btn_t)(intptr_t)usr_data, ev, s_user);
-}
-static void cb_press (void *a, void *u) { on_event(a, u, BSP_BTN_PRESS);  }
-static void cb_click (void *a, void *u) { on_event(a, u, BSP_BTN_CLICK);  }
-static void cb_double(void *a, void *u) { on_event(a, u, BSP_BTN_DOUBLE); }
-static void cb_long  (void *a, void *u) { on_event(a, u, BSP_BTN_LONG);   }
-
 esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
-    s_cb = cb; s_user = user;
+    bsp_button_events_init(cb, user);
 
     // 先由 BSP 建 unit,再把句柄交给 button 组件(button_adc.h:adc_handle 非 NULL 即复用),
     // 这样本文件的 bsp_button_read_mv() 也能读同一路 ADC。
@@ -67,11 +55,8 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
                      i, esp_err_to_name(e), BSP_BTN_ADC_CHANNEL);
             return e == ESP_OK ? ESP_FAIL : e;
         }
-        void *idx = (void *)(intptr_t)i;
-        iot_button_register_cb(s_btn[i], BUTTON_PRESS_DOWN,      NULL, cb_press,  idx);
-        iot_button_register_cb(s_btn[i], BUTTON_SINGLE_CLICK,    NULL, cb_click,  idx);
-        iot_button_register_cb(s_btn[i], BUTTON_DOUBLE_CLICK,    NULL, cb_double, idx);
-        iot_button_register_cb(s_btn[i], BUTTON_LONG_PRESS_START,NULL, cb_long,   idx);
+        // 事件怎么报,两块板一样,见 bsp_button_events.c。
+        if ((e = bsp_button_events_attach(s_btn[i], (bsp_btn_t)i)) != ESP_OK) return e;
     }
 
     // 通道已由组件配置好,这里只补一份校准句柄给 bsp_button_read_mv() 用。

@@ -23,6 +23,37 @@ config AV_SCREEN_CAPTURE
 
         Off by default: it holds 9600 bytes of heap for one session and prints
         sixty lines of hex, neither of which belongs in an ordinary build.
+config AV_VOICE
+    bool "Push-to-talk voice control: hold OK and speak"
+    depends on AV_RAW_PROTOTYPE
+    default y
+    help
+        Hold OK for AV_VOICE_HOLD_MS while playing (or in the channel list)
+        and speak; let go and the server recognises the words and the device
+        switches channel, changes the volume and so on. Design:
+        docs/superpowers/specs/2026-10-12-voice-control-design.md.
+
+        Inert until a server offers it: voice is only turned on by a CONFIG
+        that carries "voice", which a server sends only when it has a speech
+        recogniser. Until then, and with this option off, the keys are
+        exactly what they were. On, the Xingzhi's backlight page moves from
+        OK's 1.5 s long press to an OK triple-click, and the channel list's
+        "back" from OK's long press to a double-click.
+
+        Costs about 13 KB of heap while OK is held (freed afterwards) and a
+        few kilobytes of code. Not yet verified on either board's microphone.
+
+config AV_VOICE_HOLD_MS
+    int "How long OK is held before it means talking (ms)"
+    depends on AV_VOICE
+    range 300 1200
+    default 450
+    help
+        A click is reported 180 ms after release (the button component's
+        short-press window), so deliberate clicks stay well under this.
+        Capture starts at press-down either way, so speech that begins before
+        the threshold is kept.
+
 config AV_USB_TRANSPORT
     bool "Also carry the media stream over the USB cable (measurement builds only)"
     depends on AV_RAW_PROTOTYPE

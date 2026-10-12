@@ -99,3 +99,13 @@ def decode(block: bytes, count: int) -> list[int]:
         index = 0 if index < 0 else INDEX_MAX if index > INDEX_MAX else index
         out.append(pred)
     return out
+
+
+def decode_block(block: bytes) -> bytes:
+    """解码一个完整的块（头部之后每字节两个采样），返回小端 s16 单声道 PCM。
+
+    设备上行的语音（VOICE 包）用的就是这个布局；每块自带头部，丢一块不影响下一块。"""
+    if len(block) < HEADER_BYTES:
+        raise ValueError("block shorter than its header")
+    samples = decode(block, (len(block) - HEADER_BYTES) * 2)
+    return struct.pack(f"<{len(samples)}h", *samples)

@@ -71,7 +71,24 @@ void ui_overlay_banner(ui_surface_t surface, const ui_menu_t *menu)
     char fitted[UI_MENU_NAME_MAX + 4];
     (void)ui_text_ellipsize(fitted, sizeof(fitted), menu->banner, 226 - 60);
     ui_text_draw(surface, 60, 166, fitted, UI_PAPER, UI_INK);
-    if (menu->banner_detail[0]) {
+    if (ui_episode_known(&menu->playing)) {
+        // A relay channel: which episode and what it is, instead of where the
+        // channel sits in the list.
+        char episode[24];
+        ui_episode_text(&menu->playing, episode, sizeof(episode));
+        int pen = 60;
+        if (episode[0]) {
+            pen = ui_text_draw_scaled(surface, pen, 189, episode, 1, UI_AMBER, UI_INK);
+        }
+        if (menu->playing.title[0]) {
+            // Ellipsized into the name's buffer: the room left is narrower
+            // than any title that would not fit it (this runs on the video
+            // task's stack, so no second copy of the title).
+            if (episode[0]) pen = ui_text_draw_scaled(surface, pen, 189, " \xC2\xB7 ", 1, UI_MUTED, UI_INK);
+            (void)ui_text_ellipsize(fitted, sizeof(fitted), menu->playing.title, 226 - pen);
+            ui_text_draw_scaled(surface, pen, 189, fitted, 1, UI_MUTED, UI_INK);
+        }
+    } else if (menu->banner_detail[0]) {
         ui_text_draw(surface, 60, 189, menu->banner_detail, UI_MUTED, UI_INK);
     }
 }
@@ -92,6 +109,32 @@ void ui_overlay_hint(ui_surface_t surface, const ui_menu_t *menu)
     // padding would paint over the frame at x=179.
     ui_text_draw_scaled(surface, 112, 100, text, 1, UI_PAPER, UI_INK);
     ui_text_draw_scaled(surface, 112, 124, "缓冲中", 1, UI_MUTED, UI_INK);
+}
+
+void ui_overlay_loading(ui_surface_t surface, const ui_menu_t *menu)
+{
+    // The pause band's rows (84..155), so the two read as one family.
+    enum { TOP = 84, BOTTOM = 156 };
+    if (!ui_menu_loading_band(menu) || !covers(surface, TOP, BOTTOM)) {
+        return;
+    }
+    const ui_episode_t *loading = &menu->loading;
+    ui_text_fill(surface, 0, TOP, surface.width, BOTTOM - TOP, UI_INK);
+    ui_text_fill(surface, 0, TOP, surface.width, 1, UI_RULE);
+    ui_text_fill(surface, 0, BOTTOM - 1, surface.width, 1, UI_RULE);
+    ui_draw_icon(surface, UI_ICON_NEXT, 20, TOP + 20, 2, UI_AMBER);
+    int pen = ui_text_draw_scaled(surface, 68, TOP + 14, "正在加载", 1, UI_PAPER, UI_INK);
+    char episode[24];
+    ui_episode_text(loading, episode, sizeof(episode));
+    if (episode[0]) {
+        pen = ui_text_draw_scaled(surface, pen, TOP + 14, " ", 1, UI_PAPER, UI_INK);
+        ui_text_draw_scaled(surface, pen, TOP + 14, episode, 1, UI_AMBER, UI_INK);
+    }
+    if (loading->title[0]) {
+        char fitted[UI_EPISODE_TITLE_MAX + 4];
+        (void)ui_text_ellipsize(fitted, sizeof(fitted), loading->title, 226 - 68);
+        ui_text_draw_scaled(surface, 68, TOP + 40, fitted, 1, UI_MUTED, UI_INK);
+    }
 }
 
 void ui_overlay_pause(ui_surface_t surface, int top, int bottom, unsigned pet, const char *title)
@@ -119,6 +162,50 @@ void ui_overlay_pause_hint(ui_surface_t surface, int top, int bottom)
     static const char how[] = "手机点「继续」播放";
     ui_text_fill(surface, 0, top, surface.width, bottom - top, UI_DEEP);
     ui_text_draw(surface, (surface.width - ui_text_width(how)) / 2, top + 7, how, UI_MUTED, UI_DEEP);
+}
+
+void ui_overlay_progress_line(ui_surface_t panel, int top, uint32_t pos_ms, uint32_t dur_ms, bool times)
+{
+    if (dur_ms == 0 || !covers(panel, top, top + 30)) {
+        return;
+    }
+    // Two rows: thin enough to leave the picture alone, thick enough to see.
+    const int lit = (int)ui_progress_fill(pos_ms, dur_ms, (unsigned)panel.width);
+    ui_text_fill(panel, 0, top, lit, 2, UI_AMBER);
+    ui_text_fill(panel, lit, top, panel.width - lit, 2, UI_RULE);
+    if (!times) {
+        return;
+    }
+    char played[16], total[16];
+    ui_progress_times(pos_ms, dur_ms, played, total, sizeof(played));
+    const ui_surface_t view = ui_surface_centered(panel);
+    const char *slash = " / ";
+    const int width = ui_text_width(played) + ui_text_width(slash) + ui_text_width(total);
+    int pen = (view.width - width) / 2;
+    pen = ui_text_draw_scaled(view, pen, top + 8, played, 1, UI_PAPER, UI_DEEP);
+    pen = ui_text_draw_scaled(view, pen, top + 8, slash, 1, UI_MUTED, UI_DEEP);
+    ui_text_draw_scaled(view, pen, top + 8, total, 1, UI_MUTED, UI_DEEP);
+}
+
+void ui_overlay_progress_bar(ui_surface_t surface, int top, uint32_t pos_ms, uint32_t dur_ms)
+{
+    if (dur_ms == 0 || !covers(surface, top, top + 30)) {
+        return;
+    }
+    char played[16], total[16];
+    ui_progress_times(pos_ms, dur_ms, played, total, sizeof(played));
+    // The times on the row the other bottom-bar lines use, the bar on their
+    // middle (the font's x-height), 4 px tall.
+    const int left = ui_text_draw_scaled(surface, 16, top + 7, played, 1, UI_PAPER, UI_DEEP) + 8;
+    const int right_text = 224 - ui_text_width(total);
+    ui_text_draw_scaled(surface, right_text, top + 7, total, 1, UI_MUTED, UI_DEEP);
+    const int right = right_text - 8;
+    if (right <= left) {
+        return;
+    }
+    const int lit = (int)ui_progress_fill(pos_ms, dur_ms, (unsigned)(right - left));
+    ui_text_fill(surface, left, top + 14, lit, 4, UI_AMBER);
+    ui_text_fill(surface, left + lit, top + 14, right - left - lit, 4, UI_RULE);
 }
 
 // ---- Menus and pages ----
@@ -329,6 +416,253 @@ void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uin
     ui_text_draw(surface, (surface.width - ui_text_width(text)) / 2, top + 7, text, color, UI_DEEP);
 }
 
+// ---- Voice screens ----
+
+#define VOICE_HEAD_TOP 36
+#define VOICE_RULE_Y 90
+#define VOICE_ROWS_TOP 96
+#define VOICE_ROW_H 24
+
+// The key that reaches setup from playback, for the "unavailable" screen: the
+// status page, then ▲ held there.
+#define UI_SETUP_KEYS "配网：双击" UI_STATUS_KEY " 再长按\xE2\x96\xB2"
+
+static void voice_words(ui_surface_t surface, const char *words, const char *status,
+                        uint16_t status_color, uint16_t mic_color)
+{
+    ui_draw_icon(surface, UI_ICON_MIC, 14, VOICE_HEAD_TOP + 6, 2, mic_color);
+    char quoted[UI_VOICE_HEARD_MAX + 8], fitted[UI_VOICE_HEARD_MAX + 8];
+    snprintf(quoted, sizeof(quoted), "\xE3\x80\x8C%s\xE3\x80\x8D", words);   // 「 」
+    (void)ui_text_ellipsize(fitted, sizeof(fitted), quoted, 222 - 52);
+    ui_text_draw_scaled(surface, 52, VOICE_HEAD_TOP + 6, fitted, 1, UI_PAPER, UI_INK);
+    (void)ui_text_ellipsize(fitted, sizeof(fitted), status, 222 - 52);
+    ui_text_draw_scaled(surface, 52, VOICE_HEAD_TOP + 28, fitted, 1, status_color, UI_INK);
+}
+
+static void voice_message(ui_surface_t surface, const char *line1, uint16_t color1,
+                          const char *line2, uint16_t mic_color)
+{
+    ui_draw_icon(surface, UI_ICON_MIC, 14, VOICE_HEAD_TOP + 6, 2, mic_color);
+    char fitted[UI_VOICE_STATUS_MAX + 8];
+    (void)ui_text_ellipsize(fitted, sizeof(fitted), line1, 222 - 52);
+    ui_text_draw_scaled(surface, 52, VOICE_HEAD_TOP + 6, fitted, 1, color1, UI_INK);
+    (void)ui_text_ellipsize(fitted, sizeof(fitted), line2, 222 - 52);
+    ui_text_draw_scaled(surface, 52, VOICE_HEAD_TOP + 28, fitted, 1, UI_MUTED, UI_INK);
+}
+
+// One row below the header, `k` counted from the top of the screen.
+static void voice_row(ui_surface_t surface, unsigned k, bool chosen, const ui_voice_row_t *row)
+{
+    const int top = VOICE_ROWS_TOP + (int)k * VOICE_ROW_H;
+    if (!covers(surface, top, top + VOICE_ROW_H)) return;
+    if (chosen) ui_draw_notched_rect(surface, 6, top, 222, VOICE_ROW_H, UI_VERM);
+    const uint16_t back = chosen ? UI_VERM : UI_INK;
+    const uint16_t fore = chosen ? UI_DEEP : row->muted ? UI_MUTED : UI_PAPER;
+    const int y = top + 4;
+    if (row->lead[0]) {
+        ui_text_draw_scaled(surface, 16, y, row->lead, 1, chosen ? UI_DEEP : UI_MUTED, back);
+    } else {
+        ui_draw_icon(surface, (ui_icon_t)row->icon, 14, y, 1, chosen ? UI_DEEP : UI_AMBER);
+    }
+    char fitted[UI_MENU_NAME_MAX + 8];
+    (void)ui_text_ellipsize(fitted, sizeof(fitted), row->label,
+                            (row->right[0] ? 222 - ui_text_width(row->right) - 8 : 222) - 42);
+    ui_text_draw_scaled(surface, 42, y, fitted, 1, fore, back);
+    if (row->right[0]) {
+        ui_text_draw_scaled(surface, 222 - ui_text_width(row->right), y, row->right, 1,
+                            chosen ? UI_DEEP : UI_MUTED, back);
+    }
+}
+
+static void voice_fixed_row(ui_surface_t surface, unsigned k, bool chosen, ui_icon_t icon,
+                            const char *label, bool muted)
+{
+    ui_voice_row_t row;
+    memset(&row, 0, sizeof(row));
+    row.icon = (uint8_t)icon;
+    row.muted = muted;
+    snprintf(row.label, sizeof(row.label), "%s", label);
+    voice_row(surface, k, chosen, &row);
+}
+
+// What can be said, under the header (listening, not understood).
+static void voice_examples(ui_surface_t surface)
+{
+    if (covers(surface, VOICE_ROWS_TOP, VOICE_ROWS_TOP + VOICE_ROW_H)) {
+        ui_text_draw_scaled(surface, 16, VOICE_ROWS_TOP + 4, "可以说：", 1, UI_MUTED, UI_INK);
+    }
+    voice_fixed_row(surface, 1, false, UI_ICON_TV, "湖南卫视 / 中央五套", true);
+    voice_fixed_row(surface, 2, false, UI_ICON_FILM, "熊出没 第三集", true);
+    voice_fixed_row(surface, 3, false, UI_ICON_VOLUME, "大声一点 / 暂停", true);
+}
+
+static void voice_bars(ui_surface_t surface, const uint8_t *levels)
+{
+    for (unsigned k = 0; k < UI_VOICE_BARS; k++) {
+        const int x = 58 + (int)k * 14;
+        const unsigned cells = (levels[k] * 6u + 127u) / 255u;
+        ui_text_fill(surface, x, 80, 10, 3, UI_RULE);
+        for (unsigned c = 0; c < cells && c < 6u; c++) {
+            ui_text_fill(surface, x, 80 - (int)c * 6, 10, 4, c + 1u == cells ? UI_VERM : UI_AMBER);
+        }
+    }
+}
+
+void ui_overlay_voice(ui_surface_t surface, const ui_menu_t *menu)
+{
+    if (!menu || !covers(surface, VOICE_HEAD_TOP, VOICE_ROWS_TOP + (int)UI_VOICE_ROWS_SHOWN * VOICE_ROW_H)) {
+        return;
+    }
+    const ui_voice_t *v = &menu->voice;
+    if (v->screen == UI_VOICE_NONE) return;
+    char line[UI_VOICE_STATUS_MAX + 8];
+    switch (v->screen) {
+    case UI_VOICE_LISTENING:
+        ui_draw_icon(surface, UI_ICON_MIC, 14, VOICE_HEAD_TOP + 6, 2, UI_VERM);
+        voice_bars(surface, v->levels);
+        break;
+    case UI_VOICE_RECOGNISING:
+        if (v->heard[0]) {
+            voice_words(surface, v->heard, "正在识别…", UI_AMBER, UI_AMBER);
+        } else {
+            snprintf(line, sizeof(line), "录了 %u.%u 秒", v->recorded_ds / 10u, v->recorded_ds % 10u);
+            voice_message(surface, line, UI_PAPER, "", UI_AMBER);
+            ui_text_draw_scaled(surface, 52, VOICE_HEAD_TOP + 28, "正在识别…", 1, UI_AMBER, UI_INK);
+        }
+        break;
+    case UI_VOICE_DONE:
+        voice_words(surface, v->heard, v->status[0] ? v->status : "好的", UI_AMBER, UI_AMBER);
+        break;
+    case UI_VOICE_CHOICES:
+        if (v->status[0]) {
+            voice_words(surface, v->heard, v->status, UI_AMBER, UI_AMBER);
+        } else {
+            const unsigned n = v->row_count ? v->row_count - 1u : 0u;
+            snprintf(line, sizeof(line), "找到 %u 个，选一个", n);
+            voice_words(surface, v->heard, line, UI_AMBER, UI_AMBER);
+        }
+        break;
+    case UI_VOICE_NOT_UNDERSTOOD:
+        voice_words(surface, v->heard[0] ? v->heard : "……", v->status[0] ? v->status : "没听懂，再说一次？",
+                    UI_VERM, UI_MUTED);
+        break;
+    case UI_VOICE_SETUP:
+        voice_words(surface, v->heard, "进入配网会停止播放", UI_AMBER, UI_AMBER);
+        break;
+    case UI_VOICE_UNAVAILABLE:
+        voice_message(surface, "语音现在用不了", UI_VERM, "需要连上电视服务器", UI_MUTED);
+        break;
+    case UI_VOICE_ERROR:
+    default:
+        voice_message(surface, "没有识别出来", UI_VERM, v->status[0] ? v->status : "服务器没回应，稍后再试",
+                      UI_MUTED);
+        break;
+    }
+    ui_draw_dotted_hline(surface, 16, 223, VOICE_RULE_Y, UI_RULE);
+    switch (v->screen) {
+    case UI_VOICE_LISTENING:
+        voice_examples(surface);
+        // Ten cells along the bottom: the ten-second limit.
+        ui_draw_cells(surface, 200, 4, v->elapsed_ds / 10u, UI_VERM, UI_RULE);
+        break;
+    case UI_VOICE_NOT_UNDERSTOOD:
+        if (covers(surface, VOICE_ROWS_TOP, VOICE_ROWS_TOP + VOICE_ROW_H)) {
+            ui_text_draw_scaled(surface, 16, VOICE_ROWS_TOP + 4, "可以说：", 1, UI_MUTED, UI_INK);
+        }
+        voice_fixed_row(surface, 1, false, UI_ICON_TV, "频道名，或\"第12台\"", true);
+        voice_fixed_row(surface, 2, false, UI_ICON_FILM, "剧名加\"第几集\"", true);
+        voice_fixed_row(surface, 3, false, UI_ICON_SUN, "\"亮一点\" \"只听声音\"", true);
+        break;
+    case UI_VOICE_UNAVAILABLE:
+        voice_fixed_row(surface, 0, false, UI_ICON_WIFI, UI_SETUP_KEYS, true);
+        break;
+    case UI_VOICE_SETUP:
+        voice_fixed_row(surface, 0, v->selected == 0, UI_ICON_WIFI, "进入配网", false);
+        voice_fixed_row(surface, 1, v->selected == 1, UI_ICON_CROSS, "算了", false);
+        break;
+    case UI_VOICE_DONE:
+    case UI_VOICE_CHOICES:
+        for (unsigned k = 0; k < UI_VOICE_ROWS_SHOWN; k++) {
+            const unsigned row = v->scroll + k;
+            if (row >= v->row_count) break;
+            voice_row(surface, k, v->highlight && row == v->selected, &v->rows[row]);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+unsigned ui_overlay_voice_label(const ui_menu_t *menu, const char *texts[3], uint16_t colors[3],
+                                char *scratch, size_t scratch_size)
+{
+    if (!menu || !texts || !colors) {
+        return 0;
+    }
+    switch (menu->voice.screen) {
+    case UI_VOICE_LISTENING:
+        texts[0] = "\xE2\x97\x8F ";   // ●
+        colors[0] = UI_VERM;
+        texts[1] = "正在听…";
+        colors[1] = UI_PAPER;
+        return 2;
+    case UI_VOICE_RECOGNISING:
+        texts[0] = "识别中…";
+        colors[0] = UI_MUTED;
+        return 1;
+    case UI_VOICE_CHOICES: {
+        // Counted over the candidates; the last row ("none of these") has no number.
+        const unsigned candidates = menu->voice.row_count ? menu->voice.row_count - 1u : 0u;
+        if (scratch && scratch_size && menu->voice.selected < candidates) {
+            snprintf(scratch, scratch_size, "语音 %u/%u", menu->voice.selected + 1u, candidates);
+            texts[0] = scratch;
+        } else {
+            texts[0] = "语音";
+        }
+        colors[0] = UI_MUTED;
+        return 1;
+    }
+    default:
+        texts[0] = "语音";
+        colors[0] = UI_MUTED;
+        return 1;
+    }
+}
+
+const char *ui_overlay_voice_hint(const ui_menu_t *menu)
+{
+    if (!menu) {
+        return NULL;
+    }
+    switch (menu->voice.screen) {
+    case UI_VOICE_NONE:
+        return "按住OK说话  双击OK返回";
+    case UI_VOICE_LISTENING:
+        return "松开OK结束  \xE2\x96\xB2取消";
+    case UI_VOICE_RECOGNISING:
+        return "\xE2\x96\xB2取消";
+    case UI_VOICE_DONE:
+        return "按住OK再说";
+    case UI_VOICE_CHOICES:
+        return "OK选  按住OK重说  双击OK返回";
+    case UI_VOICE_SETUP:
+        return "OK确定  双击OK返回";
+    case UI_VOICE_UNAVAILABLE:
+        return "任意键关闭";
+    case UI_VOICE_NOT_UNDERSTOOD:
+    case UI_VOICE_ERROR:
+    default:
+        return "按住OK再说  双击OK返回";
+    }
+}
+
+void ui_overlay_bottom_keys(ui_surface_t surface, int top, const char *text)
+{
+    if (text) {
+        ui_overlay_key_line(surface, (surface.width - ui_text_width(text)) / 2, top + 7, text, UI_DEEP);
+    }
+}
+
 // ---- Waiting screens and the pet picker ----
 
 const char *ui_overlay_wait_label(ui_wait_kind_t kind)
@@ -496,10 +830,21 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
         ui_text_draw_scaled(surface, x, num_top + 12 * scale - 12, "CH", 1, UI_AMBER, UI_INK);
         ui_text_draw_scaled(surface, x + ch_w + 6, num_top, number, scale, UI_AMBER, UI_INK);
         centred(surface, 108, page->name[0] ? page->name : "正在打开频道", UI_PAPER);
-        centred(surface, 132, page->detail, UI_MUTED);
+        // A relay channel's video: its title where the list position was.
+        centred(surface, 132, page->title[0] ? page->title : page->detail, UI_MUTED);
         ui_text_fill(surface, 40, 168, 160, 4, UI_RULE);
         ui_text_fill(surface, 40 + 8 * (int)bounce(tick, 15u), 168, 40, 4, UI_AMBER);
-        centred(surface, 180, "正在打开", UI_MUTED);
+        const char *verb = page->loading ? "正在加载" : "正在打开";
+        if (page->episode[0]) {
+            // The verb muted, the episode in amber, centred as one line.
+            const int space = ui_text_width(" ");
+            const int width = ui_text_width(verb) + space + ui_text_width(page->episode);
+            int pen = (surface.width - width) / 2;
+            pen = ui_text_draw_scaled(surface, pen, 180, verb, 1, UI_MUTED, UI_INK);
+            ui_text_draw_scaled(surface, pen + space, 180, page->episode, 1, UI_AMBER, UI_INK);
+        } else {
+            centred(surface, 180, verb, UI_MUTED);
+        }
         break;
     }
     case UI_WAIT_LISTEN:

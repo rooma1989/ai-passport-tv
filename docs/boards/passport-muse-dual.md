@@ -89,3 +89,24 @@ The dual-core Xingzhi sets it to 0 and keeps its priorities.
 
 A Passport stream is about 120-150 kB/s (picture plus sound). On a host with 3 Mbit/s of public
 bandwidth, two devices watching at once share it and both lose quality.
+
+## Voice (push-to-talk)
+
+With `CONFIG_AV_VOICE` (the default) and a server whose CONFIG offers voice,
+holding OK for 0.45 s while playing or in the channel list talks; letting go
+finishes, ▲ cancels. An OK click still opens the list; inside the list and the
+voice results a double-click of OK goes back a level (the long press now talks).
+The backlight stays on the arrows' double-click, so nothing else moves. Without
+a server offering voice, the keys are exactly as before.
+
+The microphone is the ES8311's, read from the I2S0 receive channel that the
+player already opens full duplex at 16 kHz/16-bit (left slot, 30 dB input gain,
+`no_dac_ref`): no codec reopen and no glitch in the TV's sound, which is muted in
+software from OK press-down until the recording ends. Voice takes about 10 KB of
+buffers plus a 3 KB task stack while OK is held and gives them back afterwards;
+the log prints `capture started: buffers=… heap=… largest=…` and
+`voice buffers freed; heap=… min_heap=…`. While the list or a voice screen
+covers the picture the C3 does not decode it. Not yet verified on the device:
+the capture level in a room with the TV just muted, and the frame rate and key
+latency during and after voice in a busy scene.
+

@@ -26,6 +26,16 @@
 // after it is back (HANDOFF.md 4.5).
 #define UI_MENU_HINT_MAX_MS 8000
 #define UI_MENU_HINT_AFTER_MS 500
+// The loading band: up to this long without word from the server, then this
+// long at most once the server has the new source (a picture normally ends it
+// first; audio-only mode has none).
+#define UI_MENU_LOADING_MAX_MS 30000
+#define UI_MENU_LOADING_AFTER_MS 3000
+// The played and total times under the picture after a key or a seek.
+#define UI_MENU_PROGRESS_MS 4000
+// A seek's preview gives up after this much sound clock without the new
+// source's anchor, and the bar follows the old anchor again.
+#define UI_PROGRESS_SEEK_MS 20000
 // The pet picker closes after this long untouched, and this long after a choice.
 #define UI_MENU_PET_MS 20000
 #define UI_MENU_PET_CHOSEN_MS 1000
@@ -382,6 +392,7 @@ void ui_menu_open(ui_menu_t *menu)
     if (!menu || menu->count == 0) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_MENU;
     menu->timeout_ms = UI_MENU_TIMEOUT_MS;
     menu->action = UI_ACTION_NONE;
@@ -404,6 +415,15 @@ void ui_menu_back(ui_menu_t *menu)
     if (!menu) {
         return;
     }
+    if (ui_menu_voice_up(menu)) {
+        // Out of the voice screens: to the list they were over, else closed.
+        if (menu->voice.over_list) {
+            ui_menu_voice_to_list(menu);
+        } else {
+            ui_menu_close(menu);
+        }
+        return;
+    }
     if (menu->view == UI_VIEW_MENU && !menu->at_groups && two_levels(menu)) {
         menu->at_groups = true;
         menu->selected = row_of_group(menu, menu->group);
@@ -420,6 +440,7 @@ void ui_menu_open_brightness(ui_menu_t *menu)
     if (!menu) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_BRIGHTNESS;
     // Same timeout discipline as the status page: the page closes itself, so a
     // viewer who walks away cannot leave the arrows bound to brightness and be
@@ -444,6 +465,7 @@ void ui_menu_open_status(ui_menu_t *menu)
     if (!menu) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_STATUS;
     menu->timeout_ms = UI_MENU_STATUS_MS;
     menu->action = UI_ACTION_NONE;
@@ -456,6 +478,87 @@ void ui_menu_close(ui_menu_t *menu)
     }
     menu->view = UI_VIEW_VIDEO;
     menu->timeout_ms = 0;
+    ui_menu_voice_clear(menu);
+}
+
+void ui_menu_voice_clear(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    menu->voice.screen = UI_VOICE_NONE;
+    menu->voice.row_count = 0;
+    menu->voice.highlight = false;
+    menu->voice.selected = 0;
+    menu->voice.scroll = 0;
+}
+
+void ui_menu_voice_show(ui_menu_t *menu, ui_voice_screen_t screen)
+{
+    if (!menu) {
+        return;
+    }
+    if (screen == UI_VOICE_NONE) {
+        ui_menu_voice_to_list(menu);
+        return;
+    }
+    if (menu->voice.screen == UI_VOICE_NONE) {
+        // Coming into the voice screens: remember whether the list was there.
+        menu->voice.over_list = menu->view == UI_VIEW_MENU;
+    }
+    if (menu->voice.screen != screen) {
+        menu->voice.row_count = 0;
+        menu->voice.highlight = false;
+        menu->voice.selected = 0;
+        menu->voice.scroll = 0;
+    }
+    menu->voice.screen = screen;
+    menu->view = UI_VIEW_MENU;
+    menu->timeout_ms = 0;
+    menu->action = UI_ACTION_NONE;
+}
+
+bool ui_menu_voice_up(const ui_menu_t *menu)
+{
+    return menu && menu->view == UI_VIEW_MENU && menu->voice.screen != UI_VOICE_NONE;
+}
+
+void ui_menu_voice_to_list(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    const bool over_list = menu->voice.over_list && menu->view == UI_VIEW_MENU;
+    ui_menu_voice_clear(menu);
+    menu->voice.over_list = false;
+    if (menu->count == 0) {
+        ui_menu_close(menu);
+        return;
+    }
+    if (over_list) {
+        menu->view = UI_VIEW_MENU;
+        menu->timeout_ms = UI_MENU_TIMEOUT_MS;
+        follow_selection(menu, menu->visible_rows);
+        return;
+    }
+    ui_menu_open(menu);
+}
+
+void ui_menu_voice_select(ui_menu_t *menu, unsigned row)
+{
+    if (!menu || menu->voice.row_count == 0) {
+        return;
+    }
+    if (row >= menu->voice.row_count) {
+        row = menu->voice.row_count - 1u;
+    }
+    menu->voice.highlight = true;
+    menu->voice.selected = row;
+    if (row < menu->voice.scroll) {
+        menu->voice.scroll = row;
+    } else if (row >= menu->voice.scroll + UI_VOICE_ROWS_SHOWN) {
+        menu->voice.scroll = row - UI_VOICE_ROWS_SHOWN + 1u;
+    }
 }
 
 void ui_menu_set_rows(ui_menu_t *menu, unsigned rows)
@@ -474,7 +577,8 @@ void ui_menu_step(ui_menu_t *menu, int delta)
 
 void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows)
 {
-    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0 || delta == 0) {
+    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0 || delta == 0 ||
+        ui_menu_voice_up(menu)) {
         return;
     }
     if (rows) {
@@ -498,7 +602,7 @@ void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows)
 
 void ui_menu_confirm(ui_menu_t *menu)
 {
-    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0) {
+    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0 || ui_menu_voice_up(menu)) {
         return;
     }
     if (menu->at_groups) {
@@ -549,6 +653,23 @@ bool ui_menu_tick(ui_menu_t *menu, int64_t elapsed_ms)
             changed = true;
         }
     }
+    if (menu->loading_ms > 0) {
+        menu->loading_ms -= elapsed_ms;
+        if (menu->loading_ms <= 0) {
+            menu->loading_ms = 0;
+            menu->loading_done = false;
+            menu->info_seq++;
+            changed = true;
+        }
+    }
+    // No repaint asked for: the times are in the bottom bar, which the player
+    // repaints when what it shows changes.
+    if (menu->progress_ms > 0) {
+        menu->progress_ms -= elapsed_ms;
+        if (menu->progress_ms < 0) {
+            menu->progress_ms = 0;
+        }
+    }
     if (menu->view != UI_VIEW_VIDEO && menu->timeout_ms > 0) {
         menu->timeout_ms -= elapsed_ms;
         if (menu->timeout_ms <= 0) {
@@ -596,6 +717,7 @@ void ui_menu_open_pets(ui_menu_t *menu, unsigned current, unsigned count)
     if (!menu || count == 0) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_PET;
     menu->pet_count = count;
     menu->pet_current = current < count ? current : 0;
@@ -697,6 +819,10 @@ void ui_menu_show_hint(ui_menu_t *menu, ui_hint_t hint, int seconds)
     if (!menu || hint == UI_HINT_NONE) {
         return;
     }
+    // "Next" while the band says what is loading would say it twice.
+    if (hint == UI_HINT_NEXT && ui_menu_loading_up(menu)) {
+        return;
+    }
     menu->hint = hint;
     menu->hint_seconds = seconds;
     menu->hint_ms = UI_MENU_HINT_MAX_MS;
@@ -755,3 +881,227 @@ void ui_menu_banner(ui_menu_t *menu, const char *name, const char *previous)
     menu->banner_ms = UI_MENU_BANNER_MS;
 }
 
+
+bool ui_episode_known(const ui_episode_t *episode)
+{
+    return episode && (episode->title[0] || episode->episode);
+}
+
+void ui_episode_set_title(ui_episode_t *episode, const char *title)
+{
+    if (!episode) {
+        return;
+    }
+    size_t n = title ? strnlen(title, sizeof(episode->title) - 1u) : 0u;
+    // Back off a cut multi-byte character: drop continuation bytes, then the
+    // lead byte whose sequence they did not finish.
+    if (title && title[n] != '\0') {
+        size_t end = n;
+        while (end > 0 && ((unsigned char)title[end] & 0xC0u) == 0x80u) {
+            end--;
+        }
+        n = end;
+    }
+    if (title) {
+        memcpy(episode->title, title, n);
+    }
+    episode->title[n] = '\0';
+}
+
+void ui_episode_text(const ui_episode_t *episode, char *out, size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+    out[0] = '\0';
+    if (!episode || !episode->episode) {
+        return;
+    }
+    if (episode->total >= episode->episode) {
+        snprintf(out, out_size, "第 %u/%u 集", episode->episode, episode->total);
+    } else {
+        snprintf(out, out_size, "第 %u 集", episode->episode);
+    }
+}
+
+void ui_menu_set_playing(ui_menu_t *menu, const ui_episode_t *episode)
+{
+    if (!menu) {
+        return;
+    }
+    if (episode) {
+        menu->playing = *episode;
+    } else {
+        memset(&menu->playing, 0, sizeof(menu->playing));
+    }
+    menu->info_seq++;
+}
+
+void ui_menu_show_loading(ui_menu_t *menu, const ui_episode_t *episode)
+{
+    if (!menu || !ui_episode_known(episode)) {
+        return;
+    }
+    menu->loading = *episode;
+    menu->loading_ms = UI_MENU_LOADING_MAX_MS;
+    menu->loading_done = false;
+    menu->info_seq++;
+    if (menu->hint == UI_HINT_NEXT) {
+        menu->hint = UI_HINT_NONE;
+        menu->hint_ms = 0;
+        menu->hint_seq++;
+    }
+}
+
+bool ui_menu_loading_done(ui_menu_t *menu)
+{
+    if (!menu || menu->loading_ms <= 0 || menu->loading_done) {
+        return false;
+    }
+    menu->loading_done = true;
+    menu->playing = menu->loading;
+    if (menu->loading_ms > UI_MENU_LOADING_AFTER_MS) {
+        menu->loading_ms = UI_MENU_LOADING_AFTER_MS;
+    }
+    menu->info_seq++;
+    return true;
+}
+
+void ui_menu_loading_shown(ui_menu_t *menu)
+{
+    if (!menu || menu->loading_ms <= 0 || !menu->loading_done) {
+        return;
+    }
+    menu->loading_ms = 0;
+    menu->loading_done = false;
+    menu->info_seq++;
+}
+
+bool ui_menu_loading_band(const ui_menu_t *menu)
+{
+    return menu && menu->loading_ms > 0 && !menu->loading_done;
+}
+
+bool ui_menu_loading_up(const ui_menu_t *menu)
+{
+    return menu && menu->loading_ms > 0;
+}
+
+
+void ui_progress_forget(ui_progress_t *progress)
+{
+    if (progress) {
+        memset(progress, 0, sizeof(*progress));
+    }
+}
+
+bool ui_progress_anchor(ui_progress_t *progress, uint32_t dur_ms, uint32_t pos_ms, uint32_t at_ms,
+                        bool stopped, uint32_t stop_ms)
+{
+    if (!progress || dur_ms == 0) {
+        return false;
+    }
+    const bool keep_seek = progress->known && progress->seeking && stopped;
+    progress->known = true;
+    progress->dur_ms = dur_ms;
+    progress->pos_ms = pos_ms < dur_ms ? pos_ms : dur_ms;
+    progress->at_ms = at_ms;
+    progress->stopped = stopped;
+    progress->stop_ms = stopped && stop_ms > at_ms ? stop_ms : at_ms;
+    if (!keep_seek) {
+        progress->seeking = false;
+    } else if (progress->seek_ms > dur_ms) {
+        progress->seek_ms = dur_ms;
+    }
+    return true;
+}
+
+// Where the anchor puts the video at `clock_ms`, the seek aside.
+static uint32_t anchored(const ui_progress_t *progress, uint32_t clock_ms)
+{
+    uint32_t end = clock_ms;
+    if (progress->stopped && end > progress->stop_ms) {
+        end = progress->stop_ms;
+    }
+    const uint64_t pos = (uint64_t)progress->pos_ms + (end > progress->at_ms ? end - progress->at_ms : 0u);
+    return pos < progress->dur_ms ? (uint32_t)pos : progress->dur_ms;
+}
+
+bool ui_progress_position(const ui_progress_t *progress, uint32_t clock_ms, uint32_t *pos_ms)
+{
+    if (!progress || !progress->known) {
+        return false;
+    }
+    uint32_t pos;
+    if (progress->seeking && (clock_ms < progress->seek_at_ms ||
+                              clock_ms - progress->seek_at_ms < UI_PROGRESS_SEEK_MS)) {
+        pos = progress->seek_ms;
+    } else {
+        pos = anchored(progress, clock_ms);
+    }
+    if (pos_ms) {
+        *pos_ms = pos;
+    }
+    return true;
+}
+
+void ui_progress_seek(ui_progress_t *progress, int seconds, uint32_t clock_ms)
+{
+    uint32_t now;
+    if (!ui_progress_position(progress, clock_ms, &now)) {
+        return;
+    }
+    int64_t target = (int64_t)now + (int64_t)seconds * 1000;
+    if (target < 0) {
+        target = 0;
+    }
+    if (target > (int64_t)progress->dur_ms) {
+        target = progress->dur_ms;
+    }
+    progress->seeking = true;
+    progress->seek_ms = (uint32_t)target;
+    progress->seek_at_ms = clock_ms;
+}
+
+unsigned ui_progress_fill(uint32_t pos_ms, uint32_t dur_ms, unsigned width)
+{
+    if (dur_ms == 0) {
+        return 0;
+    }
+    if (pos_ms >= dur_ms) {
+        return width;
+    }
+    return (unsigned)((uint64_t)pos_ms * width / dur_ms);
+}
+
+static void progress_time(uint32_t ms, bool hours, char *out, size_t size)
+{
+    const unsigned total = ms / 1000u;
+    if (hours) {
+        snprintf(out, size, "%u:%02u:%02u", total / 3600u, total / 60u % 60u, total % 60u);
+    } else {
+        snprintf(out, size, "%u:%02u", total / 60u, total % 60u);
+    }
+}
+
+void ui_progress_times(uint32_t pos_ms, uint32_t dur_ms, char *played, char *total, size_t size)
+{
+    if (!played || !total || !size) {
+        return;
+    }
+    const bool hours = dur_ms >= 3600u * 1000u;
+    progress_time(pos_ms < dur_ms ? pos_ms : dur_ms, hours, played, size);
+    progress_time(dur_ms, hours, total, size);
+}
+
+void ui_menu_show_progress(ui_menu_t *menu)
+{
+    if (menu) {
+        menu->progress_ms = UI_MENU_PROGRESS_MS;
+    }
+}
+
+bool ui_menu_progress_label(const ui_menu_t *menu)
+{
+    return menu && (menu->progress_ms > 0 || menu->banner_ms > 0);
+}

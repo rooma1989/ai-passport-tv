@@ -109,7 +109,9 @@ Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核
 「第 n / N 集 · 标题」。接口：`GET /api/series/<sr 编号>/episodes` 返回 `{ok, id, name, total, next, playing,
 episodes: [{n, title, duration, state: watched|current|left, position?}]}`（`next` 是这个台下次打开时播的集，`playing` 是设备上正在播的集，
 没有为 0）；`POST /api/series/<sr 编号>/play {"episode": n}` 和 `POST /api/previous` 回答 `{ok, at, episode, title}`，设备本来就在这个台上时
-带 `cut: true`；不换台时（设备不在线、固件不支持遥控、或这一集已经在播）改带 `note` 说明。不改固件：换集时设备上没有提示框。
+带 `cut: true`；不换台时（设备不在线、固件不支持遥控、或这一集已经在播）改带 `note` 说明。HELLO 带 `"info": 1` 的固件会显示正在加载什么：点下一个、上一集或选集（手机、遥控或语音）后约一秒内，画面上出现一条横条「正在加载 第 n/N 集」和这一集的标题，之后频道等待画面也这样写，直到新一集的画面出来，台标横幅再报出它；一集播完、接着打开下一集时也一样。每次打开频道，打开画面和台标横幅也会写出是哪一集。旧固件不变。详见 [`docs/local-tv-prototype.zh_CN.md`](../local-tv-prototype.zh_CN.md) 的「剧集信息」。
+
+**进度条。** 在 UP 主、剧集和投屏台上，HELLO 带 `"progress": 1` 的固件在底条画播放进度：画面下方一条细细的琥珀色线，台标横幅出现时、按键、手机上的操作、暂停、跳转或换集之后 4 秒，线下面还写「12:34 / 23:40」；只听声音时宠物下面一直有进度条和已播 / 总长。暂停时停住，跳转时立刻跳过去。直播台没有变化。详见 [`docs/local-tv-prototype.zh_CN.md`](../local-tv-prototype.zh_CN.md) 的「播放进度」。
 
 B 站对云服务器地址的网页和带签名的接口返回 412，所以中转直接调用不带签名的网页 API，不用 yt-dlp。
 
@@ -143,7 +145,7 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
   [`docs/superpowers/specs/2026-10-10-playback-and-device-controls-design.zh_CN.md`](../superpowers/specs/2026-10-10-playback-and-device-controls-design.zh_CN.md)。
 - **宠物**：「遥控」标签里的「宠物」一行打开「我的宠物」：从 11 只里选一只点「换上」，设备保存下来并让它开心 2 秒。
   `POST /api/pet` 写 `pet` 事件；媒体服务只给 HELLO 里带 `pet` 的固件发 `AV_SWITCH {"pet": i}`，固件在 HELLO 和 STATUS 里报当前宠物。
-  快进和下一个也会写 `seek`/`next` 事件，以 `{"seek": 秒}`/`{"next": 1}` 发给 HELLO 带 `"hint": 1` 的固件，设备画一个提示框，画面恢复后消失。
+  快进和下一个也会写 `seek`/`next` 事件，以 `{"seek": 秒}`/`{"next": 1}` 发给 HELLO 带 `"hint": 1` 的固件，设备画一个提示框，画面恢复后消失。下一个、上一集和选集还会写 `loading` 事件，以 `{"loading": {...}}` 发给 HELLO 带 `"info": 1` 的固件，设备画正在加载哪一集，代替「下一个」提示框。
 - **自动保养**：YouTube 节点每 6 小时检查一次测试视频，cookies 需要更换时网页会提示；`packaging/yt-relay/yt-dlp-update.timer` 每周更新
   yt-dlp，新版能解析测试视频才替换。
 
@@ -200,6 +202,21 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
 短按调音量、长按换台，因为这两个键在外壳上就是音量键（`BSP_ARROW_CLICK_IS_VOLUME`）；Passport 现在也一样。
 上下按物理位置排列，不按外壳印的音量−/+，因为按印的字用起来是反的。
 
+## 语音（按住说话）
+
+带 `CONFIG_AV_VOICE`（默认开）编译的固件，在服务器的 CONFIG 提供语音时才打开语音（`"voice"`，只有接了识别服务的服务器才发，见 [`server/README.zh_CN.md`](../../server/README.zh_CN.md)）。在那之前按键和上表完全一样。语音打开后：
+
+| 按键 | 手势 | 作用 |
+| --- | --- | --- |
+| 上3（BOOT） | 播放时或在频道列表里按住 0.45 秒 | 说话；松开结束（▲ 取消） |
+| 上3（BOOT） | 短按 | 和以前一样打开频道列表；底栏改为“按住OK说话  双击OK返回” |
+| 上3（BOOT） | **三击** | **亮度**（长按现在用来说话） |
+| 上3（BOOT），在频道列表或语音结果里 | 双击 | 返回上一级，再双击关闭（原来是长按） |
+
+确定键一按下电视声音就静音（没有回声消除），录音结束时恢复；如果这一下只是短按，立即恢复。频道列表或语音页盖住画面时，画面不解码。
+
+麦克风是板上 I2S1 的 I2S MEMS 麦克风（WS 4、SCK 5、DIN 6，见板级头文件的 `BSP_MIC_*`），按标准 I2S、32 位槽、左声道、16 kHz 读，右移 12 位成 16 位——这是小智固件在这块板上用的格式。**尚未在本板上验证：**第一次上机看 `av_voice: capture done: blocks=… peak=…` 这一行（peak 接近 0 表示没信号或声道选错；接近 32767 表示右移得太少）。
+
 ## 针对这块板的修正（均在一台设备上实测）
 
 - **Wi-Fi 发射功率上限 11 dBm。** 20 dBm 时板子电源被拉抖，纯 TCP 只有 15–50 KB/s；
@@ -216,3 +233,4 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
 - 超过约十分钟的长时间稳定性，以及在其他 Wi-Fi 网络下的表现。
 - 4G 模组在飞行模式下的耗电，以及是否应改为让它保持复位。
 - `tools/start_xingzhi_media.sh` 在 Windows 上未测试（仅 macOS）。
+- 语音：麦克风的格式与增益（见上文“语音”）、实际的按住门限，以及设备上的整条语音链路。

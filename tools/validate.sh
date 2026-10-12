@@ -45,6 +45,12 @@ run_static_checks() {
         -o "${test_dir}/test_av_adpcm"
     "${test_dir}/test_av_adpcm"
     # Overlay text and menu state: pure logic, so they run without a device.
+    # Push-to-talk: what every key does in every voice state, the timeouts,
+    # and a result that arrives after a cancel.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_av_voice_policy.c main/av_voice_policy.c \
+        -o "${test_dir}/test_av_voice_policy"
+    "${test_dir}/test_av_voice_policy"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_ui_text.c main/ui_text.c \
         -o "${test_dir}/test_ui_text"
@@ -106,6 +112,12 @@ run_static_checks() {
         tests/test_av_channel_policy.c main/av_channel_policy.c \
         -o "${test_dir}/test_av_channel_policy"
     "${test_dir}/test_av_channel_policy"
+    # The identity in HELLO: the shapes the multi-tenant server accepts, and a
+    # secret encoding checked against a known vector.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_av_identity.c main/av_identity.c \
+        -o "${test_dir}/test_av_identity"
+    "${test_dir}/test_av_identity"
     python3 tests/test_verify_firmware.py
     python3 tests/test_tv_server.py
     python3 tests/test_video_import.py

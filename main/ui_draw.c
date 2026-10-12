@@ -34,6 +34,7 @@ static const uint8_t *const icons[UI_ICON_COUNT] = {
     [UI_ICON_LINK] = ICON_LINK,
     [UI_ICON_PHONE] = ICON_PHONE,
     [UI_ICON_REWIND] = ICON_REWIND,
+    [UI_ICON_MIC] = ICON_MIC,
 };
 
 // True when rows [y, y + h) reach the band at all.

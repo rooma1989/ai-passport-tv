@@ -20,12 +20,26 @@ void ui_overlay_banner(ui_surface_t surface, const ui_menu_t *menu);
 // The seek box at (60,92), 120x56.
 void ui_overlay_hint(ui_surface_t surface, const ui_menu_t *menu);
 
+// The loading band across y=84..155 while the source changes (next, previous,
+// an episode picked): the "next" mark, 正在加载 and 第 n/N 集, the title.
+void ui_overlay_loading(ui_surface_t surface, const ui_menu_t *menu);
+
 // The pause band over rows [top, bottom): `pet` dozing, the pause mark, 已暂停
 // and the video's title.
 void ui_overlay_pause(ui_surface_t surface, int top, int bottom, unsigned pet, const char *title);
 
 // The bottom bar while paused, rows [top, bottom): how to carry on.
 void ui_overlay_pause_hint(ui_surface_t surface, int top, int bottom);
+
+// A relay video's progress in the bottom bar, whose first row is `top`, under
+// a picture: the played share of the whole panel's width lit along the bar's
+// top two rows, the rest of them dim; with `times`, "12:34 / 23:40" centred
+// below. `panel` is the panel's own surface (the line reaches its edges).
+void ui_overlay_progress_line(ui_surface_t panel, int top, uint32_t pos_ms, uint32_t dur_ms, bool times);
+
+// The same in audio-only mode, under the pet: the played time at the left,
+// the total at the right, a bar between them.
+void ui_overlay_progress_bar(ui_surface_t surface, int top, uint32_t pos_ms, uint32_t dur_ms);
 
 // ---- Menus and pages (HANDOFF.md 4.7-4.10), drawn on the opaque panel ----
 
@@ -66,6 +80,26 @@ void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uin
 // The status page's bottom line: what OK does there, and that the rest close.
 void ui_overlay_status_bottom(ui_surface_t surface, int top, bool audio_only);
 
+// ---- Voice screens, in the list's panel (voice control design, mock-ups 1-12) ----
+//
+// The header takes rows 36-87 (the microphone, then the loudness bars or the
+// words heard and a status line), a dotted rule sits at y=90, and up to
+// UI_VOICE_ROWS_SHOWN rows of 24 px start at y=96.
+
+// The voice screen `menu->voice.screen`, on the opaque panel. Nothing for
+// UI_VOICE_NONE (the list is drawn by ui_overlay_list).
+void ui_overlay_voice(ui_surface_t surface, const ui_menu_t *menu);
+
+// The top bar's label for a voice screen: up to three coloured runs into
+// `texts`/`colors`, using `scratch` for a count. Returns how many.
+unsigned ui_overlay_voice_label(const ui_menu_t *menu, const char *texts[3], uint16_t colors[3],
+                                char *scratch, size_t scratch_size);
+
+// The bottom bar's line while the list or a voice screen is up and voice is
+// on: how to talk, finish, cancel or go back. ▲ ▼ OK in amber.
+const char *ui_overlay_voice_hint(const ui_menu_t *menu);
+void ui_overlay_bottom_keys(ui_surface_t surface, int top, const char *text);
+
 // ---- Waiting screens (HANDOFF.md 4.2, 4.3) and the pet picker (4.15) ----
 
 typedef enum {
@@ -83,6 +117,12 @@ typedef struct {
     unsigned number;    // the channel's number in the list; 0 when unknown
     char name[64];      // the channel's name; "" when unknown
     char detail[48];    // "group · n/total"
+    // A relay channel's video (UI_WAIT_CHANNEL): its title and "第 n/N 集", in
+    // place of `detail` and after the verb; `loading` says 正在加载 (the source
+    // is changing in a session) rather than 正在打开. Empty: as before.
+    char title[64];
+    char episode[24];
+    bool loading;
     // The listening screen's live inputs, refreshed before each frame:
     // loudness now and over the last UI_LISTEN_BARS chunks (oldest first),
     // 0..255; whether the screen has dimmed (the pet sleeps); and tenths of

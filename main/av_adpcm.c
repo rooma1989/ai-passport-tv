@@ -38,3 +38,35 @@ void av_adpcm_decode(const uint8_t *block, size_t samples, int16_t *out) {
         out[i] = (int16_t)predictor;
     }
 }
+
+void av_adpcm_encode(av_adpcm_state_t *state, const int16_t *pcm, size_t samples, uint8_t *block) {
+    int predictor = state->predictor;
+    int index = state->index > AV_ADPCM_INDEX_MAX ? (int)AV_ADPCM_INDEX_MAX : state->index;
+    block[0] = (uint8_t)((uint16_t)predictor >> 8);
+    block[1] = (uint8_t)predictor;
+    block[2] = (uint8_t)index;
+    block[3] = 0;
+    uint8_t *nibbles = block + AV_ADPCM_HEADER_BYTES;
+    for (size_t i = 0; i < samples; i++) {
+        int step = k_step[index];
+        int diff = pcm[i] - predictor;
+        unsigned code = 0;
+        if (diff < 0) { code = 8u; diff = -diff; }
+        int delta = step >> 3;
+        if (diff >= step) { code |= 4u; diff -= step; delta += step; }
+        step >>= 1;
+        if (diff >= step) { code |= 2u; diff -= step; delta += step; }
+        step >>= 1;
+        if (diff >= step) { code |= 1u; delta += step; }
+        predictor += (code & 8u) ? -delta : delta;
+        if (predictor > 32767) predictor = 32767;
+        else if (predictor < -32768) predictor = -32768;
+        index += k_index_step[code & 7u];
+        if (index < 0) index = 0;
+        else if (index > (int)AV_ADPCM_INDEX_MAX) index = (int)AV_ADPCM_INDEX_MAX;
+        if (i & 1u) nibbles[i >> 1] |= (uint8_t)(code << 4);
+        else nibbles[i >> 1] = (uint8_t)code;
+    }
+    state->predictor = (int16_t)predictor;
+    state->index = (uint8_t)index;
+}

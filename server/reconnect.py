@@ -135,6 +135,59 @@ def _tell_paused(server, connection, session: int, wire: WireState, paused: bool
     wire.seq += 1
 
 
+def _flush_voice(server, connection, session: int, wire: WireState) -> None:
+    """暂停、断流重连时也把语音结果发出去（暂停中说「继续」最常见）。"""
+    flush = getattr(server, "voice_flush", None)
+    if flush is not None:
+        wire.seq = flush(connection, session, wire.seq)
+
+
+def _flush_info(server, connection, session: int, wire: WireState, fetch=None):
+    """「正在加载」：中转说要换的（事件），或片源重开时后台问到的（fetch 完成时）。返回仍在问的 fetch。"""
+    flush = getattr(server, "info_flush", None)
+    if flush is not None:
+        wire.seq = flush(connection, session, wire.seq)
+    if fetch is not None and fetch.done:
+        wire.seq = server.info_loading(connection, session, wire.seq, fetch.result)
+        return None
+    return fetch
+
+
+def _flush_progress(server, connection, session: int, wire: WireState) -> None:
+    """进度条的锚点问到了就发（片源重开时在后台问，见 server/progress.py）。"""
+    flush = getattr(server, "progress_flush", None)
+    if flush is not None:
+        wire.seq = flush(connection, session, wire.seq)
+
+
+def _progress_stopped(server, connection, session: int, wire: WireState) -> None:
+    """片源停了：设备上的进度条在最后一块真声音播完时停下。"""
+    stop = getattr(server, "progress_stop", None)
+    if stop is not None and wire.audio_stamp >= 0:
+        wire.seq = stop(connection, session, wire.seq, wire.audio_stamp + AUDIO_CHUNK_MS)
+
+
+def _resumed(server, connection, session: int, wire: WireState, channel, fresh: bool = True):
+    """接着推流之前：设备上的「正在加载」该收了（新片源的画面紧接着就来）。
+
+    进度条：新片源（fresh）从中转说的位置起，它的第一块声音就是下一个时间戳；原片源自己缓过来时
+    从停下的地方接着走。
+    """
+    done = getattr(server, "info_done", None)
+    if done is not None:
+        wire.seq = done(connection, session, wire.seq)
+    at = wire.audio_stamp + AUDIO_CHUNK_MS
+    if fresh:
+        begin = getattr(server, "progress_begin", None)
+        if begin is not None:
+            begin(at)
+    else:
+        resumed = getattr(server, "progress_resumed", None)
+        if resumed is not None:
+            wire.seq = resumed(connection, session, wire.seq, at)
+    return channel
+
+
 def hold(server, connection, session: int, channel: LiveChannel, wire: WireState,
          origin: float, since: float, restart_reason: str = "",
          paused: bool = False, pause_title: str = "") -> LiveChannel | None:
@@ -150,6 +203,8 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
     """
     deadline = since + RECONNECT_TIMEOUT_S
     restart: Restart | None = None
+    # 片源重开时问中转新片源是哪一集（server.info_fetch，只对会画的固件、中转的台）。
+    fetch = None
     attempts = 0
     retry_at = 0.0
     pending = restart_reason
@@ -159,6 +214,8 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
         text = overlay.PAUSE_TEXT if paused else overlay.NOTICE_TEXT
         # 会自己画暂停横条的固件：不发画面，屏幕保留暂停前的最后一帧。
         device_draws = paused and getattr(server, "device_pause", False)
+        # 进度条先停（在暂停横条之前，设备画横条时已经知道停在哪）。
+        _progress_stopped(server, connection, session, wire)
         if device_draws:
             _tell_paused(server, connection, session, wire, True, pause_title)
             shown = getattr(channel, "shown", None)
@@ -176,7 +233,12 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 _send_silence(server, connection, session, wire, origin)
                 keep()
                 now = time.monotonic()
+                _flush_voice(server, connection, session, wire)
+                _flush_progress(server, connection, session, wire)
                 verdict = server.pause_verdict(paused_at)
+                # 暂停中选了别的集：继续之前就画「正在加载」。
+                if verdict == "resume":
+                    _flush_info(server, connection, session, wire)
                 if verdict == "leave":
                     return None
                 if verdict == "resume":
@@ -200,6 +262,9 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 _tell_device(connection, session, "source unavailable")
                 raise LiveError(f"source unavailable for {RECONNECT_TIMEOUT_S:.0f} s")
             _send_silence(server, connection, session, wire, origin)
+            _flush_voice(server, connection, session, wire)
+            fetch = _flush_info(server, connection, session, wire, fetch)
+            _flush_progress(server, connection, session, wire)
 
             if restart is None:
                 if channel is not None and not pending:
@@ -208,7 +273,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                     elif now - since > STALL_RESTART_S:
                         pending = "stalled"
                     elif channel.video_pending() and len(channel.audio) >= 4:
-                        return channel
+                        return _resumed(server, connection, session, wire, channel, fresh=False)
                 elif channel is None and not pending:
                     pending = "start_failed"
                 if pending and now >= retry_at:
@@ -220,6 +285,8 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                         channel = None
                     restart = Restart(make)
                     pending = ""
+                    if fetch is None and getattr(server, "info_fetch", None) is not None:
+                        fetch = server.info_fetch()
             else:
                 failed = ""
                 if restart.done and restart.error is not None:
@@ -236,7 +303,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                     retry_at = now + RETRY_DELAY_S
                 elif restart.done and restart.channel.prebuffered():
                     winner, restart = restart.channel, None
-                    return winner
+                    return _resumed(server, connection, session, wire, winner)
 
             getattr(server, "keep_now_playing", lambda: None)()
             # 手机要换台：结束会话，设备重连时拿到新台（AVServer.switch_waiting）。

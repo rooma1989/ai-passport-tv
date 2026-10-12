@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import episode_info
 from .relay.events import read_event, read_events
 from .relay.table import CAST_ID
 
@@ -28,6 +29,15 @@ class SwitchWatcher:
     def take_controls(self) -> list[tuple[str, int | None]]:
         taken, self._controls = self._controls, []
         return taken
+
+    def take_loading(self) -> tuple[str, dict] | None:
+        """最新的「正在加载」(台, 给设备的 payload)，连同排在队里的「下一个」提示一起取走：
+        会画「正在加载」的固件不需要那个提示框。没有时为 None，队列不动。"""
+        loads = [value for kind, value in self._controls if kind == "loading"]
+        if not loads:
+            return None
+        self._controls = [c for c in self._controls if c[0] not in ("loading", "next")]
+        return loads[-1]
 
     def requeue(self, controls: list[tuple[str, int | None]]) -> None:
         """取走后暂时处理不了的，放回队首。"""
@@ -54,6 +64,13 @@ class SwitchWatcher:
                     self._controls = [c for c in self._controls if c[0] != action]
                 # 暂停带的是标题（text），其余带数值。
                 self._controls.append((action, event.text if action == "pause" else event.value))
+                continue
+            if action == "loading":
+                # 中转马上要换片源：(台, 设备要画的 {"title", "episode", "total"})；只留最新的。
+                info = episode_info.payload(event.text, event.value or 0, event.total)
+                self._controls = [c for c in self._controls if c[0] != "loading"]
+                if info is not None:
+                    self._controls.append(("loading", (event.channel, info)))
                 continue
             if action == "switch":
                 # 手机遥控换台；要换回当前这个台就等于不换。

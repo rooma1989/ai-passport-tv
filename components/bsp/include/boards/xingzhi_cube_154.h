@@ -60,7 +60,7 @@
 #define BSP_BTN_GPIO_OK      0           // BOOT 键,也是下载模式的 strapping 脚
 
 // ============================================================================
-// 音频:I2S 直连数字功放,无 codec、无 MCLK。麦克风(WS 4/SCK 5/DIN 6)本玩法不用。
+// 音频:I2S 直连数字功放,无 codec、无 MCLK。麦克风另走 I2S1(见下),给语音按住说话用。
 // ============================================================================
 #define BSP_I2S_PORT         I2S_NUM_0
 #define BSP_I2S_BCLK         15
@@ -70,6 +70,16 @@
 // 测试音一响就欠压复位。两者处理掉之后(见下方模组飞行模式与 sdkconfig 里的发射功率)
 // 恢复满幅;若再出现欠压复位(bsp_power 日志"上次复位原因: 9"),先降这里。
 #define BSP_AUDIO_MAX_GAIN_Q16 65536u
+// 麦克风:I2S MEMS,接 I2S1。引脚来自小智固件的本板配置(AUDIO_I2S_MIC_GPIO_*),格式同上:
+// 标准 I2S、32 位槽、左声道。32 位样本右移 12 位成 16 位,也是照小智固件的做法 ——
+// 增益与格式都【未在本板实测】,见 src/xingzhi_cube_154/bsp_mic.c。
+#define BSP_MIC_I2S_PORT     I2S_NUM_1
+#define BSP_MIC_WS           4
+#define BSP_MIC_SCK          5
+#define BSP_MIC_DIN          6
+#define BSP_MIC_SHIFT        12
+// 三击确定键打开亮度页(按住确定键已经给了语音)。Passport 用上/下键双击调亮度,不需要。
+#define BSP_OK_TRIPLE_IS_BRIGHTNESS 1
 
 // ============================================================================
 // 电量:电池经分压接 ADC2_CH6(GPIO17)。充电检测接 GPIO38,高电平 = 充电中。

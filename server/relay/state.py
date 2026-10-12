@@ -74,11 +74,29 @@ def _creator_from(raw: dict) -> Creator:
     return Creator(**raw)
 
 
-class State:
-    """所有修改都在 `lock` 内进行；调用者负责在修改后 save()。"""
+def _cast_from(cast) -> tuple[Video | None, float, bool]:
+    if not cast:
+        return None, 0.0, False
+    return Video(**cast["video"]), float(cast.get("position", 0.0)), bool(cast.get("done", False))
 
-    def __init__(self, path: Path):
-        self.path = Path(path)
+
+def _cast_record(video: Video | None, position: float, done: bool) -> dict | None:
+    if video is None:
+        return None
+    return {"video": dataclasses.asdict(video), "position": position, "done": done}
+
+
+class State:
+    """所有修改都在 `lock` 内进行；调用者负责在修改后 save()。
+
+    单用户时是一个文件（relay-state.json）。多用户时（server/tenancy）每个用户一个 State，
+    从数据库的一行读、存回那一行（store 有 load() 和 save(dict)）；那时投屏在每台设备的
+    CastSlot 里，会话和扫码码在账号表里，这里只放这个用户的订阅、进度、投屏历史和分组。
+    """
+
+    def __init__(self, path: Path | None = None, store=None):
+        self.path = Path(path) if path is not None else None
+        self.store = store
         self.lock = threading.RLock()
         self.creators: list[Creator] = []
         # 投屏只留一个视频：新的投屏替换旧的；播完后保留，手动选「我的投屏」可以重看。
@@ -88,31 +106,52 @@ class State:
         self.history: list[dict] = []
         self.sessions: dict[str, float] = {}
         self.code = ""
-        if self.path.exists():
-            try:
+        # 多用户时：这个用户调整过的直播台分组（单用户时在 channel-groups.json 里）。
+        self.group_overrides: dict[str, str] = {}
+        source = str(self.path) if store is None else "用户状态"
+        try:
+            if store is not None:
+                data = store.load()
+            elif self.path is not None and self.path.exists():
                 data = json.loads(self.path.read_text(encoding="utf-8"))
-                self.creators = [_creator_from(c) for c in data["creators"]]
-                cast = data.get("cast")
-                if cast:
-                    self.cast = Video(**cast["video"])
-                    self.cast_position = float(cast.get("position", 0.0))
-                    self.cast_done = bool(cast.get("done", False))
-                self.history = [dict(h) for h in data.get("history") or []][:HISTORY_SIZE]
-                self.sessions = {str(k): float(v) for k, v in (data.get("sessions") or {}).items()}
-                self.code = str(data.get("code") or "")
-            except (ValueError, KeyError, TypeError) as error:
-                # 坏文件不自动清空：宁可服务起不来，也不丢掉用户的关注列表。
-                raise ValueError(f"{self.path}: 状态文件损坏：{error}") from None
+            else:
+                data = None
+            if data is not None:
+                self.load(data)
+        except (ValueError, KeyError, TypeError) as error:
+            # 坏文件不自动清空：宁可服务起不来，也不丢掉用户的关注列表。
+            raise ValueError(f"{source}: 状态文件损坏：{error}") from None
 
-    def save(self) -> None:
+    def load(self, data: dict) -> None:
+        self.creators = [_creator_from(c) for c in data["creators"]]
+        self.cast, self.cast_position, self.cast_done = _cast_from(data.get("cast"))
+        self.history = [dict(h) for h in data.get("history") or []][:HISTORY_SIZE]
+        self.sessions = {str(k): float(v) for k, v in (data.get("sessions") or {}).items()}
+        self.code = str(data.get("code") or "")
+        self.group_overrides = {str(k): str(v) for k, v in (data.get("group_overrides") or {}).items()}
+
+    def snapshot(self) -> dict:
+        """要存的内容。文件里的格式和以前一样；存进数据库的只有这个用户自己的部分。"""
         with self.lock:
             data = {"creators": [dataclasses.asdict(c) for c in self.creators]}
-            if self.cast is not None:
-                data["cast"] = {"video": dataclasses.asdict(self.cast),
-                                "position": self.cast_position, "done": self.cast_done}
+            if self.store is not None:
+                data["history"] = [dict(h) for h in self.history]
+                data["group_overrides"] = dict(self.group_overrides)
+                return data
+            cast = _cast_record(self.cast, self.cast_position, self.cast_done)
+            if cast is not None:
+                data["cast"] = cast
             data["history"] = self.history
             data["sessions"] = self.sessions
             data["code"] = self.code
+            return data
+
+    def save(self) -> None:
+        with self.lock:
+            data = self.snapshot()
+            if self.store is not None:
+                self.store.save(data)
+                return
             text = json.dumps(data, ensure_ascii=False, indent=1)
             tmp = self.path.with_name(self.path.name + ".tmp")
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
@@ -175,6 +214,17 @@ class State:
                     return video, 0.0
             creator.watched = []
             return creator.videos[0], 0.0
+
+    def peek_video(self, cid: str) -> Video | None:
+        """next_video 下一次会选的视频，只看不改（都看过时不清标记）。给设备「正在加载」用。"""
+        with self.lock:
+            creator = self.get(cid)
+            if creator is None or not creator.videos:
+                return None
+            for video in creator.videos:
+                if video.bvid in creator.positions:
+                    return video
+            return next((v for v in creator.videos if v.bvid not in creator.watched), creator.videos[0])
 
     def episode(self, cid: str) -> int:
         """剧集台下一次播第几集（从 1 数），只看不改；都看完了算第 1 集。"""
@@ -292,3 +342,25 @@ class State:
             self.code = ""
             self.sessions = {}
             return self.ensure_code()
+
+
+class CastSlot:
+    """多用户时每台设备一个投屏位（两台设备可以各投各的）；和 State 的投屏部分接口一样。
+
+    store 有 load() 和 save(dict)：数据库里这台设备的 device_state，格式是
+    {"cast": {"video": …, "position": …, "done": …}}，和 relay-state.json 里的 cast 一样。
+    """
+
+    def __init__(self, store):
+        self.store = store
+        self.lock = threading.RLock()
+        data = store.load() or {}
+        self.cast, self.cast_position, self.cast_done = _cast_from(data.get("cast"))
+
+    def save(self) -> None:
+        with self.lock:
+            self.store.save({"cast": _cast_record(self.cast, self.cast_position, self.cast_done)})
+
+    set_cast = State.set_cast
+    save_cast_position = State.save_cast_position
+    cast_ended = State.cast_ended

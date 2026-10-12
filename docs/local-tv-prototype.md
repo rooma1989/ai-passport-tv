@@ -103,6 +103,139 @@ PTS can be lower than an immediately preceding audio PTS. Loops must maintain
 continuous PTS/sequence or start a new session; `duration_ms` describes server
 material, not a firmware-enforced session timeout.
 
+### Voice (push-to-talk), kinds 10-12
+
+Firmware built with `CONFIG_AV_VOICE` adds `"voice":1` to HELLO. Voice is turned
+on only by a CONFIG carrying `"voice":{"max_s":N}` (N >= 1; the device caps an
+utterance at min(N, 10) s); a CONFIG without it turns it off, and the keys are
+then exactly what they were. The authority for the numbers is
+`main/av_protocol.h` (`AV_VOICE_CTL`, `AV_VOICE`, `AV_VOICE_RESULT`,
+`AV_VOICE_RESULT_MAX`, `AV_VOICE_BLOCKS_MAX`); `server/protocol.py` mirrors them
+and a host test compares the two.
+
+| Kind | Direction | Header | Payload |
+| --- | --- | --- | --- |
+| VOICE_CTL (10) | device to server | session = the session's, seq 0, PTS 0 (like STATUS) | JSON: `{"op":"begin","id":n,"rate":16000,"codec":"adpcm"}`, `{"op":"end","id":n}`, `{"op":"cancel","id":n}`, `{"op":"pick","id":n,"ref":"..."}` |
+| VOICE (11) | device to server | seq 0, PTS = 40 x the block's index from the utterance's first block | exactly 324 bytes: one IMA ADPCM block in the AUDIO layout above, 640 samples of 16 kHz microphone audio; at most 250 per utterance |
+| VOICE_RESULT (12) | server to device | the session's next seq, PTS 0, flags 0 (like SWITCH) | JSON, 1..2048 bytes |
+
+- `id` counts utterances from 1 per boot. "begin" goes when OK has been held for
+  `CONFIG_AV_VOICE_HOLD_MS` (450 ms), but capture starts at OK press-down, so the
+  first blocks after "begin" are the pre-roll recorded before it (block 0 is the
+  press). The encoder runs continuously over the utterance and every block
+  carries its own state, so a block lost to a full uplink ring (`dropped=` in the
+  log; the PTS then skips) does not disturb the next.
+- "end" follows the last block, about 120 ms after OK is let go. "cancel" (▲
+  while listening or recognising, or a new press that abandons an unfinished
+  utterance) drops whatever is unsent; a "begin" that never left the device is
+  simply forgotten. "pick" answers a candidate that carries `ref`; the server
+  answers it with a result for the same `id`.
+- Only the receive task writes the socket. It sends these between its own
+  reads: at the top of each packet, while it waits for an audio slot, and, while
+  an utterance is in flight, in 20 ms slices before a header read, so a quiet
+  stream (paused, audio only) does not hold the uplink up. A failed or partial
+  write ends the session, like any other.
+- A result is read into the control buffer, parsed into a fixed structure
+  (no transcript is logged) and handed to the session owner. One whose `id` is
+  not the utterance being waited for (a cancel, a newer one) is dropped.
+- Fields used: `state` (`final`, `error`; `partial` would update the words while
+  recognising, not sent by the server in phase 1), `heard`, `reply`, `intent`
+  (`none` is "not understood": the low earcon), `label` and `lead` (the row shown
+  for a single match), `do` with one of `channel`, `volume`, `brightness` (step
+  index), `audio_only`, `pet`, `page` (`status`, `close`; the device also accepts
+  `list`, `brightness`, `pets`) or `setup`, and `choices` (up to 6
+  `{label, lead, do | ref}`). A clear match is carried out at once through the
+  same paths as AV_SWITCH; no `do` and no `choices` shows `reply` (the relay
+  acted) unless `intent` is `none`. "None of these, open the channel list" is
+  added after the candidates only when they are channels.
+
+### Episode information ("info": 1)
+
+Firmware that draws which episode plays and loads adds `"info":1` to HELLO. Only
+such a device gets anything below; older firmware sees exactly what it did.
+
+- CONFIG may carry `"playing":{"title":"...","episode":n,"total":N}` for a relay
+  channel (a series, a creator, the cast): what this session opens. `episode`
+  and `total` are present only for a series (1-based; `total` only when known).
+  The title is UTF-8, at most 60 bytes, cut on a character by the server; the
+  device keeps 63 bytes and cuts on a character itself. The opening screen shows
+  the title where the list position was and "Opening, episode n/N" under the
+  bar; the channel banner shows "Episode n/N · title" in place of
+  "group · n/total" (on screen in Chinese, as everywhere). Absent (a live
+  channel, an older server) means nothing is known.
+- `AV_SWITCH {"loading":{"title","episode","total"}}`: the source is about to
+  change inside the session (next, previous episode, an episode picked on the
+  phone or by voice, an episode that ended). The device draws a band across
+  y=84..155 over the picture -- the "next" mark, "Loading episode n/N", the title --
+  and, once the picture has stopped for 1.5 s, the channel's waiting screen with
+  "Loading" instead of "Opening". A "next" box (`{"next":1}`) is not drawn while
+  it is up.
+- `AV_SWITCH {"loading":0}`: the new source is ready and its picture comes next.
+  The loading becomes what plays, the channel banner names it, the band is no
+  longer drawn over pictures (the new source starts with a whole frame) and the
+  waiting screen keeps it until the next picture is drawn.
+- Never stuck: the band goes 30 s after the last `loading` without a `0`, 3 s
+  after the `0` without a picture (audio-only mode has none), and at the start
+  of every session. Both messages are SWITCH packets: parsed at depth 2, no
+  timeline, the session's next seq.
+
+The relay knows the episode. Its stream port answers `GET /info/<channel>`
+(`/info/<device>/<channel>` with several users) with
+`{"channel","title","episode","total"}` for the video the stream at
+`/ch/<channel>` plays, or would open now (looked up without contacting the site
+or changing state); 404 for anything else. The media server derives the address
+from the channel's stream URL, asks at session start (0.5 s at most, before
+CONFIG) and again in the background whenever it reopens the source. For the
+immediate response, the relay writes a `loading` event (channel, `value` = the
+episode or 0, `total`, `text` = the title) before next, previous or an episode
+pick cuts the stream; the media server sends it within a second, drops the
+`next` hint queued with it, and sends `{"loading":0}` when the reopened source
+has prebuffered.
+
+### Playback progress ("progress": 1)
+
+Firmware that draws how far a relay video has played adds `"progress":1` to
+HELLO. Only such a device gets the message below; older firmware sees exactly
+what it did. All values are milliseconds.
+
+- `AV_SWITCH {"progress":{"dur":D,"pos":P,"at":T}}`: the video is D long and
+  is at P when this session's sound clock -- the audio PTS the device is
+  playing, `estimated_pts()` -- reads T. The device moves the bar on with its
+  own clock (position = P + clock - T, at most D), so nothing is sent per
+  second. T is the wire PTS of the first sound block of the source the anchor
+  describes: 0 at a session's start, the next audio PTS when a source is
+  reopened inside the session (a seek, next, an episode pick, a pause ended, a
+  stall).
+- The same with `"stop":S`: the source stopped (a stall, a pause) after the
+  sound that ends at clock S; the bar stops at P + S - T.
+- `AV_SWITCH {"progress":0}`: nothing known (the new video's length is not).
+- The device forgets the bar at every CONFIG, on `{"loading":{...}}` and on
+  `{"next":1}` (another video comes), and moves it at once on `{"seek":n}`
+  (to the position + n s, still), keeping that through a stopped anchor until
+  a running one arrives or 20 s of clock have passed.
+- Drawn in the bottom bar (rows 210..239), not over the picture, so it never
+  meets the banner, the level box, the hints, the loading or pause band, and
+  delta-coded stripes cannot leave it behind. Under a picture: the played
+  share of the panel's width in amber along the bar's top two rows, the rest
+  dim; "12:34 / 23:40" (H:MM:SS for an hour or longer) centred below, with the
+  channel banner and for 4 s after a key, anything from the phone, a pause or
+  resume, a voice result and every new anchor. Audio-only, under the pet: the
+  played time, a bar and the total, always. Paused: the line, still, above the
+  pause band's hint. The bar is repainted when what it shows changes -- about
+  once a second with the times up, when the line grows a pixel otherwise --
+  never per frame. A page in the bottom bar (list, status, pets) keeps it.
+
+The relay knows the length and the offset. `GET /info/<channel>` (see above)
+also answers `duration` (seconds; absent when unknown) and, while that stream is
+being pushed, `offset` (the second it started from). The media server asks in
+the background when a source starts feeding (session start, `reconnect.hold`
+returning a new source), at most three times a second apart while the relay has
+no `offset` yet; it sends the stopped anchor when a hold begins (before the
+pause message) and, when the same source recovers, moves the anchor on by the
+silence instead of asking (`server/progress.py`). A Bilibili stream starts at
+the keyframe before the offset, so the bar can be a few seconds ahead. The v2
+sender (`TV_LIVE_ENGINE=v2`) sends no progress.
+
 ## Media conversion and compatibility
 
 Both `prepare` and `import-video` generate actual baseline 160x120 YUV420 JPEGs;
@@ -151,6 +284,16 @@ network configuration are unchanged. See [server instructions](../server/README.
   DMA buffers. The standalone control,
   buttons, Wi-Fi event loop and BSP remain owned for the boot lifetime, while
   per-session allocations are released. There is no return-to-LVGL transition.
+- Voice (`main/av_voice.c`, `main/av_voice_policy.c`): nothing is held until OK
+  goes down. Then one block of about 9.9 KB (a 24-block uplink ring of 328 bytes,
+  the 1280-byte block accumulator, a 640-byte read chunk and a spare block) and a
+  task (3072-byte stack on the C3, 4096 on the S3, priority 6) are allocated;
+  both go when the capture has stopped and the ring is drained, or at once on a
+  click. A result costs about 1.1 KB while it is on screen, plus the cJSON tree
+  (a few KB) for the moment it is parsed in the receive task. The TV's sound is
+  zeroed in the audio task from press-down until the capture ends; while the
+  list or a voice screen covers the picture the video task releases each stripe
+  undecoded and repaints the panel on its own.
 - Five seconds without receive progress triggers reset; no fixed total session
   timeout is imposed. Normal END drains queued work; reconnect backs off one
   second, clears all state and starts a new handshake. Continuous-PTS server

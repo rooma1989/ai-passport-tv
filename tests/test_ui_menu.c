@@ -526,8 +526,226 @@ static void test_pet_picker(void)
           "left alone, it closes without changing the pet");
 }
 
+static void test_voice_screens_share_the_panel(void)
+{
+    // From the picture: the panel opens on the voice screen.
+    ui_menu_t menu = grouped("ch001");
+    ui_menu_voice_show(&menu, UI_VOICE_LISTENING);
+    check(menu.view == UI_VIEW_MENU && ui_menu_voice_up(&menu), "voice opens the panel");
+    check(!menu.voice.over_list, "no list underneath");
+    check(menu.timeout_ms == 0, "the voice policy owns the timing");
+    check(!ui_menu_tick(&menu, 60000) && menu.view == UI_VIEW_MENU, "the panel does not time out under it");
+    ui_menu_scroll_by(&menu, 1, 7);
+    ui_menu_confirm(&menu);
+    check(menu.action == UI_ACTION_NONE, "list keys do nothing to a voice screen");
+    // "None of these": the list opens afresh at the groups.
+    ui_menu_voice_to_list(&menu);
+    check(menu.view == UI_VIEW_MENU && !ui_menu_voice_up(&menu), "the list replaces the voice screen");
+    check(ui_menu_at_groups(&menu), "opened at the groups");
+    check(menu.timeout_ms > 0, "the list's own timeout is back");
+
+    // From inside a group: the list is kept as it was underneath.
+    ui_menu_confirm(&menu);
+    check(!ui_menu_at_groups(&menu), "inside a group");
+    const unsigned selected = menu.selected;
+    ui_menu_voice_show(&menu, UI_VOICE_LISTENING);
+    check(menu.voice.over_list, "the list is underneath");
+    ui_menu_voice_show(&menu, UI_VOICE_RECOGNISING);
+    check(menu.voice.over_list, "still underneath after the next screen");
+    ui_menu_voice_to_list(&menu);
+    check(!ui_menu_at_groups(&menu) && menu.selected == selected, "back to the same place in the list");
+
+    // Back (double-click) from a voice screen over the list returns to it, and
+    // from one over the picture closes the panel.
+    ui_menu_voice_show(&menu, UI_VOICE_NOT_UNDERSTOOD);
+    ui_menu_back(&menu);
+    check(menu.view == UI_VIEW_MENU && !ui_menu_voice_up(&menu) && !ui_menu_at_groups(&menu),
+          "back from voice: the list as it was");
+    ui_menu_close(&menu);
+    ui_menu_voice_show(&menu, UI_VOICE_ERROR);
+    ui_menu_back(&menu);
+    check(menu.view == UI_VIEW_VIDEO && menu.voice.screen == UI_VOICE_NONE, "back from voice over the picture closes");
+
+    // Rows, highlight and scrolling.
+    ui_menu_voice_show(&menu, UI_VOICE_CHOICES);
+    menu.voice.row_count = 7;
+    ui_menu_voice_select(&menu, 0);
+    check(menu.voice.highlight && menu.voice.selected == 0 && menu.voice.scroll == 0, "first row");
+    ui_menu_voice_select(&menu, 5);
+    check(menu.voice.scroll == 2, "the highlight is kept on screen");
+    ui_menu_voice_select(&menu, 99);
+    check(menu.voice.selected == 6 && menu.voice.scroll == 3, "clamped to the last row");
+    ui_menu_voice_select(&menu, 1);
+    check(menu.voice.scroll == 1, "scrolls back up");
+    ui_menu_voice_show(&menu, UI_VOICE_CHOICES);
+    check(menu.voice.row_count == 7, "the same screen keeps its rows");
+    ui_menu_voice_show(&menu, UI_VOICE_DONE);
+    check(menu.voice.row_count == 0 && !menu.voice.highlight, "another screen starts empty");
+
+    // Any other page replaces it.
+    ui_menu_open_status(&menu);
+    check(menu.view == UI_VIEW_STATUS && menu.voice.screen == UI_VOICE_NONE, "a page drops the voice screen");
+    ui_menu_voice_show(&menu, UI_VOICE_ERROR);
+    check(!menu.voice.over_list, "a page is not the list");
+
+    // Without a list, going "back to the list" closes.
+    ui_menu_t empty;
+    ui_menu_init(&empty);
+    ui_menu_voice_show(&empty, UI_VOICE_UNAVAILABLE);
+    check(empty.view == UI_VIEW_MENU, "voice opens without a list");
+    ui_menu_voice_to_list(&empty);
+    check(empty.view == UI_VIEW_VIDEO, "no list to go back to: closed");
+}
+
+static void test_episode_loading(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    char text[32];
+    ui_episode_t ep = { "", 3, 26 };
+    ui_episode_text(&ep, text, sizeof(text));
+    check(strcmp(text, "第 3/26 集") == 0, "episode with total");
+    ep.total = 0;
+    ui_episode_text(&ep, text, sizeof(text));
+    check(strcmp(text, "第 3 集") == 0, "episode without total");
+    ep.total = 2;
+    ui_episode_text(&ep, text, sizeof(text));
+    check(strcmp(text, "第 3 集") == 0, "a total below the episode is not shown");
+    ep.episode = 0;
+    ui_episode_text(&ep, text, sizeof(text));
+    check(text[0] == '\0' && !ui_episode_known(&ep), "not a series, no title: nothing");
+
+    // A title cut on a whole character: 21 CJK characters are 63 bytes, 22 do not fit.
+    char long_title[80] = "";
+    for (int i = 0; i < 22; i++) strcat(long_title, "犬");
+    ui_episode_set_title(&ep, long_title);
+    check(strlen(ep.title) == 63, "21 characters fit");
+    strcpy(long_title, "a");
+    for (int i = 0; i < 22; i++) strcat(long_title, "犬");
+    ui_episode_set_title(&ep, long_title);
+    check(strlen(ep.title) == 61, "a cut character is dropped, not halved");
+    ui_episode_set_title(&ep, NULL);
+    check(ep.title[0] == '\0', "no title");
+
+    // Loading: the band goes up, takes a "next" box with it, refuses a new one.
+    ui_menu_show_hint(&menu, UI_HINT_NEXT, 0);
+    ui_episode_t next = { "第2集 战国", 2, 26 };
+    const unsigned seq = menu.info_seq;
+    ui_menu_show_loading(&menu, &next);
+    check(ui_menu_loading_band(&menu) && ui_menu_loading_up(&menu) && menu.info_seq != seq, "band up");
+    check(menu.hint == UI_HINT_NONE, "the next box goes");
+    ui_menu_show_hint(&menu, UI_HINT_NEXT, 0);
+    check(menu.hint == UI_HINT_NONE, "and does not come back while loading");
+    ui_menu_show_hint(&menu, UI_HINT_FORWARD, 30);
+    check(menu.hint == UI_HINT_FORWARD, "a seek box still shows");
+    ui_menu_show_loading(&menu, &(ui_episode_t){ "", 0, 0 });
+    check(menu.loading.episode == 2, "an empty loading changes nothing");
+
+    // A picture before the server's word does not end it.
+    ui_menu_loading_shown(&menu);
+    check(ui_menu_loading_up(&menu), "still loading");
+    (void)ui_menu_tick(&menu, 20000);   // the seek box goes; the band stays
+    check(ui_menu_loading_band(&menu), "stays while the source opens");
+
+    // The server has it: no band over pictures, the waiting screen keeps it.
+    check(ui_menu_loading_done(&menu), "done");
+    check(!ui_menu_loading_done(&menu), "once");
+    check(!ui_menu_loading_band(&menu) && ui_menu_loading_up(&menu), "band off, still loading");
+    check(menu.playing.episode == 2 && strcmp(menu.playing.title, "第2集 战国") == 0, "it plays now");
+    ui_menu_loading_shown(&menu);
+    check(!ui_menu_loading_up(&menu), "the picture ends it");
+
+    // Never stuck: 30 s without word, 3 s after the word without a picture.
+    ui_menu_show_loading(&menu, &next);
+    check(!ui_menu_tick(&menu, 29000) && ui_menu_loading_up(&menu), "29 s");
+    check(ui_menu_tick(&menu, 1000) && !ui_menu_loading_up(&menu), "30 s");
+    ui_menu_show_loading(&menu, &next);
+    ui_menu_loading_done(&menu);
+    check(ui_menu_tick(&menu, 3000) && !ui_menu_loading_up(&menu), "3 s after done");
+    check(!ui_menu_loading_done(&menu), "done with nothing loading is nothing");
+
+    ui_menu_set_playing(&menu, NULL);
+    check(!ui_episode_known(&menu.playing), "forgotten");
+}
+
+
+static void test_progress(void)
+{
+    ui_progress_t p;
+    ui_progress_forget(&p);
+    uint32_t pos = 1;
+    check(!ui_progress_position(&p, 5000, &pos) && pos == 1, "nothing known");
+    ui_progress_seek(&p, 30, 1000);
+    check(!p.known && !p.seeking, "a seek with nothing known is nothing");
+    check(!ui_progress_anchor(&p, 0, 0, 0, false, 0) && !p.known, "no length, no bar");
+
+    // 23:40 long, at 12 s when the sound clock read 0: it moves with the clock.
+    check(ui_progress_anchor(&p, 1420000, 12000, 0, false, 0), "anchor");
+    check(ui_progress_position(&p, 0, &pos) && pos == 12000, "at the anchor");
+    check(ui_progress_position(&p, 60000, &pos) && pos == 72000, "a minute on");
+    check(ui_progress_position(&p, 5000000, &pos) && pos == 1420000, "never past the end");
+    // An anchor for a later clock reading (a new source after a silence).
+    ui_progress_anchor(&p, 1420000, 300000, 64000, false, 0);
+    check(ui_progress_position(&p, 10000, &pos) && pos == 300000, "before its first sound: at its start");
+    check(ui_progress_position(&p, 74000, &pos) && pos == 310000, "10 s after");
+
+    // Stopped (a stall, a pause): the bar stays where the sound ran out.
+    ui_progress_anchor(&p, 1420000, 300000, 64000, true, 70000);
+    check(ui_progress_position(&p, 68000, &pos) && pos == 304000, "the queued sound still plays");
+    check(ui_progress_position(&p, 99000, &pos) && pos == 306000, "then it stops");
+    ui_progress_anchor(&p, 1420000, 300000, 64000, true, 1000);
+    check(ui_progress_position(&p, 99000, &pos) && pos == 300000, "a stop before the anchor is the anchor");
+
+    // A seek: there at once, still, through the old source's stop, until the new anchor.
+    ui_progress_anchor(&p, 1420000, 0, 0, false, 0);
+    ui_progress_seek(&p, 30, 60000);
+    check(p.seeking && ui_progress_position(&p, 61000, &pos) && pos == 90000, "jumped 30 s on, at once");
+    check(ui_progress_position(&p, 65000, &pos) && pos == 90000, "and still");
+    ui_progress_seek(&p, 30, 65000);
+    check(ui_progress_position(&p, 66000, &pos) && pos == 120000, "a second seek adds to the first");
+    ui_progress_anchor(&p, 1420000, 0, 0, true, 66000);
+    check(p.seeking && ui_progress_position(&p, 67000, &pos) && pos == 120000, "the cut does not undo it");
+    ui_progress_anchor(&p, 1420000, 119000, 70000, false, 0);
+    check(!p.seeking && ui_progress_position(&p, 71000, &pos) && pos == 120000, "the new source takes over");
+    ui_progress_seek(&p, -600, 71000);
+    check(ui_progress_position(&p, 71000, &pos) && pos == 0, "not before the start");
+    ui_progress_seek(&p, 86400, 71000);
+    check(ui_progress_position(&p, 71000, &pos) && pos == 1420000, "nor past the end");
+    check(ui_progress_position(&p, 71000 + 20000, &pos) && pos == 140000,
+          "no new source within 20 s: back to the anchor");
+
+    // Pixels and times.
+    check(ui_progress_fill(0, 1420000, 320) == 0, "none played");
+    check(ui_progress_fill(710000, 1420000, 320) == 160, "half");
+    check(ui_progress_fill(1420000, 1420000, 320) == 320 && ui_progress_fill(9, 0, 320) == 0, "ends");
+    char played[16], total[16];
+    ui_progress_times(754000, 1420000, played, total, sizeof(played));
+    check(!strcmp(played, "12:34") && !strcmp(total, "23:40"), "12:34 / 23:40");
+    ui_progress_times(5000, 185000, played, total, sizeof(played));
+    check(!strcmp(played, "0:05") && !strcmp(total, "3:05"), "0:05 / 3:05");
+    ui_progress_times(754000, 5020000, played, total, sizeof(played));
+    check(!strcmp(played, "0:12:34") && !strcmp(total, "1:23:40"), "an hour or more: H:MM:SS for both");
+    ui_progress_times(9000000, 3600000, played, total, sizeof(played));
+    check(!strcmp(played, "1:00:00") && !strcmp(total, "1:00:00"), "played never past the total");
+
+    // The times under the picture: with the banner, and 4 s after a key.
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    check(!ui_menu_progress_label(&menu), "down at first");
+    ui_menu_show_progress(&menu);
+    check(ui_menu_progress_label(&menu), "up after a key");
+    check(!ui_menu_tick(&menu, 3900) && ui_menu_progress_label(&menu), "3.9 s: still up, no repaint asked");
+    (void)ui_menu_tick(&menu, 100);
+    check(!ui_menu_progress_label(&menu), "4 s: down");
+    ui_menu_banner(&menu, "犬夜叉", NULL);
+    check(ui_menu_progress_label(&menu), "up with the banner");
+    ui_progress_forget(&p);
+    check(!p.known, "forgotten");
+}
+
 int main(void)
 {
+    test_voice_screens_share_the_panel();
     test_open_selects_the_playing_channel();
     test_stepping_wraps_and_keeps_the_selection_sane();
     test_confirm_reports_the_highlighted_channel();
@@ -551,6 +769,8 @@ int main(void)
     test_level_indicator();
     test_seek_hint();
     test_pet_picker();
+    test_episode_loading();
+    test_progress();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

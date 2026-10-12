@@ -46,13 +46,16 @@
 | 文件 | 负责什么 |
 | --- | --- |
 | [`main/av_channel_policy.c`/`.h`](../../main/av_channel_policy.h) | "这个频道是否出过画面"的记录，以及跳到下一频道的决策。 |
-| [`main/av_adpcm.c`/`.h`](../../main/av_adpcm.h) | 音频包的 IMA ADPCM 块解码（324 字节 → 640 个采样）；块格式写在头文件和 [`docs/local-tv-prototype.md`](../local-tv-prototype.zh_CN.md) 里。由 `audio_task()` 调用。 |
+| [`main/av_adpcm.c`/`.h`](../../main/av_adpcm.h) | 音频包的 IMA ADPCM 块解码（324 字节 → 640 个采样），以及麦克风上行用的编码器；块格式写在头文件和 [`docs/local-tv-prototype.md`](../local-tv-prototype.zh_CN.md) 里。由 `audio_task()` 调用。 |
 | [`main/av_provision.cpp`/`.h`](../../main/av_provision.h) | Wi-Fi station/AP 生命周期（C++，封装 `esp-wifi-connect`）。 |
 | [`main/av_provision_policy.c`/`.h`](../../main/av_provision_policy.h) | 纯启动模式判定（`AV_BOOT_PLAY` vs `AV_BOOT_SETUP`），无 ESP-IDF 依赖。 |
 | [`main/av_settings.c`/`.h`](../../main/av_settings.h) | 亮度/音量的分档表（固定档位而非连续值）。 |
-| [`main/av_store.c`/`.h`](../../main/av_store.h) | 音量/亮度/服务器地址的 NVS 持久化。 |
+| [`main/av_store.c`/`.h`](../../main/av_store.h) | 音量/亮度/服务器地址的 NVS 持久化，以及设备密钥。 |
+| [`main/av_identity.c`/`.h`](../../main/av_identity.h) | HELLO 里给多用户服务器的设备身份（`device_id`、`model`、`device_secret`、`fw`）；格式化部分有主机测试。 |
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
-| [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机——纯逻辑，无 LVGL。 |
+| [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机，以及频道列表面板里的语音子状态——纯逻辑，无 LVGL。 |
+| [`main/av_voice_policy.c`/`.h`](../../main/av_voice_policy.h) | 按住说话：每种语音状态下每个按键做什么、按住与短按的区分、各种超时——纯逻辑，有主机测试。 |
+| [`main/av_voice.c`/`.h`](../../main/av_voice.h) | 设备端的按住说话：录音任务、高通、ADPCM、由 `receive_task()` 发出的上行环形缓冲、`AV_VOICE_RESULT` 解析。与播放器的衔接在 `av_player.c` 的 `voice_*`。 |
 | [`main/ui_text.c`/`.h`](../../main/ui_text.h) | 直接画到屏幕条带上的位图文字（非 LVGL）；CJK 字形来自 `ui_font_cjk.bin`，由 `tools/make_font.py` 重新生成。 |
 | [`main/ui_draw.c`/`.h`](../../main/ui_draw.h) | 设备端 UI 设计稿的图标、宠物和像素图形（点线、切角矩形、10 格进度条、不透明面板）；素材在 `main/xiaozhi_tv_ui_assets.h`，由设计稿导出。 |
 | [`main/ui_status.c`/`.h`](../../main/ui_status.h) | 顶条：左侧标签（播放时是台号和台名）和右侧的信号、电量。 |
@@ -75,9 +78,15 @@
 | [`server/usb_link.py`](../../server/usb_link.py) | 在 USB 串口传输上包一层 socket 形状的适配器（仅用于测量build）。 |
 | [`server/live_sender.py`](../../server/live_sender.py) | opt-in 的 v2 发送器（`TV_LIVE_ENGINE=v2`）；动它之前先看 [`docs/development/live-sender-v2.md`](../development/live-sender-v2.zh_CN.md) 的范围与边界。 |
 | [`server/relay/`](../../server/relay/web.py) | UP 主和剧集频道的视频中转：B 站接口、看过/进度状态、生成的频道表、MPEG-TS 流和带密钥的网页。独立服务（`python3 -m server.relay`）。 |
+| [`server/tenancy/`](../../server/tenancy/accounts.py) | 多用户阶段 1：SQLite 里的账号、会话、邀请、设备和每个用户的状态（`accounts.py`、`db.py`）；电视服务认设备（`gate.py`、`unbound.py`）；迁移（`migrate.py`）和管理命令（`admin.py`）。中转一侧：`server/relay/tenants.py`。运维手册：[`docs/development/tenancy-phase1-runbook.zh_CN.md`](../development/tenancy-phase1-runbook.zh_CN.md)。 |
+| [`server/relay/console.py`](../../server/relay/console.py) | 多用户阶段 2：电脑版（`assets/console.html`）、扫码登录的接口和手机确认页（`assets/login.html`）、登录列表、跨站 POST 检查（`same_origin()`）。登录票据和限流：[`server/tenancy/tickets.py`](../../server/tenancy/tickets.py)。二维码画成 SVG：[`server/relay/qr.py`](../../server/relay/qr.py)。 |
 | [`server/channel_groups.py`](../../server/channel_groups.py) | 频道分组：按台名归类、手机上的调整、CONFIG 里的分组表。 |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | 正在播放（给手机看），以及把中转的事件变成 SWITCH 包或 HELLO 时的新台。 |
 | [`server/listen.py`](../../server/listen.py) | 用手机听（原型，尚未接入）：设备晚 H 秒照着放的时间表、HLS 音频段窗口、从队列取声音、收听令牌。设计见 [`2026-10-12-phone-audio-design.zh_CN.md`](../superpowers/specs/2026-10-12-phone-audio-design.zh_CN.md)；本机试验在 `tools/listen_proto/`。 |
+| [`server/episode_info.py`](../../server/episode_info.py) | 给 `"info": 1` 的固件的「正在播 / 正在加载哪一集」：中转的 `/info/<台>`、CONFIG 的 `playing`、SWITCH 的 `loading`。 |
+| [`server/progress.py`](../../server/progress.py) | 给 `"progress": 1` 的固件的进度条锚点：中转 `/info/<台>` 的 `duration`/`offset`，每个片源开始时的 SWITCH `progress`，断流或暂停时的 `stop`。设备侧：`main/ui_menu.c` 的 `ui_progress_*`，由 `ui_overlay_progress_*` 画。 |
+| [`server/voice/`](../../server/voice/session.py) | 设备的语音命令：VOICE_CTL/VOICE 包和结果队列（`session.py`）、到 muse-asr 的 Unix 套接字桥（`asr.py`）、规则优先的意图引擎（`intent.py`、`match.py`、`numbers.py`、由 `tools/make_pinyin_table.py` 生成的 `pinyin_table.py`）、带明确设备的中转调用（`relay_client.py`）。运维说明见 [`server/README.zh_CN.md`](../../server/README.zh_CN.md#语音控制)。 |
+| [`server/relay/voice.py`](../../server/relay/voice.py) | 给媒体服务的 `GET /api/voice/catalog`。`device` 字段本身在 `web.py` 的 `Relay.find_device()`/`_pick()`（单用户时也认名字；有 `--db` 时带密钥点名设备的请求按那台设备的访客处理，`_DEVICE_SCOPED`）。 |
 | [`server/fault.py`](../../server/fault.py) | 面向受控设备实验（B02-R）的故障注入工具；不在正式发布的服务端路径里。 |
 
 ## 4. 做需求时真正会用到的工具
@@ -121,10 +130,14 @@
 | 频道列表，增删/排序频道 | `channels.txt`、`tools/channel_config.py`、`server/live.py`（`CHANNELS`、`reload_channels_if_changed`）、`main/av_channel_policy.c` |
 | UP 主频道、视频网站、手机网页 | `server/relay/`、`packaging/systemd/tv-relay.service`、`packaging/nginx/tv-relay.conf` |
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
+| 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
+| 电脑版、扫码登录、登录列表 | `server/relay/console.py`、`assets/console.html`、`assets/login.html`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`） |
 | 线协议/包格式改动 | `main/av_protocol.h`、`server/protocol.py`、`server/frames.py`，见上文第 5 节 |
+| 语音命令、语音识别、一句话是什么意思 | `server/voice/intent.py`（及 `tests/test_voice_intent.py`）、`server/voice/session.py`、`docs/superpowers/specs/2026-10-12-voice-control-design.zh_CN.md` |
 | 画质、帧率、条带/几何参数 | `main/av_protocol.h`（`AV_VIDEO_*`、`AV_FPS`）、`server/frames.py`、`server/rate.py`、`main/av_player.c` 的 `video_task`/`push_stripe` |
 | 音画同步、drift、卡顿、会话重置 | `server/timeline.py`、`server/pts.py`、`main/av_player.c` 的 `audio_task`/`video_task`、`docs/development/state-20260916.md` |
 | 设备按键、屏幕菜单、横幅、音量/亮度 HUD | `main/ui_menu.c`/`.h`、`main/av_player.c` 的 `process_key()`、`main/av_settings.c` |
+| 语音控制、麦克风 | `main/av_voice_policy.c`、`main/av_voice.c`、`components/bsp/src/*/bsp_mic.c`、`components/bsp/src/bsp_button_events.c`、`docs/superpowers/specs/2026-10-12-voice-control-design.md` |
 | Wi-Fi/服务器地址配网流程、captive portal | `main/av_provision.cpp`、`main/av_provision_policy.c`、`main/av_player.c` 的 `run_setup_mode()` |
 | 服务端打包/分发/发布 | `tools/build_server.py`、`packaging/tv-server.spec`、`.github/workflows/build-server.yml` |
 | 固件构建、CI、发布产物 | `tools/validate.sh`、`sdkconfig.av-prototype`、`.github/workflows/build-firmware.yml` |

@@ -238,7 +238,33 @@
 // "switch": 1, because firmware without it refuses an unknown kind.
 // AV_STATUS: device to server, {"volume", "brightness"}, sent when either changes
 // so the phone remote shows the device's real values. Never received here.
-enum { AV_HELLO=1, AV_CONFIG, AV_AUDIO, AV_VIDEO, AV_END, AV_ERROR, AV_PALETTE, AV_SWITCH, AV_STATUS };
+//
+// Voice (push-to-talk; docs/superpowers/specs/2026-10-12-voice-control-design.md
+// section 6), on the same socket. Sent only by firmware whose HELLO carried
+// "voice": 1, and only while the server's CONFIG offered "voice":
+//   AV_VOICE_CTL    device to server, JSON: {"op":"begin","id":n,"rate":16000,
+//                   "codec":"adpcm"}, {"op":"end","id":n}, {"op":"cancel","id":n},
+//                   {"op":"pick","id":n,"ref":"..."}. Header seq 0, pts 0, like
+//                   AV_STATUS.
+//   AV_VOICE        device to server, one microphone block in the downstream
+//                   audio layout (AV_AUDIO_BYTES of IMA ADPCM, 640 samples at
+//                   16 kHz). pts is milliseconds from the utterance's first
+//                   block (block k has pts 40*k); at most AV_VOICE_BLOCKS_MAX.
+//   AV_VOICE_RESULT server to device, JSON of at most AV_VOICE_RESULT_MAX:
+//                   {"id":n,"state":"final"|"partial"|"error","heard":"...",
+//                   "reply":"...","do":{...}} or "choices":[{"label","lead",
+//                   "do"|"ref"}, ... up to AV_VOICE_CHOICES_MAX]. It takes its
+//                   place in the sequence like AV_SWITCH and has no timeline.
+enum { AV_HELLO=1, AV_CONFIG, AV_AUDIO, AV_VIDEO, AV_END, AV_ERROR, AV_PALETTE, AV_SWITCH, AV_STATUS,
+       AV_VOICE_CTL, AV_VOICE, AV_VOICE_RESULT };
+// A result is drawn on a small screen and parsed on a chip with little heap
+// while a channel list may also be live: two kilobytes is the ceiling the
+// design sets (a heard sentence, a reply and six choices fit in well under it).
+#define AV_VOICE_RESULT_MAX 2048u
+// Ten seconds of 40 ms blocks: the device ends an utterance by itself there.
+#define AV_VOICE_BLOCKS_MAX 250u
+#define AV_VOICE_CHOICES_MAX 6u
+#define AV_VOICE_RATE 16000u
 // The only flag in use, and only on AV_VIDEO: this packet carries further
 // stripes of the frame the previous one started, rather than a new frame. A
 // frame cut into several packets sends them all with the same timestamp, and

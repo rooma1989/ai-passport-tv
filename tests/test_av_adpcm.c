@@ -147,12 +147,80 @@ static void edge_tests(void) {
     assert(!memcmp(a, b, sizeof(a)));
 }
 
+// The encoder (the microphone's uplink, AV_VOICE). The expected bytes come from
+// server/adpcm.py's Encoder over the same integer-only signal, so the device
+// and the server agree bit for bit; regenerate them with the snippet in
+// tests/test_voice_adpcm_agreement.py (which checks the same figures) if the signal changes.
+static uint32_t fnv1a_bytes(const uint8_t *b, size_t n) {
+    uint32_t h = 0x811c9dc5u;
+    for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 0x01000193u;
+    return h;
+}
+
+static void test_signal(int16_t *out, size_t n) {
+    uint32_t seed = 12345u;
+    for (size_t i = 0; i < n; i++) {
+        seed = (seed * 1103515245u + 12345u) & 0x7fffffffu;
+        int noise = (int)((seed >> 16) & 0x7ffu) - 1024;
+        int tri = (int)((i * 97u) % 4000u);
+        if (tri >= 2000) tri = 4000 - tri;
+        int burst = ((i / 160u) % 4u) == 1u ? 20000 : 0;
+        int v = (tri - 1000) * 12 + noise + ((i & 1u) ? burst : -burst);
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        out[i] = (int16_t)v;
+    }
+}
+
+static void encoder_tests(void) {
+    static int16_t pcm[2 * AV_AUDIO_SAMPLES];
+    test_signal(pcm, 2 * AV_AUDIO_SAMPLES);
+    uint8_t b1[AV_AUDIO_BYTES], b2[AV_AUDIO_BYTES];
+    av_adpcm_state_t st = {0, 0};
+    av_adpcm_encode(&st, pcm, AV_AUDIO_SAMPLES, b1);
+    av_adpcm_encode(&st, pcm + AV_AUDIO_SAMPLES, AV_AUDIO_SAMPLES, b2);
+    // Bytes equal to the Python encoder's.
+    static const uint8_t head1[8] = {0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0x9f};
+    static const uint8_t head2[8] = {0x31, 0x9e, 0x3d, 0x00, 0xba, 0xb9, 0xe1, 0xa8};
+    static const uint8_t tail2[4] = {0xbb, 0xa0, 0xbc, 0x1b};
+    assert(!memcmp(b1, head1, sizeof(head1)));
+    assert(!memcmp(b2, head2, sizeof(head2)));
+    assert(!memcmp(b2 + AV_AUDIO_BYTES - 4, tail2, sizeof(tail2)));
+    assert(fnv1a_bytes(b1, sizeof(b1)) == 0xf085219au);
+    assert(fnv1a_bytes(b2, sizeof(b2)) == 0x5fd8e440u);
+    assert(st.predictor == -11259 && st.index == 54);
+    // Each block is one the receiver would accept, and decodes alone.
+    assert(av_adpcm_header_valid(b1) && av_adpcm_header_valid(b2));
+    // Round trip over the stretch without the alternating burst (which no
+    // ADPCM can follow): once the step has grown, the decoder tracks the input
+    // within a step.
+    int16_t back[AV_AUDIO_SAMPLES];
+    av_adpcm_decode(b1, AV_AUDIO_SAMPLES, back);
+    long worst = 0;
+    for (unsigned i = 64; i < 160; i++) {
+        long d = (long)back[i] - (long)pcm[i];
+        if (d < 0) d = -d;
+        if (d > worst) worst = d;
+    }
+    assert(worst < 4000);
+    // Silence from rest stays silence: the header is the zero state and every
+    // code is +0 or -0 at the smallest step.
+    int16_t quiet[16] = {0};
+    av_adpcm_state_t z = {0, 0};
+    uint8_t qb[AV_ADPCM_HEADER_BYTES + 8];
+    av_adpcm_encode(&z, quiet, 16, qb);
+    int16_t qout[16];
+    av_adpcm_decode(qb, 16, qout);
+    for (unsigned i = 0; i < 16; i++) assert(qout[i] >= -8 && qout[i] <= 8);
+}
+
 int main(void) {
+    encoder_tests();
     constants_tests();
     header_tests();
     vector_tests();
     packet_tests();
     edge_tests();
-    puts("IMA ADPCM decoder tests: PASS");
+    puts("IMA ADPCM decoder and encoder tests: PASS");
     return 0;
 }

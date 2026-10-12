@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .. import channel_groups
+
 STREAM_BASE = "http://127.0.0.1:8099/ch/"
 # 投屏台总在表里，排第一：设备只能被切到它频道列表里已有的 id。
 CAST_ID = "cast"
@@ -15,27 +17,43 @@ NAME_COLUMNS = 20
 
 
 def label(creator) -> str:
-    """设备频道列表里显示的名字。"""
+    """设备频道列表里显示的名字：名字加网站标记（「王志安(油管)」），一共不超过 NAME_COLUMNS 格。"""
+    return label_for(creator.name, creator.site, creator.id)
+
+
+def plain_label(creator) -> str:
+    """不带网站标记的名字（手机网页另有网站标签）。"""
     return label_text(creator.name) or creator.id
 
 
-def label_text(name: str) -> str:
-    """名字截到 NAME_COLUMNS 格；去掉会破坏表格式的竖线。"""
+def label_for(name: str, site: str, fallback: str = "") -> str:
+    """名字截短后接上网站标记；放不下时截名字，不截标记。"""
+    suffix = channel_groups.mark(site)
+    return (label_text(name, NAME_COLUMNS - columns(suffix)) or fallback) + suffix
+
+
+def columns(text: str) -> int:
+    return sum(1 if ord(char) < 128 else 2 for char in text)
+
+
+def label_text(name: str, width: int = NAME_COLUMNS) -> str:
+    """名字截到 width 格；去掉会破坏表格式的竖线。"""
     name = " ".join(name.replace("|", " ").split())
     kept, used = [], 0
     for char in name:
-        width = 1 if ord(char) < 128 else 2
-        if used + width > NAME_COLUMNS:
+        size = 1 if ord(char) < 128 else 2
+        if used + size > width:
             break
         kept.append(char)
-        used += width
+        used += size
     return "".join(kept).strip()
 
 
-def render(creators) -> str:
+def render(creators, base: str = STREAM_BASE) -> str:
+    """base：播放流地址的前缀；多用户时带上设备 id（STREAM_BASE + "<设备 id>/"）。"""
     lines = ["# 由视频中转生成，不要手改。每行： id | 显示名 | 地址",
-             f"{CAST_ID} | {CAST_LABEL} | {STREAM_BASE}{CAST_ID}"]
-    lines += [f"{c.id} | {label(c)} | {STREAM_BASE}{c.id}" for c in creators]
+             f"{CAST_ID} | {CAST_LABEL} | {base}{CAST_ID}"]
+    lines += [f"{c.id} | {label(c)} | {base}{c.id}" for c in creators]
     return "\n".join(lines) + "\n"
 
 

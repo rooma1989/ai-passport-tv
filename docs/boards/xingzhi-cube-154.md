@@ -143,8 +143,24 @@ episodes: [{n, title, duration, state: watched|current|left, position?}]}`
 0); `POST /api/series/<sr id>/play {"episode": n}` and `POST /api/previous` answer
 `{ok, at, episode, title}` plus `cut: true` when the device was already on the
 channel, or a `note` instead of switching (device offline, firmware without
-remote switching, or that episode already playing). No firmware change: the
-device draws no hint box for an episode change.
+remote switching, or that episode already playing). Firmware whose HELLO says
+`"info": 1` shows what loads: within about a second of next, previous or an
+episode pick (phone, remote or voice) a band over the picture reads "Loading
+episode n/N" (in Chinese) with the episode's title, then the channel's waiting screen says the
+same until the new episode's picture arrives, and the channel banner names it;
+an episode that ends and the next that opens are shown the same way. The opening
+screen and the banner name the episode at every channel start too. Older
+firmware is unchanged. See "Episode information" in
+[`docs/local-tv-prototype.md`](../local-tv-prototype.md).
+
+**Progress bar.** On creator, series and cast channels, firmware whose HELLO
+says `"progress": 1` draws how far the video has played in the bottom bar: a
+thin amber line under the picture, with "12:34 / 23:40" under it together with
+the channel banner and for 4 s after a key, anything from the phone, a pause,
+a seek or a new episode; in audio-only mode a bar with the played and total
+times under the pet, always. It stops while paused and jumps on a seek. Live
+channels show nothing new. See "Playback progress" in
+[`docs/local-tv-prototype.md`](../local-tv-prototype.md).
 
 Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
 relay uses the unsigned web API rather than yt-dlp.
@@ -204,7 +220,10 @@ The relay's page is a remote for the device, at `https://<site>/tv/`. Design:
   `AV_SWITCH {"pet": i}` only to firmware whose HELLO carries `pet`, and the
   firmware reports its pet in HELLO and STATUS. Seek and next also write
   `seek`/`next` events, sent as `{"seek": s}`/`{"next": 1}` to firmware whose
-  HELLO says `"hint": 1`, which draws a box until the picture is back.
+  HELLO says `"hint": 1`, which draws a box until the picture is back. Next,
+  previous and an episode pick also write a `loading` event, sent as
+  `{"loading": {...}}` to firmware whose HELLO says `"info": 1`, which draws
+  the episode loading instead of the "next" box.
 - **Upkeep.** The YouTube node checks a test video every 6 hours and the page
   warns when its cookies need replacing; `packaging/yt-relay/yt-dlp-update.timer`
   installs a new yt-dlp weekly only after it resolves the test video.
@@ -296,6 +315,32 @@ case's volume keys (`BSP_ARROW_CLICK_IS_VOLUME`); the Passport now does the same
 Up and down follow the keys' physical order rather than the printed VOL−/VOL+,
 which read backwards in use.
 
+## Voice (push-to-talk)
+
+Firmware built with `CONFIG_AV_VOICE` (the default) turns voice on when the
+server's CONFIG offers it (`"voice"`, only from a server with a recogniser; see
+[`server/README.md`](../../server/README.md)). Until then the keys are exactly as
+in the table above. With voice on:
+
+| Key | Gesture | What it does |
+| --- | --- | --- |
+| Top 3 (BOOT) | held 0.45 s, while playing or in the list | talk; let go to finish (▲ cancels) |
+| Top 3 (BOOT) | click | channel list, as before; the bottom bar now reads "hold OK to talk, double-click OK to go back" |
+| Top 3 (BOOT) | **triple-click** | **brightness** (the long press now talks) |
+| Top 3 (BOOT), in the list or a voice result | double-click | back a level, then close (was the long press) |
+
+The TV's sound is muted from the moment OK goes down (there is no echo
+cancellation) and comes back when the recording ends, or at once when the press
+turns out to be a click. While the list or a voice screen covers the picture,
+the picture is not decoded.
+
+The microphone is the board's I2S MEMS microphone on I2S1 (WS 4, SCK 5, DIN 6,
+`BSP_MIC_*` in the board header), read as standard I2S, 32-bit slots, left
+channel, 16 kHz, shifted right by 12 to 16 bits -- the format Xiaozhi's firmware
+uses on this board. **It has not been verified on this board:** the first device
+test checks the `av_voice: capture done: blocks=… peak=…` line (a peak near 0
+means no signal or the wrong slot; near 32767 means the shift is too small).
+
 ## Board-specific fixes, all measured on one device
 
 - **Wi-Fi transmit power is capped at 11 dBm.** At 20 dBm this board's supply
@@ -320,3 +365,5 @@ which read backwards in use.
 - The 4G module's power draw in airplane mode, and whether it should instead be
   held in reset.
 - `tools/start_xingzhi_media.sh` on Windows (macOS only).
+- Voice: the microphone's format and gain (see Voice above), the hold threshold
+  in use, and the whole voice path on the device.

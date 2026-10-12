@@ -9,6 +9,7 @@
 // put two unrelated writers on the same keys.
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "av_server_addr.h"
@@ -33,6 +34,14 @@ bool av_store_save_pet(uint8_t pet);
 // Audio-only mode (sound, the pet on screen, no picture); off when unset.
 bool av_store_load_audio_only(void);
 bool av_store_save_audio_only(bool on);
+
+// The device secret for HELLO (av_identity.h): AV_DEVICE_SECRET_LEN base64url
+// characters, key "dsecret". Generated once and never rewritten while valid;
+// the Muse dual build never erases NVS, so it survives switching firmwares.
+// out must hold AV_DEVICE_SECRET_LEN + 1 bytes. Returns false when none is
+// stored or the stored one is malformed.
+bool av_store_load_device_secret(char *out, size_t size);
+bool av_store_save_device_secret(const char *secret);
 
 // Read where the streaming server is, as entered on the setup page.
 //

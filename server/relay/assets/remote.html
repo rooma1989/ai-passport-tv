@@ -183,9 +183,18 @@
   .eps .row.cur { background: #231f19; box-shadow: inset 2px 0 0 var(--red); }
   .eps .row.cur .t, .eps .row.cur .src { color: var(--amber); }
   .eps .row.cur .n { opacity: 1; }
+  .devrow .t small { font: 12px var(--mono); color: var(--faint); margin-left: 6px; }
+  .devrow button { flex: none; background: none; border: 0; color: var(--dim); font: 14px var(--serif); padding: 0 0 0 10px; }
+  .devrow button.red { color: var(--red); }
+  .linkbox { margin: 8px 16px 0; font: 13px/1.5 var(--mono); color: var(--amber); word-break: break-all;
+             background: var(--ink-deep); border: 1px solid var(--rule); padding: 8px 10px; user-select: all; }
+  [data-tenant] { display: none; }
+  body.tenant [data-tenant] { display: block; }
+  body.guest .noguest { display: none !important; }
   .gate { position: fixed; inset: 0; background: var(--ink); display: none; align-items: center; justify-content: center;
           padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
   .gate.on { display: flex; }
+  a.pclogin { margin-top: 14px; text-decoration: none; }
 </style>
 </head>
 <body>
@@ -202,7 +211,7 @@
       </div>
     </div>
     <section class="page on" id="remote">
-      <div class="mast"><h1>小智电视</h1><button id="adjust">调整分组</button></div>
+      <div class="mast"><h1>小智电视</h1><button id="adjust" class="noguest">调整分组</button></div>
       <div class="seg" id="devs" hidden></div>
       <div class="screen off" id="screen">
         <div class="top"><span class="ch" id="ch">— —</span><span class="grp" id="grp"></span></div>
@@ -263,9 +272,11 @@
         <textarea id="link" placeholder="粘贴 B 站或 YouTube 视频链接（App 里「分享 → 复制链接」）"></textarea>
         <button class="go" id="play">在小智上播放</button>
       </div>
-      <div class="h">放过的</div>
-      <ol class="rows" id="history"></ol>
-      <div class="hint">点一下重播，左滑删除。</div>
+      <div class="noguest">
+        <div class="h">放过的</div>
+        <ol class="rows" id="history"></ol>
+        <div class="hint">点一下重播，左滑删除。</div>
+      </div>
     </section>
 
     <section class="page" id="creators">
@@ -286,13 +297,32 @@
       </div>
       <ol class="rows" id="seriesList"></ol>
       <div class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。点一部剧可以选集。番剧只播免费的集；YouTube 每集第一次播要等 20～40 秒。</div>
+      <div data-tenant>
+        <div class="mast"><h1>我的设备</h1><span class="tag" id="meName"></span></div>
+        <ol class="rows" id="deviceList"></ol>
+        <div class="box inline">
+          <input id="claim" placeholder="绑定码（小电视屏幕上的 20 位字母数字）" autocapitalize="characters" autocomplete="off">
+          <button class="go" id="bind">绑定</button>
+        </div>
+        <div class="hint">新的小电视连上网以后，屏幕上会显示绑定码；也可以在小电视状态页（双击按键打开）扫二维码绑定。</div>
+        <!-- 电脑版（多用户阶段 2）：输入电脑屏幕上的 6 位登录码、退出已登录的电脑，页面是 login.html。 -->
+        <a class="petline pclogin" href="login"><span>电脑</span><b>登录电脑版：输入电脑屏幕上的 6 位码</b><i>›</i></a>
+        <div id="adminBox" hidden>
+          <div class="box inline">
+            <input id="inviteName" placeholder="家人的名字（可不填）" maxlength="20">
+            <button class="go" id="invite">邀请</button>
+          </div>
+          <div class="linkbox" id="inviteLink" hidden></div>
+          <div class="hint">邀请链接 7 天内有效、只能用一次：发给家人，在手机浏览器里打开。</div>
+        </div>
+      </div>
       <div class="foot"><a href="/TV/" target="_blank" rel="noreferrer">使用说明</a><button id="newcode">换一个扫码码</button></div>
     </section>
   </main>
   <nav>
     <button class="on" data-page="remote">遥控</button>
     <button data-page="cast">投屏</button>
-    <button data-page="creators">订阅</button>
+    <button data-page="creators" class="noguest">订阅</button>
   </nav>
 </div>
 <div class="toast" id="toast"></div>
@@ -338,7 +368,8 @@ function el(tag, cls, text) {
 
 function pad(n) { return String(n).padStart(2, "0"); }
 
-function siteTag(site) { return site === "youtube" ? "YT" : "B站"; }
+// 与设备频道列表里的网站标记一样（server/channel_groups.py 的 SITE_MARKS）。
+function siteTag(site) { return site === "youtube" ? "油管" : "B站"; }
 
 function dateLabel(at) {
   const day = new Date(at * 1000);
@@ -458,8 +489,10 @@ function renderScreen() {
     screen.className = "screen off";
     $("ch").textContent = "— —";
     $("grp").textContent = "";
-    $("nm").textContent = devName() + "没在线";
-    $("ti").textContent = "打开小电视后这里会显示正在播的台";
+    const none = data.me && !(data.devices || []).length;
+    $("nm").textContent = none ? "还没有绑定小电视" : devName() + "没在线";
+    $("ti").textContent = none ? "小电视连上网后屏幕上有绑定码，到「订阅 → 我的设备」里输入"
+      : "打开小电视后这里会显示正在播的台";
   }
 }
 
@@ -510,6 +543,7 @@ function renderChannels() {
   if (!current) return;
   const sites = {};
   for (const cr of data.creators) sites[cr.id] = cr.site;
+  for (const sr of data.series || []) sites[sr.id] = sr.site;
   const movable = !["我的投屏", "UP 主"].includes(group);
   for (const c of current.channels) {
     const li = el("li");
@@ -815,8 +849,57 @@ function renderListen() {
     : on ? "只放声音，省流量也省电" : "只放声音，屏幕只显示宠物";
 }
 
+// 多用户：自己的设备（改名、解绑）、绑定新设备、管理员发邀请。单用户时没有 data.me，这一块不显示。
+function renderMine() {
+  const me = data.me;
+  document.body.classList.toggle("tenant", !!me);
+  document.body.classList.toggle("guest", !!me && me.role === "guest");
+  if (!me) return;
+  // 访客没有「订阅」页：上次停在那一页（localStorage 记着）就回到遥控。
+  if (me.role === "guest" && $("creators").classList.contains("on")) {
+    document.querySelector('nav button[data-page="remote"]').click();
+  }
+  $("meName").textContent = me.role === "guest" ? "访客" : me.name + (me.role === "admin" ? " · 管理员" : "");
+  $("adminBox").hidden = me.role !== "admin";
+  const list = $("deviceList");
+  list.innerHTML = "";
+  const rows = data.devices || [];
+  if (!rows.length) list.appendChild(el("li", "empty", "还没有绑定小电视"));
+  for (const dv of rows) {
+    const li = el("li");
+    const row = el("div", "row devrow");
+    const name = el("span", "t", dv.name);
+    name.appendChild(el("small", "", (dv.online ? "在线" : "离线") + (dv.legacy ? " · 旧固件" : "")));
+    row.appendChild(name);
+    if (dv.mine) {
+      const rename = el("button", "", "改名");
+      rename.onclick = async () => {
+        const value = prompt("新名字", dv.name);
+        if (!value) return;
+        const answer = await call("POST", "api/devices/" + dv.id, { name: value });
+        if (!answer.ok) toast(answer.error, true);
+        refresh();
+      };
+      row.appendChild(rename);
+      if (!dv.legacy) {
+        const unbind = el("button", "red", "解绑");
+        unbind.onclick = async () => {
+          if (!confirm("解绑「" + dv.name + "」？解绑后它会显示新的绑定码，谁绑定就归谁；你的订阅不受影响。")) return;
+          const answer = await call("POST", "api/devices/" + dv.id + "/unbind", {});
+          if (!answer.ok) toast(answer.error, true); else toast("已解绑");
+          refresh();
+        };
+        row.appendChild(unbind);
+      }
+    }
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+}
+
 function render() {
   if (!data) return;
+  renderMine();
   renderPets();
   renderListen();
   renderNotice();
@@ -923,8 +1006,30 @@ $("addSeries").onclick = () => busy($("addSeries"), async () => {
   } else toast(answer.error, true);
 });
 
+$("bind").onclick = () => busy($("bind"), async () => {
+  const claim = $("claim").value.replace(/[\s-]/g, "").toUpperCase();
+  if (!claim) { toast("请先输入绑定码", true); return; }
+  const answer = await call("POST", "api/bind", { claim });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  $("claim").value = "";
+  toast("已绑定「" + answer.device.name + "」，小电视几秒后换成你的频道");
+  refresh();
+});
+
+$("invite").onclick = () => busy($("invite"), async () => {
+  const answer = await call("POST", "api/invites", { name: $("inviteName").value });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  $("inviteName").value = "";
+  $("inviteLink").hidden = false;
+  $("inviteLink").textContent = answer.link;
+  try { await navigator.clipboard.writeText(answer.link); toast("邀请链接已复制"); } catch (error) { toast("长按复制邀请链接"); }
+});
+
 $("newcode").onclick = async () => {
-  if (!confirm("换一个扫码码后，所有手机（包括这台）都要重新扫小电视上的码。确定？")) return;
+  const text = data && data.me
+    ? "给「" + devName() + "」换一个扫码码后，扫旧码进来的访客都要重新扫；你自己不受影响。确定？"
+    : "换一个扫码码后，所有手机（包括这台）都要重新扫小电视上的码。确定？";
+  if (!confirm(text)) return;
   const answer = await call("POST", "api/code", {});
   if (answer.ok) toast("已换新码，小电视换台后显示新的二维码");
 };

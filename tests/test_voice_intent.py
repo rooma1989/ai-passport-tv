@@ -1,0 +1,1070 @@
+"""The voice intent engine: about 200 spoken phrasings against a fixture channel table.
+
+Each row is an utterance as SenseVoice might return it (with or without
+punctuation, Chinese or Arabic numerals, homophones, fillers) and the decision
+the rules must reach. See server/voice/intent.py and
+docs/superpowers/specs/2026-10-12-voice-control-design.md section 3.
+"""
+
+import re
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from server.channel_groups import classify
+from server.voice import intent, match, numbers
+from server.voice.intent import Catalog, Channel, Series, decide
+
+ROWS = [("cast", "我的投屏"), ("up01", "小Lin说"), ("up02", "老高与小茉"), ("sr01", "熊出没"),
+        ("sr02", "熊出没之探险日记"), ("sr03", "西游记")]
+ROWS += [(f"ch{n:03d}", f"CCTV{n + 1}") for n in range(17)]
+ROWS += [("ch5p", "CCTV-5+ 体育赛事"), ("ch017", "湖南卫视"), ("ch018", "浙江卫视"), ("ch019", "江苏卫视"),
+         ("ch020", "东方卫视"), ("ch021", "香港卫视"), ("ch022", "东方卫视4K"), ("ch023", "浙江卫视4K"),
+         ("ch028", "凤凰中文"), ("ch029", "凤凰资讯"), ("ch030", "凤凰香港"), ("ch037", "CGTN英语"),
+         ("ch038", "CGTN记录"), ("ch039", "CNA"), ("ch050", "猫和老鼠"), ("ch051", "哆啦A梦"),
+         ("ch070", "薛之谦精选30首(2小时)"), ("ch077", "王菲精选145首(10小时)"),
+         ("ch073", "周深精选72首(5小时)"), ("ch084", "BBC News (1080p)"), ("gd1", "广东体育"),
+         ("ch035", "中国交通"), ("ch049", "纪实科教")]
+CHANNELS = [Channel(cid, name, n, classify(cid, name)) for n, (cid, name) in enumerate(ROWS, 1)]
+NUMBER = {c.id: c.number for c in CHANNELS}
+SERIES = [Series("sr01", "熊出没", 52), Series("sr02", "熊出没之探险日记", 26), Series("sr03", "西游记", 25)]
+
+
+def catalog(current="ch000", **overrides):
+    values = dict(series=SERIES, current=current, volume=50, brightness=2, steps=5, audio_only=0)
+    values.update(overrides)
+    return Catalog(CHANNELS, **values)
+
+
+LIVE = catalog()
+SERIES_PLAYING = catalog("sr01", episode=3)
+CREATOR_PLAYING = catalog("up01")
+
+# (utterance, catalogue, expected). Expected forms:
+#   ("channel", id)            switch at once to id
+#   ("here", id)               already on id: a reply, nothing to do
+#   ("choices", {ids})         candidates; exactly these channel ids, in any order
+#   ("choices_has", {ids})     candidates that include at least these
+#   ("volume", n) / ("brightness", n) / ("audio_only", n) / ("page", name)
+#   ("relay", action, params)  the relay does it
+#   ("episode", series, n)     relay episode pick, and a switch when not already there
+#   ("ep_choices", {refs})
+#   (kind,)                    just the decision kind, nothing to do (a reply)
+CASES = [
+    # ---- channels: exact names, fillers, verbs ----
+    ("湖南卫视", LIVE, ("channel", "ch017")),
+    ("我要看湖南卫视", LIVE, ("channel", "ch017")),
+    ("我要看湖南卫视。", LIVE, ("channel", "ch017")),
+    ("请帮我切换到湖南卫视", LIVE, ("channel", "ch017")),
+    ("换到湖南卫视吧", LIVE, ("channel", "ch017")),
+    ("打开湖南卫视频道", LIVE, ("channel", "ch017")),
+    ("播放湖南卫视", LIVE, ("channel", "ch017")),
+    ("看湖南卫视", LIVE, ("channel", "ch017")),
+    ("湖南卫视，谢谢", LIVE, ("channel", "ch017")),
+    ("小智小智，湖南卫视", LIVE, ("channel", "ch017")),
+    ("浙江卫视", LIVE, ("channel", "ch018")),
+    ("江苏卫视", LIVE, ("channel", "ch019")),
+    ("东方卫视", LIVE, ("channel", "ch020")),
+    ("香港卫视", LIVE, ("channel", "ch021")),
+    ("东方卫视4K", LIVE, ("channel", "ch022")),
+    ("东方卫视 4k", LIVE, ("channel", "ch022")),
+    ("浙江卫视四K", LIVE, ("channel", "ch023")),
+    ("凤凰中文", LIVE, ("channel", "ch028")),
+    ("凤凰资讯", LIVE, ("channel", "ch029")),
+    ("凤凰香港", LIVE, ("channel", "ch030")),
+    ("猫和老鼠", LIVE, ("channel", "ch050")),
+    ("我想看猫和老鼠", LIVE, ("channel", "ch050")),
+    ("哆啦A梦", LIVE, ("channel", "ch051")),
+    ("哆啦a梦", LIVE, ("channel", "ch051")),
+    ("中国交通", LIVE, ("channel", "ch035")),
+    ("纪实科教", LIVE, ("channel", "ch049")),
+    ("广东体育", LIVE, ("channel", "gd1")),
+    ("我的投屏", LIVE, ("channel", "cast")),
+    ("CNA", LIVE, ("channel", "ch039")),
+    # ---- satellite channels without "weishi" ----
+    ("湖南", LIVE, ("channel", "ch017")),
+    ("湖南台", LIVE, ("channel", "ch017")),
+    ("看湖南台", LIVE, ("channel", "ch017")),
+    ("湖南电视台", LIVE, ("channel", "ch017")),
+    ("浙江", LIVE, ("channel", "ch018")),
+    ("江苏台", LIVE, ("channel", "ch019")),
+    ("东方台", LIVE, ("channel", "ch020")),
+    ("上海卫视", LIVE, ("channel", "ch020")),
+    ("东方4K", LIVE, ("channel", "ch022")),
+    ("凤凰卫视", LIVE, ("channel", "ch028")),
+    ("凤凰台", LIVE, ("channel", "ch028")),
+    # ---- CCTV aliases ----
+    ("中央五套", LIVE, ("channel", "ch004")),
+    ("中央5套", LIVE, ("channel", "ch004")),
+    ("央视五套", LIVE, ("channel", "ch004")),
+    ("央视五台", LIVE, ("channel", "ch004")),
+    ("中央五台", LIVE, ("channel", "ch004")),
+    ("中央电视台五套", LIVE, ("channel", "ch004")),
+    ("CCTV5", LIVE, ("channel", "ch004")),
+    ("cctv5", LIVE, ("channel", "ch004")),
+    ("CCTV-5", LIVE, ("channel", "ch004")),
+    ("CCTV 5", LIVE, ("channel", "ch004")),
+    ("CCTV五", LIVE, ("channel", "ch004")),
+    ("五套", LIVE, ("channel", "ch004")),
+    ("我要看五套", LIVE, ("channel", "ch004")),
+    ("中央五", LIVE, ("channel", "ch004")),
+    ("央视体育", LIVE, ("channel", "ch004")),
+    ("中央舞套", LIVE, ("channel", "ch004")),
+    ("中央一套", catalog("ch017"), ("channel", "ch000")),
+    ("中央1套", LIVE, ("here", "ch000")),
+    ("CCTV1", catalog("ch017"), ("channel", "ch000")),
+    ("中央二套", LIVE, ("channel", "ch001")),
+    ("央视财经", LIVE, ("channel", "ch001")),
+    ("中央三套", LIVE, ("channel", "ch002")),
+    ("中央六套", LIVE, ("channel", "ch005")),
+    ("央视电影", LIVE, ("channel", "ch005")),
+    ("中央八套", LIVE, ("channel", "ch007")),
+    ("中央十套", LIVE, ("channel", "ch009")),
+    ("中央十一套", LIVE, ("channel", "ch010")),
+    ("中央十二套", LIVE, ("channel", "ch011")),
+    ("中央十三套", LIVE, ("channel", "ch012")),
+    ("中央十三", LIVE, ("channel", "ch012")),
+    ("央视新闻", LIVE, ("channel", "ch012")),
+    ("CCTV13", LIVE, ("channel", "ch012")),
+    ("cctv 13", LIVE, ("channel", "ch012")),
+    ("中央十四套", LIVE, ("channel", "ch013")),
+    ("央视少儿", LIVE, ("channel", "ch013")),
+    ("中央十五", LIVE, ("channel", "ch014")),
+    ("中央十七套", LIVE, ("channel", "ch016")),
+    ("中央五套加", LIVE, ("channel", "ch5p")),
+    ("中央五加", LIVE, ("channel", "ch5p")),
+    ("五加", LIVE, ("channel", "ch5p")),
+    ("5+", LIVE, ("channel", "ch5p")),
+    ("CCTV5+", LIVE, ("channel", "ch5p")),
+    ("CCTV5加", LIVE, ("channel", "ch5p")),
+    ("央视五加", LIVE, ("channel", "ch5p")),
+    ("体育赛事", LIVE, ("channel", "ch5p")),
+    # ---- homophones and near misses (toneless pinyin) ----
+    ("湖南为是", LIVE, ("channel", "ch017")),
+    ("胡南卫视", LIVE, ("channel", "ch017")),
+    ("湖南卫士", LIVE, ("channel", "ch017")),
+    ("浙江为视", LIVE, ("channel", "ch018")),
+    ("江苏为是", LIVE, ("channel", "ch019")),
+    ("东方为视", LIVE, ("channel", "ch020")),
+    ("凤黄中文", LIVE, ("channel", "ch028")),
+    ("猫和老树", LIVE, ("channel", "ch050")),
+    ("哆拉A梦", LIVE, ("channel", "ch051")),
+    ("多啦a梦", LIVE, ("channel", "ch051")),
+    ("中国交铜", LIVE, ("channel", "ch035")),
+    ("熊初没", LIVE, ("channel", "sr01")),
+    ("西游计", LIVE, ("channel", "sr03")),
+    ("小林说", LIVE, ("channel", "up01")),
+    ("小lin说", LIVE, ("channel", "up01")),
+    ("老高与小末", LIVE, ("channel", "up02")),
+    ("老高和小茉", LIVE, ("channel", "up02")),
+    ("老高", LIVE, ("channel", "up02")),
+    ("周深", LIVE, ("channel", "ch073")),
+    ("我想听周深的歌", LIVE, ("channel", "ch073")),
+    ("薛之谦", LIVE, ("channel", "ch070")),
+    ("来点王菲的歌", LIVE, ("channel", "ch077")),
+    ("王菲精选", LIVE, ("channel", "ch077")),
+    ("CGTN", LIVE, ("channel", "ch037")),
+    ("BBC", LIVE, ("channel", "ch084")),
+    ("BBC新闻", LIVE, ("channel", "ch084")),
+    # ---- ambiguity: candidates ----
+    ("凤凰", LIVE, ("choices", {"ch028", "ch029", "ch030"})),
+    ("看凤凰", LIVE, ("choices", {"ch028", "ch029", "ch030"})),
+    ("体育", LIVE, ("choices_has", {"ch004", "ch5p", "gd1"})),
+    ("看体育", LIVE, ("choices_has", {"ch004", "ch5p", "gd1"})),
+    ("熊出没探险", LIVE, ("choices", {"sr01", "sr02"})),
+    # The longer series is listed first, but the shorter name is in the words too: ask.
+    ("熊出没之探险", LIVE, ("choices", {"sr01", "sr02"})),
+    ("熊出没之探险日记", LIVE, ("channel", "sr02")),
+    ("cgtn纪录片", LIVE, ("channel", "ch038")),
+    ("广东卫视", LIVE, ("choices_has", {"ch017", "ch018"})),
+    # ---- groups ----
+    ("卫视", LIVE, ("choices_has", {"ch017", "ch018", "ch019"})),
+    ("看卫视", LIVE, ("choices_has", {"ch017"})),
+    ("央视", LIVE, ("choices_has", {"ch000"})),
+    ("动画片", LIVE, ("choices_has", {"sr01", "ch050"})),
+    ("我想看动画", LIVE, ("choices_has", {"sr01"})),
+    ("港澳台", LIVE, ("choices_has", {"ch028", "ch021"})),
+    ("音乐", LIVE, ("choices_has", {"ch070", "ch077"})),
+    ("听歌", LIVE, ("choices_has", {"ch070"})),
+    ("UP主", LIVE, ("choices", {"up01", "up02"})),
+    # ---- channel numbers ----
+    ("第十二台", LIVE, ("channel", ROWS[11][0])),
+    ("第12台", LIVE, ("channel", ROWS[11][0])),
+    ("十二台", LIVE, ("channel", ROWS[11][0])),
+    ("频道十二", LIVE, ("channel", ROWS[11][0])),
+    ("十二频道", LIVE, ("channel", ROWS[11][0])),
+    ("第二十五个台", LIVE, ("channel", ROWS[24][0])),
+    ("换到第3台", LIVE, ("channel", ROWS[2][0])),
+    ("第一个台", catalog("ch017"), ("channel", ROWS[0][0])),
+    ("第一百台", LIVE, ("channel_missing",)),
+    # ---- channel steps ----
+    ("下一个台", LIVE, ("channel", "ch001")),
+    ("下一个频道", LIVE, ("channel", "ch001")),
+    ("换个台", LIVE, ("channel", "ch001")),
+    ("上一个台", LIVE, ("channel", "ch5p")),
+    ("上个频道", catalog("ch001"), ("channel", "ch000")),
+    ("下一个", LIVE, ("channel", "ch001")),
+    # ---- series and episodes ----
+    ("熊出没", LIVE, ("channel", "sr01")),
+    ("熊出没第三集", LIVE, ("episode", "sr01", 3)),
+    ("熊出没 第三集", LIVE, ("episode", "sr01", 3)),
+    ("熊出没第3集", LIVE, ("episode", "sr01", 3)),
+    ("我要看熊出没第三集", LIVE, ("episode", "sr01", 3)),
+    ("播放熊出没的第十二集", LIVE, ("episode", "sr01", 12)),
+    ("熊出没第二十集", LIVE, ("episode", "sr01", 20)),
+    ("熊出没3集", LIVE, ("episode", "sr01", 3)),
+    ("熊初没第三集", LIVE, ("episode", "sr01", 3)),
+    ("熊出没之探险日记第二集", LIVE, ("episode", "sr02", 2)),
+    ("探险日记第二集", LIVE, ("episode", "sr02", 2)),
+    ("西游记第一集", LIVE, ("episode", "sr03", 1)),
+    ("西游记第一百集", LIVE, ("episode_out_of_range", "sr03")),
+    ("西游记最新一集", LIVE, ("episode", "sr03", 25)),
+    ("西游记的最后一集", LIVE, ("episode", "sr03", 25)),
+    ("第五集", SERIES_PLAYING, ("episode", "sr01", 5)),
+    ("看第五集", SERIES_PLAYING, ("episode", "sr01", 5)),
+    ("第五集", LIVE, ("episode_no_series",)),
+    ("熊出没第三集", SERIES_PLAYING, ("episode", "sr01", 3)),
+    ("熊出没探险第三集", LIVE, ("ep_choices", {"ep:sr01:3", "ep:sr02:3"})),
+    ("葫芦娃第三集", LIVE, ("none",)),
+    # ---- episode steps and playback (relay) ----
+    ("下一集", SERIES_PLAYING, ("relay", "next", {})),
+    ("下集", SERIES_PLAYING, ("relay", "next", {})),
+    ("播下一集", SERIES_PLAYING, ("relay", "next", {})),
+    ("下一个", CREATOR_PLAYING, ("relay", "next", {})),
+    ("下一个视频", CREATOR_PLAYING, ("relay", "next", {})),
+    ("跳过这个", CREATOR_PLAYING, ("relay", "next", {})),
+    ("上一集", SERIES_PLAYING, ("relay", "previous", {})),
+    ("上一集", CREATOR_PLAYING, ("previous",)),
+    ("暂停", SERIES_PLAYING, ("relay", "pause", {})),
+    ("暂停一下", SERIES_PLAYING, ("relay", "pause", {})),
+    ("停一下", CREATOR_PLAYING, ("relay", "pause", {})),
+    ("先停", CREATOR_PLAYING, ("relay", "pause", {})),
+    ("继续", SERIES_PLAYING, ("relay", "resume", {})),
+    ("继续播放", SERIES_PLAYING, ("relay", "resume", {})),
+    ("接着播", CREATOR_PLAYING, ("relay", "resume", {})),
+    ("播放", CREATOR_PLAYING, ("relay", "resume", {})),
+    ("快进", SERIES_PLAYING, ("relay", "seek", {"delta": 30})),
+    ("快进三十秒", SERIES_PLAYING, ("relay", "seek", {"delta": 30})),
+    ("快进1分钟", SERIES_PLAYING, ("relay", "seek", {"delta": 60})),
+    ("快进两分钟", SERIES_PLAYING, ("relay", "seek", {"delta": 120})),
+    ("后退十秒", SERIES_PLAYING, ("relay", "seek", {"delta": -10})),
+    ("快退", CREATOR_PLAYING, ("relay", "seek", {"delta": -30})),
+    ("倒回去", CREATOR_PLAYING, ("relay", "seek", {"delta": -30})),
+    ("跳到十分钟", CREATOR_PLAYING, ("relay", "seek", {"position": 600})),
+    ("从头播", SERIES_PLAYING, ("relay", "seek", {"position": 0})),
+    ("重播这集", SERIES_PLAYING, ("relay", "seek", {"position": 0})),
+    ("暂停", LIVE, ("pause",)),
+    ("快进三十秒", LIVE, ("seek",)),
+    ("下一集", LIVE, ("next",)),
+    ("上一集", LIVE, ("previous",)),
+    ("继续", LIVE, ("resume",)),
+    # ---- volume ----
+    ("大声一点", LIVE, ("volume", 60)),
+    ("大声点", LIVE, ("volume", 60)),
+    ("声音大一点", LIVE, ("volume", 60)),
+    ("音量调大", LIVE, ("volume", 60)),
+    ("调大音量", LIVE, ("volume", 60)),
+    ("再大声一点", LIVE, ("volume", 60)),
+    ("听不见", LIVE, ("volume", 60)),
+    ("大声很多", LIVE, ("volume", 80)),
+    ("声音大很多", LIVE, ("volume", 80)),
+    ("小声一点", LIVE, ("volume", 40)),
+    ("小声点", LIVE, ("volume", 40)),
+    ("声音小一点", LIVE, ("volume", 40)),
+    ("轻一点", LIVE, ("volume", 40)),
+    ("太吵了", LIVE, ("volume", 40)),
+    ("音量调小", LIVE, ("volume", 40)),
+    ("音量调到三十", LIVE, ("volume", 30)),
+    ("音量调整60%。", LIVE, ("volume", 60)),
+    ("音量调整为百分之四十", LIVE, ("volume", 40)),
+    ("声音调节到20", LIVE, ("volume", 20)),
+    ("音量改成七十", LIVE, ("volume", 70)),
+    ("音量30", LIVE, ("volume", 30)),
+    ("音量七", LIVE, ("volume", 70)),
+    ("声音开到八", LIVE, ("volume", 80)),
+    ("音量百分之六十", LIVE, ("volume", 60)),
+    ("音量一百", LIVE, ("volume", 100)),
+    ("最大声", LIVE, ("volume", 100)),
+    ("音量最小", LIVE, ("volume", 10)),
+    ("静音", LIVE, ("volume", 0)),
+    ("取消静音", catalog(volume=0, unmute_volume=70), ("volume", 70)),
+    ("打开声音", catalog(volume=0), ("volume", 50)),
+    ("大声一点", catalog(volume=100), ("volume_same",)),
+    ("音量五", LIVE, ("volume_same",)),
+    ("大声一点", catalog(volume=None), ("volume", 60)),
+    # ---- brightness (device step 0 is the brightest of 5) ----
+    ("亮一点", LIVE, ("brightness", 1)),
+    ("调亮一点", LIVE, ("brightness", 1)),
+    ("太暗了", LIVE, ("brightness", 1)),
+    ("暗一点", LIVE, ("brightness", 3)),
+    ("调暗", LIVE, ("brightness", 3)),
+    ("太亮了", LIVE, ("brightness", 3)),
+    ("亮度五", LIVE, ("brightness", 0)),
+    ("亮度一", LIVE, ("brightness", 4)),
+    ("亮度调到4", LIVE, ("brightness", 1)),
+    ("最亮", LIVE, ("brightness", 0)),
+    ("最暗", LIVE, ("brightness", 4)),
+    ("亮一点", catalog(brightness=0), ("brightness_same",)),
+    ("亮一点", catalog(steps=None, brightness=None), ("brightness_same",)),
+    # ---- audio only ----
+    ("只听声音", LIVE, ("audio_only", 1)),
+    ("关掉画面", LIVE, ("audio_only", 1)),
+    ("不要画面", LIVE, ("audio_only", 1)),
+    ("打开画面", catalog(audio_only=1), ("audio_only", 0)),
+    ("显示画面", catalog(audio_only=1), ("audio_only", 0)),
+    ("退出只听声音", catalog(audio_only=1), ("audio_only", 0)),
+    ("只听声音", catalog(audio_only=1), ("audio_only_same",)),
+    # ---- pages, setup, cancel, help ----
+    ("状态", LIVE, ("page", "status")),
+    ("打开状态页", LIVE, ("page", "status")),
+    ("信号怎么样", LIVE, ("page", "status")),
+    ("还有多少电", LIVE, ("page", "status")),
+    ("我要配网", LIVE, ("setup",)),
+    ("配网", LIVE, ("setup",)),
+    ("连接WiFi", LIVE, ("setup",)),
+    ("换个网络", LIVE, ("setup",)),
+    ("连Wi-Fi", LIVE, ("setup",)),
+    ("算了", LIVE, ("cancel",)),
+    ("取消", LIVE, ("cancel",)),
+    ("不用了", LIVE, ("cancel",)),
+    ("你能做什么", LIVE, ("help",)),
+    ("帮助", LIVE, ("help",)),
+    # ---- not understood ----
+    ("那个那个什么来着", LIVE, ("none",)),
+    ("今天天气怎么样", LIVE, ("none",)),
+    ("", LIVE, ("none",)),
+    ("。", LIVE, ("none",)),
+    ("<|zh|><|NEUTRAL|><|Speech|><|withitn|>湖南卫视", LIVE, ("channel", "ch017")),
+]
+
+
+class IntentTableTests(unittest.TestCase):
+    def check(self, text, cat, expected):
+        d = decide(text, cat)
+        kind = expected[0]
+        where = f"{text!r} -> {d}"
+        if kind == "channel":
+            self.assertEqual((d.kind, d.do), ("channel", {"channel": expected[1]}), where)
+            self.assertEqual(d.lead, f"{NUMBER[expected[1]]:02d}", where)
+            self.assertTrue(d.label, where)
+        elif kind == "here":
+            self.assertEqual((d.kind, d.do), ("channel", None), where)
+            self.assertTrue(d.reply.startswith("正在播"), where)
+        elif kind in ("choices", "choices_has"):
+            self.assertEqual(d.kind, "choices", where)
+            # A long group ends with a "next page" row (a ref, not a channel).
+            ids = {c["do"]["channel"] for c in d.choices if "do" in c}
+            self.assertLessEqual(len(d.choices), intent.CHOICES_MAX, where)
+            if kind == "choices":
+                self.assertEqual(ids, expected[1], where)
+            else:
+                self.assertLessEqual(expected[1], ids, where)
+        elif kind in ("volume", "brightness", "audio_only", "page"):
+            self.assertEqual((d.kind, d.do), (kind, {kind: expected[1]}), where)
+        elif kind in ("volume_same", "brightness_same", "audio_only_same"):
+            self.assertEqual((d.kind, d.do), (kind[:-5], None), where)
+        elif kind == "relay":
+            self.assertEqual(d.relay, (expected[1], expected[2]), where)
+            self.assertIsNone(d.do, where)
+        elif kind == "episode":
+            self.assertEqual(d.relay, ("episode", {"series": expected[1], "episode": expected[2]}), where)
+            self.assertEqual(d.then_channel, "" if cat.current == expected[1] else expected[1], where)
+            self.assertEqual(d.lead, f"{expected[2]:02d}", where)
+        elif kind == "ep_choices":
+            self.assertEqual(d.kind, "choices", where)
+            self.assertEqual({c["ref"] for c in d.choices}, expected[1], where)
+        elif kind == "episode_out_of_range":
+            self.assertEqual((d.kind, d.relay), ("episode", None), where)
+            self.assertIn("25", d.reply, where)
+        elif kind == "episode_no_series":
+            self.assertEqual((d.kind, d.relay), ("episode", None), where)
+        elif kind == "channel_missing":
+            self.assertEqual((d.kind, d.do), ("channel", None), where)
+            self.assertIn("没有第 100 台", d.reply, where)
+        elif kind == "setup":
+            self.assertEqual(d.kind, "setup", where)
+            self.assertEqual(d.choices[0]["do"], {"setup": 1}, where)
+            self.assertIsNone(d.do, "setup needs a confirmation first")
+        elif kind == "cancel":
+            self.assertEqual((d.kind, d.do), ("cancel", {"page": "close"}), where)
+        else:
+            self.assertEqual(d.kind, kind, where)
+            self.assertIsNone(d.do, where)
+            self.assertIsNone(d.relay, where)
+            self.assertTrue(d.reply, where)
+
+    def test_table(self):
+        self.assertGreaterEqual(len(CASES), 200)
+        for text, cat, expected in CASES:
+            with self.subTest(text=text, current=cat.current):
+                self.check(text, cat, expected)
+
+    def test_replies_are_short_chinese(self):
+        for text, cat, _ in CASES:
+            d = decide(text, cat)
+            self.assertLessEqual(len(d.reply), 40, text)
+
+    def test_choices_carry_label_and_number(self):
+        d = decide("凤凰", LIVE)
+        self.assertEqual(d.choices[0], {"label": "凤凰中文", "lead": f"{NUMBER['ch028']:02d}",
+                                        "do": {"channel": "ch028"}})
+
+    def test_labels_drop_the_bracket_note(self):
+        self.assertEqual(decide("薛之谦", LIVE).label, "薛之谦精选30首")
+
+    def test_series_without_the_relay_still_switches(self):
+        cat = catalog(series=[])
+        self.assertEqual(decide("熊出没", cat).do, {"channel": "sr01"})
+        d = decide("熊出没第三集", cat)
+        self.assertEqual(d.relay, ("episode", {"series": "sr01", "episode": 3}))
+        self.assertIn("不知道", decide("熊出没最新一集", cat).reply)
+
+
+# ---- listing a category ----
+# Today's channel set, with the site each relay channel comes from (the relay catalogue's "site").
+TODAY_ROWS = [("cast", "我的投屏", ""), ("up01", "小Lin说", "bilibili"), ("up02", "老高与小茉", "bilibili"),
+              ("up03", "Dulaa Music", "youtube"), ("up04", "王志安", "youtube"),
+              ("up05", "罗翔说刑法", "bilibili"), ("up06", "半佛仙人", "bilibili"),
+              ("up07", "李永乐老师", "bilibili"), ("up08", "影视飓风", "bilibili"),
+              ("up09", "何同学", "bilibili"), ("sr01", "熊出没", "bilibili"), ("sr02", "西游记", "bilibili"),
+              ("sr03", "Peppa Pig 小猪佩奇", "youtube")]
+TODAY_ROWS += [(f"ch{n:03d}", f"CCTV{n + 1}", "") for n in range(17)]
+TODAY_ROWS += [("ch017", "湖南卫视", ""), ("ch018", "浙江卫视", ""), ("ch028", "凤凰中文", ""),
+               ("ch021", "香港卫视", ""), ("ch037", "CGTN英语", ""), ("ch039", "CNA", ""),
+               ("ch070", "薛之谦精选30首(2小时)", ""), ("ch077", "王菲精选145首(10小时)", ""),
+               ("ch050", "猫和老鼠", ""), ("ch090", "中国交通", "")]
+TODAY_CHANNELS = [Channel(cid, name, n, classify(cid, name), site=site)
+                  for n, (cid, name, site) in enumerate(TODAY_ROWS, 1)]
+TODAY = Catalog(TODAY_CHANNELS, current="ch000", volume=50)
+NO_YT_SERIES = Catalog([c for c in TODAY_CHANNELS if c.id != "sr03"], current="ch000")
+# The relay did not answer: relay channels without a site.
+NO_SITES = Catalog([Channel(c.id, c.name, c.number, c.group) for c in TODAY_CHANNELS], current="ch000")
+YT_UP = {"up03", "up04"}
+BL_UP = {"up01", "up02", "up05", "up06", "up07", "up08", "up09"}
+SERIES_IDS = {"sr01", "sr02", "sr03"}
+GROUPS_ALL = "groups"
+
+# (utterance, catalogue, expected): a set of channel ids that are listed (over every page),
+# GROUPS_ALL for the overview of groups, or ("none", words in the reply) / ("channel", id).
+LIST_CASES = [
+    # ---- by site: only that site's creators (series need 剧 / 剧集) ----
+    ("我有哪些youtube频道告诉我。", TODAY, YT_UP),
+    ("我有哪些YouTube频道", TODAY, YT_UP),
+    ("我有哪些YouTube频道？", TODAY, YT_UP),
+    ("有哪些油管频道", TODAY, YT_UP),
+    ("有哪些优兔频道", TODAY, YT_UP),
+    ("油管上有什么", TODAY, YT_UP),
+    ("YouTube 有哪些", TODAY, YT_UP),
+    ("YouTube上都有什么台", TODAY, YT_UP),
+    ("列出YouTube频道", TODAY, YT_UP),
+    ("列出所有的YouTube频道", TODAY, YT_UP),
+    ("显示油管的频道", TODAY, YT_UP),
+    ("告诉我有哪些YouTube频道", TODAY, YT_UP),
+    ("帮我列一下YouTube的频道", TODAY, YT_UP),
+    ("有没有YouTube频道", TODAY, YT_UP),
+    ("我在YouTube上订阅了哪些", TODAY, YT_UP),
+    ("YouTube频道", TODAY, YT_UP),
+    ("youtube的频道有哪些呢", TODAY, YT_UP),
+    ("我有哪些YouTube的频道？告诉我一下。", TODAY, YT_UP),
+    ("YouTube的频道都有哪些", TODAY, YT_UP),
+    ("哪些频道是YouTube的", TODAY, YT_UP),
+    ("小智小智，有哪些YouTube频道", TODAY, YT_UP),
+    ("我想知道有哪些YouTube频道", TODAY, YT_UP),
+    ("我的youtube频道", TODAY, YT_UP),
+    ("B站有哪些频道", TODAY, BL_UP),
+    ("哔哩哔哩上有什么", TODAY, BL_UP),
+    # ---- creators ----
+    ("B站的UP主有哪些", TODAY, BL_UP),
+    ("b站的up主有哪些？", TODAY, BL_UP),
+    ("哔哩哔哩的up主有哪些", TODAY, BL_UP),
+    ("bilibili有哪些up主", TODAY, BL_UP),
+    ("B站UP主", TODAY, BL_UP),
+    ("你给我列一下B站的UP主", TODAY, BL_UP),
+    ("B 站 UP 主有哪些", TODAY, BL_UP),
+    ("油管的up主有哪些", TODAY, YT_UP),
+    ("YouTube上的博主有哪些", TODAY, YT_UP),
+    ("我订阅了哪些UP主", TODAY, BL_UP | YT_UP),
+    ("我订阅了哪些UP主。", TODAY, BL_UP | YT_UP),
+    ("有哪些up主", TODAY, BL_UP | YT_UP),
+    ("我关注了哪些博主", TODAY, BL_UP | YT_UP),
+    ("UP主都有谁", TODAY, BL_UP | YT_UP),
+    ("列出所有UP主", TODAY, BL_UP | YT_UP),
+    # ---- series ----
+    ("有哪些剧", TODAY, SERIES_IDS),
+    ("有什么剧集", TODAY, SERIES_IDS),
+    ("都有哪些电视剧", TODAY, SERIES_IDS),
+    ("我有哪些连续剧", TODAY, SERIES_IDS),
+    ("YouTube有哪些剧集", TODAY, {"sr03"}),
+    ("B站的剧集有哪些", TODAY, {"sr01", "sr02"}),
+    ("有哪些YouTube的剧", NO_YT_SERIES, ("none", "还没有 YouTube 剧集")),
+    ("有哪些YouTube的剧", NO_SITES, ("none", "中转")),
+    ("我有哪些youtube频道告诉我。", NO_SITES, ("none", "中转")),
+    # ---- groups ----
+    ("有哪些动画片", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有什么动画", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有没有动画片", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有什么好看的电影", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有哪些卫视", TODAY, {"ch017", "ch018"}),
+    ("卫视有哪些", TODAY, {"ch017", "ch018"}),
+    ("央视有哪些台", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("中央台有哪些频道", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("CCTV有哪些频道", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("列出央视的台", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("有什么音乐台", TODAY, {"ch070", "ch077"}),
+    ("有什么歌可以听", TODAY, {"ch070", "ch077"}),
+    ("请问有哪些卫视台", TODAY, {"ch017", "ch018"}),
+    ("有哪些台湾台", TODAY, {"ch028", "ch021"}),
+    ("有哪些港台频道", TODAY, {"ch028", "ch021"}),
+    ("有哪些香港台", TODAY, {"ch028", "ch021"}),
+    ("国际频道", TODAY, {"ch037", "ch039"}),
+    ("有哪些国际台", TODAY, {"ch037", "ch039"}),
+    ("国外的台有哪些", TODAY, {"ch037", "ch039"}),
+    ("其他频道有哪些", TODAY, {"ch090"}),
+    ("有哪些动画片", Catalog([c for c in TODAY_CHANNELS if c.group != "动画影视"]), ("none", "动画影视")),
+    # ---- everything: the groups first ----
+    ("都有什么台", TODAY, GROUPS_ALL),
+    ("有什么可以看的", TODAY, GROUPS_ALL),
+    ("有什么可以看的。", TODAY, GROUPS_ALL),
+    ("有哪些频道", TODAY, GROUPS_ALL),
+    ("你这里有什么节目", TODAY, GROUPS_ALL),
+    ("一共有多少个台", TODAY, GROUPS_ALL),
+    ("列出所有频道", TODAY, GROUPS_ALL),
+    ("告诉我都有哪些台", TODAY, GROUPS_ALL),
+    ("有什么", TODAY, GROUPS_ALL),
+    # ---- not a list: a channel is named, or two different groups ----
+    ("有没有湖南卫视", TODAY, ("channel", "ch017")),
+    ("有没有熊出没", TODAY, ("channel", "sr01")),
+    ("央视电影", TODAY, ("channel", "ch005")),
+    ("电视剧", TODAY, ("channel", "ch007")),
+    ("我的投屏", TODAY, ("channel", "cast")),
+    ("看王志安", TODAY, ("channel", "up04")),
+    ("王菲的歌", TODAY, ("channel", "ch077")),
+]
+
+
+def listed_ids(d, cat):
+    """Every channel the answer lists, following the "next page" rows."""
+    ids, seen = [], 0
+    while True:
+        ids += [c["do"]["channel"] for c in d.choices if "do" in c]
+        more = [c["ref"] for c in d.choices if "ref" in c]
+        if not more:
+            return ids
+        seen += 1
+        assert seen < 50, "paging never ends"
+        d = intent.list_page(more[-1], cat)
+
+
+class ListTests(unittest.TestCase):
+    def test_list_table(self):
+        self.assertGreaterEqual(len(LIST_CASES), 70)
+        for text, cat, expected in LIST_CASES:
+            with self.subTest(text=text):
+                d = decide(text, cat)
+                where = f"{text!r} -> {d}"
+                self.assertLessEqual(len(d.reply), 40, where)
+                if isinstance(expected, tuple) and expected[0] == "channel":
+                    self.assertEqual((d.kind, d.do), ("channel", {"channel": expected[1]}), where)
+                elif isinstance(expected, tuple):
+                    self.assertEqual((d.kind, d.do, d.choices), ("none", None, None), where)
+                    self.assertIn(expected[1], d.reply, where)
+                elif expected == GROUPS_ALL:
+                    self.assertEqual(d.kind, "list", where)
+                    self.assertTrue(all("ref" in c for c in d.choices), where)
+                    self.assertIn("个台", d.reply, where)
+                else:
+                    self.assertIn(d.kind, ("list", "choices"), where)
+                    self.assertIsNone(d.do, where)
+                    ids = listed_ids(d, cat)
+                    self.assertEqual(len(ids), len(set(ids)), where)
+                    self.assertEqual(set(ids), expected, where)
+
+    def test_the_failing_transcript(self):
+        d = decide("我有哪些youtube频道告诉我。", TODAY)
+        self.assertEqual(d.kind, "list")
+        self.assertEqual(d.reply, "YouTube 频道有 2 个")
+        self.assertEqual([c["do"]["channel"] for c in d.choices], ["up03", "up04"])
+        self.assertEqual(d.choices[0], {"label": "Dulaa Music", "lead": f"{TODAY.channel('up03').number:02d}",
+                                        "do": {"channel": "up03"}})
+
+    def test_replies(self):
+        self.assertEqual(decide("我订阅了哪些UP主", TODAY).reply, "UP 主有 9 个")
+        self.assertEqual(decide("油管的up主有哪些", TODAY).reply, "YouTube UP 主有 2 个")
+        self.assertEqual(decide("B站的UP主有哪些", TODAY).reply, "B站 UP 主有 7 个")
+        self.assertEqual(decide("B站有哪些频道", TODAY).reply, "B站频道有 7 个")
+        self.assertEqual(decide("有哪些卫视", TODAY).reply, "卫视有 2 个台")
+        self.assertEqual(decide("有哪些YouTube的剧", NO_YT_SERIES).reply, "还没有 YouTube 剧集")
+        self.assertEqual(decide("都有什么台", TODAY).reply, f"一共 {len(TODAY_CHANNELS)} 个台，分 9 组")
+
+    def test_paging(self):
+        d = decide("央视有哪些台", TODAY)
+        self.assertEqual(d.reply, "央视有 17 个台")
+        self.assertEqual(len(d.choices), intent.CHOICES_MAX)
+        self.assertEqual([c["label"] for c in d.choices[:5]], ["CCTV1", "CCTV2", "CCTV3", "CCTV4", "CCTV5"])
+        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 12 个", "lead": "", "ref": "ls:..2:5"})
+        d = intent.list_page("ls:..2:5", TODAY)
+        self.assertEqual(d.reply, "央视 第 6-10 个，共 17 个")
+        self.assertEqual(d.choices[0]["label"], "CCTV6")
+        self.assertEqual(d.choices[5]["ref"], "ls:..2:10")
+        d = intent.list_page("ls:..2:10", TODAY)
+        self.assertEqual(d.choices[5]["label"], "下一页 · 还有 2 个")
+        d = intent.list_page("ls:..2:15", TODAY)
+        self.assertEqual([c["label"] for c in d.choices], ["CCTV16", "CCTV17"])
+        self.assertEqual(d.reply, "央视 第 16-17 个，共 17 个")
+        # Six fit without a "next page" row; seven do not.
+        self.assertEqual(len(decide("B站UP主", TODAY).choices), 6)
+        self.assertEqual(decide("B站UP主", TODAY).choices[5]["ref"], "ls:bl.up.:5")
+        six = decide("B站UP主", Catalog([c for c in TODAY_CHANNELS if c.id != "up09"])).choices
+        self.assertEqual(len(six), 6)
+        self.assertTrue(all("do" in c for c in six))
+
+    def test_groups_open_their_lists(self):
+        d = decide("有什么可以看的", TODAY)
+        self.assertEqual(d.choices[0], {"label": "我的投屏 · 1 个台", "lead": "", "ref": "ls:..0:0"})
+        self.assertEqual(d.choices[2]["label"], "央视 · 17 个台")
+        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 4 个", "lead": "", "ref": "ls:..:5"})
+        rest = intent.list_page("ls:..:5", TODAY)
+        self.assertEqual([c["label"].split(" · ")[0] for c in rest.choices], ["国际", "音乐", "动画影视", "其他"])
+        opened = intent.list_page(d.choices[1]["ref"], TODAY)
+        self.assertEqual(opened.reply, "UP 主有 9 个台")
+        self.assertEqual(opened.choices[0]["do"], {"channel": "up01"})
+
+    def test_refs_fit_the_device(self):
+        """The firmware keeps a ref in 32 bytes (printable, no quote or backslash), a label in 48."""
+        for site in ("", "youtube", "bilibili"):
+            for kind in ("", "up", "series"):
+                for group in ("",) + intent.GROUP_ORDER:
+                    ref = intent.list_ref(intent.Category(site, kind, group), 125)
+                    self.assertLessEqual(len(ref), 31)
+                    self.assertTrue(all(" " <= ch < "\x7f" and ch not in '"\\' for ch in ref), ref)
+                    self.assertEqual(intent.parse_list_ref(ref), (intent.Category(site, kind, group), 125))
+        for text, cat, _ in LIST_CASES:
+            for choice in decide(text, cat).choices or []:
+                self.assertLessEqual(len(choice["label"].encode("utf-8")), 47, choice)
+
+    def test_lists_mark_the_site_unless_it_was_asked_for(self):
+        d = decide("UP主有哪些", TODAY)
+        labels = [c["label"] for c in d.choices]
+        self.assertEqual(labels[:4], ["小Lin说(B站)", "老高与小茉(B站)", "Dulaa Music(油管)", "王志安(油管)"])
+        self.assertEqual([c["label"] for c in decide("有哪些YouTube频道", TODAY).choices], ["Dulaa Music", "王志安"])
+        self.assertIn("CCTV1", [c["label"] for c in decide("央视有哪些", TODAY).choices], "live channels unmarked")
+        long = Channel("sr09", "超级长的名字的一部动画片", 9, "动画影视", site="youtube")
+        self.assertEqual(intent._marked_label(long), "超级长的名字的(油管)")
+
+    def test_stale_and_bad_refs(self):
+        # The list got shorter between the pages: start again.
+        d = intent.list_page("ls:..2:40", TODAY)
+        self.assertEqual(d.choices[0]["label"], "CCTV1")
+        for bad in ("ls:", "ls:xx..:0", "ls:..99:0", "ls:..2:", "ep:sr01:3", "ls:..2:5;"):
+            self.assertIsNone(intent.list_page(bad, TODAY), bad)
+
+
+# ---- search ----
+# (utterance, site, kind, query): kind "" means the question "video or UP 主?" comes first; site ""
+# means no site was named (search_sites: Bilibili for videos, both sites for creators).
+SEARCH_CASES = [
+    # unclear what to search for: ask
+    ("搜索猫和老鼠", "", "", "猫和老鼠"),
+    ("搜索李子柒", "", "", "李子柒"),
+    ("搜一下老番茄", "", "", "老番茄"),
+    ("帮我搜罗翔", "", "", "罗翔"),
+    ("搜一搜熊出没", "", "", "熊出没"),
+    ("B站搜猫和老鼠", "bilibili", "", "猫和老鼠"),
+    ("在B站上搜一下罗翔说刑法", "bilibili", "", "罗翔说刑法"),
+    ("搜索哔哩哔哩的老番茄", "bilibili", "", "老番茄"),
+    ("油管搜lofi", "youtube", "", "lofi"),
+    ("优兔搜一下周杰伦", "youtube", "", "周杰伦"),
+    ("YouTube上搜索 Lofi Girl。", "youtube", "", "lofi girl"),
+    ("搜uptown funk", "", "", "uptown funk"),
+    ("小智小智，搜索一下熊出没", "", "", "熊出没"),
+    # videos
+    ("搜视频猫和老鼠", "", "video", "猫和老鼠"),
+    ("搜索视频猫和老鼠", "", "video", "猫和老鼠"),
+    ("搜索猫和老鼠视频", "", "video", "猫和老鼠"),
+    ("搜索猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("搜一下猫和老鼠相关视频", "", "video", "猫和老鼠"),
+    ("找猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("找一下李子柒的视频", "", "video", "李子柒"),
+    ("我想看猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("看看小猪佩奇的视频吧", "", "video", "小猪佩奇"),
+    ("放一个猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("放一个lofi视频", "", "video", "lofi"),
+    ("来点猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("我想看搞笑视频的视频", "", "video", "搞笑视频"),
+    ("B站搜索老番茄的视频", "bilibili", "video", "老番茄"),
+    ("在YouTube上找lofi的视频", "youtube", "video", "lofi"),
+    ("麻烦帮我在油管上搜一下lofi的视频", "youtube", "video", "lofi"),
+    ("我想看YouTube上周杰伦的视频", "youtube", "video", "周杰伦"),
+    ("搜一下Taylor Swift的视频", "", "video", "taylor swift"),
+    ("油管搜视频 lo-fi hip hop", "youtube", "video", "lofi hip hop"),
+    # creators (UP 主 / channels)
+    ("搜UP主老番茄", "", "up", "老番茄"),
+    ("搜索UP主罗翔说刑法", "", "up", "罗翔说刑法"),
+    ("搜博主李子柒", "", "up", "李子柒"),
+    ("找罗翔这个UP主", "", "up", "罗翔"),
+    ("搜索罗翔up", "", "up", "罗翔"),
+    ("搜频道lofi girl", "", "up", "lofi girl"),
+    ("搜一下 Lofi Girl 的频道", "", "up", "lofi girl"),
+    ("搜油管频道lofi girl", "youtube", "up", "lofi girl"),
+    ("YouTube上找lofi girl频道", "youtube", "up", "lofi girl"),
+    ("在油管搜一下李子柒这个博主", "youtube", "up", "李子柒"),
+    ("B站搜UP主何同学", "bilibili", "up", "何同学"),
+]
+# What other intents own: never a search.
+NOT_SEARCH = ["我想看湖南卫视", "我要看湖南卫视", "我要看犬夜叉第三集", "熊出没第三集", "看体育", "有哪些动画片",
+              "有什么视频", "我有哪些YouTube频道", "B站有哪些频道", "YouTube频道", "暂停", "继续播放", "大声一点",
+              "下一集", "下一个台", "第二个", "下一页", "帮我找湖南卫视", "找到湖南卫视", "找不到频道", "我想看猫和老鼠",
+              "看视频", "放一个视频", "我想看B站的视频", "我想看点好看的视频", "我想看搞笑视频",
+              "有没有猫和老鼠的视频", "播放", "播放猫和老鼠", "今天天气怎么样", "状态", "只听声音"]
+
+
+class SearchIntentTests(unittest.TestCase):
+    def test_search_phrasings(self):
+        self.assertGreaterEqual(len(SEARCH_CASES), 40)
+        for text, site, kind, query in SEARCH_CASES:
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.search), ("search", {"site": site, "kind": kind, "query": query}))
+                self.assertIsNone(d.do)
+                self.assertIsNone(d.relay)
+
+    def test_other_intents_are_not_stolen(self):
+        for text in NOT_SEARCH:
+            with self.subTest(text=text):
+                self.assertIsNone(decide(text, LIVE).search)
+        for text, cat, _ in CASES + LIST_CASES:
+            with self.subTest(text=text):
+                self.assertIsNone(decide(text, cat).search)
+
+    def test_nothing_to_search_for(self):
+        for text, words in (("搜索", "要搜什么？"), ("搜一下", "要搜什么？"), ("搜视频", "要搜什么视频？"),
+                            ("搜UP主", "要搜什么 UP 主？"), ("油管搜一下", "要搜什么？"),
+                            ("搜一下有什么好看的", "要搜什么？")):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.search), ("none", None))
+                self.assertTrue(d.reply.startswith(words), d.reply)
+
+    def test_page_rows_and_paging(self):
+        results = [{"id": f"BV1{n:09d}", "title": f"<猫和老鼠>第{n}集", "uploader": "猫咪", "duration": 65 + n}
+                   for n in range(12)]
+        d = intent.search_page("bilibili", "video", "猫和老鼠", results, 0, 7)
+        self.assertEqual((d.kind, d.reply), ("search", "找到 12 个B站视频"))
+        self.assertEqual(len(d.choices), intent.CHOICES_MAX)
+        self.assertEqual(d.choices[0], {"label": "<猫和老鼠>第0集 · 1:05", "lead": "01", "ref": "sv:7:0"})
+        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 7 个", "lead": "", "ref": "sp:7:5"})
+        d = intent.search_page("bilibili", "video", "猫和老鼠", results, 5, 7)
+        self.assertEqual(d.reply, "第 6-10 个，共 12 个")
+        self.assertEqual(d.choices[0]["lead"], "06")
+        self.assertEqual(d.choices[5]["ref"], "sp:7:10")
+        d = intent.search_page("bilibili", "video", "猫和老鼠", results, 10, 7)
+        self.assertEqual([c["ref"] for c in d.choices], ["sv:7:10", "sv:7:11"])
+        # Six fit without a "next page" row.
+        d = intent.search_page("youtube", "video", "lofi", results[:6], 0, 7)
+        self.assertEqual((d.reply, len(d.choices)), ("找到 6 个YouTube 视频", 6))
+        self.assertTrue(all(c["ref"].startswith("sv:") for c in d.choices))
+        d = intent.search_page("bilibili", "video", "没有的东西", [], 0, 7)
+        self.assertEqual((d.kind, d.reply, d.choices), ("none", "B站没搜到「没有的东西」", None))
+
+    def test_row_labels_fit_the_device(self):
+        long = {"id": "BV1000000000", "title": "【4K修复】猫和老鼠🤓 经典合集 全161集 超长版本 一次看个够",
+                "uploader": "猫咪老鼠大王", "duration": 102243}
+        label = intent.search_page("bilibili", "video", "x", [long], 0, 1).choices[0]["label"]
+        self.assertLessEqual(len(label.encode("utf-8")), intent.LABEL_BYTES)
+        self.assertNotIn("🤓", label)
+        self.assertTrue(label.startswith("【4K修复】猫和老鼠 经典合集"), label)
+        short = {"id": "BV1000000000", "title": "lofi", "uploader": "LoFi", "duration": 3725}
+        self.assertEqual(intent.search_page("bilibili", "video", "x", [short], 0, 1).choices[0]["label"],
+                         "lofi · 1:02:05 · LoFi")
+        # The uploader only when it fits the row; the duration first.
+        short["uploader"] = "Lofi Girl"
+        self.assertEqual(intent.search_page("bilibili", "video", "x", [short], 0, 1).choices[0]["label"],
+                         "lofi · 1:02:05")
+        creators = [{"id": "546195", "name": "老番茄", "fans": 20840107, "videos": 680},
+                    {"id": "1", "name": "小号", "fans": 0, "videos": 3},
+                    {"id": "2", "name": "大号", "fans": 123456789, "videos": 1},
+                    {"id": "3", "name": "新人", "fans": 950, "videos": 0}]
+        d = intent.search_page("bilibili", "up", "番茄", creators, 0, 3)
+        self.assertEqual(d.reply, "找到 4 个B站 UP 主")
+        self.assertEqual([c["label"] for c in d.choices], ["老番茄 · 2084万粉", "小号 · 3个视频", "大号 · 1.2亿粉",
+                                                           "新人 · 950粉"])
+        self.assertEqual([c["ref"] for c in d.choices], ["su:3:0", "su:3:1", "su:3:2", "su:3:3"])
+        self.assertEqual(intent.search_page("youtube", "up", "lofi", creators, 0, 3).reply, "找到 4 个YouTube 频道")
+
+    def test_question_and_creator_menu(self):
+        d = intent.search_question(12)
+        self.assertEqual((d.kind, d.reply), ("ask", "要搜视频，还是搜 UP 主？"))
+        self.assertEqual(d.choices, [{"label": "搜视频", "lead": "", "ref": "sq:12:v"},
+                                     {"label": "搜 UP 主", "lead": "", "ref": "sq:12:u"}])
+        d = intent.creator_menu({"id": "546195", "name": "老番茄"}, 4, 12)
+        self.assertEqual((d.kind, d.reply), ("creator", "「老番茄」：订阅还是看最新？"))
+        self.assertEqual(d.choices, [{"label": "订阅为频道", "lead": "", "ref": "sf:12:4"},
+                                     {"label": "播放最新视频", "lead": "", "ref": "sl:12:4"}])
+
+    def test_refs(self):
+        for op, arg in (("q", "v"), ("v", 19), ("u", 0), ("p", 15), ("f", 19), ("l", 19), ("r", "yt"), ("r", "bl")):
+            ref = intent.search_ref(op, 9999, arg)
+            self.assertLessEqual(len(ref), 31)
+            self.assertTrue(all(" " <= ch < "\x7f" and ch not in '"\\' for ch in ref), ref)
+            self.assertEqual(intent.parse_search_ref(ref), (op, 9999, str(arg)))
+        for bad in ("", "sv:", "sv:1", "sx:1:1", "sv:12345:1", "sv:1:1;", "ls:..2:5", "ep:sr01:3", "sv:1:-1"):
+            self.assertIsNone(intent.parse_search_ref(bad), bad)
+
+    def test_which_sites_are_searched(self):
+        self.assertEqual(intent.search_sites("", "up"), ("bilibili", "youtube"))
+        self.assertEqual(intent.search_sites("", "video"), ("bilibili",))
+        self.assertEqual(intent.search_sites("youtube", "up"), ("youtube",))
+        self.assertEqual(intent.search_sites("bilibili", "up"), ("bilibili",))
+        self.assertEqual(intent.search_sites("youtube", "video"), ("youtube",))
+        self.assertEqual((intent.site_of_ref("yt"), intent.site_of_ref("bl"), intent.site_of_ref("x")),
+                         ("youtube", "bilibili", ""))
+
+    def test_pixel_widths_match_the_firmware_font(self):
+        """The row width is measured with the device's own glyph advances (main/ui_font_data.h)."""
+        header = (Path(__file__).resolve().parents[1] / "main" / "ui_font_data.h").read_text(encoding="utf-8")
+        table = re.search(r"ui_font_ascii_adv\[UI_FONT_ASCII_COUNT\] = \{(.*?)\};", header, re.S).group(1)
+        advances = [int(x, 16) for x in re.findall(r"0x[0-9A-Fa-f]+", table)]
+        self.assertEqual(len(advances), 95)
+        self.assertEqual([intent.pixels(chr(32 + n)) for n in range(95)], advances)
+        self.assertEqual(intent.pixels("站·"), 16 + 5)
+        # The example row is 172 of the 180 pixels.
+        self.assertEqual(intent.pixels("B站 · 老番茄 · 2084万粉"), 172)
+        self.assertLessEqual(intent.pixels("B站 · 老番茄 · 2084万粉"), intent.ROW_PIXELS)
+
+    def test_rows_are_labelled_with_their_site(self):
+        self.assertEqual(intent.row_label("老番茄", ("2084万粉",), "bilibili"), "B站 · 老番茄 · 2084万粉")
+        self.assertEqual(intent.row_label("Lofi Girl", ("",), "youtube"), "油管 · Lofi Girl")
+        # The mark stays; the extras give way first, then the device ends the name with "…".
+        self.assertEqual(intent.row_label("Linus Tech Tips", ("1600万粉",), "youtube"), "油管 · Linus Tech Tips")
+        long = intent.row_label("很长的名字" * 6, ("1万粉",), "youtube")
+        self.assertTrue(long.startswith("油管 · 很长的名字"), long)
+        self.assertLessEqual(len(long.encode("utf-8")), intent.LABEL_BYTES)
+        self.assertEqual(intent.row_label("老番茄", (), ""), "老番茄")
+
+    def test_two_site_pages(self):
+        bili = [{"id": str(n), "name": f"B{n}", "fans": 10000 * (n + 1)} for n in range(8)]
+        yt = [{"id": f"UC{n:022d}", "name": f"Y{n}", "fans": 0} for n in range(3)]
+        merged = intent.merge_results({"bilibili": bili, "youtube": yt})
+        self.assertEqual([(m["site"], m["name"]) for m in merged[:7]],
+                         [("bilibili", "B0"), ("youtube", "Y0"), ("bilibili", "B1"), ("youtube", "Y1"),
+                          ("bilibili", "B2"), ("youtube", "Y2"), ("bilibili", "B3")])
+        self.assertNotIn("site", bili[0], "the site's own list is left as it was")
+        d = intent.search_page("", "up", "番茄", merged, 0, 4, found={"bilibili": 8, "youtube": 3})
+        self.assertEqual(d.reply, "找到 11 个UP 主：B站 8 个，油管 3 个")
+        self.assertEqual([c["label"] for c in d.choices[:2]], ["B站 · B0 · 1万粉", "油管 · Y0"])
+        # YouTube late: four rows, "next page" and the row that searches YouTube again.
+        only = intent.merge_results({"bilibili": bili})
+        d = intent.search_page("", "up", "番茄", only, 0, 4, late={"youtube": "slow"}, found={"bilibili": 8})
+        self.assertEqual(d.reply, "找到 8 个UP 主：B站 8 个，油管还在搜")
+        self.assertEqual([c["lead"] for c in d.choices], ["01", "02", "03", "04", "", ""])
+        self.assertEqual(d.choices[-1], {"label": "油管还在搜 · 再搜一次", "lead": "", "ref": "sr:4:yt"})
+        self.assertEqual(d.choices[-2]["ref"], "sp:4:4")
+        d = intent.search_page("", "up", "番茄", only, 4, 4, late={"youtube": "busy"}, found={"bilibili": 8})
+        self.assertEqual(d.reply, "第 5-8 个，共 8 个")
+        self.assertEqual([c["lead"] for c in d.choices], ["05", "06", "07", "08", ""])
+        self.assertEqual(d.choices[-1]["label"], "油管正忙 · 再搜一次")
+        self.assertEqual((intent.search_window(8, 0, 1), intent.search_window(8, 4, 1), intent.search_window(5, 0, 1),
+                          intent.search_window(12, 0), intent.search_window(6, 0)), (4, 4, 5, 5, 6))
+        d = intent.search_page("", "up", "番茄", [], 0, 4, late={"youtube": "slow"}, found={"bilibili": 0})
+        self.assertEqual((d.kind, d.reply), ("search", "B站没搜到，油管还在搜，稍后再说一次"))
+        d = intent.search_page("", "up", "番茄", [], 0, 4, found={"bilibili": 0, "youtube": 0})
+        self.assertEqual((d.kind, d.reply), ("none", "B站和油管都没搜到「番茄」"))
+        # A creator menu carries the site too.
+        d = intent.creator_menu(merged[1], 1, 4)
+        self.assertEqual((d.label, d.reply), ("油管 · Y0", "「Y0」：订阅还是看最新？"))
+
+    def test_retry_words(self):
+        for text, site in (("再搜一次", ""), ("再试一次", ""), ("重试", ""), ("再搜", ""), ("油管", "youtube"),
+                           ("YouTube", "youtube"), ("再搜一下油管", "youtube"), ("油管再搜一次", "youtube"),
+                           ("B站", "bilibili")):
+            with self.subTest(text=text):
+                self.assertEqual(intent.wants_retry(text), site)
+        for text in ("下一页", "第二个", "湖南卫视", "订阅", "", "搜UP主老番茄"):
+            with self.subTest(text=text):
+                self.assertIsNone(intent.wants_retry(text))
+
+    def test_spoken_answers(self):
+        for text, expected in (("视频", ("video", "")), ("搜视频", ("video", "")), ("要视频", ("video", "")),
+                               ("UP主", ("up", "")), ("博主", ("up", "")), ("搜UP主", ("up", "")),
+                               ("频道", ("up", "")), ("YouTube的视频", ("video", "youtube")),
+                               ("B站UP主吧", ("up", "bilibili")), ("第一个", ("video", "")), ("第二个", ("up", "")),
+                               ("湖南卫视", None), ("第三个", None), ("大声一点", None)):
+            self.assertEqual(intent.search_answer(text), expected, text)
+        for text, n in (("第二个", 2), ("播放第三个", 3), ("选第3个视频", 3), ("第十个", 10), ("第2台", None),
+                        ("两个", None), ("第二个UP主", 2)):
+            self.assertEqual(intent.pick_number(text), n, text)
+        for text, more in (("下一页", True), ("下1页", True), ("换一批", True), ("还有呢", True),
+                           ("下一集", False), ("下一个", False)):
+            self.assertEqual(intent.wants_next_page(text), more, text)
+        for text, action in (("订阅", "follow"), ("订阅为频道", "follow"), ("关注他", "follow"),
+                             ("第一个", "follow"), ("播放最新视频", "latest"), ("看最新的", "latest"),
+                             ("第二个", "latest"), ("随便", None)):
+            self.assertEqual(intent.creator_answer(text), action, text)
+
+    def test_site_lists_without_creators(self):
+        no_yt_up = Catalog([c for c in TODAY_CHANNELS if c.id not in YT_UP], current="ch000")
+        d = decide("我有哪些YouTube频道", no_yt_up)
+        self.assertEqual((d.kind, d.reply), ("none", "还没有 YouTube 频道"))
+        self.assertEqual(listed_ids(decide("YouTube有哪些剧集", no_yt_up), no_yt_up), ["sr03"])
+
+
+# ---- seeking by voice on relay channels ----
+# (utterance, the relay's seek parameters, the reply)
+SEEK_CASES = [
+    # restart
+    ("从头播", {"position": 0}, "从头播放"), ("从头开始播", {"position": 0}, "从头播放"),
+    ("回到开头", {"position": 0}, "从头播放"), ("回到最开始", {"position": 0}, "从头播放"),
+    ("从第一秒开始", {"position": 0}, "从头播放"), ("重新看这集", {"position": 0}, "从头播放"),
+    ("跳到开头", {"position": 0}, "从头播放"), ("跳到百分之零", {"position": 0}, "从头播放"),
+    # a time, units combined
+    ("跳到3分20秒", {"position": 200}, "跳到 3 分 20 秒"),
+    ("跳转到三分二十秒", {"position": 200}, "跳到 3 分 20 秒"),
+    ("跳到1小时5分", {"position": 3900}, "跳到 1 小时 5 分"),
+    ("跳到一个小时零五分三十秒", {"position": 3930}, "跳到 1 小时 5 分 30 秒"),
+    ("跳到两个小时", {"position": 7200}, "跳到 2 小时"),
+    ("跳到1个半小时", {"position": 5400}, "跳到 1 小时 30 分"),
+    ("跳到12分半", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到半小时", {"position": 1800}, "跳到 30 分"),
+    ("跳到第90秒", {"position": 90}, "跳到 1 分 30 秒"),
+    ("跳到12:30", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到12：30。", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到1:02:03", {"position": 3723}, "跳到 1 小时 2 分 3 秒"),
+    ("跳到12点30", {"position": 750}, "跳到 12 分 30 秒"),
+    ("从5分钟开始播", {"position": 300}, "跳到 5 分"),
+    ("从五分钟开始", {"position": 300}, "跳到 5 分"),
+    ("播到10分钟的地方", {"position": 600}, "跳到 10 分"),
+    ("到3分20", {"position": 200}, "跳到 3 分 20 秒"),
+    ("跳到十二分三十秒的位置", {"position": 750}, "跳到 12 分 30 秒"),
+    ("跳到3分钟左右", {"position": 180}, "跳到 3 分"),
+    ("跳到十分钟", {"position": 600}, "跳到 10 分"),
+    # a share of the video
+    ("跳到一半", {"fraction": 0.5}, None), ("跳到中间", {"fraction": 0.5}, None),
+    ("跳到三分之一", {"fraction": 0.3333}, None), ("跳到四分之三", {"fraction": 0.75}, None),
+    ("跳到百分之六十", {"fraction": 0.6}, None), ("跳到60%", {"fraction": 0.6}, None),
+    ("跳到最后", {"from_end": 30}, None), ("快到结尾", {"from_end": 30}, None),
+    ("快进到结尾", {"from_end": 30}, None), ("跳到100%", {"from_end": 30}, None),
+    # relative, units combined
+    ("快进1分30秒", {"delta": 90}, "快进 1 分 30 秒"), ("后退半分钟", {"delta": -30}, "后退 30 秒"),
+    ("往回倒20秒", {"delta": -20}, "后退 20 秒"), ("快进五分钟", {"delta": 300}, "快进 5 分钟"),
+    ("快退一分半", {"delta": -90}, "后退 1 分 30 秒"), ("后退1个小时", {"delta": -3600}, "后退 1 小时"),
+    ("往前20秒", {"delta": 20}, "快进 20 秒"), ("快进", {"delta": 30}, "快进 30 秒"),
+]
+# Not a seek: nothing to jump to, or another intent's words.
+NOT_SEEK = ["一半", "三分之一", "百分之六十", "三分二十秒", "跳到5", "快进一点", "到湖南卫视", "回到湖南卫视", "大声一点",
+            "音量百分之五十", "亮度百分之六十", "第三集", "跳到第三集", "12:30"]
+
+
+class SeekTests(unittest.TestCase):
+    def test_seek_phrasings(self):
+        for text, params, reply in SEEK_CASES:
+            for cat in (SERIES_PLAYING, CREATOR_PLAYING):
+                with self.subTest(text=text, current=cat.current):
+                    d = decide(text, cat)
+                    self.assertEqual((d.kind, d.relay, d.do), ("seek", ("seek", params), None))
+                    if reply:
+                        self.assertEqual(d.reply, reply)
+                    self.assertLessEqual(len(d.reply), 40)
+
+    def test_live_channels_cannot(self):
+        for text, params, _ in SEEK_CASES:
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.relay, d.do), (None, None))
+                self.assertIn(d.reply, ("直播台不能快进快退", "直播台不能从头播"))
+
+    def test_not_a_seek(self):
+        for text in NOT_SEEK:
+            for cat in (SERIES_PLAYING, LIVE):
+                with self.subTest(text=text, current=cat.current):
+                    d = decide(text, cat)
+                    self.assertNotEqual(d.kind, "seek")
+                    self.assertFalse(d.relay and d.relay[0] == "seek")
+        self.assertEqual(decide("跳到第三集", SERIES_PLAYING).relay, ("episode", {"series": "sr01", "episode": 3}))
+        self.assertEqual(decide("音量百分之五十", catalog(volume=30)).do, {"volume": 50})
+
+    def test_times(self):
+        for text, seconds in (("3分20秒", 200), ("3分20", 200), ("1小时5", 3900), ("半分钟", 30), ("半小时", 1800),
+                              ("第90秒", 90), ("12点30", 750), ("2分钟", 120), ("1个小时", 3600), ("90", 90)):
+            self.assertEqual(intent.seek_seconds(text), seconds, text)
+        for text in ("", "分", "3分20秒钟后", "abc", "25小时", "3分200秒x"):
+            self.assertIsNone(intent.seek_seconds(text), text)
+        for seconds, words in ((0, "0 秒"), (20, "20 秒"), (200, "3 分 20 秒"), (600, "10 分"), (3900, "1 小时 5 分"),
+                               (3930, "1 小时 5 分 30 秒"), (7200, "2 小时")):
+            self.assertEqual(intent.time_words(seconds), words)
+
+
+class NotFoundTests(unittest.TestCase):
+    def test_a_named_series_or_channel_that_is_not_there(self):
+        for text, name in (("葫芦娃第三集", "葫芦娃"), ("葫芦娃第3集", "葫芦娃"), ("葫芦娃最新一集", "葫芦娃")):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.do, d.relay, d.search), ("none", None, None, None))
+                self.assertEqual(d.reply, f"没有找到「{name}」")
+        # A channel that is not there: also say that it can be searched for.
+        for text, name in (("我要看葫芦娃", "葫芦娃"), ("播放小猪佩奇", "小猪佩奇"), ("打开小猪佩奇", "小猪佩奇"),
+                           ("切到葫芦娃", "葫芦娃"), ("看熊大", "熊大")):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.do, d.relay, d.search), ("none", None, None, None))
+                self.assertEqual(d.reply, f"没有找到「{name}」，可以说「搜索{name}」")
+                self.assertLessEqual(len(d.reply), 40)
+
+    def test_plain_nonsense_is_still_not_understood(self):
+        for text in ("今天天气怎么样", "那个那个什么来着", "看什么好", "看不了", "什么", "看看", "打开", "来点",
+                     "我要看电视"):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                if d.kind == "none":
+                    self.assertEqual(d.reply, intent.REPLY_UNKNOWN)
+
+
+class NumberTests(unittest.TestCase):
+    def test_numerals(self):
+        for text, value in (("中央五套", "中央5套"), ("第十二集", "第12集"), ("一百", "100"),
+                            ("一百五", "150"), ("三百零五", "305"), ("二十", "20"), ("十", "10"),
+                            ("两千零一", "2001"), ("一二", "12"), ("第一个台", "第1个台")):
+            self.assertEqual(numbers.to_digits(text), value)
+
+    def test_soft_one_is_not_a_number(self):
+        for text in ("大声一点", "下一集", "上一个", "换一个台", "等一下", "一些"):
+            self.assertEqual(numbers.to_digits(text), text)
+
+    def test_parse_rejects_nonsense(self):
+        self.assertIsNone(numbers.parse("十十"))
+        self.assertIsNone(numbers.parse("五五十"))
+
+
+class MatchTests(unittest.TestCase):
+    def test_normalize(self):
+        self.assertEqual(match.normalize("ＣＣＴＶ－５＋ 体育！"), "cctv5加体育")
+        self.assertEqual(match.normalize("<|zh|>湖南卫视。"), "湖南卫视")
+
+    def test_pinyin_hears_homophones_and_polyphones(self):
+        self.assertEqual(match.pinyin_ratio("湖南为是", "湖南卫视"), 1.0)
+        self.assertEqual(match.pinyin_ratio("重庆", "崇庆"), 1.0)      # zhong/chong
+        self.assertEqual(match.pinyin_ratio("小林说", "小lin说"), 1.0)
+        self.assertEqual(match.pinyin_ratio("5套", "舞套"), 1.0)
+        self.assertGreater(match.pinyin_ratio("四", "十"), 0.4)       # si / shi: half an error
+        self.assertLess(match.pinyin_ratio("四", "十"), 1.0)
+
+    def test_pinyin_table_covers_gb2312(self):
+        """The device's font and SenseVoice's output are GB2312 hanzi: every one has a reading."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        from make_pinyin_table import gb2312_hanzi
+        hanzi = gb2312_hanzi()
+        self.assertEqual(len(hanzi), 6763)
+        missing = [c for c in hanzi if c not in match._READINGS]
+        self.assertEqual(missing, [])
+        self.assertEqual(set(match._READINGS["行"]), {"xing", "hang", "heng"})
+
+    def test_aliases(self):
+        names = dict(intent.aliases("CCTV-5+ 体育赛事"))
+        self.assertIn("中央5加", names)
+        self.assertIn("5加", names)
+        names = dict(intent.aliases("湖南卫视"))
+        self.assertIn("湖南", names)
+
+
+if __name__ == "__main__":
+    unittest.main()
