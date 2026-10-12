@@ -23,7 +23,8 @@ from pathlib import Path
 
 from .. import channel_groups, now_playing
 from ..tenancy import files as tenancy_files
-from . import events, stream, table, voice, youtube as youtube_links
+from ..tenancy.tickets import LoginTickets
+from . import console, events, stream, table, voice, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
@@ -106,6 +107,8 @@ class Relay:
         # 多用户：账号库（server/tenancy/accounts.py）和每台设备的文件目录。
         self.accounts = accounts
         self.devices_dir = Path(devices_dir) if devices_dir is not None else None
+        # 电脑扫码登录的票据（阶段 2，console.py）。
+        self.login_tickets = LoginTickets(accounts) if accounts is not None else None
         # 每个网站一个客户端；YouTube 只经 cstone 节点，没配置时为 None。
         self.clients = {"bilibili": client, "youtube": youtube}
         self.events_out = Path(events_out) if events_out is not None else None
@@ -1002,8 +1005,9 @@ class Relay:
 
     # ---- 管理 ----
 
-    def summary(self, caller: Caller = LEGACY) -> dict:
-        dev = self.target(caller)
+    def summary(self, caller: Caller = LEGACY, device: str | None = None) -> dict:
+        # device：电脑版点名看哪一台（不改手机选的那台）；别人的设备 NotFound。
+        dev = self._pick(caller, device) if device else self.target(caller)
         groups = self.groups(dev)
         try:
             account = self._account(caller)
@@ -1422,12 +1426,18 @@ def _manage_handler(relay: Relay):
                 self._not_found()
 
         def do_POST(self):
+            if not console.same_origin(self.headers):
+                self._not_found()       # 跨站来的（表单、别的网站的脚本）
+                return
             try:
                 self._post()
             except NotFound:
                 self._not_found()
 
         def do_DELETE(self):
+            if not console.same_origin(self.headers):
+                self._not_found()
+                return
             try:
                 self._delete()
             except NotFound:
@@ -1438,6 +1448,9 @@ def _manage_handler(relay: Relay):
             if path in ASSETS:
                 kind, data = ASSETS[path]
                 self._send(200, data, kind, {"Cache-Control": "public, max-age=86400"})
+                return
+            # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py。
+            if relay.tenant and console.get(self, relay, path):
                 return
             if relay.tenant:
                 # 扫设备二维码、绑定码、邀请链接：落地页不用登录，页面里的脚本再带着 cookie 问接口。
@@ -1476,7 +1489,7 @@ def _manage_handler(relay: Relay):
             if path == "/":
                 self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             elif path == "/api/state":
-                self._json(relay.summary(caller))
+                self._json(relay.summary(caller, device))
             elif _EPISODES.match(path):
                 self._json(relay.episodes(_EPISODES.match(path).group(1), caller, device))
             elif path == "/api/voice/catalog":
@@ -1530,6 +1543,8 @@ def _manage_handler(relay: Relay):
 
         def _post(self):
             path = self._path()
+            if relay.tenant and console.post(self, relay, path):
+                return
             if relay.tenant and path in ("/api/scan", "/api/invite/accept"):
                 body = self._body()
                 if body is None:

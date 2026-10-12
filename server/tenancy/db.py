@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS login_ticket (
     state TEXT NOT NULL CHECK (state IN ('pending', 'confirmed', 'used')),
     user_id INTEGER REFERENCES user(id),
     pc_ip_prefix TEXT NOT NULL DEFAULT '',
-    pc_user_agent TEXT NOT NULL DEFAULT ''
+    pc_user_agent TEXT NOT NULL DEFAULT '',
+    poll_sha256 BLOB
 );
 CREATE TABLE IF NOT EXISTS device (
     id TEXT PRIMARY KEY,
@@ -128,6 +129,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    _add_columns(conn)
     if fresh:
         # 里面有会话和设备密钥的哈希：只给服务账号和它的组读。
         try:
@@ -142,6 +144,24 @@ def connect(path: Path | str) -> sqlite3.Connection:
         conn.close()
         raise RuntimeError(f"{path}: 数据库是更新的版本（{row['value']}），这份代码只认 {SCHEMA_VERSION}")
     return conn
+
+
+# 后来加的列：(表, 列, 类型)。旧库打开时补上（ALTER TABLE ADD COLUMN），已有的数据不动。
+# 阶段 2：电脑登录票据的轮询密钥（只在电脑上，二维码里是另一个），见 tickets.py。
+ADDED_COLUMNS = (("login_ticket", "poll_sha256", "BLOB"),)
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    for table, column, kind in ADDED_COLUMNS:
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column in present:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        except sqlite3.OperationalError as error:
+            # 另一个进程（电视服务）刚好同时补上了。
+            if "duplicate column" not in str(error):
+                raise
 
 
 class transaction:

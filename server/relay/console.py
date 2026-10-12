@@ -1,0 +1,288 @@
+"""电脑版（多用户阶段 2）：/tv/console 页面、扫码登录、登录列表、设备详情、邀请列表、二维码。
+
+只在多用户（--db）时有；单用户的中转对这些路径一律 404（电脑上想用，先上 --db）。
+遥控、订阅、投屏用的是手机同一套接口（web.py）：「一套接口，两种排版」。这里只放电脑版
+多出来的那几个，由 web.py 的处理类在最前面转过来（get()/post() 返回 True 表示处理过了）。
+
+谁能做什么：
+- 页面、要票据、等结果、扫码落地页：不用登录（票据本身就是凭据）。
+- 确认电脑登录、看登录列表、退出别处：已登录的手机或电脑（cookie），访客和密钥都不行。
+- 设备详情、二维码：账号（访客不行，密钥算管理员）。邀请列表：管理员。
+"""
+
+from __future__ import annotations
+
+import re
+import urllib.parse
+from pathlib import Path
+
+from ..tenancy import db
+from ..tenancy.accounts import MODEL_NAMES, SESSION_S
+from ..tenancy.tickets import Limited, describe_agent
+from . import qr
+
+# 和 web.COOKIE 相同（web 引用本模块，这里不反过来引用它）；tests/test_relay_console.py 核对。
+COOKIE = "tvs"
+_LOGIN_LINK = re.compile(r"^/(?:l|TV/L)/([A-Za-z2-7]{26})$")
+QR_TEXT_MAX = 300
+_ASSET_DIR = Path(__file__).resolve().parent / "assets"
+CONSOLE_PAGE = (_ASSET_DIR / "console.html").read_bytes()
+LOGIN_PAGE = (_ASSET_DIR / "login.html").read_bytes()
+# 登录确认页和电脑版都不许被别的网站嵌进框里（防止骗点「确认」）。
+PAGE_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                               "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; "
+                               "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+}
+
+
+def same_origin(headers) -> bool:
+    """改东西的请求（POST、DELETE）只收本站页面发的：跨站的表单或脚本一律当作不存在。
+
+    cookie 本身是 SameSite=Lax，跨站的 POST 不带它；这里再看一眼浏览器给的来源，双保险。
+    没有这两个头的（电视服务的语音命令、curl）照常处理：它们不是浏览器，带不了别人的 cookie。
+    """
+    site = (headers.get("Sec-Fetch-Site") or "").lower()
+    if site and site not in ("same-origin", "none"):
+        return False
+    origin = headers.get("Origin")
+    if origin is None:
+        return True
+    # 只比主机名：nginx 转进来的 Host 是 $host，不带端口。
+    host = urllib.parse.urlsplit("//" + (headers.get("Host") or "")).hostname
+    return origin != "null" and host is not None and urllib.parse.urlsplit(origin).hostname == host
+
+
+def cookie_header(token: str, kind: str) -> str:
+    return (f"{COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/tv/; "
+            f"Max-Age={SESSION_S[kind]}")
+
+
+def _clear_cookie() -> str:
+    return f"{COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/tv/; Max-Age=0"
+
+
+def _base(relay, handler) -> str:
+    """网站地址（二维码用）：--public-url；没配时按请求的 Host 猜。"""
+    if relay.public_url:
+        return relay.public_url
+    host = handler.headers.get("Host") or "localhost"
+    local = host.startswith(("127.", "localhost", "[::1]"))
+    return ("http://" if local else "https://") + host
+
+
+def _session(relay, handler) -> dict | None:
+    """cookie 里的会话（不认密钥）：{user_id, kind, device_id, role, name}。"""
+    return relay.accounts.session(handler._cookie())
+
+
+def _member_session(relay, handler) -> dict | None:
+    info = _session(relay, handler)
+    return info if info is not None and info["role"] != "guest" else None
+
+
+# ---- GET ----
+
+def get(handler, relay, path: str) -> bool:
+    if path == "/console":
+        handler._send(200, CONSOLE_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
+        return True
+    if path == "/console/":
+        handler._send(302, b"", "text/plain", {"Location": "/tv/console"})
+        return True
+    if path == "/login" or _LOGIN_LINK.match(path):
+        handler._send(200, LOGIN_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
+        return True
+    if path == "/api/login/status":
+        info = _session(relay, handler)
+        me = {"name": info["name"], "role": info["role"], "kind": info["kind"]} if info else None
+        handler._json({"ok": True, "signed_in": info is not None, "me": me})
+        return True
+    if path == "/api/login/info":
+        _login_info(handler, relay)
+        return True
+    if path == "/api/sessions":
+        info = _member_session(relay, handler)
+        if info is None:
+            handler._not_found()
+            return True
+        rows = relay.accounts.session_list(info["user_id"], handler._cookie())
+        for row in rows:
+            row["browser"] = describe_agent(row.pop("user_agent"))
+        handler._json({"ok": True, "sessions": rows})
+        return True
+    if path == "/api/console/devices":
+        caller = handler._caller()
+        if caller is None or caller.guest or caller.user is None:
+            handler._not_found()
+            return True
+        handler._json({"ok": True, "devices": devices(relay, caller, _base(relay, handler))})
+        return True
+    if path == "/api/invites":
+        caller = handler._caller()
+        if caller is None or caller.role != "admin":
+            handler._not_found()
+            return True
+        handler._json({"ok": True, "invites": invites(relay)})
+        return True
+    return False
+
+
+def _login_info(handler, relay) -> None:
+    """确认页要看的：用二维码里的票据不用登录（只回答登录码，好让人去桌面图标里输入）；
+    用 6 位码查要已登录，并且按用户和网段限流（输错才计数）。"""
+    query = handler._query()
+    tickets = relay.login_tickets
+    member = _member_session(relay, handler)
+    ticket, code = query.get("t"), query.get("code")
+    if code is not None:
+        if member is None:
+            handler._not_found()
+            return
+        keys = (f"u{member['user_id']}", db.ip_prefix(handler._ip()) or "?")
+        if tickets.guess_blocked(keys):
+            handler._json({"ok": False, "error": "输错太多次了，请 10 分钟后再试"})
+            return
+        found = tickets.info(code=code)
+        if found is None:
+            tickets.guess_missed(keys)
+    else:
+        found = tickets.info(ticket=ticket)
+    if found is None:
+        handler._json({"ok": False, "error": "这个登录码不对或已经过期了，请看电脑屏幕上现在显示的码"})
+        return
+    found.update(ok=True, signed_in=member is not None,
+                 guest=member is None and _session(relay, handler) is not None,
+                 same_network=bool(found["network"]) and found["network"] == db.ip_prefix(handler._ip()),
+                 name=member["name"] if member else "")
+    handler._json(found)
+
+
+def devices(relay, caller, base: str) -> list[dict]:
+    """电脑版「设备」页：名字、型号、固件、在线、正在播什么、访客；主人还能拿到访客链接。"""
+    rows = []
+    guests = {}
+    for session in relay.accounts.session_list(caller.user):
+        if session["kind"] == "guest":
+            guests[session["device_id"]] = guests.get(session["device_id"], 0) + 1
+    for row in relay.accounts.devices_of(caller.user):
+        dev = relay._device_entry(row)
+        owner = row["member_role"] == "owner"
+        playing = relay.now(relay.groups(dev), dev)
+        item = {"id": dev["id"], "name": dev["name"], "model": dev["model"],
+                "model_name": MODEL_NAMES.get(dev["model"], dev["model"] or "小电视"), "fw": dev["fw"],
+                "legacy": dev["legacy"], "mine": owner, "online": playing["online"],
+                "channel": playing["channel"] if playing["online"] else "",
+                "channel_name": playing["name"] if playing["online"] else "",
+                "title": playing["title"] if playing["online"] else "",
+                "last_seen": row.get("last_seen") or 0, "since": playing["since"] if playing["online"] else 0,
+                "guests": guests.get(dev["id"], 0) if owner else 0}
+        if owner and dev["remote_code"]:
+            item["guest_link"] = f"{base.upper()}/TV/R/{dev['remote_code']}"
+        rows.append(item)
+    return rows
+
+
+def invites(relay) -> list[dict]:
+    now = relay.clock()
+    rows = relay.accounts.invite_list()
+    for row in rows:
+        row["state"] = "used" if row["used_at"] else "expired" if row["expires_at"] <= now else "open"
+    return rows
+
+
+# ---- POST ----
+
+def post(handler, relay, path: str) -> bool:
+    if path == "/api/login/ticket":
+        _new_ticket(handler, relay)
+        return True
+    if path not in ("/api/login/poll", "/api/login/confirm", "/api/logout", "/api/sessions/revoke", "/api/qr"):
+        return False
+    body = handler._body()
+    if body is None and path != "/api/logout":
+        handler._json({"ok": False, "error": "请求格式不对"}, 400)
+        return True
+    body = body or {}
+    if path == "/api/login/poll":
+        _poll(handler, relay, body)
+    elif path == "/api/login/confirm":
+        _confirm(handler, relay, body)
+    elif path == "/api/logout":
+        token = handler._cookie()
+        if token and relay.accounts.revoke_session(token):
+            relay.log("退出登录")
+        handler._json({"ok": True}, headers={"Set-Cookie": _clear_cookie()})
+    elif path == "/api/sessions/revoke":
+        _revoke(handler, relay, body)
+    else:
+        caller = handler._caller()
+        text = body.get("text")
+        if caller is None or caller.guest or caller.user is None:
+            handler._not_found()
+        elif not isinstance(text, str) or not 0 < len(text) <= QR_TEXT_MAX:
+            handler._json({"ok": False, "error": "请求格式不对"}, 400)
+        else:
+            handler._json({"ok": True, "svg": qr.svg(text)})
+    return True
+
+
+def _new_ticket(handler, relay) -> None:
+    try:
+        ticket = relay.login_tickets.create(handler._ip(), handler._agent())
+    except Limited as error:
+        handler._json({"ok": False, "error": str(error)}, 429)
+        return
+    link = f"{_base(relay, handler).upper()}/TV/L/{ticket.pop('ticket')}"
+    handler._json({"ok": True, "svg": qr.svg(link), **ticket})
+
+
+def _poll(handler, relay, body: dict) -> None:
+    status, user = relay.login_tickets.poll(body.get("poll"))
+    if status != "ok":
+        handler._json({"ok": True, "state": status})
+        return
+    token = relay.accounts.new_session(user, "pc", user_agent=handler._agent(), ip=handler._ip())
+    relay.accounts.audit("login.pc", user, handler._ip(), "session", "", describe_agent(handler._agent()))
+    relay.log(f"用户 {user} 在电脑上登录")
+    handler._json({"ok": True, "state": "ok"}, headers={"Set-Cookie": cookie_header(token, "pc")})
+
+
+def _confirm(handler, relay, body: dict) -> None:
+    member = _member_session(relay, handler)
+    if member is None:
+        handler._not_found()
+        return
+    ticket, code, accept = body.get("ticket"), body.get("code"), body.get("accept", True)
+    if not isinstance(accept, bool) or (ticket is not None and not isinstance(ticket, str)) or \
+            (code is not None and not isinstance(code, str)) or (ticket is None) == (code is None):
+        handler._json({"ok": False, "error": "请求格式不对"}, 400)
+        return
+    tickets = relay.login_tickets
+    keys = (f"u{member['user_id']}", db.ip_prefix(handler._ip()) or "?")
+    if code is not None and tickets.guess_blocked(keys):
+        handler._json({"ok": False, "error": "输错太多次了，请 10 分钟后再试"})
+        return
+    if not tickets.answer(member["user_id"], accept, ticket=ticket, code=code, ip=handler._ip()):
+        if code is not None:
+            tickets.guess_missed(keys)
+        handler._json({"ok": False, "error": "这个登录码已经过期或用过了，请在电脑上刷新二维码"})
+        return
+    handler._json({"ok": True})
+
+
+def _revoke(handler, relay, body: dict) -> None:
+    member = _member_session(relay, handler)
+    if member is None:
+        handler._not_found()
+        return
+    if body.get("others") is True:
+        count = relay.accounts.revoke_other_sessions(member["user_id"], handler._cookie())
+        handler._json({"ok": True, "count": count})
+        return
+    session_id = body.get("id")
+    if not isinstance(session_id, str) or not relay.accounts.revoke_session_id(member["user_id"], session_id):
+        handler._json({"ok": False, "error": "没有这个登录"})
+        return
+    handler._json({"ok": True})

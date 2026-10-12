@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#1c1915">
+<title>电脑登录 · 小智电视</title>
+<style>
+  :root { --ink: #1c1915; --ink-deep: #0f0d0b; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
+          --dim: #8c8170; --faint: #6e6455; --red: #d2553f; --amber: #ffb547;
+          --serif: "Songti SC", "STSong", "Noto Serif SC", serif; --mono: "Menlo", "SF Mono", ui-monospace, monospace; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--ink); color: var(--paper); font: 15px/1.6 -apple-system, "PingFang SC", sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: calc(28px + env(safe-area-inset-top)) 20px 32px; }
+  h1 { margin: 0 0 6px; font: 700 24px/1.3 var(--serif); letter-spacing: 3px; color: var(--paper-hi); }
+  .tag { font-size: 12px; color: var(--red); letter-spacing: 3px; }
+  p { font: 16px/1.7 var(--serif); margin: 12px 0; }
+  .dim { color: var(--dim); font-size: 14px; }
+  .bad { color: var(--red); }
+  .code { font: 600 30px/1.4 var(--mono); color: var(--amber); letter-spacing: 6px; text-align: center;
+          background: var(--ink-deep); border: 1px solid var(--rule); padding: 12px; margin: 12px 0; }
+  dl { margin: 16px 0; border-top: 1px dotted var(--rule); }
+  dl div { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px dotted var(--rule); }
+  dt { flex: none; width: 56px; color: var(--dim); font: 14px var(--serif); }
+  dd { margin: 0; flex: 1; min-width: 0; font: 15px var(--serif); color: var(--paper-hi); word-break: break-all; }
+  dd small { display: block; font: 13px/1.5 -apple-system, "PingFang SC", sans-serif; color: var(--red); margin-top: 2px; }
+  dd.mono { font: 600 17px var(--mono); color: var(--amber); letter-spacing: 2px; }
+  input { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule); color: var(--amber);
+          font: 600 24px var(--mono); letter-spacing: 6px; text-align: center; text-transform: uppercase;
+          padding: 10px 12px; border-radius: 0; }
+  input::placeholder { color: var(--faint); font: 15px -apple-system, "PingFang SC", sans-serif; letter-spacing: 0; text-transform: none; }
+  button { display: block; width: 100%; margin-top: 12px; background: var(--red); color: #fff4e6; border: 0;
+           padding: 12px; font: 17px var(--serif); letter-spacing: 4px; }
+  button.plain { background: none; border: 1px solid var(--rule); color: var(--dim); }
+  button:disabled { opacity: .5; }
+  a { color: var(--amber); }
+  .h { margin: 28px 0 0; padding-bottom: 6px; font: 16px var(--serif); color: var(--paper-hi); border-bottom: 1px solid var(--rule); }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: baseline; gap: 10px; padding: 11px 0; border-bottom: 1px dotted var(--rule); }
+  li span { flex: 1; min-width: 0; font: 15px var(--serif); }
+  li small { display: block; font: 12px var(--mono); color: var(--faint); }
+  li button { flex: none; width: auto; margin: 0; padding: 0; background: none; color: var(--red); font: 14px var(--serif); letter-spacing: 0; }
+  .back { display: inline-block; margin-top: 22px; color: var(--dim); font: 14px var(--serif); text-decoration: none; }
+</style>
+</head>
+<body>
+<main>
+  <div class="tag">小智电视 · 电脑登录</div>
+  <h1 id="title">正在打开…</h1>
+  <div id="body"></div>
+  <div id="extra"></div>
+  <a class="back" href="/tv/">‹ 返回遥控</a>
+</main>
+<script>
+"use strict";
+// 两种进来的方式：扫电脑屏幕上的二维码（/TV/L/<票据>），或从遥控的「电脑登录」进来输入 6 位码（/tv/login）。
+// 接口都在 /tv/ 下：登录的 cookie 只在那个路径下发送。
+const parts = location.pathname.split("/").filter(Boolean);
+const ticket = parts.length >= 2 && parts[parts.length - 2].toLowerCase() === "l" ? parts[parts.length - 1].toUpperCase() : "";
+const $ = (id) => document.getElementById(id);
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function show(title, ...nodes) {
+  $("title").textContent = title;
+  $("body").replaceChildren(...nodes);
+}
+
+async function api(method, path, body) {
+  const options = { method, credentials: "same-origin", headers: {} };
+  if (body !== undefined) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch("/tv/" + path, options);
+  if (response.status === 404) return null;
+  return response.json();
+}
+
+function row(label, value, cls, warn) {
+  const div = el("div");
+  const dd = el("dd", cls || "", value);
+  if (warn) dd.appendChild(el("small", "", warn));
+  div.append(el("dt", "", label), dd);
+  return div;
+}
+
+let timer = 0;
+// 确认页：电脑的浏览器和网段，免得点了别人发来的二维码（只确认你自己面前的电脑）。
+function confirmView(info, by) {
+  const dl = el("dl");
+  dl.append(row("电脑", info.browser),
+            row("网络", info.network || "未知", "", info.same_network ? "" : "和这台手机不在同一个网络。电脑不在你身边的话，请点取消。"),
+            row("登录码", info.code, "mono"),
+            row("账号", info.name));
+  const left = el("p", "dim");
+  let seconds = info.expires_in;
+  const tick = () => {
+    left.textContent = seconds > 0 ? "请看一眼电脑屏幕上的登录码是否一样。" + seconds + " 秒内有效。" : "已经过期了，请在电脑上刷新二维码。";
+    yes.disabled = seconds <= 0;
+    seconds -= 1;
+  };
+  const yes = el("button", "", "确认登录");
+  const no = el("button", "plain", "取消");
+  const note = el("p", "dim", "确认后这台电脑以你的身份登录 30 天，随时可以在电脑版「设置」或这里退出。");
+  const answer = async (accept) => {
+    yes.disabled = no.disabled = true;
+    const result = await api("POST", "api/login/confirm", Object.assign({ accept }, by));
+    clearInterval(timer);
+    if (!result || !result.ok) {
+      note.className = "bad";
+      note.textContent = result ? result.error : "登录已失效，请从桌面上的遥控重新打开";
+      no.disabled = false;
+      return;
+    }
+    if (accept) show("已确认", el("p", "", "电脑马上就登录好了，可以放下手机了。"));
+    else show("已取消", el("p", "", "电脑屏幕上的二维码作废了。"));
+    loadSessions();
+  };
+  yes.onclick = () => answer(true);
+  no.onclick = () => answer(false);
+  tick();
+  clearInterval(timer);
+  timer = setInterval(tick, 1000);
+  show("在电脑上登录？", dl, left, yes, no, note);
+}
+
+// 扫的二维码：这个浏览器登录过就直接确认；没登录（相机、微信打开的）就告诉他去桌面图标里输入登录码。
+async function byTicket() {
+  const info = await api("GET", "api/login/info?t=" + encodeURIComponent(ticket));
+  if (!info || !info.ok) { show("二维码过期了", el("p", "", "请在电脑上刷新二维码，再扫一次。")); return; }
+  if (info.signed_in) { confirmView(info, { ticket }); return; }
+  show("用遥控确认登录",
+    el("p", "", info.guest ? "访客不能登录电脑版。请用你自己的账号：从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 电脑登录」里输入："
+      : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 电脑登录」里输入："),
+    el("div", "code", info.code),
+    el("p", "dim", "电脑屏幕上也显示着这个码，2 分钟内有效。还没有账号的话，请先向管理员要一个邀请链接。"));
+}
+
+// 从遥控进来：输入电脑屏幕上的 6 位码。
+async function byCode() {
+  const status = await api("GET", "api/login/status");
+  if (!status || !status.signed_in || status.me.role === "guest") {
+    show("电脑登录", el("p", "", status && status.signed_in
+      ? "访客不能登录电脑版。" : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 电脑登录」里进来。"));
+    return;
+  }
+  const input = el("input");
+  input.placeholder = "电脑屏幕上的 6 位登录码";
+  input.maxLength = 7;
+  input.autocomplete = "off";
+  input.setAttribute("autocapitalize", "characters");
+  const next = el("button", "", "下一步");
+  const note = el("p", "dim", "在电脑上打开小智电视网站的 /tv/console，屏幕上有二维码和 6 位登录码。");
+  const go = async () => {
+    const code = input.value.replace(/[\s-]/g, "").toUpperCase();
+    if (code.length !== 6) { note.className = "bad"; note.textContent = "登录码是 6 位字母和数字"; return; }
+    next.disabled = true;
+    const info = await api("GET", "api/login/info?code=" + encodeURIComponent(code));
+    next.disabled = false;
+    if (!info || !info.ok) { note.className = "bad"; note.textContent = info ? info.error : "登录已失效"; return; }
+    confirmView(info, { code });
+  };
+  next.onclick = go;
+  input.onkeydown = (event) => { if (event.key === "Enter") go(); };
+  show("电脑登录", input, next, note);
+  input.focus();
+  loadSessions();
+}
+
+// 已经登录的电脑：可以在手机上退出。
+async function loadSessions() {
+  const answer = await api("GET", "api/sessions");
+  const box = $("extra");
+  box.replaceChildren();
+  if (!answer || !answer.ok) return;
+  const pcs = answer.sessions.filter((s) => s.kind === "pc");
+  if (!pcs.length) return;
+  const list = el("ol");
+  for (const s of pcs) {
+    const li = el("li");
+    const text = el("span", "", s.browser + (s.current ? "（本机）" : ""));
+    text.appendChild(el("small", "", (s.ip_prefix || "") + " · 最近 " + new Date(s.last_seen * 1000).toLocaleString("zh-CN", { hour12: false })));
+    const out = el("button", "", "退出");
+    out.onclick = async () => {
+      out.disabled = true;
+      const result = await api("POST", "api/sessions/revoke", { id: s.id });
+      if (result && result.ok) li.remove(); else out.disabled = false;
+    };
+    li.append(text, out);
+    list.appendChild(li);
+  }
+  box.append(el("div", "h", "已登录的电脑"), list);
+}
+
+(ticket ? byTicket : byCode)().catch(() => show("打不开", el("p", "", "网络不通，请稍后再试。")));
+</script>
+</body>
+</html>
