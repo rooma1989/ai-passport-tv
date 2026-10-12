@@ -1,0 +1,11 @@
+# Append after sdkconfig.defaults and sdkconfig.av-prototype for an AI Passport
+# that carries the Muse gadget firmware in ota_0 and this player in ota_1. No
+# credentials here. The image goes to ota_1 (0x400000) only: Muse's bootloader
+# and partition table stay as they are.
+CONFIG_AV_MUSE_DUAL=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-muse-dual.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions-muse-dual.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x10000
+# Muse's bootloader rolls back an image that doesn't mark itself valid.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

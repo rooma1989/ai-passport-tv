@@ -28,6 +28,7 @@ idf_component_register(
          "av_channel_policy.c"
          "av_server_addr.c"
          "av_store.c"
+         "av_muse.c"
     INCLUDE_DIRS "."
     # The non-ASCII glyph table, written by tools/make_font.py. Embedded as a
     # blob rather than included as a header: the same data as C source is about
@@ -35,7 +36,7 @@ idf_component_register(
     EMBED_FILES "ui_font_cjk.bin"
     REQUIRES bsp qrcodegen bt esp_driver_usb_serial_jtag esp_event esp_hw_support esp_netif
              esp_timer esp_wifi nvs_flash json esp_rom
-             esp-wifi-connect
+             esp-wifi-connect app_update
 )
 # The glyph blob is checked in, so a fresh clone builds without extra steps. Say
 # what to run if it is ever missing: EMBED_FILES would otherwise fail with a

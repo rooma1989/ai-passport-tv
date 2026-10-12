@@ -6,6 +6,7 @@
 
 ## 未发布
 
+- **AI Passport 上和 Muse 固件并存**：用 `sdkconfig.muse-dual` 编译时，播放器装在 Muse 分区表的第二个应用分区（ota_1）里，从 Muse 菜单（Settings > TV）切过来；在状态页双击 OK 回到 Muse。它从不擦除共享的 NVS，自己还没有 Wi-Fi 和音量时沿用 Muse 的，并为 Muse 带回滚的引导程序把自己标记为可用。它有自己的服务器实例（320x180，`tv-passport`），和星智那台并排运行。见 [`docs/boards/passport-muse-dual.md`](boards/passport-muse-dual.md)。
 - **只听声音模式**：只放声音、屏幕只显示宠物，在状态页短按 OK 或在手机上切换；服务器不给这样的设备发画面，改按声音判断台是否正常，10 秒后背光变暗。HELLO 带 `audio_only`，`AV_SWITCH` 可以带它。配网页上以前连过的 Wi-Fi 密码留空就用记住的密码。
 - **设备界面改版**：界面按 Claude Design 的设计稿重做——暖墨色、像素图标、11 只宠物。播放时顶条显示台号和台名；菜单和页面铺在不透明面板上；音量、亮度、换台横幅、快进和暂停的提示都重画了；彩条换成连接 Wi-Fi、连接服务器、换台中、连不上服务器四种等待画面；配网改成新的四页并带倒计时。宠物可以在设备上选（状态页长按第二个键），也可以在手机新的「我的宠物」页里换。中转新增事件 `seek`、`next`、`pet`；`AV_SWITCH` 可带 `seek`/`next`（发给 `"hint": 1` 的固件）和 `pet`（发给会报 `pet` 的固件）。见 [`docs/superpowers/specs/2026-10-10-device-ui-redesign-design.zh_CN.md`](superpowers/specs/2026-10-10-device-ui-redesign-design.zh_CN.md)。
 - **支持星智 Cube 1.54 板**：同一份固件通过 Kconfig 选项 `AV_BOARD` 也能编给 ESP32-S3 的"星智 Cube 1.54 TFT"（以小智 AI 玩具出售）。用 `./tools/validate.sh --xingzhi` 编译，用 `tools/start_xingzhi_media.sh` 提供服务（端口 8098，240×180）。见 [`docs/boards/xingzhi-cube-154.zh_CN.md`](boards/xingzhi-cube-154.zh_CN.md)。

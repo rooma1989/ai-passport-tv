@@ -60,7 +60,12 @@ bool WifiManager::Initialize(const WifiManagerConfig& config) {
 
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
+#if CONFIG_AV_MUSE_DUAL
+    // The NVS partition is shared with the Muse firmware: never wipe its pairing.
+    if (false) {
+#else
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+#endif
         ESP_LOGW(TAG, "Erasing NVS...");
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();

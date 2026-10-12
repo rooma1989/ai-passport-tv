@@ -148,4 +148,15 @@ config AV_JPEG_BENCH
         prints per-tier decode time. Off by default; enable with
         tools/sdkconfig.jpeg-bench. Embeds main/jpeg_test.bin
         (tools/make_jpeg_clip.py).
+config AV_MUSE_DUAL
+    bool "Run from the Muse gadget firmware's second app slot"
+    depends on AV_RAW_PROTOTYPE
+    default n
+    help
+        For the AI Passport carrying the Muse gadget firmware in ota_0 and this
+        player in ota_1 (sdkconfig.muse-dual, partitions-muse-dual.csv). The
+        player marks itself valid for Muse's rollback-enabled bootloader, takes
+        Muse's Wi-Fi on a first boot, never erases the shared NVS, and goes
+        back to Muse on a double-click of OK on the status page.
+
 endmenu

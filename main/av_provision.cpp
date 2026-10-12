@@ -8,6 +8,7 @@
 
 #include "av_provision.h"
 #include "av_config.h"
+#include "av_muse.h"
 
 #include "ssid_manager.h"
 #include "wifi_manager.h"
@@ -208,6 +209,17 @@ bool av_provision_init(bool *has_stored_network)
         stored = true;
         ESP_LOGI(TAG, "Using the network compiled into this build");
     }
+#if CONFIG_AV_MUSE_DUAL
+    // Beside Muse, a first boot joins the network Muse was set up on.
+    if (!stored) {
+        char ssid[33], password[65];
+        if (av_muse_wifi(ssid, sizeof(ssid), password, sizeof(password))) {
+            ssids.AddSsid(ssid, password);
+            stored = true;
+            ESP_LOGI(TAG, "Using Muse's network");
+        }
+    }
+#endif
 
     s_initialized.store(true);
     if (has_stored_network) {

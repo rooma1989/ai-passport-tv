@@ -9,6 +9,7 @@
 #include "bsp_battery.h"
 #include "ui_menu.h"
 #include "av_provision.h"
+#include "av_muse.h"
 #include "av_provision_policy.h"
 #include "av_settings.h"
 #include "av_store.h"
@@ -3624,6 +3625,13 @@ static void process_key(const key_ev_t *item) {
         return;
     }
     if (s.menu.view!=UI_VIEW_VIDEO) {
+#if CONFIG_AV_MUSE_DUAL
+        // Double OK on the status page goes back to Muse (the page says so).
+        if (s.menu.view==UI_VIEW_STATUS && item->key==BSP_BTN_OK && item->ev==BSP_BTN_DOUBLE) {
+            av_muse_back();
+            return;
+        }
+#endif
         if (item->key==BSP_BTN_OK) {
             if (item->ev==BSP_BTN_CLICK) {
                 if (s.menu.view==UI_VIEW_MENU) {
@@ -4276,6 +4284,11 @@ void av_player_main(void) {
     if(bsp_display_init()!=ESP_OK || wifi_init(&has_network)!=ESP_OK) {
         ESP_LOGE(TAG,"Hardware/network initialization failed; no NVS erase attempted"); return;
     }
+#if CONFIG_AV_MUSE_DUAL
+    // Before any of the restarts below (setup, timeouts, faults): one of those
+    // before this would make Muse's bootloader roll back to Muse.
+    av_muse_mark_valid();
+#endif
 #ifdef CONFIG_AV_DISPLAY_BENCH
     // Before anything owns the panel, and before a socket exists. The result is
     // one line in the boot log; see the function for what it settles.
@@ -4310,6 +4323,10 @@ void av_player_main(void) {
     // Through locals: s.volume is atomic, and the store deals in plain bytes.
     uint8_t stored_volume=(uint8_t)AV_VOLUME_DEFAULT_PERCENT;
     av_store_load(&stored_volume,&stored_brightness);
+#if CONFIG_AV_MUSE_DUAL
+    // Until the viewer sets one here, play as loud as Muse is set to.
+    av_muse_volume(&stored_volume);
+#endif
     s.volume=stored_volume;
     s.menu.brightness=av_brightness_nearest_index(stored_brightness);
     atomic_store(&s.pet,(unsigned)av_store_load_pet((uint8_t)ui_pet_count()));

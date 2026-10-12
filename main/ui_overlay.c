@@ -3,6 +3,10 @@
 // 6 left and 4 up of that).
 #include "ui_overlay.h"
 
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"   /* CONFIG_AV_MUSE_DUAL */
+#endif
+
 #include "qrcodegen.h"
 #include "ui_draw.h"
 #include "ui_qr.h"
@@ -286,7 +290,11 @@ void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page)
         }
     }
     ui_draw_dotted_hline(surface, 16, 223, 184, UI_RULE);
+#if CONFIG_AV_MUSE_DUAL
+    ui_overlay_key_hint(surface, 186, "长按\xE2\x96\xB2配网 \xE2\x96\xBC宠物 双击OK回Muse");
+#else
     ui_overlay_key_hint(surface, 186, "长按\xE2\x96\xB2配网  长按\xE2\x96\xBC宠物");
+#endif
 }
 
 void ui_overlay_bottom_rates(ui_surface_t surface, int top, unsigned fps_x10, unsigned kbytes_per_s)
