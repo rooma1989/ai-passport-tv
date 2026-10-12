@@ -60,7 +60,7 @@ Don't flash this build's bootloader, partition table or `ota_data_initial.bin`.
 
 The geometry is fixed per server process and one device is served at a time,
 so the Passport has its own instance next to the Xingzhi one: `tv-passport`, a
-copy of `tv-xingzhi` with `TV_GEOMETRY=320x180`, `TV_FPS=12`, `TV_RATE_START=110000`, port 8097, its own
+copy of `tv-xingzhi` with `TV_GEOMETRY=320x180`, `TV_FPS=12`, port 8097, its own
 `TV_DATA_DIR`, now-playing file and relay events file
 (`TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv-passport/relay-events.json`).
 The relay is told about it with
@@ -68,13 +68,16 @@ The relay is told about it with
 the phone remote then follows whichever device changed channel last, or the
 one picked at the top of the page. Open the port in the cloud firewall as well.
 
-The byte rate is lower than the Xingzhi's 200000 because the ESP32-C3 cannot
-decode much more: in busy scenes at 140-165 kB/s of picture its decode and
-panel work took longer than the time it covered, frames fell to 9.5-11 a
-second, and keys answered late until the scene calmed down. Below about
-110 kB/s it keeps up with room to spare.
+It keeps the Xingzhi's byte rate (200000). In busy scenes at 140-165 kB/s of
+picture the ESP32-C3's decode and panel work takes longer than the time it
+covers and frames fall to 9.5-11 a second. Capping the Passport at 110 kB/s
+kept it ahead but cost the colour: every frame is fitted into its byte budget
+by stepping down a ladder of coarser colours (`frames.encode_within`), and at
+about 9 kB a frame detailed channels such as CCTV1 sat on the coarsest rungs,
+eight flat colours. The cap was removed once the firmware took keys above the
+video task.
 
-The firmware does not rely on that cap alone. On this single-core chip a busy
+On this single-core chip a busy
 scene keeps the video task (priority 5) ready all the time, and the task that
 takes the keys -- the main task running `av_player_main()`, priority 1 -- did
 not run until the scene calmed down. The Passport's board header sets

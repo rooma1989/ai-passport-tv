@@ -50,14 +50,16 @@ python -m esptool --chip esp32c3 -p PORT write-flash 0x400000 build-muse-dual/tv
 ## 服务器
 
 画面尺寸是每个服务器进程固定的，而且一次只服务一台设备，所以 Passport 在星智那台旁边有自己的实例：
-`tv-passport`，照抄 `tv-xingzhi`，改成 `TV_GEOMETRY=320x180`、`TV_FPS=12`、`TV_RATE_START=110000`、端口 8097，
+`tv-passport`，照抄 `tv-xingzhi`，改成 `TV_GEOMETRY=320x180`、`TV_FPS=12`、端口 8097，
 用自己的 `TV_DATA_DIR`、正在播放文件和中转事件文件（`TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv-passport/relay-events.json`）。
 中转用 `--extra-device Passport:/var/lib/ai-passport-tv-passport/now-playing.json:/var/lib/ai-passport-tv-passport/relay-events.json`
 认识它；手机遥控自动跟着最近换过台的那台设备，也可以在页面顶上点名遥控哪一台。云服务器的防火墙也要放行这个端口。
 
-码率比星智的 200000 低，因为 ESP32-C3 解不动更多：复杂画面每秒 140–165 KB 时，解码和刷屏的耗时超过了实际时长，帧率掉到每秒 9.5–11 帧，按键也要等画面平静下来才响应。每秒 110 KB 以下它有余量。
+码率和星智一样是 200000。复杂画面每秒 140–165 KB 时，ESP32-C3 解码和刷屏的耗时超过实际时长，帧率掉到每秒 9.5–11 帧。
+曾经把 Passport 限制在每秒 110 KB，帧率是跟上了，颜色却坏了：每帧都要塞进字节预算，塞不下就逐档减少颜色（`frames.encode_within`），
+每帧只有约 9 KB 时，CCTV1 这类细节多的台一直落在最粗的几档，只剩 8 种纯色。固件把按键任务提到视频任务之上以后，这个上限就去掉了。
 
-固件这边不只靠这个上限。C3 是单核，复杂画面时视频任务（优先级 5）一直处于就绪状态，而处理按键的任务——运行
+C3 是单核，复杂画面时视频任务（优先级 5）一直处于就绪状态，而处理按键的任务——运行
 `av_player_main()` 的 main 任务，优先级 1——要等画面平静下来才轮得到。Passport 的板级头文件设了
 `BSP_KEYS_ABOVE_VIDEO 1`，把这个任务提到优先级 6，刚好高过视频任务；它平时在按键队列上以 50 ms 为单位等待，
 所以画面几乎不受影响，声音（7）仍在它之上。每次按键都会打印 `key <n> ev <n> waited <ms> ms`，即从按键任务到处理按键的等待时间。
