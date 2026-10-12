@@ -40,6 +40,7 @@ from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packe
                        send_packet, _write_slice)
 from . import now_playing, reconnect
 from .cast_switch import SwitchWatcher
+from .voice.session import VoiceService
 
 # 替代 --token-file 的环境变量名；只有令牌值需与固件一致，变量名无需一致。
 TOKEN_ENV = "TV_PAIRING_TOKEN"
@@ -322,6 +323,8 @@ class AVServer:
         self.state_history: List[Dict[str, Any]] = []
         self.session_limit_s: float | None = None
         self.fault_injector: Any | None = None
+        # 语音：设备按住 OK 说的话（server/voice/）；不设 TV_ASR_SOCKET 时关闭，CONFIG 不给 voice。
+        self.voice = VoiceService.from_env(self.logger)
 
     def set_session_state(self, state: SessionState, session: int, reason: str = "", **kwargs: Any) -> None:
         """记录会话状态迁移及当时的发送计数。"""
@@ -441,11 +444,10 @@ class AVServer:
         except EOFError:
             # 无 END 的断开原样抛出，由 serve() 分类。
             raise
-        if packet.kind == Kind.STATUS:
-            self._take_status(packet)
+        if self._take_upstream(packet):
             return False
         if packet.kind != Kind.END:
-            raise ProtocolError("only END or STATUS allowed while playing")
+            raise ProtocolError("only END, STATUS or VOICE allowed while playing")
         return True
 
     def note_device_boot(self, greeting: dict, now: float | None = None) -> None:
@@ -476,6 +478,29 @@ class AVServer:
                 parts.append(f"{key}={str(value)[:32]}")
         if parts:
             self.logger("device wifi " + " ".join(parts))
+
+    def _take_upstream(self, packet: Packet) -> bool:
+        """会话照常进行的上行包：STATUS（音量亮度变了）和语音。处理了返回 True。"""
+        if packet.kind == Kind.STATUS:
+            self._take_status(packet)
+            return True
+        if packet.kind in (Kind.VOICE_CTL, Kind.VOICE):
+            self.voice.take(packet, self._voice_context)
+            return True
+        return False
+
+    def _voice_context(self) -> dict:
+        """识别要用的背景：设备看到的频道表（序号、分组）、正在播的台、设备的音量亮度。"""
+        return {"config": live.channel_config(), "current": self.channel_name,
+                "device": dict(self.device_status or {})}
+
+    def voice_flush(self, connection: socket.socket, session: int, seq: int) -> int:
+        """把排好的语音结果发出去，像 SWITCH 一样占序号；返回下一个序号。"""
+        for payload in self.voice.results():
+            self.phase = "voice_send"
+            send_packet(connection, Packet(Kind.VOICE_RESULT, session, seq, 0, payload))
+            seq += 1
+        return seq
 
     def _take_status(self, packet: Packet) -> None:
         """设备的音量或亮度变了：记下来给手机看，会话照常。也每 30 秒报一次信号。"""
@@ -519,13 +544,12 @@ class AVServer:
                     # select 报告可读但数据尚不可取：不是对端错误，继续等待。
                     self.phase = "schedule_wait"
                     continue
-                if packet.kind == Kind.STATUS:
-                    # 等待、重连、暂停中也可能调音量：记下后接着等。
-                    self._take_status(packet)
+                if self._take_upstream(packet):
+                    # 等待、重连、暂停中也可能调音量、说话：记下后接着等。
                     self.phase = "schedule_wait"
                     continue
                 if packet.kind != Kind.END:
-                    raise ProtocolError("only END or STATUS allowed after HELLO")
+                    raise ProtocolError("only END, STATUS or VOICE allowed after HELLO")
                 return False
             if time.monotonic() >= target:
                 return True
@@ -605,7 +629,8 @@ class AVServer:
             send_packet(connection, Packet(Kind.CONFIG, session, 0, 0,
                                            json_bytes(dict(CONFIG, session=session,
                                                            channel=channel_id,
-                                                           **self._channel_payload()))))
+                                                           **self._channel_payload(),
+                                                           **self.voice.config()))))
             self.phase = "live_palette"
             # 首帧前必须有调色板，缺失则设备无色可用，画面全黑。
             try:
@@ -857,6 +882,7 @@ class AVServer:
                 if self._device_left(connection, session):
                     return
             self.keep_now_playing()
+            seq = self.voice_flush(connection, session, seq)
             decision = self.switch_watcher.poll(self.channel_name, now)
             if decision is not None and self.device_switches:
                 kind, target = decision
@@ -1169,6 +1195,7 @@ class AVServer:
             # 新固件自己画快进、下一个的提示（"hint": 1）；别的固件不发，免得它把包当成坏数据。
             self.device_hints = greeting.get("hint") == 1
             self.device_audio_only = greeting.get("audio_only") == 1
+            self.voice.reset()
             self.device_status = None
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):
                 self.device_status = {"volume": greeting["volume"], "brightness": greeting["brightness"],

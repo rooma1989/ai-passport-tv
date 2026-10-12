@@ -135,6 +135,13 @@ def _tell_paused(server, connection, session: int, wire: WireState, paused: bool
     wire.seq += 1
 
 
+def _flush_voice(server, connection, session: int, wire: WireState) -> None:
+    """暂停、断流重连时也把语音结果发出去（暂停中说「继续」最常见）。"""
+    flush = getattr(server, "voice_flush", None)
+    if flush is not None:
+        wire.seq = flush(connection, session, wire.seq)
+
+
 def hold(server, connection, session: int, channel: LiveChannel, wire: WireState,
          origin: float, since: float, restart_reason: str = "",
          paused: bool = False, pause_title: str = "") -> LiveChannel | None:
@@ -176,6 +183,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 _send_silence(server, connection, session, wire, origin)
                 keep()
                 now = time.monotonic()
+                _flush_voice(server, connection, session, wire)
                 verdict = server.pause_verdict(paused_at)
                 if verdict == "leave":
                     return None
@@ -200,6 +208,7 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 _tell_device(connection, session, "source unavailable")
                 raise LiveError(f"source unavailable for {RECONNECT_TIMEOUT_S:.0f} s")
             _send_silence(server, connection, session, wire, origin)
+            _flush_voice(server, connection, session, wire)
 
             if restart is None:
                 if channel is not None and not pending:

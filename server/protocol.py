@@ -21,6 +21,12 @@ from .frames import VIDEO_MAX
 AUDIO_PCM_BYTES = 1280
 # 该块上线的字节数：4 字节 IMA ADPCM 头加 640 个半字节（见 adpcm.py），须与固件 AV_AUDIO_BYTES 一致。
 AUDIO_BYTES = 324
+# 语音（docs/superpowers/specs/2026-10-12-voice-control-design.md 第 6 节）：上行一个 VOICE 包
+# 是一个 40 ms 的 ADPCM 块，布局同下行音频（AUDIO_BYTES）；一句话最多 10 秒即 250 块。
+VOICE_MAX_S = 10
+VOICE_MAX_BLOCKS = 250
+# 结果 JSON 的上限：C3 上解析时还要建 cJSON 树，结果超过 2 KB 会挤占堆。
+VOICE_RESULT_MAX = 2048
 UINT32_MAX = 0xFFFFFFFF
 IO_TIMEOUT = 0.25
 
@@ -39,6 +45,12 @@ class Kind(IntEnum):
     SWITCH = 8
     # 设备上报自己的音量、亮度（JSON {"volume", "brightness"}），变化时发；方向与其他包相反。
     STATUS = 9
+    # 语音控制，设备 → 服务端，JSON：begin / end / cancel / pick（见 server/voice/session.py）。
+    VOICE_CTL = 10
+    # 语音音频，设备 → 服务端：一个 AUDIO_BYTES 的 IMA ADPCM 块；pts 是从 begin 起的毫秒数。
+    VOICE = 11
+    # 语音结果，服务端 → 设备，JSON，不超过 VOICE_RESULT_MAX；只发给 CONFIG 里给了 voice 的会话。
+    VOICE_RESULT = 12
 
 # 唯一使用的标志位，仅用于视频：本包是上一包所起始那一帧的后续条带。
 # 同一帧的多个包共用一个时间戳，需要此标志与重复帧区分。
@@ -73,8 +85,12 @@ class Packet:
 
 
 def validate_length(kind: Kind, size: int) -> None:
-    if kind in (Kind.HELLO, Kind.CONFIG, Kind.ERROR, Kind.SWITCH, Kind.STATUS):
+    if kind in (Kind.HELLO, Kind.CONFIG, Kind.ERROR, Kind.SWITCH, Kind.STATUS, Kind.VOICE_CTL):
         valid = 0 < size <= CONTROL_MAX
+    elif kind == Kind.VOICE_RESULT:
+        valid = 0 < size <= VOICE_RESULT_MAX
+    elif kind == Kind.VOICE:
+        valid = size == AUDIO_BYTES
     elif kind == Kind.PCM:
         valid = (size == AUDIO_BYTES or size == AUDIO_PCM_BYTES)
     elif kind in (Kind.JPEG, Kind.PALETTE):

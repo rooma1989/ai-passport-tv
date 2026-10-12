@@ -2,7 +2,7 @@
 # Steps and the reasons for each setting: docs/boards/xingzhi-cube-154.md ("Cloud server").
 [Unit]
 Description=AI Passport TV media server for the Xingzhi Cube 1.54 (240x180, port 8098)
-After=network-online.target tv-relay.service
+After=network-online.target tv-relay.service muse-asr.service
 Wants=network-online.target
 
 [Service]
@@ -27,6 +27,14 @@ Environment=TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv/relay-events.json
 Environment=TV_CHANNEL_GROUPS_FILE=/var/lib/ai-passport-tv/channel-groups.json
 Environment=TV_NOW_PLAYING_FILE=/var/lib/ai-passport-tv/now-playing.json
 Environment=TV_REMOTE_URL_FILE=/var/lib/ai-passport-tv/remote-url.txt
+# Voice commands (server/README.md, "Voice control"): muse-asr's local socket (0660, group
+# tvserver; see muse-asr.service), and the relay for episodes and playback, acting on this
+# device by name: d0 is the relay's --device-name device. Remove TV_ASR_SOCKET to turn voice off.
+Environment=TV_ASR_SOCKET=/run/muse-asr/asr.sock
+Environment=TV_RELAY_KEY_FILE=/etc/ai-passport-tv/relay-key
+Environment=TV_RELAY_DEVICE=d0
+# Only while tuning the thresholds: recognised words in the log.
+#Environment=TV_VOICE_LOG_TEXT=1
 ExecStart=/usr/bin/python3.11 -m server.tv_server live --channel ch000 --port 8098 --ffmpeg /opt/ai-passport-tv/ffmpeg-btbn-8.1 --token-file /etc/ai-passport-tv/token
 Restart=always
 RestartSec=3
