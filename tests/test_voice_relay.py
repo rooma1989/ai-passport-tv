@@ -121,8 +121,9 @@ class VoiceRelayTests(unittest.TestCase):
         status, answer = self.call("GET", "/api/voice/catalog?device=Passport")
         self.assertEqual(status, 200)
         self.assertEqual(answer["device"], {"id": "d1", "name": "Passport", "online": True})
-        self.assertEqual(answer["series"], [{"id": "sr01", "name": "番剧ss7", "total": 3, "next": 1}])
-        self.assertEqual(answer["creators"], [{"id": "up01", "name": "UP42"}])
+        self.assertEqual(answer["series"], [{"id": "sr01", "name": "番剧ss7", "site": "bilibili",
+                                             "total": 3, "next": 1}])
+        self.assertEqual(answer["creators"], [{"id": "up01", "name": "UP42", "site": "bilibili"}])
         self.assertEqual(answer["playing"]["channel"], "sr01")
         self.assertFalse(answer["playing"]["paused"])
         self.assertEqual(self.call("GET", "/api/voice/catalog?device=x")[1]["ok"], False)

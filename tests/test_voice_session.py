@@ -322,6 +322,48 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(json.loads(self.voice.results()[0])["reply"], "这个选项已经过期了")
         self.assertEqual(len(self.relay.calls), 1)
 
+    def test_list_a_category_and_page_through_it(self):
+        """「央视有哪些台」: five channels and a "next page" row; picking it answers the same id."""
+        config = {"groups": ["央视"], "channel_list": [{"id": f"ch{n:03d}", "name": f"CCTV{n + 1}", "g": 0}
+                                                     for n in range(8)]}
+        ctx = lambda: {"config": config, "current": "ch000", "device": {"volume": 50}}
+        self.asr.text = "央视有哪些台"
+        result = self.say(ctx=ctx)[0]
+        self.assertEqual((result["intent"], result["reply"]), ("list", "央视有 8 个台"))
+        self.assertEqual([c.get("do") for c in result["choices"][:5]],
+                         [{"channel": f"ch{n:03d}"} for n in range(5)])
+        last = result["choices"][5]
+        self.assertEqual((last["label"], last["ref"]), ("下一页 · 还有 3 个", "ls:..2:5"))
+        self.voice.take(ctl("pick", 1, ref=last["ref"]), ctx)
+        page = json.loads(self.voice.results()[0])
+        self.assertEqual((page["id"], page["intent"]), (1, "list"))
+        self.assertEqual([c["do"]["channel"] for c in page["choices"]], ["ch005", "ch006", "ch007"])
+        self.assertNotIn("do", page)
+        self.assertEqual(self.relay.calls, [], "listing never calls the relay's actions")
+        # The first page's ref is no longer offered once the second page replaced it.
+        self.voice.take(ctl("pick", 1, ref="ls:..2:5"), ctx)
+        self.assertEqual(json.loads(self.voice.results()[0])["reply"], "这个选项已经过期了")
+
+    def test_sites_come_from_the_relay(self):
+        catalog = self.relay.catalog
+
+        def with_sites():
+            data = catalog()
+            for row in data["series"] + data["creators"]:
+                row["site"] = "youtube" if row["id"] == "sr02" else "bilibili"
+            return data
+
+        self.relay.catalog = with_sites
+        self.asr.text = "我有哪些youtube频道告诉我。"
+        result = self.say()[0]
+        self.assertEqual((result["intent"], result["reply"]), ("list", "YouTube 频道有 1 个"))
+        self.assertEqual(result["choices"], [{"label": "熊出没之探险日", "lead": "07", "do": {"channel": "sr02"}}])
+        # An older relay without sites: say so instead of guessing.
+        self.relay.catalog = catalog
+        result = self.say(uid=2)[0]
+        self.assertEqual(result["intent"], "none")
+        self.assertIn("中转", result["reply"])
+
     def test_result_fits_the_device(self):
         long = {"id": 1, "state": "final", "heard": "长" * 400, "reply": "找到",
                 "choices": [{"label": "很长的名字" * 4, "lead": "01", "do": {"channel": "ch000"}}] * 6}
