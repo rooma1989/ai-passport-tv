@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server.relay import youtube
-from server.relay.bilibili import BilibiliError
+from server.relay.bilibili import BilibiliError, SourceError
 from server.relay.youtube import YouTube
 
 
@@ -180,6 +180,48 @@ class StreamProcTests(unittest.TestCase):
         proc = youtube.StreamProc(response)
         proc.kill()
         self.assertTrue(response.closed)
+
+
+class SearchTests(unittest.TestCase):
+    def client(self, answer):
+        self.calls = []
+
+        def fetch(path, params, timeout=None):
+            self.calls.append((path, params, timeout))
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+        return YouTube(fetch_json=fetch)
+
+    def test_videos(self):
+        client = self.client({"videos": [
+            {"id": "n61ULEU7CO0", "title": " Lofi  Girl ", "duration": 3615, "uploader": "Lofi Girl"},
+            {"id": "bad", "title": "x", "duration": 5}, {"id": "4xDzrJKXOOY", "title": "", "duration": 5},
+            {"id": "4xDzrJKXOOZ", "title": "no duration", "duration": None}, "junk"]})
+        self.assertEqual(client.search("lofi", timeout=2.5), [
+            {"id": "n61ULEU7CO0", "title": "Lofi Girl", "uploader": "Lofi Girl", "duration": 3615}])
+        self.assertEqual(self.calls, [("/yt/search", {"q": "lofi", "n": youtube.SEARCH_MAX}, 2.5)])
+
+    def test_channels(self):
+        client = self.client({"channels": [
+            {"id": "UCSJ4gkVC6NrvII8umztf0Ow", "name": "Lofi Girl", "fans": 15200000, "videos": 0},
+            {"id": "UCbad", "name": "x"}, {"id": "UCOxqgCwgOqC2lMqC5PYz_Dg", "name": "", "fans": 1}]})
+        self.assertEqual(client.search_creators("lofi girl", timeout=3), [
+            {"id": "UCSJ4gkVC6NrvII8umztf0Ow", "name": "Lofi Girl", "fans": 15200000, "videos": 0,
+             "latest": None}])
+        self.assertEqual(self.calls[0][1]["kind"], "channel")
+        self.assertEqual(youtube.channel_url("UCSJ4gkVC6NrvII8umztf0Ow"),
+                         "https://www.youtube.com/channel/UCSJ4gkVC6NrvII8umztf0Ow")
+
+    def test_reasons(self):
+        for error, reason in ((youtube.NodeError(503, '{"error": "busy"}'), "busy"),
+                              (youtube.NodeError(504, '{"error": "yt-dlp timed out"}'), "slow"),
+                              (youtube.NodeError(503, '{"error": "Sign in to confirm"}'), ""),
+                              (TimeoutError("timed out"), "slow"), (OSError("refused"), "")):
+            with self.subTest(error=error):
+                with self.assertRaises(SourceError) as caught:
+                    self.client(error).search("lofi")
+                self.assertEqual(caught.exception.reason, reason)
 
 
 if __name__ == "__main__":

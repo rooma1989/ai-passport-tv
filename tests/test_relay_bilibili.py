@@ -59,6 +59,64 @@ class FakeFetch:
         raise AssertionError(f"unexpected url {url}")
 
 
+# Voice search (search_type=video): trimmed from a real answer for 猫和老鼠 (keyword highlighting in
+# <em>, durations as "m:s" with minutes past 60), plus the kinds that cannot be cast.
+SEARCH_VIDEO = {"code": 0, "message": "OK", "data": {"page": 1, "pagesize": 20, "numResults": 1000, "result": [
+    {"type": "video", "bvid": "BV1yi7rzDEWc", "title": "经典欣赏～《<em class=\"keyword\">猫和老鼠</em>》",
+     "author": "猫咪老鼠大王", "duration": "1704:3", "is_pay": 0, "is_charge_video": 0, "badgepay": False,
+     "arcurl": "http://www.bilibili.com/video/av114608736116096"},
+    {"type": "video", "bvid": "BV1EhAaeXEYu", "title": "20分钟纯享版 | <em class=\"keyword\">猫和老鼠</em> &amp; 朋友",
+     "author": "猫和老鼠", "duration": "19:57", "is_pay": 0, "is_charge_video": 0, "badgepay": False,
+     "arcurl": "http://www.bilibili.com/video/av114024301724562"},
+    {"type": "video", "bvid": "BV1chargeAAA", "title": "充电专属", "author": "x", "duration": "3:00",
+     "is_pay": 0, "is_charge_video": 1, "arcurl": "http://www.bilibili.com/video/av1"},
+    {"type": "video", "bvid": "BV1payAAAAAA", "title": "付费", "author": "x", "duration": "3:00",
+     "is_pay": 1, "is_charge_video": 0, "arcurl": "http://www.bilibili.com/video/av2"},
+    {"type": "video", "bvid": "BV1badgeAAAA", "title": "付费角标", "author": "x", "duration": "3:00",
+     "badgepay": True, "arcurl": "http://www.bilibili.com/video/av3"},
+    {"type": "video", "bvid": "BV1bangumiAA", "title": "番剧", "author": "x", "duration": "24:00",
+     "arcurl": "https://www.bilibili.com/bangumi/play/ep1"},
+    {"type": "video", "bvid": "BV1cheeseAAA", "title": "课程", "author": "x", "duration": "24:00",
+     "arcurl": "https://www.bilibili.com/cheese/play/ep1"},
+    {"type": "video", "bvid": "BV1liveAAAAA", "title": "直播", "author": "x", "duration": "1:00",
+     "is_live_room_inline": 1, "arcurl": "https://live.bilibili.com/21852"},
+    {"type": "video", "bvid": "BV1nodurAAAA", "title": "时长不明", "author": "x", "duration": "",
+     "arcurl": "http://www.bilibili.com/video/av4"},
+    {"type": "video", "bvid": "BV1yi7rzDEWc", "title": "重复", "author": "x", "duration": "1:00"},
+    {"type": "video", "bvid": "not-a-bvid", "title": "坏 id", "author": "x", "duration": "1:00"},
+    {"type": "ketang", "bvid": "BV1ketangAAA", "title": "课堂", "duration": "1:00"},
+    {"type": "video", "bvid": "BV1m9pT6fEHu", "title": "<em class=\"keyword\">猫和老鼠</em> | 鼠鼠的游泳教学",
+     "author": "猫和老鼠", "duration": "4:40", "is_pay": 0, "is_charge_video": 0,
+     "arcurl": "http://www.bilibili.com/video/av117398451653392"},
+]}}
+# Voice search (search_type=bili_user) for 老番茄: the newest uploads come along in "res".
+SEARCH_USER = {"code": 0, "message": "OK", "data": {"page": 1, "result": [
+    {"type": "bili_user", "mid": 546195, "uname": "老番茄", "usign": "新浪微博：_老番茄_", "fans": 20840107,
+     "videos": 680, "level": 6, "is_upuser": 1, "is_live": 0, "res": [
+         {"bvid": "BV1chargeBBB", "title": "充电专属的新视频", "duration": "10:00", "is_pay": 0,
+          "is_charge_video": 1, "arcurl": "http://www.bilibili.com/video/av5"},
+         {"bvid": "BV1iqpt6cEMU", "title": "超市里……未检测到人脸……", "duration": "48:13", "is_pay": 0,
+          "is_charge_video": 0, "arcurl": "http://www.bilibili.com/video/av117411353204712"}]},
+    {"type": "bili_user", "mid": 609013982, "uname": "PPOMO<em class=\"keyword\">老番茄</em>", "fans": 96724,
+     "videos": 96, "res": []},
+    {"type": "bili_user", "mid": 1, "uname": "没有投稿", "fans": 3, "videos": 0, "res": []},
+    {"type": "bili_user", "mid": "x1", "uname": "坏 mid", "fans": 3, "videos": 5},
+    {"type": "video", "bvid": "BV1yi7rzDEWc", "title": "不是 UP 主"},
+]}}
+
+
+class SearchFetch(FakeFetch):
+    """FakeFetch that also takes the timeout the voice search passes."""
+
+    def __init__(self, answers):
+        super().__init__(answers)
+        self.timeouts = []
+
+    def __call__(self, url, cookie, timeout=None):
+        self.timeouts.append(timeout)
+        return super().__call__(url, cookie)
+
+
 class LinkTests(unittest.TestCase):
     def test_space_links(self):
         for text in ["https://space.bilibili.com/546195",
@@ -236,6 +294,72 @@ class SeriesTests(unittest.TestCase):
         with self.assertRaises(BilibiliError) as caught:
             self.client(**{"pgc/player/web/playurl": preview}).media_url("ep52310/3452735")
         self.assertTrue(caught.exception.permanent)
+
+
+class SearchTests(unittest.TestCase):
+    def client(self, **extra):
+        answers = {"finger/spi": SPI, "search_type=video": SEARCH_VIDEO, "search_type=bili_user": SEARCH_USER}
+        answers.update(extra)
+        self.fetch = SearchFetch(answers)
+        return Bilibili(fetch_json=self.fetch)
+
+    def test_videos(self):
+        hits = self.client().search("猫和老鼠")
+        self.assertEqual(hits, [
+            {"id": "BV1yi7rzDEWc", "title": "经典欣赏～《猫和老鼠》", "uploader": "猫咪老鼠大王",
+             "duration": 1704 * 60 + 3},
+            {"id": "BV1EhAaeXEYu", "title": "20分钟纯享版 | 猫和老鼠 & 朋友", "uploader": "猫和老鼠",
+             "duration": 19 * 60 + 57},
+            {"id": "BV1m9pT6fEHu", "title": "猫和老鼠 | 鼠鼠的游泳教学", "uploader": "猫和老鼠", "duration": 280}])
+        url = self.fetch.calls[-1][0]
+        self.assertTrue(url.startswith(f"{bilibili.API}/x/web-interface/search/type?"), url)
+        for part in ("search_type=video", "keyword=%E7%8C%AB%E5%92%8C%E8%80%81%E9%BC%A0", "page=1"):
+            self.assertIn(part, url)
+        self.assertNotIn("w_rid", url, "the unsigned API: no wbi signature")
+        self.assertEqual(self.fetch.calls[-1][1], "buvid3=B3-COOKIE")
+
+    def test_limit(self):
+        self.assertEqual([h["id"] for h in self.client().search("猫和老鼠", limit=1)], ["BV1yi7rzDEWc"])
+
+    def test_creators(self):
+        hits = self.client().search_creators("老番茄")
+        self.assertEqual(hits, [
+            {"id": "546195", "name": "老番茄", "videos": 680, "fans": 20840107,
+             "latest": {"id": "BV1iqpt6cEMU", "title": "超市里……未检测到人脸……", "duration": 48 * 60 + 13}},
+            {"id": "609013982", "name": "PPOMO老番茄", "videos": 96, "fans": 96724, "latest": None}])
+        self.assertIn("search_type=bili_user", self.fetch.calls[-1][0])
+
+    def test_the_whole_search_keeps_to_its_time(self):
+        """buvid3 and the search share the time the voice reply can wait."""
+        client = self.client()
+        client.search("猫和老鼠", timeout=3.0)
+        self.assertEqual(len(self.fetch.timeouts), 2)
+        self.assertTrue(all(0 < t <= 3.0 for t in self.fetch.timeouts), self.fetch.timeouts)
+        self.assertLessEqual(self.fetch.timeouts[1], self.fetch.timeouts[0])
+        # Other calls keep their own default.
+        self.assertEqual(Bilibili(fetch_json=lambda url, cookie: SPI if "spi" in url else LIST)
+                         .uploads("546195")[0].bvid, "BV1aZpw6DEKJ")
+
+    def test_slow_and_refused(self):
+        with self.assertRaises(BilibiliError) as caught:
+            self.client(**{"search_type=video": TimeoutError("timed out")}).search("x")
+        self.assertEqual(caught.exception.reason, "slow")
+        with self.assertRaises(BilibiliError) as caught:
+            self.client(**{"search_type=video": OSError("connection reset")}).search("x")
+        self.assertEqual(caught.exception.reason, "")
+        with self.assertRaises(BilibiliError) as caught:
+            self.client(**{"search_type=video": {"code": -412, "message": "请求被拦截"}}).search("x")
+        self.assertEqual(caught.exception.reason, "")
+
+    def test_parsing_helpers(self):
+        self.assertEqual(bilibili.parse_duration("1:02:03"), 3723)
+        self.assertEqual(bilibili.parse_duration("3:2"), 182)
+        self.assertEqual(bilibili.parse_duration(95), 95)
+        for bad in ("", None, "abc", "1:x", "1:2:3:4", True):
+            self.assertEqual(bilibili.parse_duration(bad), 0, bad)
+        self.assertEqual(bilibili.clean_title('<em class="keyword">猫</em>和&lt;老鼠&gt;\n'), "猫和<老鼠>")
+        self.assertEqual(bilibili.search_hits({}), [])
+        self.assertEqual(bilibili.creator_hits({"result": None}), [])
 
 
 if __name__ == "__main__":

@@ -650,15 +650,196 @@ class ListTests(unittest.TestCase):
             self.assertIsNone(intent.list_page(bad, TODAY), bad)
 
 
+# ---- search ----
+# (utterance, site, kind, query): kind "" means the question "video or UP 主?" comes first.
+SEARCH_CASES = [
+    # unclear what to search for: ask
+    ("搜索猫和老鼠", "bilibili", "", "猫和老鼠"),
+    ("搜索李子柒", "bilibili", "", "李子柒"),
+    ("搜一下老番茄", "bilibili", "", "老番茄"),
+    ("帮我搜罗翔", "bilibili", "", "罗翔"),
+    ("搜一搜熊出没", "bilibili", "", "熊出没"),
+    ("B站搜猫和老鼠", "bilibili", "", "猫和老鼠"),
+    ("在B站上搜一下罗翔说刑法", "bilibili", "", "罗翔说刑法"),
+    ("搜索哔哩哔哩的老番茄", "bilibili", "", "老番茄"),
+    ("油管搜lofi", "youtube", "", "lofi"),
+    ("优兔搜一下周杰伦", "youtube", "", "周杰伦"),
+    ("YouTube上搜索 Lofi Girl。", "youtube", "", "lofi girl"),
+    ("搜uptown funk", "bilibili", "", "uptown funk"),
+    ("小智小智，搜索一下熊出没", "bilibili", "", "熊出没"),
+    # videos
+    ("搜视频猫和老鼠", "bilibili", "video", "猫和老鼠"),
+    ("搜索视频猫和老鼠", "bilibili", "video", "猫和老鼠"),
+    ("搜索猫和老鼠视频", "bilibili", "video", "猫和老鼠"),
+    ("搜索猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
+    ("搜一下猫和老鼠相关视频", "bilibili", "video", "猫和老鼠"),
+    ("找猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
+    ("找一下李子柒的视频", "bilibili", "video", "李子柒"),
+    ("我想看猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
+    ("看看小猪佩奇的视频吧", "bilibili", "video", "小猪佩奇"),
+    ("放一个猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
+    ("放一个lofi视频", "bilibili", "video", "lofi"),
+    ("来点猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
+    ("我想看搞笑视频的视频", "bilibili", "video", "搞笑视频"),
+    ("B站搜索老番茄的视频", "bilibili", "video", "老番茄"),
+    ("在YouTube上找lofi的视频", "youtube", "video", "lofi"),
+    ("麻烦帮我在油管上搜一下lofi的视频", "youtube", "video", "lofi"),
+    ("我想看YouTube上周杰伦的视频", "youtube", "video", "周杰伦"),
+    ("搜一下Taylor Swift的视频", "bilibili", "video", "taylor swift"),
+    ("油管搜视频 lo-fi hip hop", "youtube", "video", "lofi hip hop"),
+    # creators (UP 主 / channels)
+    ("搜UP主老番茄", "bilibili", "up", "老番茄"),
+    ("搜索UP主罗翔说刑法", "bilibili", "up", "罗翔说刑法"),
+    ("搜博主李子柒", "bilibili", "up", "李子柒"),
+    ("找罗翔这个UP主", "bilibili", "up", "罗翔"),
+    ("搜索罗翔up", "bilibili", "up", "罗翔"),
+    ("搜频道lofi girl", "bilibili", "up", "lofi girl"),
+    ("搜一下 Lofi Girl 的频道", "bilibili", "up", "lofi girl"),
+    ("搜油管频道lofi girl", "youtube", "up", "lofi girl"),
+    ("YouTube上找lofi girl频道", "youtube", "up", "lofi girl"),
+    ("在油管搜一下李子柒这个博主", "youtube", "up", "李子柒"),
+    ("B站搜UP主何同学", "bilibili", "up", "何同学"),
+]
+# What other intents own: never a search.
+NOT_SEARCH = ["我想看湖南卫视", "我要看湖南卫视", "我要看犬夜叉第三集", "熊出没第三集", "看体育", "有哪些动画片",
+              "有什么视频", "我有哪些YouTube频道", "B站有哪些频道", "YouTube频道", "暂停", "继续播放", "大声一点",
+              "下一集", "下一个台", "第二个", "下一页", "帮我找湖南卫视", "找到湖南卫视", "找不到频道", "我想看猫和老鼠",
+              "看视频", "放一个视频", "我想看B站的视频", "我想看点好看的视频", "我想看搞笑视频",
+              "有没有猫和老鼠的视频", "播放", "播放猫和老鼠", "今天天气怎么样", "状态", "只听声音"]
+
+
+class SearchIntentTests(unittest.TestCase):
+    def test_search_phrasings(self):
+        self.assertGreaterEqual(len(SEARCH_CASES), 40)
+        for text, site, kind, query in SEARCH_CASES:
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.search), ("search", {"site": site, "kind": kind, "query": query}))
+                self.assertIsNone(d.do)
+                self.assertIsNone(d.relay)
+
+    def test_other_intents_are_not_stolen(self):
+        for text in NOT_SEARCH:
+            with self.subTest(text=text):
+                self.assertIsNone(decide(text, LIVE).search)
+        for text, cat, _ in CASES + LIST_CASES:
+            with self.subTest(text=text):
+                self.assertIsNone(decide(text, cat).search)
+
+    def test_nothing_to_search_for(self):
+        for text, words in (("搜索", "要搜什么？"), ("搜一下", "要搜什么？"), ("搜视频", "要搜什么视频？"),
+                            ("搜UP主", "要搜什么 UP 主？"), ("油管搜一下", "要搜什么？"),
+                            ("搜一下有什么好看的", "要搜什么？")):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.search), ("none", None))
+                self.assertTrue(d.reply.startswith(words), d.reply)
+
+    def test_page_rows_and_paging(self):
+        results = [{"id": f"BV1{n:09d}", "title": f"<猫和老鼠>第{n}集", "uploader": "猫咪", "duration": 65 + n}
+                   for n in range(12)]
+        d = intent.search_page("bilibili", "video", "猫和老鼠", results, 0, 7)
+        self.assertEqual((d.kind, d.reply), ("search", "找到 12 个B站视频"))
+        self.assertEqual(len(d.choices), intent.CHOICES_MAX)
+        self.assertEqual(d.choices[0], {"label": "<猫和老鼠>第0集 · 1:05", "lead": "01", "ref": "sv:7:0"})
+        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 7 个", "lead": "", "ref": "sp:7:5"})
+        d = intent.search_page("bilibili", "video", "猫和老鼠", results, 5, 7)
+        self.assertEqual(d.reply, "第 6-10 个，共 12 个")
+        self.assertEqual(d.choices[0]["lead"], "06")
+        self.assertEqual(d.choices[5]["ref"], "sp:7:10")
+        d = intent.search_page("bilibili", "video", "猫和老鼠", results, 10, 7)
+        self.assertEqual([c["ref"] for c in d.choices], ["sv:7:10", "sv:7:11"])
+        # Six fit without a "next page" row.
+        d = intent.search_page("youtube", "video", "lofi", results[:6], 0, 7)
+        self.assertEqual((d.reply, len(d.choices)), ("找到 6 个YouTube 视频", 6))
+        self.assertTrue(all(c["ref"].startswith("sv:") for c in d.choices))
+        d = intent.search_page("bilibili", "video", "没有的东西", [], 0, 7)
+        self.assertEqual((d.kind, d.reply, d.choices), ("none", "B站没搜到「没有的东西」", None))
+
+    def test_row_labels_fit_the_device(self):
+        long = {"id": "BV1000000000", "title": "【4K修复】猫和老鼠🤓 经典合集 全161集 超长版本 一次看个够",
+                "uploader": "猫咪老鼠大王", "duration": 102243}
+        label = intent.search_page("bilibili", "video", "x", [long], 0, 1).choices[0]["label"]
+        self.assertLessEqual(len(label.encode("utf-8")), intent.LABEL_BYTES)
+        self.assertNotIn("🤓", label)
+        self.assertTrue(label.startswith("【4K修复】猫和老鼠 经典合集"), label)
+        short = {"id": "BV1000000000", "title": "lofi", "uploader": "LoFi", "duration": 3725}
+        self.assertEqual(intent.search_page("bilibili", "video", "x", [short], 0, 1).choices[0]["label"],
+                         "lofi · 1:02:05 · LoFi")
+        # The uploader only when it fits the row; the duration first.
+        short["uploader"] = "Lofi Girl"
+        self.assertEqual(intent.search_page("bilibili", "video", "x", [short], 0, 1).choices[0]["label"],
+                         "lofi · 1:02:05")
+        creators = [{"id": "546195", "name": "老番茄", "fans": 20840107, "videos": 680},
+                    {"id": "1", "name": "小号", "fans": 0, "videos": 3},
+                    {"id": "2", "name": "大号", "fans": 123456789, "videos": 1},
+                    {"id": "3", "name": "新人", "fans": 950, "videos": 0}]
+        d = intent.search_page("bilibili", "up", "番茄", creators, 0, 3)
+        self.assertEqual(d.reply, "找到 4 个B站 UP 主")
+        self.assertEqual([c["label"] for c in d.choices], ["老番茄 · 2084万粉", "小号 · 3个视频", "大号 · 1.2亿粉",
+                                                           "新人 · 950粉"])
+        self.assertEqual([c["ref"] for c in d.choices], ["su:3:0", "su:3:1", "su:3:2", "su:3:3"])
+        self.assertEqual(intent.search_page("youtube", "up", "lofi", creators, 0, 3).reply, "找到 4 个YouTube 频道")
+
+    def test_question_and_creator_menu(self):
+        d = intent.search_question(12)
+        self.assertEqual((d.kind, d.reply), ("ask", "要搜视频，还是搜 UP 主？"))
+        self.assertEqual(d.choices, [{"label": "搜视频", "lead": "", "ref": "sq:12:v"},
+                                     {"label": "搜 UP 主", "lead": "", "ref": "sq:12:u"}])
+        d = intent.creator_menu({"id": "546195", "name": "老番茄"}, 4, 12)
+        self.assertEqual((d.kind, d.reply), ("creator", "「老番茄」：订阅还是看最新？"))
+        self.assertEqual(d.choices, [{"label": "订阅为频道", "lead": "", "ref": "sf:12:4"},
+                                     {"label": "播放最新视频", "lead": "", "ref": "sl:12:4"}])
+
+    def test_refs(self):
+        for op, arg in (("q", "v"), ("v", 19), ("u", 0), ("p", 15), ("f", 19), ("l", 19)):
+            ref = intent.search_ref(op, 9999, arg)
+            self.assertLessEqual(len(ref), 31)
+            self.assertTrue(all(" " <= ch < "\x7f" and ch not in '"\\' for ch in ref), ref)
+            self.assertEqual(intent.parse_search_ref(ref), (op, 9999, str(arg)))
+        for bad in ("", "sv:", "sv:1", "sx:1:1", "sv:12345:1", "sv:1:1;", "ls:..2:5", "ep:sr01:3", "sv:1:-1"):
+            self.assertIsNone(intent.parse_search_ref(bad), bad)
+
+    def test_spoken_answers(self):
+        for text, expected in (("视频", ("video", "")), ("搜视频", ("video", "")), ("要视频", ("video", "")),
+                               ("UP主", ("up", "")), ("博主", ("up", "")), ("搜UP主", ("up", "")),
+                               ("频道", ("up", "")), ("YouTube的视频", ("video", "youtube")),
+                               ("B站UP主吧", ("up", "bilibili")), ("第一个", ("video", "")), ("第二个", ("up", "")),
+                               ("湖南卫视", None), ("第三个", None), ("大声一点", None)):
+            self.assertEqual(intent.search_answer(text), expected, text)
+        for text, n in (("第二个", 2), ("播放第三个", 3), ("选第3个视频", 3), ("第十个", 10), ("第2台", None),
+                        ("两个", None), ("第二个UP主", 2)):
+            self.assertEqual(intent.pick_number(text), n, text)
+        for text, more in (("下一页", True), ("下1页", True), ("换一批", True), ("还有呢", True),
+                           ("下一集", False), ("下一个", False)):
+            self.assertEqual(intent.wants_next_page(text), more, text)
+        for text, action in (("订阅", "follow"), ("订阅为频道", "follow"), ("关注他", "follow"),
+                             ("第一个", "follow"), ("播放最新视频", "latest"), ("看最新的", "latest"),
+                             ("第二个", "latest"), ("随便", None)):
+            self.assertEqual(intent.creator_answer(text), action, text)
+
+    def test_site_lists_without_creators(self):
+        no_yt_up = Catalog([c for c in TODAY_CHANNELS if c.id not in YT_UP], current="ch000")
+        d = decide("我有哪些YouTube频道", no_yt_up)
+        self.assertEqual((d.kind, d.reply), ("none", "还没有 YouTube 频道"))
+        self.assertEqual(listed_ids(decide("YouTube有哪些剧集", no_yt_up), no_yt_up), ["sr03"])
+
+
 class NotFoundTests(unittest.TestCase):
     def test_a_named_series_or_channel_that_is_not_there(self):
-        for text, name in (("葫芦娃第三集", "葫芦娃"), ("葫芦娃第3集", "葫芦娃"), ("葫芦娃最新一集", "葫芦娃"),
-                           ("我要看葫芦娃", "葫芦娃"), ("播放小猪佩奇", "小猪佩奇"), ("打开小猪佩奇", "小猪佩奇"),
+        for text, name in (("葫芦娃第三集", "葫芦娃"), ("葫芦娃第3集", "葫芦娃"), ("葫芦娃最新一集", "葫芦娃")):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.do, d.relay, d.search), ("none", None, None, None))
+                self.assertEqual(d.reply, f"没有找到「{name}」")
+        # A channel that is not there: also say that it can be searched for.
+        for text, name in (("我要看葫芦娃", "葫芦娃"), ("播放小猪佩奇", "小猪佩奇"), ("打开小猪佩奇", "小猪佩奇"),
                            ("切到葫芦娃", "葫芦娃"), ("看熊大", "熊大")):
             with self.subTest(text=text):
                 d = decide(text, LIVE)
-                self.assertEqual((d.kind, d.do, d.relay), ("none", None, None))
-                self.assertEqual(d.reply, f"没有找到「{name}」")
+                self.assertEqual((d.kind, d.do, d.relay, d.search), ("none", None, None, None))
+                self.assertEqual(d.reply, f"没有找到「{name}」，可以说「搜索{name}」")
+                self.assertLessEqual(len(d.reply), 40)
 
     def test_plain_nonsense_is_still_not_understood(self):
         for text in ("今天天气怎么样", "那个那个什么来着", "看什么好", "看不了", "什么", "看看", "打开", "来点",

@@ -8,6 +8,10 @@
     TV_VOICE_LOG_TEXT   1：日志里写识别出的文字（调阈值时用，调完关掉）；默认只写意图和耗时
     TV_VOICE_WAV_DIR    开发用：把每句话存成 WAV 到这个目录，做测试语料；默认不存，平时不要设
 
+语音搜索（「搜视频猫和老鼠」「搜索李子柒」）在这里记住最近一次搜到的东西：结果页用 ref 翻页、
+选中（投屏视频、UP 主再选订阅或播最新），没说清搜什么时追问，面板还在时下一句话可以直接回答
+（「视频」「UP主」「第二个」「下一页」「订阅」）。中转那边的接口见 server/relay/voice.py。
+
 另见 asr.py（识别）、intent.py（理解）、relay_client.py（中转）。
 """
 
@@ -43,6 +47,19 @@ REPLY_NO_VOICE = "这台服务器没有开语音"
 REPLY_NO_RELAY = "这台电视没有连到视频中转"
 REPLY_RELAY_DOWN = "视频中转没回应，稍后再试"
 REPLY_FORMAT = "不支持这种音频格式"
+REPLY_EXPIRED = "这个选项已经过期了"
+
+# ---- 语音搜索 ----
+# 设备等一个语音结果 8 秒（固件 AV_VOICE_RESULT_TIMEOUT_MS，从说完或选中算起）；留一秒给发送。
+RESULT_BUDGET_S = 7.0
+# 剩下的时间不够这么多就不去搜了，直接说太慢。
+SEARCH_MIN_S = 1.5
+# 追问、结果页、选中 UP 主之后这么久内，下一句话可以直接回答（「视频」「第二个」「下一页」「订阅」）。
+FOLLOW_UP_S = 30.0
+SEARCH_RESULTS_MAX = 20
+REPLY_SEARCH_SLOW = {"bilibili": "B站搜索太慢了，稍后再试", "youtube": "YouTube 搜索太慢了，稍后再试"}
+REPLY_SITE_SLOW = {"bilibili": "B站太慢了，稍后再试", "youtube": "YouTube 太慢了，稍后再试"}
+REPLY_CASTING = "投屏中…"
 
 
 def _clip(text: str, limit: int) -> str:
@@ -99,6 +116,11 @@ class VoiceService:
         self.ignored = 0
         # 多用户（TV_DB）：设备不是固定的，认出设备后 bind_device() 按它的 id 造中转客户端。
         self._relay_for: Callable[[str], RelayClient] | None = None
+        # 最近一次搜索：{"gen", "site", "kind", "query", "results", "shown", "offset", "index", "at"}。
+        # shown 是面板上正显示的（ask 追问、page 结果页、creator 选中的 UP 主，空：都不是了），
+        # 只有这时下一句话才当成对它的回答。选项的 ref 带着 gen，换了一次搜索旧的就作废。
+        self._search: dict | None = None
+        self._search_gen = 0
 
     @classmethod
     def from_env(cls, logger: Callable[[str], None], environ=os.environ,
@@ -154,6 +176,7 @@ class VoiceService:
             self._results.clear()
             self._cancelled.clear()
             self._refs.clear()
+            self._search = None
 
     def results(self) -> list[bytes]:
         """取走排好的结果（编码好的 JSON）；发送循环每轮调用，不阻塞。"""
@@ -224,7 +247,7 @@ class VoiceService:
             ref = message.get("ref")
             offered = self._refs.get(ref) if isinstance(ref, str) else None
             if offered is None:
-                self._push(self._generation, uid, self._final(uid, "", "这个选项已经过期了", "none"))
+                self._push(self._generation, uid, self._final(uid, "", REPLY_EXPIRED, "none"))
                 return
             self._start(self._pick, uid, ref, context(), self.relay)
         else:
@@ -281,7 +304,13 @@ class VoiceService:
             return
         asr_ms = (time.monotonic() - started) * 1000
         catalog, relay_note = self._catalog(context, relay)
-        decision = intent.decide(text, catalog)
+        # 面板上有搜索的追问或结果时，先看这句话是不是在回答它（「视频」「第二个」「下一页」）。
+        step = self._follow_up(text)
+        decision = intent.decide(text, catalog) if step is None else None
+        if decision is not None and decision.search is not None:
+            step = ("search", decision.search)
+        if step is not None:
+            decision = self._search_step(uid, step, relay, started + RESULT_BUDGET_S)
         result = self._execute(uid, text, decision, catalog, relay)
         heard = f" heard={text!r}" if self.log_text else ""
         self.logger(f"voice id={uid} intent={decision.kind} audio_s={seconds:.1f} "
@@ -291,12 +320,25 @@ class VoiceService:
 
     def _pick(self, generation: int, uid: int, ref: str, context: dict,
               relay: RelayClient | None) -> None:
+        started = time.monotonic()
+        searched = intent.parse_search_ref(ref)
+        if searched is not None:
+            # 搜索结果、追问、选中的 UP 主（见 intent.py 的「搜索」一节）。
+            step = self._step_of_ref(*searched)
+            if step is None:
+                self._push(generation, uid, self._final(uid, "", REPLY_EXPIRED, "none"))
+                return
+            decision = self._search_step(uid, step, relay, started + RESULT_BUDGET_S)
+            catalog, _ = self._catalog(context, None)
+            self.logger(f"voice id={uid} pick intent={decision.kind}")
+            self._push(generation, uid, self._execute(uid, "", decision, catalog, relay))
+            return
         if ref.startswith("ls:"):
             # 「下一页」或分组概览里的一组：按现在的目录重新列（设备只认这次的结果）。
             catalog, _ = self._catalog(context, relay)
             decision = intent.list_page(ref, catalog)
             if decision is None:
-                self._push(generation, uid, self._final(uid, "", "这个选项已经过期了", "none"))
+                self._push(generation, uid, self._final(uid, "", REPLY_EXPIRED, "none"))
                 return
             result = self._execute(uid, "", decision, catalog, relay)
             self.logger(f"voice id={uid} pick intent={decision.kind}")
@@ -304,7 +346,7 @@ class VoiceService:
             return
         found = _REF.match(ref)
         if not found:
-            self._push(generation, uid, self._final(uid, "", "这个选项已经过期了", "none"))
+            self._push(generation, uid, self._final(uid, "", REPLY_EXPIRED, "none"))
             return
         catalog, _ = self._catalog(context, relay)
         offered = self._refs.get(ref, {})
@@ -408,6 +450,174 @@ class VoiceService:
         if decision.lead:
             result["lead"] = decision.lead
         return result
+
+    # ---- 语音搜索（intent.py 的「搜索」一节拼面板上的东西，这里记状态、调中转） ----
+
+    def _current_search(self, fresh: bool = False) -> dict | None:
+        """最近一次搜索；fresh：只要面板上还在显示它、没过 FOLLOW_UP_S 的。"""
+        with self._lock:
+            found = self._search
+            if found is None or (fresh and (not found["shown"]
+                                            or self.clock() - found["at"] > FOLLOW_UP_S)):
+                return None
+            return found
+
+    def _show(self, found: dict, shown: str, **changes) -> None:
+        with self._lock:
+            found.update(changes, shown=shown, at=self.clock())
+
+    def _follow_up(self, text: str) -> tuple | None:
+        """这句话是不是在回答面板上的搜索追问、结果页或选中的 UP 主；是的话返回要做的一步。
+        不是时作废它（用户说了别的，追问不再等回答）。"""
+        found = self._current_search(fresh=True)
+        if found is None:
+            return None
+        step = None
+        if found["shown"] == "ask":
+            answer = intent.search_answer(text)
+            if answer is not None:
+                step = ("search", {"site": answer[1] or found["site"], "kind": answer[0],
+                                   "query": found["query"]})
+        elif found["shown"] == "page":
+            total, offset = len(found["results"]), found["offset"]
+            on_page = total - offset if total - offset <= intent.CHOICES_MAX else intent.PAGE_SIZE
+            n = intent.pick_number(text)
+            if intent.wants_next_page(text):
+                step = ("page", offset + on_page) if offset + on_page < total else ("last",)
+            elif n is not None:
+                # 行首的号是从头数的（第二页是 06…）；说本页第几个也行。
+                index = (n - 1 if offset < n <= offset + on_page else offset + n - 1 if n <= on_page
+                         else n - 1)
+                step = ("item", index) if index < total else ("missing", n)
+        elif found["shown"] == "creator":
+            action = intent.creator_answer(text)
+            if action is not None:
+                step = (action, found["index"])
+        if step is None:
+            self._show(found, "")
+        return step
+
+    def _step_of_ref(self, op: str, generation: int, arg: str) -> tuple | None:
+        """设备选中的搜索选项（intent.parse_search_ref）→ 要做的一步；不是这次搜索的为 None。"""
+        found = self._current_search()
+        if found is None or found["gen"] != generation:
+            return None
+        if op == "q":
+            if arg not in ("v", "u"):
+                return None
+            return ("search", {"site": found["site"], "kind": "video" if arg == "v" else "up",
+                               "query": found["query"]})
+        if not arg.isdigit():
+            return None
+        return {"p": "page", "v": "item", "u": "item", "f": "follow", "l": "latest"}[op], int(arg)
+
+    def _search_step(self, uid: int, step: tuple, relay: RelayClient | None, deadline: float) -> intent.Decision:
+        """做搜索的一步，返回要发给设备的决定：搜（或追问）、翻页、选中一个、订阅、播最新。"""
+        op = step[0]
+        if relay is None:
+            return intent.Decision("none", reply=REPLY_NO_RELAY)
+        if op == "search":
+            return self._run_search(uid, step[1], relay, deadline)
+        found = self._current_search()
+        if found is None:
+            return intent.Decision("none", reply=REPLY_EXPIRED)
+        site, kind, results = found["site"], found["kind"], found["results"]
+        if op == "last":
+            return intent.Decision("none", reply="已经是最后一页了")
+        if op == "missing":
+            return intent.Decision("none", reply=f"没有第 {step[1]} 个")
+        if op == "page":
+            offset = step[1] if 0 <= step[1] < len(results) else 0
+            self._show(found, "page", offset=offset)
+            return intent.search_page(site, kind, found["query"], results, offset, found["gen"])
+        index = step[1]
+        if not 0 <= index < len(results):
+            return intent.Decision("none", reply=REPLY_EXPIRED)
+        item = results[index]
+        if op == "item" and kind == "video":
+            self._show(found, "")
+            return self._cast(uid, relay, site, item.get("id"), item.get("title"), item.get("duration"))
+        if op == "item":
+            self._show(found, "creator", index=index)
+            return intent.creator_menu(item, index, found["gen"])
+        self._show(found, "")
+        latest = item.get("latest") if isinstance(item.get("latest"), dict) else None
+        if op == "latest" and latest is not None:
+            # B 站的 UP 主搜索顺带给了最新一个能投屏的投稿：不必再问一次。
+            return self._cast(uid, relay, site, latest.get("id"), latest.get("title"), latest.get("duration"))
+        return self._creator(uid, relay, site, item, op, deadline)
+
+    def _run_search(self, uid: int, request: dict, relay: RelayClient, deadline: float) -> intent.Decision:
+        site, kind, query = request["site"], request["kind"], request["query"]
+        if not kind:
+            # 没说是视频还是 UP 主：追问，记住词和网站。
+            with self._lock:
+                self._search_gen = self._search_gen % 9999 + 1
+                self._search = {"gen": self._search_gen, "site": site, "kind": "", "query": query,
+                                "results": [], "shown": "ask", "offset": 0, "index": 0, "at": self.clock()}
+                generation = self._search_gen
+            return intent.search_question(generation)
+        left = deadline - time.monotonic()
+        if left < SEARCH_MIN_S:
+            return intent.Decision("none", reply=REPLY_SEARCH_SLOW[site])
+        try:
+            answer = relay.search(site, query, left, kind)
+        except RelayError as error:
+            self.logger(f"voice id={uid} relay search error={error}")
+            return intent.Decision("none", reply=REPLY_SEARCH_SLOW[site] if error.slow else REPLY_RELAY_DOWN)
+        if not answer.get("ok"):
+            error = answer.get("error")
+            return intent.Decision("none", reply=error if isinstance(error, str) and error else "没搜成，稍后再试")
+        results = [r for r in answer.get("results") or []
+                   if isinstance(r, dict) and isinstance(r.get("id"), str) and r["id"]][:SEARCH_RESULTS_MAX]
+        self.logger(f"voice id={uid} search site={site} kind={kind} results={len(results)}")
+        with self._lock:
+            self._search_gen = self._search_gen % 9999 + 1
+            self._search = {"gen": self._search_gen, "site": site, "kind": kind, "query": query,
+                            "results": results, "shown": "page" if results else "", "offset": 0,
+                            "index": 0, "at": self.clock()}
+            generation = self._search_gen
+        return intent.search_page(site, kind, query, results, 0, generation)
+
+    def _cast(self, uid: int, relay: RelayClient, site: str, video_id, title, duration) -> intent.Decision:
+        """投屏搜到的视频：中转让设备切到「我的投屏」，播完回到原来的台（和手机投屏一样）。"""
+        title = title if isinstance(title, str) else ""
+        duration = duration if isinstance(duration, int) and not isinstance(duration, bool) else 0
+        try:
+            answer = relay.cast_video(site, str(video_id or ""), title, duration)
+        except RelayError as error:
+            self.logger(f"voice id={uid} relay cast error={error}")
+            return intent.Decision("none", reply=REPLY_SITE_SLOW[site] if error.slow else REPLY_RELAY_DOWN)
+        if not answer.get("ok"):
+            error = answer.get("error")
+            return intent.Decision("none", reply=error if isinstance(error, str) and error else "没投成，稍后再试")
+        shown = answer.get("title") if isinstance(answer.get("title"), str) else title
+        return intent.Decision("cast", reply=REPLY_CASTING, label=intent.row_label(shown))
+
+    def _creator(self, uid: int, relay: RelayClient, site: str, item: dict, action: str,
+                 deadline: float) -> intent.Decision:
+        """订阅搜到的 UP 主（频道），或播他最新的视频。中转来不及做完时先回答「正在…」。"""
+        name = item.get("name") if isinstance(item.get("name"), str) else ""
+        label = intent.row_label(name)
+        left = max(SEARCH_MIN_S, deadline - time.monotonic())
+        try:
+            answer = relay.creator(site, str(item.get("id") or ""), name, action, left)
+        except RelayError as error:
+            self.logger(f"voice id={uid} relay creator {action} error={error}")
+            return intent.Decision("none", reply=REPLY_SITE_SLOW[site] if error.slow else REPLY_RELAY_DOWN)
+        if not answer.get("ok"):
+            error = answer.get("error")
+            return intent.Decision("none", reply=error if isinstance(error, str) and error else "没做成，稍后再试")
+        if action == "latest":
+            if answer.get("pending"):
+                return intent.Decision("cast", reply="正在找最新视频，找到就播", label=label)
+            shown = answer.get("title") if isinstance(answer.get("title"), str) else ""
+            return intent.Decision("cast", reply=REPLY_CASTING, label=intent.row_label(shown) or label)
+        if answer.get("pending"):
+            return intent.Decision("follow", reply="正在订阅，稍后出现在频道列表里", label=label)
+        added = answer.get("creator") if isinstance(answer.get("creator"), dict) else {}
+        shown = added.get("name") if isinstance(added.get("name"), str) else name
+        return intent.Decision("follow", reply=f"已订阅「{intent.row_label(shown)[:12]}」", label=label)
 
     def _save_wav(self, uid: int, pcm: bytes) -> None:
         if self.wav_dir is None or not pcm:

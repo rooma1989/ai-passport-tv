@@ -9,12 +9,16 @@ docs/superpowers/specs/2026-10-12-voice-control-design.md 第 3 节。
   外加新的 page、setup；
 - 几个候选让用户选：`choices`，每项带 `do`，或带 `ref`（选中后设备发 pick，服务端再回一个结果：
   选集 `ep:…`，列表翻页或打开一组 `ls:…`）；
-- 中转做的（选集、暂停、继续、跳转、上一集、下一集）：`relay`，由 session 带着设备名调用。
+- 中转做的（选集、暂停、继续、跳转、上一集、下一集）：`relay`，由 session 带着设备名调用；
+- 搜索（「搜视频猫和老鼠」「油管搜频道 lofi」「我想看猫和老鼠的视频」）：`search`，由 session
+  调中转去网站搜；结果页、追问和选中 UP 主后的两个动作也在这里拼（search_page、search_question、
+  creator_menu），选项的 ref 是 `s?:…`。
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -103,6 +107,8 @@ class Decision:
     relay: tuple[str, dict] | None = None
     # 选集后设备不在这部剧的台上时要换过去的台。
     then_channel: str = ""
+    # 搜索：{"site": bilibili|youtube, "kind": video|up|""（没说清，要追问）, "query"}。
+    search: dict | None = None
 
 
 # ---- 文本整理 ----
@@ -515,9 +521,14 @@ def _series_episode(text: str, catalog: Catalog) -> Decision | None:
     return Decision("choices", reply=f"找到 {len(rows)} 部，选一个", choices=rows)
 
 
-def _not_found(named: str) -> Decision:
-    """说了一个名字，但目录里没有：仍是 none（设备放低音），回答里说出没找到的是什么。"""
-    return Decision("none", reply=f"没有找到「{_label(named)}」" if named else REPLY_UNKNOWN)
+def _not_found(named: str, hint: bool = False) -> Decision:
+    """说了一个名字，但目录里没有：仍是 none（设备放低音），回答里说出没找到的是什么；
+    hint：再提示可以搜索它（「我要看葫芦娃」）。"""
+    if not named:
+        return Decision("none", reply=REPLY_UNKNOWN)
+    label = _label(named)
+    return Decision("none", reply=f"没有找到「{label}」，可以说「搜索{label}」" if hint
+                    else f"没有找到「{label}」")
 
 
 def _relay_playing(catalog: Catalog) -> bool:
@@ -810,6 +821,289 @@ def list_page(ref: str, catalog: Catalog) -> Decision | None:
     return list_decision(parsed[0], catalog, parsed[1])
 
 
+# ---- 搜索：「搜视频猫和老鼠」「油管搜频道lofi」「我想看猫和老鼠的视频」「找罗翔这个UP主」 ----
+#
+# 只在开头有明确的搜索动词（搜、搜索……；「找」还要说出视频或 UP 主），或者以「…的视频」结尾时才算，
+# 免得抢了「我想看湖南卫视」「看体育」这些换台的话。网站默认 B 站，说了油管 / YouTube / 优兔是
+# YouTube。是搜视频还是搜 UP 主没说清（「搜索李子柒」）时不猜，追问（search_question）。
+# 结果、追问、选中 UP 主后的两个动作都是带 ref 的候选，ref 是「s<操作>:<第几次搜索>:<参数>」：
+#   sq:G:v / sq:G:u   追问的回答：搜视频 / 搜 UP 主
+#   sv:G:i / su:G:i   第 i 个视频 / UP 主（从 0 数）
+#   sp:G:o            下一页，从第 o 个开始
+#   sf:G:i / sl:G:i   第 i 个 UP 主：订阅为频道 / 播放最新视频
+
+SEARCH_QUERY_MAX = 30
+# 面板一行大约这么多格（汉字 2 格）：标题后面放得下时再加时长、粉丝数。
+ROW_COLUMNS = 22
+# 设备存一行文字的字节数（含结尾的 0 是 48）。
+LABEL_BYTES = 47
+REPLY_ASK = "要搜视频，还是搜 UP 主？"
+_SITE_SHORT = {"bilibili": "B站", "youtube": "YouTube"}
+
+
+def _alternation(words) -> str:
+    return "|".join(sorted({re.escape(match.normalize(w)) for w in words}, key=len, reverse=True))
+
+
+_SITE_BY_WORD = {match.normalize(word): site for word, site in _SITE_WORDS.items()}
+_SITE_HEAD = re.compile(rf"^(?:在|到|去|用|从)?({_alternation(_SITE_WORDS)})(?:上面|上边|上|里面|里|中|的)*")
+_SEARCH_VERB = re.compile(r"^(?:去|再|来)?(搜索|搜1搜|搜一搜|搜搜|搜寻|搜|查找|找找|找)")
+_VIDEO_WORDS = ("视频", "影片", "片子")
+_UP_WORDS = ("up主", "博主", "频道", "作者", "创作者", "主播", "账号", "用户", "youtuber")
+_KIND_OF = {match.normalize(w): "video" for w in _VIDEO_WORDS} | {match.normalize(w): "up" for w in _UP_WORDS}
+_KIND_HEAD = re.compile(rf"^(?:的)?({_alternation(_VIDEO_WORDS + _UP_WORDS)})(?:叫做|名叫|叫|是)?")
+# 结尾的「up」单说也算（「搜罗翔up」）；开头不算，免得「搜uptown funk」被拆开。
+_KIND_TAIL = re.compile(rf"(?:这个|那个|这位|那位|的)?(?:相关)?({_alternation(_VIDEO_WORDS + _UP_WORDS + ('up',))})$")
+# 「我想看猫和老鼠的视频」「放一个lofi视频」：没有搜索动词，靠结尾的「的视频」。
+_VIDEO_LEAD = re.compile(r"^(看看|看|来1个|来一个|来个|来点|来|放1个|放一个|放个|放|播放1个|播放一个|播放|"
+                         r"播1个|播一个|播个|播)")
+_COUNTED_LEADS = ("来1个", "来一个", "来个", "来点", "放1个", "放一个", "放个", "播放1个", "播放一个",
+                  "播1个", "播一个", "播个")
+_OF_VIDEO = re.compile(r"^(.+?)(?:的(?:相关)?视频|相关视频)$")
+_PLAIN_VIDEO = re.compile(r"^(.+?)视频$")
+_QUERY_HEAD = re.compile(r"^(?:1些|一些|些|1点|一点|点|几个|1个|一个|个|关于|有关|叫做|叫)")
+_QUERY_TAIL = re.compile(r"(?:来看看|给我看看|看看|吧|呗)$")
+_ASKING = re.compile(r"(什么|哪|啥|吗|多少|有没有)")
+# 说了等于没说的词：「我想看点好看的视频」不是在搜「好看」。
+_VAGUE = ("好看", "好玩", "有意思", "有趣", "随便", "随机", "任意", "别的", "其他", "其它")
+# 规范化会去掉空格；外文词之间的空格搜索时要留着（「lofi girl」不是「lofigirl」），先换成这个字。
+_SPACE = "\u2581"
+_LATIN_GAP = re.compile(r"(?<=[A-Za-z0-9])\s+(?=[A-Za-z0-9])")
+
+
+def _take_site(text: str, site: str) -> tuple[str, str]:
+    found = _SITE_HEAD.match(text)
+    if not found:
+        return text, site
+    return text[found.end():], _SITE_BY_WORD.get(found.group(1), site)
+
+
+def _query(text: str) -> str:
+    text = _QUERY_TAIL.sub("", _QUERY_HEAD.sub("", text)).strip(_SPACE).replace(_SPACE, " ")
+    return "" if _ASKING.search(text) or len(text) > SEARCH_QUERY_MAX or text in _VAGUE else text
+
+
+def search_text(transcript: str) -> str:
+    """搜索用的规范化：和 decide 一样，只是外文词之间的空格留下（换成 _SPACE）。"""
+    return _strip_fillers(match.normalize(_LATIN_GAP.sub(_SPACE, transcript or "")))
+
+
+def search_request(text: str) -> dict | None:
+    """search_text() 过的一句话 → {"site", "kind", "query"}；不是在搜索时为 None。
+
+    kind 是 video / up，没说清时为空（要追问）；query 可能为空（「搜索」「搜视频」）。"""
+    rest, site = _take_site(text, "")
+    verb = _SEARCH_VERB.match(rest)
+    if verb:
+        weak = verb.group(1) in ("找", "找找", "查找")
+        rest, site = _take_site(rest[verb.end():], site)
+        kind = ""
+        head = _KIND_HEAD.match(rest)
+        if head:
+            kind = _KIND_OF[head.group(1)]
+            rest, site = _take_site(rest[head.end():], site)
+        else:
+            tail = _KIND_TAIL.search(rest)
+            if tail and tail.start() > 0:
+                kind = _KIND_OF.get(tail.group(1), "up")
+                rest = rest[:tail.start()]
+        # 「找」本身太泛（「帮我找湖南卫视」是换台）：要说出视频或 UP 主才是搜索。
+        if weak and (not kind or _NOT_A_NAME.search(rest)):
+            return None
+        return {"site": site or "bilibili", "kind": kind, "query": _query(rest)}
+    lead = _VIDEO_LEAD.match(rest)
+    counted = bool(lead) and lead.group(1) in _COUNTED_LEADS
+    if lead:
+        rest, site = _take_site(rest[lead.end():], site)
+    found = _OF_VIDEO.match(rest) or (_PLAIN_VIDEO.match(rest) if counted else None)
+    if not found:
+        return None
+    query = _query(found.group(1))
+    words = _words(query) if query else None
+    if not query or (words is not None and all(kind in ("plain", "noun", "ask", "site") for kind, _ in words)):
+        # 「看B站的视频」「看点好看的视频」：没有要搜的词。
+        return None
+    return {"site": site or "bilibili", "kind": "video", "query": query}
+
+
+_SEARCH_EXAMPLE = {"video": ("视频", "搜视频猫和老鼠"), "up": (" UP 主", "搜UP主老番茄"),
+                   "": ("", "搜索猫和老鼠")}
+
+
+def _search(transcript: str) -> Decision | None:
+    request = search_request(search_text(transcript))
+    if request is None:
+        return None
+    if not request["query"]:
+        what, example = _SEARCH_EXAMPLE[request["kind"]]
+        return Decision("none", reply=f"要搜什么{what}？比如：{example}")
+    return Decision("search", reply="正在搜索…", search=request)
+
+
+# ---- 搜索的回答：追问、结果页、选中的 UP 主（session 记着搜到了什么，这里只管拼） ----
+
+_SEARCH_REF = re.compile(r"^s([qvupfl]):(\d{1,4}):([0-9a-z]{1,3})$")
+
+
+def search_ref(op: str, generation: int, arg) -> str:
+    return f"s{op}:{generation}:{arg}"
+
+
+def parse_search_ref(ref: str) -> tuple[str, int, str] | None:
+    found = _SEARCH_REF.match(ref or "")
+    return (found.group(1), int(found.group(2)), found.group(3)) if found else None
+
+
+def _columns(text: str) -> int:
+    return sum(1 if ord(ch) < 128 else 2 for ch in text)
+
+
+def _plain(text: str) -> str:
+    """设备的字库是 ASCII 加 GB2312：去掉表情、控制符这类画不出来的，空白并成一个。"""
+    kept = []
+    for ch in unicodedata.normalize("NFKC", text or ""):
+        if ord(ch) > 0xFFFF or unicodedata.category(ch) in ("So", "Cs", "Co", "Cn", "Cc", "Cf"):
+            kept.append(" ")
+        else:
+            kept.append(ch)
+    return " ".join("".join(kept).split())
+
+
+def _fit(text: str, size: int = LABEL_BYTES) -> str:
+    """按 UTF-8 字节截短（设备再按像素加「…」）。"""
+    raw = text.encode("utf-8")
+    if len(raw) <= size:
+        return text
+    return raw[:size].decode("utf-8", "ignore").rstrip()
+
+
+def row_label(main: str, extras: tuple[str, ...] = ()) -> str:
+    """候选行的文字：画得出来的字，放得下时再接上 extras（「 · 12:34」），按设备的字节数截短。"""
+    label = _plain(main)
+    for extra in extras:
+        if extra and _columns(label) + 3 + _columns(extra) <= ROW_COLUMNS:
+            label = f"{label} · {extra}"
+    return _fit(label)
+
+
+def _clock(seconds: int) -> str:
+    if seconds >= 3600:
+        return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _fans(count: int) -> str:
+    for unit, size in (("亿", 100_000_000), ("万", 10_000)):
+        if count >= size:
+            value = f"{count / size:.1f}".removesuffix(".0")
+            return f"{value}{unit}粉"
+    return f"{count}粉" if count > 0 else ""
+
+
+def _result_label(kind: str, item: dict) -> str:
+    if kind == "video":
+        duration = item.get("duration") if isinstance(item.get("duration"), int) else 0
+        return row_label(str(item.get("title") or ""),
+                          (_clock(duration) if duration > 0 else "", _plain(str(item.get("uploader") or ""))))
+    fans, videos = item.get("fans"), item.get("videos")
+    extra = _fans(fans) if isinstance(fans, int) and fans > 0 else \
+        f"{videos}个视频" if isinstance(videos, int) and videos > 0 else ""
+    return row_label(str(item.get("name") or ""), (extra,))
+
+
+def search_noun(site: str, kind: str) -> str:
+    """「B站视频」「YouTube 视频」「B站 UP 主」「YouTube 频道」。"""
+    if kind == "video":
+        return f"{_SITE_LABEL[site]}视频"
+    return "YouTube 频道" if site == "youtube" else "B站 UP 主"
+
+
+def search_page(site: str, kind: str, query: str, results: list[dict], offset: int,
+                generation: int) -> Decision:
+    """一页搜索结果：每行一个视频或 UP 主（ref 选中），放不下时最后一行是「下一页」。"""
+    total = len(results)
+    if not total:
+        return Decision("none", reply=f"{_SITE_SHORT[site]}没搜到「{_label(query)}」")
+    if offset >= total:
+        offset = 0
+    rest = results[offset:]
+    shown = rest if len(rest) <= CHOICES_MAX else rest[:PAGE_SIZE]
+    op = "v" if kind == "video" else "u"
+    rows = [{"label": _result_label(kind, item) or "（没有标题）", "lead": f"{n + 1:02d}",
+             "ref": search_ref(op, generation, n)} for n, item in enumerate(shown, offset)]
+    if len(rest) > len(shown):
+        rows.append({"label": f"下一页 · 还有 {len(rest) - len(shown)} 个", "lead": "",
+                     "ref": search_ref("p", generation, offset + len(shown))})
+    reply = (f"找到 {total} 个{search_noun(site, kind)}" if offset == 0
+             else f"第 {offset + 1}-{offset + len(shown)} 个，共 {total} 个")
+    return Decision("search", reply=reply, choices=rows)
+
+
+def search_question(generation: int) -> Decision:
+    """搜视频还是搜 UP 主没说清：问一句（面板留着，按键选或者直接说「视频」「UP主」）。"""
+    return Decision("ask", reply=REPLY_ASK, choices=[
+        {"label": "搜视频", "lead": "", "ref": search_ref("q", generation, "v")},
+        {"label": "搜 UP 主", "lead": "", "ref": search_ref("q", generation, "u")}])
+
+
+def creator_menu(item: dict, index: int, generation: int) -> Decision:
+    """选中了一个 UP 主（频道）：订阅成台，还是播他最新的视频。"""
+    name = _label(_plain(str(item.get("name") or ""))) or "这个 UP 主"
+    return Decision("creator", reply=f"「{name}」：订阅还是看最新？", label=name, choices=[
+        {"label": "订阅为频道", "lead": "", "ref": search_ref("f", generation, index)},
+        {"label": "播放最新视频", "lead": "", "ref": search_ref("l", generation, index)}])
+
+
+# 面板上有搜索的追问或结果时，下一句话可以直接回答（session 只在这时才问这几个函数）。
+_ANSWER_LEAD = re.compile(r"^(?:我要|是|要|就|选|搜索|搜|找|看)+")
+_ANSWER_KIND = re.compile(rf"^(?:的)?({_alternation(_VIDEO_WORDS + _UP_WORDS + ('up',))})(?:的|吧)?$")
+_ORDINAL = re.compile(r"^(?:播放?|放|看|选|要|打开|订阅|就|我要)?第(\d{1,2})(?:个|条|项|位)?"
+                      r"(?:视频|up主|博主|频道)?$")
+_NEXT_PAGE = re.compile(r"^(?:下1页|下一页|下页|翻页|翻1页|翻一页|更多|还有|还有吗|后面的|再来几个|"
+                        r"换1批|换一批|下1批|下一批)$")
+_WANTS_LATEST = re.compile(r"(最新|新视频|播放|播1下|放1下|看看他|看他)")
+_WANTS_FOLLOW = re.compile(r"(订阅|关注|添加|加为频道|加到频道|加成频道|收藏)")
+
+
+def _said(transcript: str) -> str:
+    return _strip_fillers(match.normalize(transcript))
+
+
+def search_answer(transcript: str) -> tuple[str, str] | None:
+    """对追问的回答：(video|up, 网站或空)。「视频」「搜UP主」「YouTube的视频」「第二个」。"""
+    text = _said(transcript)
+    number = pick_number(transcript)
+    if number in (1, 2):
+        return ("video" if number == 1 else "up"), ""
+    text = _ANSWER_LEAD.sub("", text)
+    text, site = _take_site(text, "")
+    found = _ANSWER_KIND.match(text)
+    if not found:
+        return None
+    return _KIND_OF.get(found.group(1), "up"), site
+
+
+def pick_number(transcript: str) -> int | None:
+    """「第二个」「播放第三个」「选第3个视频」→ 2、3、3。"""
+    found = _ORDINAL.match(_said(transcript))
+    return int(found.group(1)) if found and int(found.group(1)) >= 1 else None
+
+
+def wants_next_page(transcript: str) -> bool:
+    return bool(_NEXT_PAGE.match(_said(transcript)))
+
+
+def creator_answer(transcript: str) -> str | None:
+    """选中 UP 主后的回答：follow（「订阅」「第一个」）、latest（「播放最新的」「第二个」）。"""
+    number = pick_number(transcript)
+    if number in (1, 2):
+        return "follow" if number == 1 else "latest"
+    text = _said(transcript)
+    if _WANTS_LATEST.search(text):
+        return "latest"
+    return "follow" if _WANTS_FOLLOW.search(text) else None
+
+
 def decide(transcript: str, catalog: Catalog) -> Decision:
     """识别出来的一句话 → 决定。"""
     raw = match.normalize(transcript)
@@ -826,6 +1120,10 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
                                  {"label": "算了", "do": {"page": "close"}}])
     if _STATUS.match(text) or _STATUS.match(_strip_verbs(text)):
         return _device_says("page", "打开状态页", page="status")
+    # 搜索要以搜索动词开头或以「的视频」结尾，比音量、换台这些先认（搜的词里可能有「大声」）。
+    decision = _search(transcript)
+    if decision is not None:
+        return decision
     if _AUDIO_OFF.search(text):
         if catalog.audio_only == 0:
             return Decision("audio_only", reply="画面已经开着")
@@ -872,5 +1170,5 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
     if text.startswith(_NAMING_VERBS) and 2 <= len(bare) <= 10 and bare not in _VERBS \
             and not _NOT_A_NAME.search(bare) and _words(bare) is None:
         # 「我要看葫芦娃」：显然是在点一个台，只是没有这个台（「看电视」「看看」不算）。
-        return _not_found(bare)
+        return _not_found(bare, hint=True)
     return Decision("none", reply=REPLY_UNKNOWN)

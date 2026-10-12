@@ -23,11 +23,17 @@ KEY_FILE_ENV = "TV_RELAY_KEY_FILE"
 DEVICE_ENV = "TV_RELAY_DEVICE"
 DEFAULT_URL = "http://127.0.0.1:8100"
 TIMEOUT_S = 3.0
+# 语音搜索：中转去网站搜的时间比这边等的少这么多，超时时中转还来得及回答「太慢了」。
+SEARCH_MARGIN_S = 0.7
 _LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
 
 class RelayError(RuntimeError):
-    """中转连不上或回答不对；消息里不含密钥。"""
+    """中转连不上或回答不对；消息里不含密钥。slow：在给的时间里没回答完（语音搜索要分开说）。"""
+
+    def __init__(self, message: str, slow: bool = False):
+        super().__init__(message)
+        self.slow = slow
 
 
 class RelayClient:
@@ -65,13 +71,13 @@ class RelayClient:
         cls(base, key, "-")     # 现在就检查地址和密钥，配置错了在启动时就知道
         return lambda device: cls(base, key, device)
 
-    def _call(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _call(self, method: str, path: str, body: dict | None = None, timeout: float | None = None) -> dict:
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(self.base + path, data=data, method=method,
                                          headers={"X-Key": self._key,
                                                   "Content-Type": "application/json"})
         try:
-            with self._opener.open(request, timeout=self.timeout) as response:
+            with self._opener.open(request, timeout=timeout or self.timeout) as response:
                 raw = response.read(256 * 1024)
         except urllib.error.HTTPError as error:
             try:
@@ -83,6 +89,9 @@ class RelayClient:
                 return answer
             raise RelayError(f"relay status {error.code}") from None
         except (OSError, urllib.error.URLError) as error:
+            reason = getattr(error, "reason", error)
+            if isinstance(error, TimeoutError) or isinstance(reason, TimeoutError):
+                raise RelayError("relay timed out", slow=True) from None
             raise RelayError(f"relay unreachable: {type(error).__name__}") from None
         try:
             answer = json.loads(raw.decode("utf-8"))
@@ -118,3 +127,26 @@ class RelayClient:
 
     def seek(self, delta: float | None = None, position: float | None = None) -> dict:
         return self.post("/api/seek", {"delta": delta} if position is None else {"position": position})
+
+    # ---- 语音搜索（server/relay/voice.py）：timeout 是这次最多等多久，中转那边少等一点（wait），
+    # 好在这之前回答「太慢了」而不是让这边超时 ----
+
+    @staticmethod
+    def _wait(timeout: float) -> str:
+        return f"{max(1.0, timeout - SEARCH_MARGIN_S):.1f}"
+
+    def search(self, site: str, query: str, timeout: float, kind: str = "video") -> dict:
+        """搜一页视频（kind=video）或 UP 主（kind=up）。"""
+        query = urllib.parse.urlencode({"device": self.device, "site": site, "kind": kind, "q": query,
+                                        "wait": self._wait(timeout)})
+        return self._call("GET", f"/api/voice/search?{query}", timeout=timeout)
+
+    def cast_video(self, site: str, video_id: str, title: str = "", duration: int = 0) -> dict:
+        return self.post("/api/voice/cast", {"site": site, "id": video_id, "title": title,
+                                             "duration": duration})
+
+    def creator(self, site: str, creator_id: str, name: str, action: str, timeout: float) -> dict:
+        """搜到的 UP 主：action=follow 订阅成台，latest 投屏最新投稿；没做完回答 pending。"""
+        return self._call("POST", "/api/voice/creator",
+                          {"site": site, "id": creator_id, "name": name, "action": action,
+                           "wait": float(self._wait(timeout)), "device": self.device}, timeout=timeout)
