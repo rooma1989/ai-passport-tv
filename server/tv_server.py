@@ -40,6 +40,7 @@ from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packe
                        send_packet, _write_slice)
 from . import now_playing, reconnect
 from .cast_switch import SwitchWatcher
+from .tenancy import gate as tenancy_gate, unbound as tenancy_unbound
 
 # 替代 --token-file 的环境变量名；只有令牌值需与固件一致，变量名无需一致。
 TOKEN_ENV = "TV_PAIRING_TOKEN"
@@ -274,9 +275,12 @@ class AVServer:
             validate_token(token.decode("ascii"))
         self.token = token
         self.allow_public = os.environ.get(ALLOW_PUBLIC_ENV, "0") == "1"
-        if self.allow_public and token is None:
+        # 多用户：设置了设备数据库（TV_DB）就按设备 id 和密钥认设备（server/tenancy/gate.py）。
+        tenancy_on = bool(os.environ.get(tenancy_gate.DB_ENV))
+        if self.allow_public and token is None and not tenancy_on:
             raise ValueError(f"{ALLOW_PUBLIC_ENV}=1 requires a pairing token "
-                             f"({TOKEN_ENV} or --token-file)")
+                             f"({TOKEN_ENV} or --token-file) or a device database "
+                             f"({tenancy_gate.DB_ENV})")
         self.bind, self.port = bind, port
         self.stop = threading.Event()
         self.ready = threading.Event()
@@ -318,6 +322,7 @@ class AVServer:
             self.channel_factory = LiveChannel
         self.frame_deadline_s = FRAME_WRITE_DEADLINE_S
         self.logger = logger or (lambda message: None)
+        self.tenancy = tenancy_gate.from_env(self.logger) if tenancy_on else None
         self.session_state: SessionState = SessionState.CLOSED
         self.state_history: List[Dict[str, Any]] = []
         self.session_limit_s: float | None = None
@@ -1150,11 +1155,30 @@ class AVServer:
             return
         raise TimeoutError("live session cancelled")
 
+    def _admit(self, connection: socket.socket, hello: Packet) -> bool:
+        """多用户：认出设备并换上它的文件；未绑定的设备在这里服务完（只给绑定画面），返回 True。"""
+        authenticate(hello, None)
+        try:
+            peer = connection.getpeername()[0]
+        except OSError:
+            peer = ""
+        admission = self.tenancy.admit(json_object(hello.payload), self.token, self.port, peer)
+        if not admission.bound:
+            tenancy_unbound.serve(self, connection, admission, self.tenancy, CONFIG)
+            return True
+        tenancy_gate.apply(self, admission.files)
+        self.logger(f"device={admission.device_id}{' legacy' if admission.legacy else ''}")
+        return False
+
     def _session(self, connection: socket.socket) -> None:
         self.phase = "hello_receive"
         hello = receive_packet(connection, expected_session=0)
         self.phase = "authenticate"
-        authenticate(hello, self.token)
+        if self.tenancy is None:
+            authenticate(hello, self.token)
+        else:
+            if self._admit(connection, hello):
+                return
         if self.live_enabled:
             # 视频中转增删 UP 主后会改写频道表；在会话之间重读，正在播放的会话不受影响。
             live.reload_channels_if_changed()
