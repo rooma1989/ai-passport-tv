@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>用手机听 · 试验</title>
+<style>
+  :root { --bg:#1c1915; --fg:#e6dcc8; --dim:#9a8f7c; --accent:#e0a050; --panel:#2a251f; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 -apple-system, "PingFang SC", sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:4px 0 12px; }
+  button { font:inherit; padding:10px 16px; border-radius:10px; border:0; background:var(--accent); color:#1c1915; }
+  button.ghost { background:var(--panel); color:var(--fg); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:10px 0; }
+  .panel { background:var(--panel); border-radius:12px; padding:12px; margin:12px 0; }
+  .big { font-size:28px; font-variant-numeric:tabular-nums; }
+  .dim { color:var(--dim); font-size:13px; }
+  input[type=range] { width:100%; }
+  input[type=number] { width:80px; font:inherit; background:var(--bg); color:var(--fg); border:1px solid var(--dim); border-radius:6px; padding:4px; }
+  #tv { height:90px; border-radius:12px; background:#000; display:flex; align-items:center; justify-content:center; color:#555; transition:background 40ms; }
+  #tv.flash { background:#fff; color:#000; }
+  #tv.flash.high { background:var(--accent); }
+  pre { white-space:pre-wrap; font-size:12px; color:var(--dim); margin:0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>用手机听（试验）</h1>
+  <p class="dim">声音从手机（或连着的蓝牙耳机）出来，小电视继续放画面、自己不出声。锁屏后也会接着放。</p>
+
+  <div class="row">
+    <button id="start">开始在手机上听</button>
+    <button id="stop" class="ghost">停止</button>
+  </div>
+  <audio id="audio" preload="none" playsinline></audio>
+
+  <div class="panel">
+    <div class="dim">手机声音比电视画面</div>
+    <div class="big" id="err">—</div>
+    <div class="dim" id="state">未开始</div>
+  </div>
+
+  <div class="panel">
+    <div class="row"><span>手动微调</span><span class="dim" id="offv">0 ms</span></div>
+    <input id="offset" type="range" min="-500" max="500" step="10" value="0">
+    <div class="dim">往右：手机声音更晚。听起来声音比嘴型早就往右拖。</div>
+    <div class="row">
+      <span>蓝牙延迟</span><input id="bt" type="number" value="0" step="10"> ms
+      <button class="ghost" id="btauto">自动测</button>
+    </div>
+    <div class="row dim">
+      <button class="ghost" data-bt="0">手机扬声器</button>
+      <button class="ghost" data-bt="150">AirPods Pro</button>
+      <button class="ghost" data-bt="200">AirPods</button>
+      <button class="ghost" data-bt="250">其他蓝牙</button>
+    </div>
+    <label class="row"><input type="checkbox" id="auto" checked> 自动对齐（页面在前台时）</label>
+  </div>
+
+  <div class="panel" id="tvpanel">
+    <div class="dim">模拟电视画面：设备「嘀」的那一刻闪一下（只有试验服务器有）</div>
+    <div id="tv">TV</div>
+  </div>
+
+  <div class="panel"><pre id="diag"></pre></div>
+</main>
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+const device = params.get("d") || "d0";
+const token = params.get("t");
+const q = token ? "?t=" + encodeURIComponent(token) : "";
+const base = "listen/" + device + "/";
+const audio = document.getElementById("audio");
+const $ = (id) => document.getElementById(id);
+
+let clockOffset = 0;      // 服务器时间 - 本机时间（毫秒）
+let rtt = NaN;
+let lastSeek = 0, seeks = 0, stalls = 0, edgeShort = 0;
+// 跳转时要先缓冲，这段时间不出声，落点总会晚一截（macOS AVPlayer 上约 0.35 秒）。
+// 从上一次跳转后的残差里学到这个代价，下次多跳这么多。
+let seekCost = load("listen.seekCost", 0), checkAfterSeek = false;
+let listening = false;
+
+function store(key, value) { try { localStorage.setItem(key, String(value)); } catch (e) {} }
+function load(key, fallback) { try { const v = localStorage.getItem(key); return v === null ? fallback : Number(v); } catch (e) { return fallback; } }
+$("bt").value = load("listen.bt", 0);
+$("offset").value = load("listen.offset", 0);
+$("offv").textContent = $("offset").value + " ms";
+
+async function syncClock() {
+  // NTP 式：取往返最短的那一次。
+  let best = null;
+  for (let i = 0; i < 8; i++) {
+    const t0 = performance.now();
+    const r = await fetch("listen/time", { cache: "no-store" });
+    const body = await r.json();
+    const t1 = performance.now();
+    const sample = { rtt: t1 - t0, offset: body.t - (performance.timeOrigin + (t0 + t1) / 2) };
+    if (!best || sample.rtt < best.rtt) best = sample;
+  }
+  clockOffset = best.offset; rtt = best.rtt;
+}
+const serverNow = () => performance.timeOrigin + performance.now() + clockOffset;
+
+function metadataPdt() {
+  // 备用：段头 ID3 TXXX "pdt" 在 Safari 里是 metadata 轨道上的 cue。
+  for (const track of audio.textTracks) {
+    if (track.kind !== "metadata") continue;
+    if (track.mode === "disabled") track.mode = "hidden";
+    let best = null;
+    for (const cue of track.cues || []) {
+      const v = cue.value || {};
+      if (v.key === "TXXX" && v.info === "pdt" && cue.startTime <= audio.currentTime) {
+        if (!best || cue.startTime > best.startTime) best = cue;
+      }
+    }
+    if (best) return Number(best.value.data) + (audio.currentTime - best.startTime) * 1000;
+  }
+  return NaN;
+}
+
+function playingPdt() {
+  if (audio.getStartDate) {
+    const start = audio.getStartDate().getTime();
+    if (!isNaN(start)) return { pdt: start + audio.currentTime * 1000, via: "getStartDate" };
+  }
+  return { pdt: metadataPdt(), via: "ID3" };
+}
+
+function measure() {
+  const { pdt, via } = playingPdt();
+  if (isNaN(pdt)) return null;
+  const bt = Number($("bt").value) || 0;
+  const offset = Number($("offset").value) || 0;
+  // 正数：手机放的是电视稍后才放的内容，手机早了。
+  const error = pdt - bt - serverNow() + offset;
+  return { error, via };
+}
+
+function edge() {
+  const s = audio.seekable;
+  return s.length ? s.end(s.length - 1) - audio.currentTime : NaN;
+}
+
+function correct(force) {
+  const m = measure();
+  if (!m || audio.paused || audio.seeking) return m;
+  const now = performance.now();
+  if (checkAfterSeek && now - lastSeek > 1500) {
+    checkAfterSeek = false;
+    seekCost = Math.max(-1, Math.min(1, seekCost - m.error / 1000));
+    store("listen.seekCost", seekCost);
+  }
+  if ((force || $("auto").checked) && Math.abs(m.error) > 60 && (force || now - lastSeek > 4000)) {
+    let target = audio.currentTime - m.error / 1000 + seekCost;
+    const s = audio.seekable;
+    if (s.length && target > s.end(s.length - 1) - 1.5) { target = s.end(s.length - 1) - 1.5; edgeShort++; }
+    audio.currentTime = target;
+    lastSeek = now; seeks++; checkAfterSeek = true;
+  }
+  return m;
+}
+
+function render() {
+  const m = listening ? measure() : null;
+  if (m) {
+    const ms = Math.round(-m.error);
+    $("err").textContent = Math.abs(ms) <= 40 ? "对齐（" + (ms > 0 ? "晚 " : "早 ") + Math.abs(ms) + " ms）"
+      : (ms > 0 ? "晚 " : "早 ") + Math.abs(ms) + " ms";
+  }
+  $("diag").textContent = [
+    "时钟往返 " + (isNaN(rtt) ? "—" : rtt.toFixed(0) + " ms"),
+    "离流末端 " + (isNaN(edge()) ? "—" : edge().toFixed(2) + " s"),
+    "取时刻 " + (m ? m.via : "—"),
+    "跳转 " + seeks + "（补 " + Math.round(seekCost * 1000) + " ms）  卡顿 " + stalls + "  末端不够 " + edgeShort,
+    "页面 " + document.visibilityState,
+  ].join("\n");
+}
+
+async function start() {
+  // 播放类会话：不受静音键影响（WebKit 的 navigator.audioSession，Safari 16.4+）。
+  if (navigator.audioSession) { try { navigator.audioSession.type = "playback"; } catch (e) {} }
+  await syncClock();
+  audio.src = base + "live.m3u8" + q;
+  await audio.play();
+  listening = true;
+  $("state").textContent = "正在听";
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: "小电视的声音", artist: "用手机听" });
+    navigator.mediaSession.setActionHandler("play", async () => { await audio.play(); setTimeout(() => correct(true), 800); });
+    navigator.mediaSession.setActionHandler("pause", () => audio.pause());
+  }
+  setTimeout(() => correct(true), 1500);
+}
+
+function stop() {
+  listening = false;
+  audio.pause();
+  fetch(base + "bye" + q, { method: "POST" }).catch(() => {});
+  audio.removeAttribute("src"); audio.load();
+  $("state").textContent = "已停止：电视会在几秒内恢复自己的声音";
+}
+
+$("start").onclick = () => start().catch((e) => { $("state").textContent = "开不了：" + e.message; });
+$("stop").onclick = stop;
+$("offset").oninput = () => { $("offv").textContent = $("offset").value + " ms"; store("listen.offset", $("offset").value); };
+$("bt").onchange = () => store("listen.bt", $("bt").value);
+document.querySelectorAll("[data-bt]").forEach((b) => b.onclick = () => { $("bt").value = b.dataset.bt; store("listen.bt", b.dataset.bt); correct(true); });
+$("btauto").onclick = async () => {
+  // iOS 18.4+：AudioContext.outputLatency 含系统报的蓝牙路由延迟；要在发声时读。
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  const ctx = new Ctx();
+  const src = ctx.createBufferSource();
+  src.buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+  src.connect(ctx.destination); src.start();
+  await new Promise((r) => setTimeout(r, 600));
+  const total = (ctx.outputLatency || 0) + (ctx.baseLatency || 0);
+  await ctx.close();
+  if (total > 0) { $("bt").value = Math.round(total * 1000); store("listen.bt", $("bt").value); correct(true); }
+  else $("state").textContent = "这台手机报不出延迟（需要 iOS 18.4 以上），请选一个预设";
+};
+audio.addEventListener("waiting", () => stalls++);
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && listening) { await syncClock(); correct(true); }
+});
+setInterval(() => { if (listening) correct(false); render(); }, 1000);
+setInterval(() => { if (listening && document.visibilityState === "visible") syncClock().catch(() => {}); }, 60000);
+
+// ---- 模拟电视（只在试验服务器上） ----
+const tv = $("tv");
+const scheduled = new Set();
+async function pollDevice() {
+  try {
+    const r = await fetch("device.json", { cache: "no-store" });
+    if (!r.ok) { $("tvpanel").style.display = "none"; return; }
+    const body = await r.json();
+    for (const [wall, high] of body.beeps) {
+      if (scheduled.has(wall)) continue;
+      const delay = wall - serverNow();
+      if (delay < -50) continue;
+      scheduled.add(wall);
+      setTimeout(() => { tv.classList.add("flash"); tv.classList.toggle("high", high);
+        setTimeout(() => tv.classList.remove("flash", "high"), 120); }, Math.max(0, delay));
+    }
+  } catch (e) {}
+  setTimeout(pollDevice, 1000);
+}
+syncClock().then(pollDevice).catch(() => {});
+</script>
+</body>
+</html>

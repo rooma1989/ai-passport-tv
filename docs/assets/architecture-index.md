@@ -91,6 +91,7 @@ Supporting modules, each already host-testable and already covered by
 | [`server/relay/`](../../server/relay/web.py) | Video relay for creator and series channels: Bilibili client, watched/position state, generated channel table, MPEG-TS streams and the key-protected page. Separate service (`python3 -m server.relay`). |
 | [`server/channel_groups.py`](../../server/channel_groups.py) | Channel groups: classification by name, the phone's overrides, and the CONFIG group list. |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | What is playing (for the phone) and turning the relay's events into SWITCH packets or a channel at HELLO. |
+| [`server/listen.py`](../../server/listen.py) | Listening on the phone (prototype, not wired in yet): the schedule the device follows H seconds behind the phone, the HLS audio window, the queue tap, listen tokens. Design: [`2026-10-12-phone-audio-design.md`](../superpowers/specs/2026-10-12-phone-audio-design.md); local trial in `tools/listen_proto/`. |
 | [`server/fault.py`](../../server/fault.py) | Fault-injection harness for controlled device experiments (B02-R); not part of the shipped server path. |
 
 ## 4. Tools you will actually touch for a feature
