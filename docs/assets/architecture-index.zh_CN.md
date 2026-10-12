@@ -83,6 +83,7 @@
 | [`server/channel_groups.py`](../../server/channel_groups.py) | 频道分组：按台名归类、手机上的调整、CONFIG 里的分组表。 |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | 正在播放（给手机看），以及把中转的事件变成 SWITCH 包或 HELLO 时的新台。 |
 | [`server/episode_info.py`](../../server/episode_info.py) | 给 `"info": 1` 的固件的「正在播 / 正在加载哪一集」：中转的 `/info/<台>`、CONFIG 的 `playing`、SWITCH 的 `loading`。 |
+| [`server/progress.py`](../../server/progress.py) | 给 `"progress": 1` 的固件的进度条锚点：中转 `/info/<台>` 的 `duration`/`offset`，每个片源开始时的 SWITCH `progress`，断流或暂停时的 `stop`。设备侧：`main/ui_menu.c` 的 `ui_progress_*`，由 `ui_overlay_progress_*` 画。 |
 | [`server/voice/`](../../server/voice/session.py) | 设备的语音命令：VOICE_CTL/VOICE 包和结果队列（`session.py`）、到 muse-asr 的 Unix 套接字桥（`asr.py`）、规则优先的意图引擎（`intent.py`、`match.py`、`numbers.py`、由 `tools/make_pinyin_table.py` 生成的 `pinyin_table.py`）、带明确设备的中转调用（`relay_client.py`）。运维说明见 [`server/README.zh_CN.md`](../../server/README.zh_CN.md#语音控制)。 |
 | [`server/relay/voice.py`](../../server/relay/voice.py) | 给媒体服务的 `GET /api/voice/catalog`。`device` 字段本身在 `web.py` 的 `Relay.find_device()`/`_pick()`（单用户时也认名字；有 `--db` 时带密钥点名设备的请求按那台设备的访客处理，`_DEVICE_SCOPED`）。 |
 | [`server/fault.py`](../../server/fault.py) | 面向受控设备实验（B02-R）的故障注入工具；不在正式发布的服务端路径里。 |

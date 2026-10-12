@@ -151,6 +151,8 @@ ERROR 类型保留且支持拆包；服务器错误时关闭连接，不冒险�
 
 只对 HELLO 带 `"info": 1` 的固件、只对中转的台：直播路径在 CONFIG 里加 `playing`（`{title, episode, total}`），片源马上要换时发 `SWITCH {"loading": {...}}`，重开的片源预缓冲好时发 `SWITCH {"loading": 0}`（`server/episode_info.py`、`AVServer.info_*`、`reconnect.hold`）。剧集来自中转：它播放流端口上的 `GET /info/<台>`（把播放流地址里的 `/ch/` 换成 `/info/`），CONFIG 之前至多问 0.5 秒，每次重开片源时在后台线程里再问；以及中转在「下一个」「上一集」或选集掐断流之前写的 `loading` 事件。中转不回答就没有 `playing` 和 `loading`，播放不受影响。设备侧见 [`docs/local-tv-prototype.zh_CN.md`](../docs/local-tv-prototype.zh_CN.md) 的「剧集信息」。
 
+只对 HELLO 带 `"progress": 1` 的固件、只对中转的台：直播路径发 `SWITCH {"progress": {"dur", "pos", "at"}}` 锚点（毫秒）——视频多长、本会话某个音频 PTS 时播到哪；设备按自己的声音时钟往前推。`server/progress.py` 管一个会话的锚点：片源开始供数据时（会话开始 `at` 为 0，或 `reconnect.hold` 换上新片源，`at` 为下一个音频 PTS）在后台线程里问中转 `/info/<台>` 的 `duration` 和 `offset`（流还没起来时隔 1 秒再问，最多 3 次）；保持（断流、暂停）开始时把锚点加上 `stop`（最后一块真声音之后的 PTS）重发；原片源自己缓过来时按停顿把锚点顺延。没有总长的视频在设备挂着进度条时发 `{"progress": 0}`。不每秒发，也不逐帧做事。v2 发送端不发。设备侧见 [`docs/local-tv-prototype.zh_CN.md`](../docs/local-tv-prototype.zh_CN.md) 的「播放进度」。
+
 ## 语音控制
 
 在设备上按住 OK 说话，松开：设备在电视连接上把这句话传上来，媒体服务交给同一台主机上的

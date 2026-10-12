@@ -192,6 +192,50 @@ pick cuts the stream; the media server sends it within a second, drops the
 `next` hint queued with it, and sends `{"loading":0}` when the reopened source
 has prebuffered.
 
+### Playback progress ("progress": 1)
+
+Firmware that draws how far a relay video has played adds `"progress":1` to
+HELLO. Only such a device gets the message below; older firmware sees exactly
+what it did. All values are milliseconds.
+
+- `AV_SWITCH {"progress":{"dur":D,"pos":P,"at":T}}`: the video is D long and
+  is at P when this session's sound clock -- the audio PTS the device is
+  playing, `estimated_pts()` -- reads T. The device moves the bar on with its
+  own clock (position = P + clock - T, at most D), so nothing is sent per
+  second. T is the wire PTS of the first sound block of the source the anchor
+  describes: 0 at a session's start, the next audio PTS when a source is
+  reopened inside the session (a seek, next, an episode pick, a pause ended, a
+  stall).
+- The same with `"stop":S`: the source stopped (a stall, a pause) after the
+  sound that ends at clock S; the bar stops at P + S - T.
+- `AV_SWITCH {"progress":0}`: nothing known (the new video's length is not).
+- The device forgets the bar at every CONFIG, on `{"loading":{...}}` and on
+  `{"next":1}` (another video comes), and moves it at once on `{"seek":n}`
+  (to the position + n s, still), keeping that through a stopped anchor until
+  a running one arrives or 20 s of clock have passed.
+- Drawn in the bottom bar (rows 210..239), not over the picture, so it never
+  meets the banner, the level box, the hints, the loading or pause band, and
+  delta-coded stripes cannot leave it behind. Under a picture: the played
+  share of the panel's width in amber along the bar's top two rows, the rest
+  dim; "12:34 / 23:40" (H:MM:SS for an hour or longer) centred below, with the
+  channel banner and for 4 s after a key, anything from the phone, a pause or
+  resume, a voice result and every new anchor. Audio-only, under the pet: the
+  played time, a bar and the total, always. Paused: the line, still, above the
+  pause band's hint. The bar is repainted when what it shows changes -- about
+  once a second with the times up, when the line grows a pixel otherwise --
+  never per frame. A page in the bottom bar (list, status, pets) keeps it.
+
+The relay knows the length and the offset. `GET /info/<channel>` (see above)
+also answers `duration` (seconds; absent when unknown) and, while that stream is
+being pushed, `offset` (the second it started from). The media server asks in
+the background when a source starts feeding (session start, `reconnect.hold`
+returning a new source), at most three times a second apart while the relay has
+no `offset` yet; it sends the stopped anchor when a hold begins (before the
+pause message) and, when the same source recovers, moves the anchor on by the
+silence instead of asking (`server/progress.py`). A Bilibili stream starts at
+the keyframe before the offset, so the bar can be a few seconds ahead. The v2
+sender (`TV_LIVE_ENGINE=v2`) sends no progress.
+
 ## Media conversion and compatibility
 
 Both `prepare` and `import-video` generate actual baseline 160x120 YUV420 JPEGs;

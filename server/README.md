@@ -203,6 +203,23 @@ does not answer means no `playing` and no `loading`; playback is unaffected.
 Device side: "Episode information" in
 [`docs/local-tv-prototype.md`](../docs/local-tv-prototype.md).
 
+### Playback progress
+
+To firmware whose HELLO carries `"progress": 1`, and for relay channels only,
+the live path sends `SWITCH {"progress": {"dur", "pos", "at"}}` anchors (ms):
+the video's length and where it is at a given audio PTS of the session; the
+device moves the bar on with its own sound clock. `server/progress.py` keeps
+one session's anchor: when a source starts feeding (session start with
+`at` 0, or `reconnect.hold` returning a new source with `at` = the next audio
+PTS) it asks the relay's `/info/<channel>` in a background thread for
+`duration` and `offset` (retrying up to three times a second apart until the
+stream is active); when a hold begins (stall or pause) it resends the anchor
+with `stop` = the PTS after the last real sound; when the same source recovers
+it moves the anchor on by the silence. A video without a length sends
+`{"progress": 0}` if a bar was up. Nothing per second; no per-frame work. The
+v2 sender does not send these. Device side: "Playback progress" in
+[`docs/local-tv-prototype.md`](../docs/local-tv-prototype.md).
+
 ## Voice control
 
 Hold OK on the device, speak, let go: the device streams the utterance on its TV

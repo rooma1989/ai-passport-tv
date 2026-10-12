@@ -153,6 +153,15 @@ screen and the banner name the episode at every channel start too. Older
 firmware is unchanged. See "Episode information" in
 [`docs/local-tv-prototype.md`](../local-tv-prototype.md).
 
+**Progress bar.** On creator, series and cast channels, firmware whose HELLO
+says `"progress": 1` draws how far the video has played in the bottom bar: a
+thin amber line under the picture, with "12:34 / 23:40" under it together with
+the channel banner and for 4 s after a key, anything from the phone, a pause,
+a seek or a new episode; in audio-only mode a bar with the played and total
+times under the pet, always. It stops while paused and jumps on a seek. Live
+channels show nothing new. See "Playback progress" in
+[`docs/local-tv-prototype.md`](../local-tv-prototype.md).
+
 Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
 relay uses the unsigned web API rather than yt-dlp.
 
