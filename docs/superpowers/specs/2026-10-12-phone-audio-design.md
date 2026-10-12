@@ -382,6 +382,17 @@ Wi-Fi. Open the printed address in Safari and tap the start button. Listen for
 the beep against the flashing box, lock the phone, unlock it, and see whether
 the "phone sound vs TV picture" readout returns to near zero.
 
+## Decisions (2026-10-12)
+
+The user accepted the recommendations:
+
+1. Start with H = 5 s, and shorten it after the phase 0 trial if the numbers allow.
+2. Both boards get the firmware `mute` and `pos` update.
+3. Pause on the lock screen pauses the programme on relay channels, like the remote's pause button. On live channels it only stops listening.
+4. Both the home-screen app and Safari are supported. Bluetooth delay is read automatically on iOS 18.4 and later; earlier versions use presets and the slider.
+5. Several phones may listen to one device at once.
+6. This fork's `server/` is canonical.
+
 ## 8. Recommendation, plan, effort, risks
 
 **Recommendation:** build the HLS path with the device delayed by a fixed H on the
