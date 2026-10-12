@@ -71,7 +71,24 @@ void ui_overlay_banner(ui_surface_t surface, const ui_menu_t *menu)
     char fitted[UI_MENU_NAME_MAX + 4];
     (void)ui_text_ellipsize(fitted, sizeof(fitted), menu->banner, 226 - 60);
     ui_text_draw(surface, 60, 166, fitted, UI_PAPER, UI_INK);
-    if (menu->banner_detail[0]) {
+    if (ui_episode_known(&menu->playing)) {
+        // A relay channel: which episode and what it is, instead of where the
+        // channel sits in the list.
+        char episode[24];
+        ui_episode_text(&menu->playing, episode, sizeof(episode));
+        int pen = 60;
+        if (episode[0]) {
+            pen = ui_text_draw_scaled(surface, pen, 189, episode, 1, UI_AMBER, UI_INK);
+        }
+        if (menu->playing.title[0]) {
+            // Ellipsized into the name's buffer: the room left is narrower
+            // than any title that would not fit it (this runs on the video
+            // task's stack, so no second copy of the title).
+            if (episode[0]) pen = ui_text_draw_scaled(surface, pen, 189, " \xC2\xB7 ", 1, UI_MUTED, UI_INK);
+            (void)ui_text_ellipsize(fitted, sizeof(fitted), menu->playing.title, 226 - pen);
+            ui_text_draw_scaled(surface, pen, 189, fitted, 1, UI_MUTED, UI_INK);
+        }
+    } else if (menu->banner_detail[0]) {
         ui_text_draw(surface, 60, 189, menu->banner_detail, UI_MUTED, UI_INK);
     }
 }
@@ -92,6 +109,32 @@ void ui_overlay_hint(ui_surface_t surface, const ui_menu_t *menu)
     // padding would paint over the frame at x=179.
     ui_text_draw_scaled(surface, 112, 100, text, 1, UI_PAPER, UI_INK);
     ui_text_draw_scaled(surface, 112, 124, "缓冲中", 1, UI_MUTED, UI_INK);
+}
+
+void ui_overlay_loading(ui_surface_t surface, const ui_menu_t *menu)
+{
+    // The pause band's rows (84..155), so the two read as one family.
+    enum { TOP = 84, BOTTOM = 156 };
+    if (!ui_menu_loading_band(menu) || !covers(surface, TOP, BOTTOM)) {
+        return;
+    }
+    const ui_episode_t *loading = &menu->loading;
+    ui_text_fill(surface, 0, TOP, surface.width, BOTTOM - TOP, UI_INK);
+    ui_text_fill(surface, 0, TOP, surface.width, 1, UI_RULE);
+    ui_text_fill(surface, 0, BOTTOM - 1, surface.width, 1, UI_RULE);
+    ui_draw_icon(surface, UI_ICON_NEXT, 20, TOP + 20, 2, UI_AMBER);
+    int pen = ui_text_draw_scaled(surface, 68, TOP + 14, "正在加载", 1, UI_PAPER, UI_INK);
+    char episode[24];
+    ui_episode_text(loading, episode, sizeof(episode));
+    if (episode[0]) {
+        pen = ui_text_draw_scaled(surface, pen, TOP + 14, " ", 1, UI_PAPER, UI_INK);
+        ui_text_draw_scaled(surface, pen, TOP + 14, episode, 1, UI_AMBER, UI_INK);
+    }
+    if (loading->title[0]) {
+        char fitted[UI_EPISODE_TITLE_MAX + 4];
+        (void)ui_text_ellipsize(fitted, sizeof(fitted), loading->title, 226 - 68);
+        ui_text_draw_scaled(surface, 68, TOP + 40, fitted, 1, UI_MUTED, UI_INK);
+    }
 }
 
 void ui_overlay_pause(ui_surface_t surface, int top, int bottom, unsigned pet, const char *title)
@@ -743,10 +786,21 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
         ui_text_draw_scaled(surface, x, num_top + 12 * scale - 12, "CH", 1, UI_AMBER, UI_INK);
         ui_text_draw_scaled(surface, x + ch_w + 6, num_top, number, scale, UI_AMBER, UI_INK);
         centred(surface, 108, page->name[0] ? page->name : "正在打开频道", UI_PAPER);
-        centred(surface, 132, page->detail, UI_MUTED);
+        // A relay channel's video: its title where the list position was.
+        centred(surface, 132, page->title[0] ? page->title : page->detail, UI_MUTED);
         ui_text_fill(surface, 40, 168, 160, 4, UI_RULE);
         ui_text_fill(surface, 40 + 8 * (int)bounce(tick, 15u), 168, 40, 4, UI_AMBER);
-        centred(surface, 180, "正在打开", UI_MUTED);
+        const char *verb = page->loading ? "正在加载" : "正在打开";
+        if (page->episode[0]) {
+            // The verb muted, the episode in amber, centred as one line.
+            const int space = ui_text_width(" ");
+            const int width = ui_text_width(verb) + space + ui_text_width(page->episode);
+            int pen = (surface.width - width) / 2;
+            pen = ui_text_draw_scaled(surface, pen, 180, verb, 1, UI_MUTED, UI_INK);
+            ui_text_draw_scaled(surface, pen + space, 180, page->episode, 1, UI_AMBER, UI_INK);
+        } else {
+            centred(surface, 180, verb, UI_MUTED);
+        }
         break;
     }
     case UI_WAIT_LISTEN:

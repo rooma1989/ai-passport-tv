@@ -20,6 +20,10 @@ void ui_overlay_banner(ui_surface_t surface, const ui_menu_t *menu);
 // The seek box at (60,92), 120x56.
 void ui_overlay_hint(ui_surface_t surface, const ui_menu_t *menu);
 
+// The loading band across y=84..155 while the source changes (next, previous,
+// an episode picked): the "next" mark, 正在加载 and 第 n/N 集, the title.
+void ui_overlay_loading(ui_surface_t surface, const ui_menu_t *menu);
+
 // The pause band over rows [top, bottom): `pet` dozing, the pause mark, 已暂停
 // and the video's title.
 void ui_overlay_pause(ui_surface_t surface, int top, int bottom, unsigned pet, const char *title);
@@ -103,6 +107,12 @@ typedef struct {
     unsigned number;    // the channel's number in the list; 0 when unknown
     char name[64];      // the channel's name; "" when unknown
     char detail[48];    // "group · n/total"
+    // A relay channel's video (UI_WAIT_CHANNEL): its title and "第 n/N 集", in
+    // place of `detail` and after the verb; `loading` says 正在加载 (the source
+    // is changing in a session) rather than 正在打开. Empty: as before.
+    char title[64];
+    char episode[24];
+    bool loading;
     // The listening screen's live inputs, refreshed before each frame:
     // loudness now and over the last UI_LISTEN_BARS chunks (oldest first),
     // 0..255; whether the screen has dimmed (the pet sleeps); and tenths of

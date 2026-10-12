@@ -17,8 +17,9 @@
 #endif
 // Seven rows of the screens that existed before voice control, then three of
 // the voice screens (docs/superpowers/specs/2026-10-12-voice-control-design.md),
-// so the first seven rows can be compared with an older sheet pixel for pixel.
-enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 10, GAP = 8 };
+// so the first seven rows can be compared with an older sheet pixel for pixel,
+// then one of the episode information (what loads, what plays).
+enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 11, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -404,6 +405,39 @@ int main(int argc, char **argv)
     // The voice screens start on a fresh row of the sheet.
     n = 7 * COLS;
     voice_screens(&n);
+
+    // Episode information, on a row of its own: the loading band over the
+    // picture (a series, then a creator's video), the banner naming the
+    // episode, and the waiting screen while the next one loads.
+    n = 10 * COLS;
+    static const ui_episode_t series = { "犬夜叉 第2集 被封印的少年与偷走四魂之玉", 2, 167 };
+    picture(); bars("21", " 犬夜叉", 76, 0, 3);
+    menu = sample_menu();
+    ui_menu_show_loading(&menu, &series);
+    ui_overlay_loading(view(), &menu);
+    place(n++);
+    picture(); bars("02", " 小Lin说", 76, 0, 3);
+    menu = sample_menu();
+    ui_menu_show_loading(&menu, &(ui_episode_t){ "日元为什么一直跌？", 0, 0 });
+    ui_overlay_loading(view(), &menu);
+    place(n++);
+    picture(); bars("21", " 犬夜叉", 76, 0, 3);
+    menu = sample_menu();
+    ui_menu_set_playing(&menu, &series);
+    ui_menu_banner(&menu, "犬夜叉", NULL);
+    ui_menu_banner_place(&menu, "f1");
+    ui_overlay_banner(view(), &menu);
+    place(n++);
+    {
+        ui_wait_page_t wait = { .kind = UI_WAIT_CHANNEL, .number = 21, .loading = true };
+        snprintf(wait.name, sizeof(wait.name), "%s", "犬夜叉");
+        snprintf(wait.detail, sizeof(wait.detail), "%s", "动画影视 \xC2\xB7 1/1");
+        snprintf(wait.title, sizeof(wait.title), "%s", series.title);
+        ui_episode_text(&series, wait.episode, sizeof(wait.episode));
+        picture(); bars(NULL, ui_overlay_wait_label(wait.kind), 76, 0, 3);
+        ui_overlay_wait(view(), &wait, 4);
+        place(n++);
+    }
 
     FILE *out = fopen(argv[1], "wb");
     if (!out) {

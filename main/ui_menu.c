@@ -26,6 +26,11 @@
 // after it is back (HANDOFF.md 4.5).
 #define UI_MENU_HINT_MAX_MS 8000
 #define UI_MENU_HINT_AFTER_MS 500
+// The loading band: up to this long without word from the server, then this
+// long at most once the server has the new source (a picture normally ends it
+// first; audio-only mode has none).
+#define UI_MENU_LOADING_MAX_MS 30000
+#define UI_MENU_LOADING_AFTER_MS 3000
 // The pet picker closes after this long untouched, and this long after a choice.
 #define UI_MENU_PET_MS 20000
 #define UI_MENU_PET_CHOSEN_MS 1000
@@ -643,6 +648,15 @@ bool ui_menu_tick(ui_menu_t *menu, int64_t elapsed_ms)
             changed = true;
         }
     }
+    if (menu->loading_ms > 0) {
+        menu->loading_ms -= elapsed_ms;
+        if (menu->loading_ms <= 0) {
+            menu->loading_ms = 0;
+            menu->loading_done = false;
+            menu->info_seq++;
+            changed = true;
+        }
+    }
     if (menu->view != UI_VIEW_VIDEO && menu->timeout_ms > 0) {
         menu->timeout_ms -= elapsed_ms;
         if (menu->timeout_ms <= 0) {
@@ -792,6 +806,10 @@ void ui_menu_show_hint(ui_menu_t *menu, ui_hint_t hint, int seconds)
     if (!menu || hint == UI_HINT_NONE) {
         return;
     }
+    // "Next" while the band says what is loading would say it twice.
+    if (hint == UI_HINT_NEXT && ui_menu_loading_up(menu)) {
+        return;
+    }
     menu->hint = hint;
     menu->hint_seconds = seconds;
     menu->hint_ms = UI_MENU_HINT_MAX_MS;
@@ -850,3 +868,108 @@ void ui_menu_banner(ui_menu_t *menu, const char *name, const char *previous)
     menu->banner_ms = UI_MENU_BANNER_MS;
 }
 
+
+bool ui_episode_known(const ui_episode_t *episode)
+{
+    return episode && (episode->title[0] || episode->episode);
+}
+
+void ui_episode_set_title(ui_episode_t *episode, const char *title)
+{
+    if (!episode) {
+        return;
+    }
+    size_t n = title ? strnlen(title, sizeof(episode->title) - 1u) : 0u;
+    // Back off a cut multi-byte character: drop continuation bytes, then the
+    // lead byte whose sequence they did not finish.
+    if (title && title[n] != '\0') {
+        size_t end = n;
+        while (end > 0 && ((unsigned char)title[end] & 0xC0u) == 0x80u) {
+            end--;
+        }
+        n = end;
+    }
+    if (title) {
+        memcpy(episode->title, title, n);
+    }
+    episode->title[n] = '\0';
+}
+
+void ui_episode_text(const ui_episode_t *episode, char *out, size_t out_size)
+{
+    if (!out || !out_size) {
+        return;
+    }
+    out[0] = '\0';
+    if (!episode || !episode->episode) {
+        return;
+    }
+    if (episode->total >= episode->episode) {
+        snprintf(out, out_size, "第 %u/%u 集", episode->episode, episode->total);
+    } else {
+        snprintf(out, out_size, "第 %u 集", episode->episode);
+    }
+}
+
+void ui_menu_set_playing(ui_menu_t *menu, const ui_episode_t *episode)
+{
+    if (!menu) {
+        return;
+    }
+    if (episode) {
+        menu->playing = *episode;
+    } else {
+        memset(&menu->playing, 0, sizeof(menu->playing));
+    }
+    menu->info_seq++;
+}
+
+void ui_menu_show_loading(ui_menu_t *menu, const ui_episode_t *episode)
+{
+    if (!menu || !ui_episode_known(episode)) {
+        return;
+    }
+    menu->loading = *episode;
+    menu->loading_ms = UI_MENU_LOADING_MAX_MS;
+    menu->loading_done = false;
+    menu->info_seq++;
+    if (menu->hint == UI_HINT_NEXT) {
+        menu->hint = UI_HINT_NONE;
+        menu->hint_ms = 0;
+        menu->hint_seq++;
+    }
+}
+
+bool ui_menu_loading_done(ui_menu_t *menu)
+{
+    if (!menu || menu->loading_ms <= 0 || menu->loading_done) {
+        return false;
+    }
+    menu->loading_done = true;
+    menu->playing = menu->loading;
+    if (menu->loading_ms > UI_MENU_LOADING_AFTER_MS) {
+        menu->loading_ms = UI_MENU_LOADING_AFTER_MS;
+    }
+    menu->info_seq++;
+    return true;
+}
+
+void ui_menu_loading_shown(ui_menu_t *menu)
+{
+    if (!menu || menu->loading_ms <= 0 || !menu->loading_done) {
+        return;
+    }
+    menu->loading_ms = 0;
+    menu->loading_done = false;
+    menu->info_seq++;
+}
+
+bool ui_menu_loading_band(const ui_menu_t *menu)
+{
+    return menu && menu->loading_ms > 0 && !menu->loading_done;
+}
+
+bool ui_menu_loading_up(const ui_menu_t *menu)
+{
+    return menu && menu->loading_ms > 0;
+}

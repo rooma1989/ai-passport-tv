@@ -58,6 +58,17 @@ typedef enum {
     UI_HINT_NEXT,
 } ui_hint_t;
 
+// What a relay channel (a series, a creator, the cast) is playing or about to
+// play, as a server that knows says (HELLO "info": 1; CONFIG "playing", SWITCH
+// "loading"). An empty title and episode 0 is "nothing known": a live channel.
+// The title is UTF-8, cut on a character, at most UI_EPISODE_TITLE_MAX - 1 bytes.
+#define UI_EPISODE_TITLE_MAX 64u
+typedef struct {
+    char title[UI_EPISODE_TITLE_MAX];
+    unsigned episode;   // 1-based; 0 when not a series
+    unsigned total;     // episodes in the series; 0 when unknown
+} ui_episode_t;
+
 // ---- Voice: the push-to-talk screens share the list's panel ("2-in-1") ----
 //
 // A sub-state of UI_VIEW_MENU: while `voice.screen` is not UI_VOICE_NONE the
@@ -159,6 +170,18 @@ typedef struct {
     unsigned brightness;
     // The voice screens, drawn in the list's panel (see ui_voice_t).
     ui_voice_t voice;
+    // What this session plays (for the banner and the opening screen), and
+    // what is loading while the source changes: the band over the picture,
+    // then the waiting screen. loading_ms counts down while it is up;
+    // loading_done says the server has the new source and its picture is next,
+    // so the band is no longer drawn over pictures (the first new one is a
+    // whole frame and must not carry it). info_seq moves on every change so a
+    // still screen knows to repaint.
+    ui_episode_t playing;
+    ui_episode_t loading;
+    int64_t loading_ms;
+    bool loading_done;
+    unsigned info_seq;
 } ui_menu_t;
 
 // Rows the list can show at once, given the screen height and row height.
@@ -273,6 +296,30 @@ void ui_menu_hint_resumed(ui_menu_t *menu);
 // The box's first line: 快进30秒, 快退2分, 下一个. Empty when no box is up.
 void ui_menu_hint_text(const ui_menu_t *menu, char *out, size_t out_size);
 
+
+// ---- Episode information ----
+
+// Whether `episode` says anything: a title or an episode number.
+bool ui_episode_known(const ui_episode_t *episode);
+// Copy `title` into `episode->title`, cut on a whole UTF-8 character.
+void ui_episode_set_title(ui_episode_t *episode, const char *title);
+// "第 3/26 集", "第 3 集" without a total, "" when not a series.
+void ui_episode_text(const ui_episode_t *episode, char *out, size_t out_size);
+// What the session plays; NULL forgets it (a live channel, a new session).
+void ui_menu_set_playing(ui_menu_t *menu, const ui_episode_t *episode);
+// The source is changing to `episode`: the loading band goes up for at most
+// UI_MENU_LOADING_MAX_MS, and a "next" box it makes redundant goes.
+void ui_menu_show_loading(ui_menu_t *menu, const ui_episode_t *episode);
+// The server has the new source and its picture comes next: what loads becomes
+// what plays. The band stops being drawn over pictures; the waiting screen keeps
+// it until ui_menu_loading_shown, or UI_MENU_LOADING_AFTER_MS at most. False
+// (nothing changed) when nothing was loading.
+bool ui_menu_loading_done(ui_menu_t *menu);
+// A picture was drawn after ui_menu_loading_done: the loading is over.
+void ui_menu_loading_shown(ui_menu_t *menu);
+// Whether the band is drawn over the picture, and whether anything is loading.
+bool ui_menu_loading_band(const ui_menu_t *menu);
+bool ui_menu_loading_up(const ui_menu_t *menu);
 
 // ---- Voice screens ----
 

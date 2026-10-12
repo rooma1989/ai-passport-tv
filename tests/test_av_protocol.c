@@ -379,6 +379,13 @@ static void json_tests(void) {
     assert(av_json_depth_safe(flat,strlen(flat),4));
     assert(av_json_depth_safe("[[[[]]]]",8,4));
     assert(!av_json_depth_safe("[[[[[]]]]]",10,4));
+    // SWITCH is parsed at depth 2: the loading message (one object inside the
+    // packet's) has to pass it, braces inside the title included.
+    {
+        const char *loading="{\"loading\":{\"title\":\"{第2集}\",\"episode\":2,\"total\":3}}";
+        assert(av_json_depth_safe(loading,strlen(loading),2));
+        assert(av_json_depth_safe("{\"loading\":0}",13,2));
+    }
     assert(!av_json_depth_safe("{",1,4));
     assert(!av_json_depth_safe("}",1,4));
     assert(!av_json_depth_safe("\"unterminated",13,4));

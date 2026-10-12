@@ -597,6 +597,77 @@ static void test_voice_screens_share_the_panel(void)
     check(empty.view == UI_VIEW_VIDEO, "no list to go back to: closed");
 }
 
+static void test_episode_loading(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    char text[32];
+    ui_episode_t ep = { "", 3, 26 };
+    ui_episode_text(&ep, text, sizeof(text));
+    check(strcmp(text, "第 3/26 集") == 0, "episode with total");
+    ep.total = 0;
+    ui_episode_text(&ep, text, sizeof(text));
+    check(strcmp(text, "第 3 集") == 0, "episode without total");
+    ep.total = 2;
+    ui_episode_text(&ep, text, sizeof(text));
+    check(strcmp(text, "第 3 集") == 0, "a total below the episode is not shown");
+    ep.episode = 0;
+    ui_episode_text(&ep, text, sizeof(text));
+    check(text[0] == '\0' && !ui_episode_known(&ep), "not a series, no title: nothing");
+
+    // A title cut on a whole character: 21 CJK characters are 63 bytes, 22 do not fit.
+    char long_title[80] = "";
+    for (int i = 0; i < 22; i++) strcat(long_title, "犬");
+    ui_episode_set_title(&ep, long_title);
+    check(strlen(ep.title) == 63, "21 characters fit");
+    strcpy(long_title, "a");
+    for (int i = 0; i < 22; i++) strcat(long_title, "犬");
+    ui_episode_set_title(&ep, long_title);
+    check(strlen(ep.title) == 61, "a cut character is dropped, not halved");
+    ui_episode_set_title(&ep, NULL);
+    check(ep.title[0] == '\0', "no title");
+
+    // Loading: the band goes up, takes a "next" box with it, refuses a new one.
+    ui_menu_show_hint(&menu, UI_HINT_NEXT, 0);
+    ui_episode_t next = { "第2集 战国", 2, 26 };
+    const unsigned seq = menu.info_seq;
+    ui_menu_show_loading(&menu, &next);
+    check(ui_menu_loading_band(&menu) && ui_menu_loading_up(&menu) && menu.info_seq != seq, "band up");
+    check(menu.hint == UI_HINT_NONE, "the next box goes");
+    ui_menu_show_hint(&menu, UI_HINT_NEXT, 0);
+    check(menu.hint == UI_HINT_NONE, "and does not come back while loading");
+    ui_menu_show_hint(&menu, UI_HINT_FORWARD, 30);
+    check(menu.hint == UI_HINT_FORWARD, "a seek box still shows");
+    ui_menu_show_loading(&menu, &(ui_episode_t){ "", 0, 0 });
+    check(menu.loading.episode == 2, "an empty loading changes nothing");
+
+    // A picture before the server's word does not end it.
+    ui_menu_loading_shown(&menu);
+    check(ui_menu_loading_up(&menu), "still loading");
+    (void)ui_menu_tick(&menu, 20000);   // the seek box goes; the band stays
+    check(ui_menu_loading_band(&menu), "stays while the source opens");
+
+    // The server has it: no band over pictures, the waiting screen keeps it.
+    check(ui_menu_loading_done(&menu), "done");
+    check(!ui_menu_loading_done(&menu), "once");
+    check(!ui_menu_loading_band(&menu) && ui_menu_loading_up(&menu), "band off, still loading");
+    check(menu.playing.episode == 2 && strcmp(menu.playing.title, "第2集 战国") == 0, "it plays now");
+    ui_menu_loading_shown(&menu);
+    check(!ui_menu_loading_up(&menu), "the picture ends it");
+
+    // Never stuck: 30 s without word, 3 s after the word without a picture.
+    ui_menu_show_loading(&menu, &next);
+    check(!ui_menu_tick(&menu, 29000) && ui_menu_loading_up(&menu), "29 s");
+    check(ui_menu_tick(&menu, 1000) && !ui_menu_loading_up(&menu), "30 s");
+    ui_menu_show_loading(&menu, &next);
+    ui_menu_loading_done(&menu);
+    check(ui_menu_tick(&menu, 3000) && !ui_menu_loading_up(&menu), "3 s after done");
+    check(!ui_menu_loading_done(&menu), "done with nothing loading is nothing");
+
+    ui_menu_set_playing(&menu, NULL);
+    check(!ui_episode_known(&menu.playing), "forgotten");
+}
+
 int main(void)
 {
     test_voice_screens_share_the_panel();
@@ -623,6 +694,7 @@ int main(void)
     test_level_indicator();
     test_seek_hint();
     test_pet_picker();
+    test_episode_loading();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

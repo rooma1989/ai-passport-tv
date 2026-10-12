@@ -504,6 +504,14 @@ typedef struct {
     // Set by the video task when frames come back after a gap, so the seek box
     // can go half a second later; taken by pump_keys, which owns the menu.
     atomic_bool frames_resumed;
+    // What a relay channel plays (CONFIG "playing") and what is loading while
+    // its source changes (SWITCH "loading"), from a server this firmware told
+    // "info": 1. Written by the receive task under list_lock, then the count
+    // moved; applied to the menu by pump_keys. info_loaded is SWITCH
+    // {"loading": 0}: the new source's picture comes next.
+    ui_episode_t info_playing, info_loading;
+    atomic_uint info_playing_gen, info_loading_gen;
+    atomic_bool info_loaded;
     // Push-to-talk (CONFIG_AV_VOICE). voice_session: this session's CONFIG
     // offered voice and the socket is up, so an utterance can be sent; written
     // by the receive task. voice_mute: the TV's sound is silenced from OK down
@@ -1110,6 +1118,22 @@ static bool json_string(const cJSON *j, const char *key, const char *expected) {
 #else
 #define AV_CONFIG_FPS_MAX 30
 #endif
+// An episode description ({"title", "episode", "total"}) into `out`; false, with
+// `out` emptied, for anything that is not one. Never logged: it is remote text.
+static bool parse_episode(const cJSON *object, ui_episode_t *out) {
+    memset(out,0,sizeof(*out));
+    if (!cJSON_IsObject(object)) return false;
+    const cJSON *title=cJSON_GetObjectItemCaseSensitive(object,"title");
+    const cJSON *episode=cJSON_GetObjectItemCaseSensitive(object,"episode");
+    const cJSON *total=cJSON_GetObjectItemCaseSensitive(object,"total");
+    if (cJSON_IsString(title) && title->valuestring) ui_episode_set_title(out,title->valuestring);
+    if (cJSON_IsNumber(episode) && episode->valuedouble>=1 && episode->valuedouble<=100000) {
+        out->episode=(unsigned)episode->valuedouble;
+        if (cJSON_IsNumber(total) && total->valuedouble>=episode->valuedouble && total->valuedouble<=100000)
+            out->total=(unsigned)total->valuedouble;
+    }
+    return ui_episode_known(out);
+}
 // Keep the channel an AV_SWITCH names for the main loop. A request that does not
 // parse or names nothing usable is logged and dropped: it is advice from the
 // server, and ignoring it leaves the device playing what it was.
@@ -1133,6 +1157,23 @@ static void take_switch(char *buf, size_t n) {
         taskEXIT_CRITICAL(&list_lock);
         atomic_store(&s.paused,on);
         atomic_fetch_add(&s.pause_gen,1u);
+        cJSON_Delete(j);
+        return;
+    }
+    // The source is about to change ({"loading": {...}}), or the new one is
+    // ready ({"loading": 0}). Only a server told "info": 1 sends either.
+    const cJSON *loading=cJSON_GetObjectItemCaseSensitive(j,"loading");
+    if (loading) {
+        ui_episode_t episode;
+        if (parse_episode(loading,&episode)) {
+            taskENTER_CRITICAL(&list_lock);
+            s.info_loading=episode;
+            taskEXIT_CRITICAL(&list_lock);
+            atomic_store(&s.info_loaded,false);
+            atomic_fetch_add(&s.info_loading_gen,1u);
+        } else if (cJSON_IsNumber(loading) || cJSON_IsFalse(loading)) {
+            atomic_store(&s.info_loaded,true);
+        }
         cJSON_Delete(j);
         return;
     }
@@ -1409,6 +1450,16 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
             }
         }
     }
+    if (ok) {
+        // A relay channel's video, from a server told "info": 1; absent (a
+        // live channel, an older server) it is forgotten.
+        ui_episode_t playing;
+        (void)parse_episode(cJSON_GetObjectItemCaseSensitive(j,"playing"),&playing);
+        taskENTER_CRITICAL(&list_lock);
+        s.info_playing=playing;
+        taskEXIT_CRITICAL(&list_lock);
+        atomic_fetch_add(&s.info_playing_gen,1u);
+    }
 #if CONFIG_AV_VOICE
     if (ok) {
         // "voice":{"max_s":10} comes only from a server with a recogniser
@@ -1504,6 +1555,8 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"pause",1) &&
         // And the box for a seek or "next" from the phone (SWITCH "seek"/"next").
         cJSON_AddNumberToObject(j,"hint",1) &&
+        // And which episode plays and loads (CONFIG "playing", SWITCH "loading").
+        cJSON_AddNumberToObject(j,"info",1) &&
         // The pet in use; its presence also says SWITCH may carry "pet".
         cJSON_AddNumberToObject(j,"pet",(double)atomic_load(&s.pet)) &&
         // Audio-only mode; its presence also says SWITCH may carry "audio_only".
@@ -2484,6 +2537,9 @@ static void refresh_status_page(void) {
     }
 }
 
+// Set while the channel's waiting screen is painted: it shows what is loading
+// itself, so the band over pictures is left off it.
+static bool s_wait_says_loading;
 // Draw one stripe's worth of overlay, if this stripe is one the overlay occupies.
 // Everything is positioned from absolute screen rows so a stripe can be drawn in
 // isolation without knowing what came before it.
@@ -2506,6 +2562,8 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         ui_overlay_level(view,&s.menu,av_brightness_percent(s.menu.brightness));
         ui_overlay_banner(view,&s.menu);
         ui_overlay_hint(view,&s.menu);
+        // Not over the channel's waiting screen, which says the same itself.
+        if (!s_wait_says_loading) ui_overlay_loading(view,&s.menu);
     } else if (s.menu.view==UI_VIEW_MENU) {
         // HANDOFF.md 4.7 and 4.8; the title and position are the top bar's label.
         // The voice screens share the panel (voice control design, mock-ups 2-12).
@@ -3320,6 +3378,7 @@ static bool showed_content(void)
 
 static unsigned pause_seen=UINT_MAX;
 static unsigned waiting_hint_seq;
+static unsigned waiting_info_seq;
 static ui_wait_kind_t waiting_kind(void);
 static ui_wait_page_t waiting_page;
 // What the overlays over a waiting or listening screen show, so a volume box
@@ -3381,6 +3440,8 @@ static bool waiting_screen_stale(void)
     if ((int)s.menu.view!=waiting_view) return true;
     // A seek box came or went while the picture is away: the screen shows it.
     if (s.menu.hint_seq!=waiting_hint_seq) return true;
+    // What plays or loads changed: the channel's waiting screen names it.
+    if (s.menu.info_seq!=waiting_info_seq) return true;
     if (waiting_kind()!=waiting_page.kind) return true;
     if (overlay_sig()!=waiting_overlay_sig) return true;
     if ((int)atomic_load(&s.link)!=waiting_link) return true;
@@ -3473,6 +3534,12 @@ static void build_waiting_page(void) {
             ui_menu_channel_place(&s.menu,s.channel,&page->number,page->detail,sizeof(page->detail));
             if (page->number) current_channel_name(page->name,sizeof(page->name));
         }
+        // A relay channel's video: what loads while the source changes,
+        // otherwise what this session opens.
+        page->loading=ui_menu_loading_up(&s.menu);
+        const ui_episode_t *episode=page->loading ? &s.menu.loading : &s.menu.playing;
+        snprintf(page->title,sizeof(page->title),"%s",episode->title);
+        ui_episode_text(episode,page->episode,sizeof(page->episode));
     } else {
         av_server_addr_t addr;
         if (server_address(&addr)) {
@@ -3519,7 +3586,9 @@ static bool paint_waiting_rows(unsigned y0, unsigned y1) {
         ui_overlay_wait(ui_surface_centered(strip),&waiting_page,tick);
         // On top, so a page covers the screen rather than competing with it:
         // the status page and the list paint their own panel and bars.
+        s_wait_says_loading=waiting_page.kind==UI_WAIT_CHANNEL;
         overlay_stripe(y,s.stripe[0]);
+        s_wait_says_loading=false;
         // Through the queueing entry point and drained in the same breath: the
         // waiting screen redraws on its own schedule and wants the simple
         // synchronous behaviour, not the overlap playback uses.
@@ -3538,6 +3607,7 @@ static bool paint_waiting_screen(void)
     waiting_drawn=true;
     waiting_view=(int)s.menu.view;
     waiting_hint_seq=s.menu.hint_seq;
+    waiting_info_seq=s.menu.info_seq;
     waiting_link=(int)atomic_load(&s.link);
     waiting_count=atomic_load(&s.count);
     waiting_overlay_sig=overlay_sig();
@@ -3814,6 +3884,10 @@ static void video_task(void *arg) {
     drain_display();
     if(bsp_display_raw_release()!=ESP_OK) fail("raw release");
 done:
+    // The overlays draw on this stack (4096 bytes), the loading band and the
+    // episode banner among them: how close it came, as the audio task says.
+    ESP_LOGI(TAG,"video task stack high-water=%u bytes free",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
     xEventGroupSetBits(s.events,VIDEO_DONE);
     vTaskDelete(NULL);
 }
@@ -4882,6 +4956,59 @@ static bool run_setup_mode(void)
     return left && !paint_failed;
 }
 
+// The episode information the receive task left (CONFIG "playing", SWITCH
+// "loading"), applied to the menu here, where the menu is owned. The counts
+// last applied; info_reset() catches them up at a session's start, so nothing
+// from the session before is applied to the next.
+static unsigned info_playing_seen, info_loading_seen;
+// Pictures drawn when the server said the new source was ready: the next one
+// is the new source's, and ends the loading.
+static uint32_t info_loaded_mark;
+static void info_reset(void) {
+    info_playing_seen=atomic_load(&s.info_playing_gen);
+    info_loading_seen=atomic_load(&s.info_loading_gen);
+    atomic_store(&s.info_loaded,false);
+    // Whatever was loading belonged to the session that ended.
+    ui_menu_loading_done(&s.menu);
+    ui_menu_loading_shown(&s.menu);
+    ui_menu_set_playing(&s.menu,NULL);
+}
+static uint32_t pictures_drawn(void) {
+    return s.decoded+atomic_load(&s.covered_frames);
+}
+static void info_pump(void) {
+    ui_episode_t episode;
+    unsigned gen=atomic_load(&s.info_playing_gen);
+    if (gen!=info_playing_seen) {
+        info_playing_seen=gen;
+        taskENTER_CRITICAL(&list_lock);
+        episode=s.info_playing;
+        taskEXIT_CRITICAL(&list_lock);
+        ui_menu_set_playing(&s.menu,ui_episode_known(&episode) ? &episode : NULL);
+    }
+    gen=atomic_load(&s.info_loading_gen);
+    if (gen!=info_loading_seen) {
+        info_loading_seen=gen;
+        taskENTER_CRITICAL(&list_lock);
+        episode=s.info_loading;
+        taskEXIT_CRITICAL(&list_lock);
+        ui_menu_show_loading(&s.menu,&episode);
+        ESP_LOGI(TAG,"Loading episode %u",episode.episode);
+    }
+    if (atomic_exchange(&s.info_loaded,false) && ui_menu_loading_done(&s.menu)) {
+        info_loaded_mark=pictures_drawn();
+        // What loaded is what plays now: say so, as after a channel switch.
+        // Raised before the new source's first picture, which is a whole
+        // frame, so the banner is drawn with it rather than stripe by stripe.
+        char name[UI_MENU_NAME_MAX];
+        current_channel_name(name,sizeof(name));
+        ui_menu_banner(&s.menu,name,NULL);
+        ui_menu_banner_place(&s.menu,s.channel);
+    } else if (s.menu.loading_done && pictures_drawn()!=info_loaded_mark) {
+        ui_menu_loading_shown(&s.menu);
+    }
+}
+
 static bool pump_keys(uint32_t wait_ms) {
     key_ev_t item;
     bool first=true;
@@ -4939,6 +5066,7 @@ static bool pump_keys(uint32_t wait_ms) {
         ui_menu_show_hint(&s.menu,(ui_hint_t)asked,atomic_load(&s.remote_hint_seconds));
     }
     if (atomic_exchange(&s.frames_resumed,false)) ui_menu_hint_resumed(&s.menu);
+    info_pump();
 #if CONFIG_AV_VOICE
     // The keys just read may have finished an utterance or picked a candidate.
     voice_pump();
@@ -5194,6 +5322,7 @@ void av_player_main(void) {
             if(!(xEventGroupGetBits(s.events)&WIFI_READY) || stopping()) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
         }
         s.submitted_samples=s.decoded=s.dropped=s.decode_max_ms=s.feed_gap_max_ms=0;
+        info_reset();
         atomic_store(&s.audio_rx,0u);
         last_frame_us=0;
         picture_was_live=false;
