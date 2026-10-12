@@ -642,7 +642,10 @@ class Category:
 
     def holds(self, channel: Channel) -> bool:
         kind = "up" if _CREATOR_ID.match(channel.id) else "series" if _SERIES_ID.match(channel.id) else ""
-        return ((not self.site or channel.site == self.site) and (not self.kind or kind == self.kind)
+        # 只说网站（「我有哪些 YouTube 频道」「B站有哪些频道」）是问订阅的 UP 主（频道）；
+        # 那个网站的剧集要说「剧」「剧集」（用户决定）。
+        wanted = self.kind or ("up" if self.site and not self.group else "")
+        return ((not self.site or channel.site == self.site) and (not wanted or kind == wanted)
                 and (not self.group or channel.group == self.group))
 
     def noun(self) -> str:

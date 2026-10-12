@@ -350,13 +350,17 @@ class SessionTests(unittest.TestCase):
         def with_sites():
             data = catalog()
             for row in data["series"] + data["creators"]:
-                row["site"] = "youtube" if row["id"] == "sr02" else "bilibili"
+                row["site"] = "youtube" if row["id"] in ("up01", "sr02") else "bilibili"
             return data
 
         self.relay.catalog = with_sites
         self.asr.text = "我有哪些youtube频道告诉我。"
         result = self.say()[0]
+        # Only the site's creators; its series need 剧 / 剧集.
         self.assertEqual((result["intent"], result["reply"]), ("list", "YouTube 频道有 1 个"))
+        self.assertEqual(result["choices"], [{"label": "小Lin说", "lead": "02", "do": {"channel": "up01"}}])
+        self.asr.text = "YouTube有哪些剧集"
+        result = self.say(uid=3)[0]
         self.assertEqual(result["choices"], [{"label": "熊出没之探险日", "lead": "07", "do": {"channel": "sr02"}}])
         # An older relay without sites: say so instead of guessing.
         self.relay.catalog = catalog

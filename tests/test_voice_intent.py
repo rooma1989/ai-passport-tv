@@ -439,7 +439,6 @@ TODAY = Catalog(TODAY_CHANNELS, current="ch000", volume=50)
 NO_YT_SERIES = Catalog([c for c in TODAY_CHANNELS if c.id != "sr03"], current="ch000")
 # The relay did not answer: relay channels without a site.
 NO_SITES = Catalog([Channel(c.id, c.name, c.number, c.group) for c in TODAY_CHANNELS], current="ch000")
-YT = {"up03", "up04", "sr03"}
 YT_UP = {"up03", "up04"}
 BL_UP = {"up01", "up02", "up05", "up06", "up07", "up08", "up09"}
 SERIES_IDS = {"sr01", "sr02", "sr03"}
@@ -448,32 +447,32 @@ GROUPS_ALL = "groups"
 # (utterance, catalogue, expected): a set of channel ids that are listed (over every page),
 # GROUPS_ALL for the overview of groups, or ("none", words in the reply) / ("channel", id).
 LIST_CASES = [
-    # ---- by site ----
-    ("我有哪些youtube频道告诉我。", TODAY, YT),
-    ("我有哪些YouTube频道", TODAY, YT),
-    ("我有哪些YouTube频道？", TODAY, YT),
-    ("有哪些油管频道", TODAY, YT),
-    ("有哪些优兔频道", TODAY, YT),
-    ("油管上有什么", TODAY, YT),
-    ("YouTube 有哪些", TODAY, YT),
-    ("YouTube上都有什么台", TODAY, YT),
-    ("列出YouTube频道", TODAY, YT),
-    ("列出所有的YouTube频道", TODAY, YT),
-    ("显示油管的频道", TODAY, YT),
-    ("告诉我有哪些YouTube频道", TODAY, YT),
-    ("帮我列一下YouTube的频道", TODAY, YT),
-    ("有没有YouTube频道", TODAY, YT),
-    ("我在YouTube上订阅了哪些", TODAY, YT),
-    ("YouTube频道", TODAY, YT),
-    ("youtube的频道有哪些呢", TODAY, YT),
-    ("我有哪些YouTube的频道？告诉我一下。", TODAY, YT),
-    ("YouTube的频道都有哪些", TODAY, YT),
-    ("哪些频道是YouTube的", TODAY, YT),
-    ("小智小智，有哪些YouTube频道", TODAY, YT),
-    ("我想知道有哪些YouTube频道", TODAY, YT),
-    ("我的youtube频道", TODAY, YT),
-    ("B站有哪些频道", TODAY, BL_UP | {"sr01", "sr02"}),
-    ("哔哩哔哩上有什么", TODAY, BL_UP | {"sr01", "sr02"}),
+    # ---- by site: only that site's creators (series need 剧 / 剧集) ----
+    ("我有哪些youtube频道告诉我。", TODAY, YT_UP),
+    ("我有哪些YouTube频道", TODAY, YT_UP),
+    ("我有哪些YouTube频道？", TODAY, YT_UP),
+    ("有哪些油管频道", TODAY, YT_UP),
+    ("有哪些优兔频道", TODAY, YT_UP),
+    ("油管上有什么", TODAY, YT_UP),
+    ("YouTube 有哪些", TODAY, YT_UP),
+    ("YouTube上都有什么台", TODAY, YT_UP),
+    ("列出YouTube频道", TODAY, YT_UP),
+    ("列出所有的YouTube频道", TODAY, YT_UP),
+    ("显示油管的频道", TODAY, YT_UP),
+    ("告诉我有哪些YouTube频道", TODAY, YT_UP),
+    ("帮我列一下YouTube的频道", TODAY, YT_UP),
+    ("有没有YouTube频道", TODAY, YT_UP),
+    ("我在YouTube上订阅了哪些", TODAY, YT_UP),
+    ("YouTube频道", TODAY, YT_UP),
+    ("youtube的频道有哪些呢", TODAY, YT_UP),
+    ("我有哪些YouTube的频道？告诉我一下。", TODAY, YT_UP),
+    ("YouTube的频道都有哪些", TODAY, YT_UP),
+    ("哪些频道是YouTube的", TODAY, YT_UP),
+    ("小智小智，有哪些YouTube频道", TODAY, YT_UP),
+    ("我想知道有哪些YouTube频道", TODAY, YT_UP),
+    ("我的youtube频道", TODAY, YT_UP),
+    ("B站有哪些频道", TODAY, BL_UP),
+    ("哔哩哔哩上有什么", TODAY, BL_UP),
     # ---- creators ----
     ("B站的UP主有哪些", TODAY, BL_UP),
     ("b站的up主有哪些？", TODAY, BL_UP),
@@ -583,8 +582,8 @@ class ListTests(unittest.TestCase):
     def test_the_failing_transcript(self):
         d = decide("我有哪些youtube频道告诉我。", TODAY)
         self.assertEqual(d.kind, "list")
-        self.assertEqual(d.reply, "YouTube 频道有 3 个")
-        self.assertEqual([c["do"]["channel"] for c in d.choices], ["up03", "up04", "sr03"])
+        self.assertEqual(d.reply, "YouTube 频道有 2 个")
+        self.assertEqual([c["do"]["channel"] for c in d.choices], ["up03", "up04"])
         self.assertEqual(d.choices[0], {"label": "Dulaa Music", "lead": f"{TODAY.channel('up03').number:02d}",
                                         "do": {"channel": "up03"}})
 
@@ -592,7 +591,7 @@ class ListTests(unittest.TestCase):
         self.assertEqual(decide("我订阅了哪些UP主", TODAY).reply, "UP 主有 9 个")
         self.assertEqual(decide("油管的up主有哪些", TODAY).reply, "YouTube UP 主有 2 个")
         self.assertEqual(decide("B站的UP主有哪些", TODAY).reply, "B站 UP 主有 7 个")
-        self.assertEqual(decide("B站有哪些频道", TODAY).reply, "B站频道有 9 个")
+        self.assertEqual(decide("B站有哪些频道", TODAY).reply, "B站频道有 7 个")
         self.assertEqual(decide("有哪些卫视", TODAY).reply, "卫视有 2 个台")
         self.assertEqual(decide("有哪些YouTube的剧", NO_YT_SERIES).reply, "还没有 YouTube 剧集")
         self.assertEqual(decide("都有什么台", TODAY).reply, f"一共 {len(TODAY_CHANNELS)} 个台，分 9 组")
