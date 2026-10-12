@@ -526,8 +526,80 @@ static void test_pet_picker(void)
           "left alone, it closes without changing the pet");
 }
 
+static void test_voice_screens_share_the_panel(void)
+{
+    // From the picture: the panel opens on the voice screen.
+    ui_menu_t menu = grouped("ch001");
+    ui_menu_voice_show(&menu, UI_VOICE_LISTENING);
+    check(menu.view == UI_VIEW_MENU && ui_menu_voice_up(&menu), "voice opens the panel");
+    check(!menu.voice.over_list, "no list underneath");
+    check(menu.timeout_ms == 0, "the voice policy owns the timing");
+    check(!ui_menu_tick(&menu, 60000) && menu.view == UI_VIEW_MENU, "the panel does not time out under it");
+    ui_menu_scroll_by(&menu, 1, 7);
+    ui_menu_confirm(&menu);
+    check(menu.action == UI_ACTION_NONE, "list keys do nothing to a voice screen");
+    // "None of these": the list opens afresh at the groups.
+    ui_menu_voice_to_list(&menu);
+    check(menu.view == UI_VIEW_MENU && !ui_menu_voice_up(&menu), "the list replaces the voice screen");
+    check(ui_menu_at_groups(&menu), "opened at the groups");
+    check(menu.timeout_ms > 0, "the list's own timeout is back");
+
+    // From inside a group: the list is kept as it was underneath.
+    ui_menu_confirm(&menu);
+    check(!ui_menu_at_groups(&menu), "inside a group");
+    const unsigned selected = menu.selected;
+    ui_menu_voice_show(&menu, UI_VOICE_LISTENING);
+    check(menu.voice.over_list, "the list is underneath");
+    ui_menu_voice_show(&menu, UI_VOICE_RECOGNISING);
+    check(menu.voice.over_list, "still underneath after the next screen");
+    ui_menu_voice_to_list(&menu);
+    check(!ui_menu_at_groups(&menu) && menu.selected == selected, "back to the same place in the list");
+
+    // Back (double-click) from a voice screen over the list returns to it, and
+    // from one over the picture closes the panel.
+    ui_menu_voice_show(&menu, UI_VOICE_NOT_UNDERSTOOD);
+    ui_menu_back(&menu);
+    check(menu.view == UI_VIEW_MENU && !ui_menu_voice_up(&menu) && !ui_menu_at_groups(&menu),
+          "back from voice: the list as it was");
+    ui_menu_close(&menu);
+    ui_menu_voice_show(&menu, UI_VOICE_ERROR);
+    ui_menu_back(&menu);
+    check(menu.view == UI_VIEW_VIDEO && menu.voice.screen == UI_VOICE_NONE, "back from voice over the picture closes");
+
+    // Rows, highlight and scrolling.
+    ui_menu_voice_show(&menu, UI_VOICE_CHOICES);
+    menu.voice.row_count = 7;
+    ui_menu_voice_select(&menu, 0);
+    check(menu.voice.highlight && menu.voice.selected == 0 && menu.voice.scroll == 0, "first row");
+    ui_menu_voice_select(&menu, 5);
+    check(menu.voice.scroll == 2, "the highlight is kept on screen");
+    ui_menu_voice_select(&menu, 99);
+    check(menu.voice.selected == 6 && menu.voice.scroll == 3, "clamped to the last row");
+    ui_menu_voice_select(&menu, 1);
+    check(menu.voice.scroll == 1, "scrolls back up");
+    ui_menu_voice_show(&menu, UI_VOICE_CHOICES);
+    check(menu.voice.row_count == 7, "the same screen keeps its rows");
+    ui_menu_voice_show(&menu, UI_VOICE_DONE);
+    check(menu.voice.row_count == 0 && !menu.voice.highlight, "another screen starts empty");
+
+    // Any other page replaces it.
+    ui_menu_open_status(&menu);
+    check(menu.view == UI_VIEW_STATUS && menu.voice.screen == UI_VOICE_NONE, "a page drops the voice screen");
+    ui_menu_voice_show(&menu, UI_VOICE_ERROR);
+    check(!menu.voice.over_list, "a page is not the list");
+
+    // Without a list, going "back to the list" closes.
+    ui_menu_t empty;
+    ui_menu_init(&empty);
+    ui_menu_voice_show(&empty, UI_VOICE_UNAVAILABLE);
+    check(empty.view == UI_VIEW_MENU, "voice opens without a list");
+    ui_menu_voice_to_list(&empty);
+    check(empty.view == UI_VIEW_VIDEO, "no list to go back to: closed");
+}
+
 int main(void)
 {
+    test_voice_screens_share_the_panel();
     test_open_selects_the_playing_channel();
     test_stepping_wraps_and_keeps_the_selection_sane();
     test_confirm_reports_the_highlighted_channel();

@@ -68,6 +68,8 @@
 #define BSP_DOUBLE_OK_IS_STATUS   1
 // 单核 C3:复杂画面时解码任务一直占着 CPU,按键得等画面平静才处理;把处理按键的会话任务提到解码之上。
 #define BSP_KEYS_ABOVE_VIDEO      1
+// 三击确定键:不用(亮度已经是上/下键双击)。
+#define BSP_OK_TRIPLE_IS_BRIGHTNESS 0
 
 // 每键的电压窗口 {min_mV, max_mV};边界取相邻档中点。
 // 确定键上界留宽到 1900,是为了和松开态的 3300mV 拉开距离。

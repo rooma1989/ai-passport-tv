@@ -29,6 +29,9 @@ bool av_header_decode(const uint8_t p[AV_HEADER_BYTES], av_header_t *h) {
     case AV_PALETTE:
         if (h->flags) return false;
         return h->length==AV_PALETTE_BYTES;
+    case AV_VOICE_RESULT:
+        if (h->flags) return false;
+        return h->length>0 && h->length<=AV_VOICE_RESULT_MAX;
     case AV_VIDEO:
         if (h->flags & ~AV_VIDEO_CONTINUES) return false;
         return h->length>0 && h->length<=AV_VIDEO_MAX;
@@ -70,6 +73,7 @@ bool av_stream_accept(av_stream_t *s, const av_header_t *h) {
         // send another at any point to retune the colours.
         break;
     case AV_SWITCH:
+    case AV_VOICE_RESULT:
         // Likewise: a request, not media. The stream carries on until the
         // device acts on it and ends the session.
         break;

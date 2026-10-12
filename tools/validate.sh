@@ -45,6 +45,12 @@ run_static_checks() {
         -o "${test_dir}/test_av_adpcm"
     "${test_dir}/test_av_adpcm"
     # Overlay text and menu state: pure logic, so they run without a device.
+    # Push-to-talk: what every key does in every voice state, the timeouts,
+    # and a result that arrives after a cancel.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_av_voice_policy.c main/av_voice_policy.c \
+        -o "${test_dir}/test_av_voice_policy"
+    "${test_dir}/test_av_voice_policy"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_ui_text.c main/ui_text.c \
         -o "${test_dir}/test_ui_text"

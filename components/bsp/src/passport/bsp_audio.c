@@ -1,6 +1,7 @@
 // components/bsp/src/passport/bsp_audio.c
 // 移植自 trae_card/components/platform/platform_esp32/src/audio_es8311.c
 #include "bsp_audio.h"
+#include "bsp_audio_priv.h"
 #include "bsp_i2c.h"
 #include "bsp_pins.h"
 #include "esp_codec_dev.h"
@@ -192,3 +193,10 @@ void bsp_audio_set_volume(uint8_t percent) {
     if (s_dev) esp_codec_dev_set_out_vol(s_dev, percent);
 }
 
+
+i2s_chan_handle_t bsp_audio_rx_if_open(uint32_t hz) {
+    // 单声道打开时 esp_codec_dev 把收发两个通道都配成 16 位单声道左声道
+    // (audio_codec_data_i2s.c 的 _i2s_data_set_fmt:channel 1 → 掩码只含通道 0)。
+    if (!s_opened || !s_rx || s_hz != hz || s_bits != 16 || s_ch != 1) return NULL;
+    return s_rx;
+}

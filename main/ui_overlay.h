@@ -66,6 +66,26 @@ void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uin
 // The status page's bottom line: what OK does there, and that the rest close.
 void ui_overlay_status_bottom(ui_surface_t surface, int top, bool audio_only);
 
+// ---- Voice screens, in the list's panel (voice control design, mock-ups 1-12) ----
+//
+// The header takes rows 36-87 (the microphone, then the loudness bars or the
+// words heard and a status line), a dotted rule sits at y=90, and up to
+// UI_VOICE_ROWS_SHOWN rows of 24 px start at y=96.
+
+// The voice screen `menu->voice.screen`, on the opaque panel. Nothing for
+// UI_VOICE_NONE (the list is drawn by ui_overlay_list).
+void ui_overlay_voice(ui_surface_t surface, const ui_menu_t *menu);
+
+// The top bar's label for a voice screen: up to three coloured runs into
+// `texts`/`colors`, using `scratch` for a count. Returns how many.
+unsigned ui_overlay_voice_label(const ui_menu_t *menu, const char *texts[3], uint16_t colors[3],
+                                char *scratch, size_t scratch_size);
+
+// The bottom bar's line while the list or a voice screen is up and voice is
+// on: how to talk, finish, cancel or go back. ▲ ▼ OK in amber.
+const char *ui_overlay_voice_hint(const ui_menu_t *menu);
+void ui_overlay_bottom_keys(ui_surface_t surface, int top, const char *text);
+
 // ---- Waiting screens (HANDOFF.md 4.2, 4.3) and the pet picker (4.15) ----
 
 typedef enum {

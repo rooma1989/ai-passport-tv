@@ -43,7 +43,7 @@ static void header_tests(void) {
         h.flags=0; av_header_encode(wire,&h);
         bool expect = (type>=AV_HELLO && type<=AV_PALETTE
                        && type!=AV_END && type!=AV_PALETTE)
-                   || type==AV_SWITCH;
+                   || type==AV_SWITCH || type==AV_VOICE_RESULT;
         assert(av_header_decode(wire,&got)==expect);
     }
     h.type=AV_VIDEO; h.length=100; h.flags=AV_VIDEO_CONTINUES; av_header_encode(wire,&h);
@@ -75,6 +75,20 @@ static void header_tests(void) {
     h.length=AV_PALETTE_BYTES; av_header_encode(wire,&h); assert(av_header_decode(wire,&got));
     h.length=AV_PALETTE_BYTES-2; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
     h.length=AV_PALETTE_BYTES+2; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
+    // Voice: the kinds the design fixed, and the one the device receives.
+    // AV_VOICE_CTL and AV_VOICE go the other way and are only ever encoded,
+    // like AV_STATUS, so the receiver refuses them.
+    assert(AV_VOICE_CTL==10 && AV_VOICE==11 && AV_VOICE_RESULT==12);
+    assert(AV_VOICE_RESULT_MAX==2048u && AV_VOICE_BLOCKS_MAX==250u);
+    h.type=AV_VOICE_RESULT; h.flags=0;
+    h.length=1; av_header_encode(wire,&h); assert(av_header_decode(wire,&got));
+    h.length=AV_VOICE_RESULT_MAX; av_header_encode(wire,&h); assert(av_header_decode(wire,&got));
+    h.length=AV_VOICE_RESULT_MAX+1; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
+    h.length=0; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
+    h.length=10; h.flags=AV_VIDEO_CONTINUES; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
+    h.flags=0;
+    h.type=AV_VOICE_CTL; h.length=40; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
+    h.type=AV_VOICE; h.length=AV_AUDIO_BYTES; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
     // An end packet carries nothing.
     h.type=AV_END; h.length=0; av_header_encode(wire,&h); assert(av_header_decode(wire,&got));
     h.length=1; av_header_encode(wire,&h); assert(!av_header_decode(wire,&got));
@@ -109,7 +123,10 @@ static void stream_tests(void) {
     h=(av_header_t){AV_SWITCH,0,42,10,0,20}; assert(av_stream_accept(&s,&h));
     bad=h; bad.seq=12; assert(!av_stream_accept(&s,&bad));
     assert(!s.ended);
-    h=(av_header_t){AV_END,0,42,11,10000,0}; assert(av_stream_accept(&s,&h));
+    // A voice result likewise: in sequence, no timeline, the stream goes on.
+    h=(av_header_t){AV_VOICE_RESULT,0,42,11,0,40}; assert(av_stream_accept(&s,&h));
+    assert(!s.ended);
+    h=(av_header_t){AV_END,0,42,12,10000,0}; assert(av_stream_accept(&s,&h));
     assert(!av_stream_accept(&s,&h));
     // A continuation with no frame under way has nothing to continue. Accepting
     // it would let a stream whose first packet was lost look like a valid one.

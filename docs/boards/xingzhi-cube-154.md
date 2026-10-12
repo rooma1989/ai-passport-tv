@@ -296,6 +296,32 @@ case's volume keys (`BSP_ARROW_CLICK_IS_VOLUME`); the Passport now does the same
 Up and down follow the keys' physical order rather than the printed VOL−/VOL+,
 which read backwards in use.
 
+## Voice (push-to-talk)
+
+Firmware built with `CONFIG_AV_VOICE` (the default) turns voice on when the
+server's CONFIG offers it (`"voice"`, only from a server with a recogniser; see
+[`server/README.md`](../../server/README.md)). Until then the keys are exactly as
+in the table above. With voice on:
+
+| Key | Gesture | What it does |
+| --- | --- | --- |
+| Top 3 (BOOT) | held 0.45 s, while playing or in the list | talk; let go to finish (▲ cancels) |
+| Top 3 (BOOT) | click | channel list, as before; the bottom bar now reads "hold OK to talk, double-click OK to go back" |
+| Top 3 (BOOT) | **triple-click** | **brightness** (the long press now talks) |
+| Top 3 (BOOT), in the list or a voice result | double-click | back a level, then close (was the long press) |
+
+The TV's sound is muted from the moment OK goes down (there is no echo
+cancellation) and comes back when the recording ends, or at once when the press
+turns out to be a click. While the list or a voice screen covers the picture,
+the picture is not decoded.
+
+The microphone is the board's I2S MEMS microphone on I2S1 (WS 4, SCK 5, DIN 6,
+`BSP_MIC_*` in the board header), read as standard I2S, 32-bit slots, left
+channel, 16 kHz, shifted right by 12 to 16 bits -- the format Xiaozhi's firmware
+uses on this board. **It has not been verified on this board:** the first device
+test checks the `av_voice: capture done: blocks=… peak=…` line (a peak near 0
+means no signal or the wrong slot; near 32767 means the shift is too small).
+
 ## Board-specific fixes, all measured on one device
 
 - **Wi-Fi transmit power is capped at 11 dBm.** At 20 dBm this board's supply
@@ -320,3 +346,5 @@ which read backwards in use.
 - The 4G module's power draw in airplane mode, and whether it should instead be
   held in reset.
 - `tools/start_xingzhi_media.sh` on Windows (macOS only).
+- Voice: the microphone's format and gain (see Voice above), the hold threshold
+  in use, and the whole voice path on the device.

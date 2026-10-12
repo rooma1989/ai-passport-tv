@@ -15,7 +15,10 @@
 #ifndef RENDER_W
 #define RENDER_W 240
 #endif
-enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 7, GAP = 8 };
+// Seven rows of the screens that existed before voice control, then three of
+// the voice screens (docs/superpowers/specs/2026-10-12-voice-control-design.md),
+// so the first seven rows can be compared with an older sheet pixel for pixel.
+enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 10, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -100,6 +103,145 @@ static void place(int index)
             q[2] = (uint8_t)((v & 0x1F) * 255 / 31);
         }
     }
+}
+
+// A voice screen as the player draws it: the panel, the top bar's label for
+// the screen, the screen, and the bottom bar's hint.
+static void voice_frame(const ui_menu_t *menu)
+{
+    picture();
+    const char *texts[3];
+    uint16_t colors[3];
+    char scratch[24];
+    const unsigned n = ui_overlay_voice_label(menu, texts, colors, scratch, sizeof(scratch));
+    ui_topbar_label_t label;
+    ui_topbar_set_label(&label, texts, colors, n);
+    ui_status_draw(whole(), W, &label, 3, 76, 0, false);
+    ui_draw_panel(whole(), 30, 210);
+    ui_overlay_voice(view(), menu);
+    ui_text_fill(whole(), 0, 210, W, 30, UI_DEEP);
+    ui_overlay_bottom_keys(view(), 210, ui_overlay_voice_hint(menu));
+}
+
+static void voice_row(ui_menu_t *menu, unsigned k, const char *lead, unsigned icon, const char *label,
+                      const char *right, bool muted)
+{
+    ui_voice_row_t *row = &menu->voice.rows[k];
+    memset(row, 0, sizeof(*row));
+    snprintf(row->lead, sizeof(row->lead), "%s", lead ? lead : "");
+    snprintf(row->label, sizeof(row->label), "%s", label);
+    snprintf(row->right, sizeof(row->right), "%s", right ? right : "");
+    row->icon = (uint8_t)icon;
+    row->muted = muted;
+    if (k + 1u > menu->voice.row_count) menu->voice.row_count = k + 1u;
+}
+
+static void voice_screens(int *n)
+{
+    static const uint8_t speech[UI_VOICE_BARS] = { 40, 90, 160, 220, 180, 120, 200, 240, 170, 110, 150, 90 };
+    ui_menu_t menu = sample_menu();
+    ui_menu_set_rows(&menu, UI_OVERLAY_LIST_ROWS);
+
+    // 1. OK click: the list, with the bottom bar saying how to talk.
+    ui_menu_open(&menu);
+    picture(); bars(NULL, "频道分组 3/9", 76, 0, 3);
+    ui_draw_panel(whole(), 30, 210);
+    ui_overlay_list(view(), &menu);
+    ui_overlay_bottom_keys(view(), 210, ui_overlay_voice_hint(&menu));
+    place((*n)++);
+
+    // 2. Listening, three seconds in.
+    ui_menu_voice_show(&menu, UI_VOICE_LISTENING);
+    memcpy(menu.voice.levels, speech, sizeof(speech));
+    menu.voice.elapsed_ds = 31;
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 3. Recognising.
+    ui_menu_voice_show(&menu, UI_VOICE_RECOGNISING);
+    menu.voice.recorded_ds = 26;
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 4. One clear match, carried out.
+    ui_menu_voice_show(&menu, UI_VOICE_DONE);
+    snprintf(menu.voice.heard, sizeof(menu.voice.heard), "我要看湖南卫视");
+    snprintf(menu.voice.status, sizeof(menu.voice.status), "换台中…");
+    voice_row(&menu, 0, "16", 0, "湖南卫视", "卫视", false);
+    ui_menu_voice_select(&menu, 0);
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 5. Several matches.
+    ui_menu_voice_show(&menu, UI_VOICE_CHOICES);
+    snprintf(menu.voice.heard, sizeof(menu.voice.heard), "看体育");
+    menu.voice.status[0] = '\0';
+    voice_row(&menu, 0, "05", 0, "CCTV-5 体育", NULL, false);
+    voice_row(&menu, 1, "06", 0, "CCTV-5+ 体育赛事", NULL, false);
+    voice_row(&menu, 2, "14", 0, "广东体育", NULL, false);
+    voice_row(&menu, 3, NULL, UI_ICON_MORE, "都不是，打开频道表", NULL, true);
+    ui_menu_voice_select(&menu, 0);
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 6. A series and an episode, carried out by the relay.
+    ui_menu_voice_show(&menu, UI_VOICE_DONE);
+    snprintf(menu.voice.heard, sizeof(menu.voice.heard), "熊出没第三集");
+    snprintf(menu.voice.status, sizeof(menu.voice.status), "从第 3 集开始播");
+    voice_row(&menu, 0, "21", 0, "熊出没", "动画影视", false);
+    ui_menu_voice_select(&menu, 0);
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 7. Not understood.
+    ui_menu_voice_show(&menu, UI_VOICE_NOT_UNDERSTOOD);
+    snprintf(menu.voice.heard, sizeof(menu.voice.heard), "那个那个什么来着");
+    menu.voice.status[0] = '\0';
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 8. A device setting: the panel closed, the level box, the words in the top bar.
+    {
+        ui_menu_t playing = sample_menu();
+        picture(); bars(NULL, "\xE3\x80\x8C大声一点\xE3\x80\x8D", 76, 0, 3);
+        ui_menu_show_volume(&playing, 80);
+        ui_overlay_level(view(), &playing, 0);
+        place((*n)++);
+    }
+
+    // 9. Setup asked for by voice.
+    ui_menu_voice_show(&menu, UI_VOICE_SETUP);
+    snprintf(menu.voice.heard, sizeof(menu.voice.heard), "我要配网");
+    menu.voice.row_count = 2;
+    ui_menu_voice_select(&menu, 0);
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 10. No session.
+    ui_menu_voice_show(&menu, UI_VOICE_UNAVAILABLE);
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 11. Recognition failed.
+    ui_menu_voice_show(&menu, UI_VOICE_ERROR);
+    menu.voice.status[0] = '\0';
+    voice_frame(&menu);
+    place((*n)++);
+
+    // 12. The candidates scrolled: six and "none of these", the last highlighted.
+    ui_menu_voice_show(&menu, UI_VOICE_CHOICES);
+    snprintf(menu.voice.heard, sizeof(menu.voice.heard), "央视");
+    static const char *const names[] = { "CCTV-1 综合", "CCTV-2 财经", "CCTV-3 综艺", "CCTV-4 中文国际",
+                                         "CCTV-7 国防军事", "CCTV-8 电视剧" };
+    for (unsigned k = 0; k < 6; k++) {
+        char lead[4];
+        snprintf(lead, sizeof(lead), "%02u", k + 4u);
+        voice_row(&menu, k, lead, 0, names[k], NULL, false);
+    }
+    voice_row(&menu, 6, NULL, UI_ICON_MORE, "都不是，打开频道表", NULL, true);
+    ui_menu_voice_select(&menu, 6);
+    voice_frame(&menu);
+    place((*n)++);
 }
 
 int main(int argc, char **argv)
@@ -258,6 +400,10 @@ int main(int argc, char **argv)
         ui_overlay_setup(view(), &setup, true);
         place(n++);
     }
+
+    // The voice screens start on a fresh row of the sheet.
+    n = 7 * COLS;
+    voice_screens(&n);
 
     FILE *out = fopen(argv[1], "wb");
     if (!out) {

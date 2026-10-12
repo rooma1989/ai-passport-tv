@@ -1,4 +1,4 @@
-// IMA ADPCM decoding for the FAV1 audio packet: no ESP-IDF dependencies.
+// IMA ADPCM for the FAV1 audio packet, both directions: no ESP-IDF dependencies.
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -28,3 +28,19 @@ bool av_adpcm_header_valid(const uint8_t block[AV_ADPCM_HEADER_BYTES]);
 // caller owns both checks. An out-of-range step index is clamped rather than
 // trusted, so a header that skipped the check cannot index outside the table.
 void av_adpcm_decode(const uint8_t *block, size_t samples, int16_t *out);
+
+// The encoder's state between blocks: the predictor and step index the next
+// block starts from. A stream that is encoded block after block keeps one of
+// these, so consecutive blocks join up exactly as the server's encoder
+// (server/adpcm.py, Encoder) makes them; zero is the state a stream starts in.
+typedef struct {
+    int16_t predictor;
+    uint8_t index;
+} av_adpcm_state_t;
+
+// Encode `samples` samples (an even number) into one block of
+// AV_ADPCM_HEADER_BYTES + samples/2 bytes, header first, and advance `state`.
+// Bit for bit the same as server/adpcm.py's Encoder.encode, which is what lets
+// the microphone's blocks (AV_VOICE) go through the server's decoder and the
+// device's own decoder alike.
+void av_adpcm_encode(av_adpcm_state_t *state, const int16_t *pcm, size_t samples, uint8_t *block);

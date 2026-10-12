@@ -58,6 +58,55 @@ typedef enum {
     UI_HINT_NEXT,
 } ui_hint_t;
 
+// ---- Voice: the push-to-talk screens share the list's panel ("2-in-1") ----
+//
+// A sub-state of UI_VIEW_MENU: while `voice.screen` is not UI_VOICE_NONE the
+// panel shows the voice header and its rows instead of the channel list, which
+// stays where it was underneath. The voice policy (av_voice_policy.c) decides
+// which screen; this only holds what is drawn.
+#define UI_VOICE_ROWS_MAX 7u     // six candidates and "none of these, open the list"
+#define UI_VOICE_ROWS_SHOWN 4u   // rows below the voice header
+#define UI_VOICE_HEARD_MAX 96u
+#define UI_VOICE_STATUS_MAX 64u
+#define UI_VOICE_BARS 12u
+
+typedef enum {
+    UI_VOICE_NONE = 0,        // the channel list (or nothing)
+    UI_VOICE_LISTENING,       // red dot, microphone, live loudness, examples, ten cells
+    UI_VOICE_RECOGNISING,     // how long was recorded, "recognising"
+    UI_VOICE_DONE,            // the words heard, what was done, the matched row
+    UI_VOICE_CHOICES,         // the words heard, candidates to pick from
+    UI_VOICE_NOT_UNDERSTOOD,  // the words heard, "didn't catch that", examples
+    UI_VOICE_UNAVAILABLE,     // no session to talk over, and how to reach setup
+    UI_VOICE_SETUP,           // asks before entering setup
+    UI_VOICE_ERROR,           // nothing came back
+} ui_voice_screen_t;
+
+typedef struct {
+    char label[UI_MENU_NAME_MAX];
+    char lead[4];                       // "05" in the number column, or "" for the icon
+    char right[UI_MENU_GROUP_NAME_MAX]; // muted text at the right edge, or ""
+    uint8_t icon;                       // a ui_icon_t, drawn when `lead` is empty
+    bool muted;                         // an example or a way out, not a result
+} ui_voice_row_t;
+
+typedef struct {
+    ui_voice_screen_t screen;
+    // Whether the channel list was open under the voice screens, so going back
+    // returns to it as it was rather than reopening it at the groups.
+    bool over_list;
+    char heard[UI_VOICE_HEARD_MAX];    // what the server heard, without brackets
+    char status[UI_VOICE_STATUS_MAX];  // the line under it: a reply, or the state
+    uint8_t levels[UI_VOICE_BARS];     // listening: loudness, oldest first, 0..255
+    unsigned elapsed_ds;               // listening: tenths of a second so far (ten cells = 10 s)
+    unsigned recorded_ds;              // recognising: tenths of a second recorded
+    ui_voice_row_t rows[UI_VOICE_ROWS_MAX];
+    unsigned row_count;
+    bool highlight;                    // a row is highlighted (candidates, setup, the match)
+    unsigned selected;
+    unsigned scroll;                   // first row on screen
+} ui_voice_t;
+
 typedef struct {
     ui_view_t view;
     ui_menu_entry_t entries[UI_MENU_MAX];
@@ -108,6 +157,8 @@ typedef struct {
     // The menu carries it so the brightness page can be drawn from the same
     // state the key handler updates, with no second source of truth.
     unsigned brightness;
+    // The voice screens, drawn in the list's panel (see ui_voice_t).
+    ui_voice_t voice;
 } ui_menu_t;
 
 // Rows the list can show at once, given the screen height and row height.
@@ -222,6 +273,24 @@ void ui_menu_hint_resumed(ui_menu_t *menu);
 // The box's first line: 快进30秒, 快退2分, 下一个. Empty when no box is up.
 void ui_menu_hint_text(const ui_menu_t *menu, char *out, size_t out_size);
 
+
+// ---- Voice screens ----
+
+// Show `screen` in the panel. From the picture the panel opens; over the list
+// the list is kept underneath. The voice policy owns the timing, so the panel
+// has no timeout of its own while a voice screen is up. Rows are cleared when
+// the screen kind changes; the caller fills `voice` after this.
+void ui_menu_voice_show(ui_menu_t *menu, ui_voice_screen_t screen);
+// Whether a voice screen (not the list) is in the panel.
+bool ui_menu_voice_up(const ui_menu_t *menu);
+// Back from the voice screens to the channel list: as it was when the list was
+// underneath, opened afresh (at the groups) when the voice panel came from the
+// picture. No list loaded: the panel closes.
+void ui_menu_voice_to_list(ui_menu_t *menu);
+// Drop the voice screen without touching the view.
+void ui_menu_voice_clear(ui_menu_t *menu);
+// Highlight row `row` of the voice rows, scrolling to keep it on screen.
+void ui_menu_voice_select(ui_menu_t *menu, unsigned row);
 
 // The channel id currently highlighted, or NULL when the list is empty or the
 // group level is showing.

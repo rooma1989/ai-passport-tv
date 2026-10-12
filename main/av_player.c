@@ -14,6 +14,8 @@
 #include "av_settings.h"
 #include "av_store.h"
 #include "av_channel_policy.h"
+#include "av_voice.h"
+#include "av_voice_policy.h"
 #include "ui_text.h"
 #include "ui_status.h"
 #include "ui_draw.h"
@@ -498,6 +500,17 @@ typedef struct {
     // Set by the video task when frames come back after a gap, so the seek box
     // can go half a second later; taken by pump_keys, which owns the menu.
     atomic_bool frames_resumed;
+    // Push-to-talk (CONFIG_AV_VOICE). voice_session: this session's CONFIG
+    // offered voice and the socket is up, so an utterance can be sent; written
+    // by the receive task. voice_mute: the TV's sound is silenced from OK down
+    // (no echo cancellation, the speaker is centimetres from the microphone);
+    // read by the audio task. beep: an earcon the audio task plays next (1 the
+    // rising "recording ended", 2 the low "not understood"). covered_frames:
+    // whole frames that arrived while the panel covered the picture and were
+    // released undrawn -- the picture is alive, just not worth decoding.
+    atomic_bool voice_session, voice_mute;
+    atomic_int beep;
+    atomic_uint covered_frames;
     // The chosen pet (HANDOFF.md F5), 0..ui_pet_count()-1, stored as soon as it
     // changes.
     atomic_uint pet;
@@ -667,6 +680,17 @@ static unsigned setup_page_kind(unsigned index) {
 // the same reason: the request arrives while a session is running, and the
 // session has to be over before its memory can be given to the access point.
 static atomic_bool s_setup_request;
+#if CONFIG_AV_VOICE
+// Voice gestures are on: built with voice, and the last CONFIG offered it (it
+// stays on across a lost connection, so a hold then says "unavailable" rather
+// than meaning something else). Read by the button callback; written by the
+// session owner, which also switches the BSP's OK hold with it.
+static atomic_bool s_voice_keys;
+// Whether the last CONFIG offered voice; written by the receive task.
+static atomic_bool s_voice_offered;
+// The utterance limit, the smaller of the server's "max_s" and ten seconds.
+static atomic_uint s_voice_max_ms=AV_VOICE_MAX_MS_DEFAULT;
+#endif
 static portMUX_TYPE clock_lock = portMUX_INITIALIZER_UNLOCKED;
 // Guards the channel id table, which two tasks touch: the receive task rebuilds
 // it from CONFIG while the owner task snapshots it on a key press. Publishing
@@ -750,7 +774,17 @@ static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *ctx) {
     // channel, a long press is volume or the menu, a double click is the status
     // page. Callbacks run in the button task, so only enqueue and drop when
     // full; never block or do work here.
-    if (ev!=BSP_BTN_CLICK && ev!=BSP_BTN_LONG && ev!=BSP_BTN_DOUBLE) return;
+    if (ev!=BSP_BTN_CLICK && ev!=BSP_BTN_LONG && ev!=BSP_BTN_DOUBLE) {
+#if CONFIG_AV_VOICE
+        // With voice on, OK's press-down (capture starts there), its hold and
+        // release, and its triple-click (the Xingzhi's backlight) mean something
+        // too. With voice off nothing new is queued: today's keys.
+        if (!atomic_load(&s_voice_keys) || key!=BSP_BTN_OK ||
+            (ev!=BSP_BTN_PRESS && ev!=BSP_BTN_HOLD && ev!=BSP_BTN_RELEASE && ev!=BSP_BTN_TRIPLE)) return;
+#else
+        return;
+#endif
+    }
     key_ev_t item={.key=key,.ev=ev,.at_ms=(uint32_t)(esp_timer_get_time()/1000)};
     xQueueSend(s.keys,&item,0);
 }
@@ -1371,6 +1405,21 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
             }
         }
     }
+#if CONFIG_AV_VOICE
+    if (ok) {
+        // "voice":{"max_s":10} comes only from a server with a recogniser
+        // behind it. Without it the keys stay exactly as they were.
+        const cJSON *voice=cJSON_GetObjectItemCaseSensitive(j,"voice");
+        const cJSON *max_s=cJSON_IsObject(voice) ? cJSON_GetObjectItemCaseSensitive(voice,"max_s") : NULL;
+        const bool offered=cJSON_IsNumber(max_s) && max_s->valuedouble>=1;
+        unsigned max_ms=AV_VOICE_MAX_MS_DEFAULT;
+        if (offered && max_s->valuedouble*1000.0<(double)max_ms) max_ms=(unsigned)(max_s->valuedouble*1000.0);
+        atomic_store(&s_voice_max_ms,max_ms);
+        if (offered!=atomic_load(&s_voice_offered)) ESP_LOGI(TAG,"Server %s voice",offered?"offers":"does not offer");
+        atomic_store(&s_voice_offered,offered);
+        atomic_store(&s.voice_session,offered);
+    }
+#endif
     cJSON_Delete(j);
     return ok;
 }
@@ -1429,6 +1478,11 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"reset_reason",(int)esp_reset_reason()) &&
         (AV_PAIRING_TOKEN[0]=='\0' ||
          cJSON_AddStringToObject(j,"token",AV_PAIRING_TOKEN)!=NULL);
+#if CONFIG_AV_VOICE
+    // This firmware may send AV_VOICE_CTL / AV_VOICE and understands
+    // AV_VOICE_RESULT; the server answers with "voice" in CONFIG if it can.
+    if (ok) ok=cJSON_AddNumberToObject(j,"voice",1)!=NULL;
+#endif
     // The link as it is now, for the server's log: which network, how strong,
     // which channel, and the transmit power actually in effect (the setup
     // page's Advanced tab can change it).
@@ -1457,6 +1511,42 @@ static bool hello(int fd) {
     memset(body,0,n); cJSON_free(body);
     return ok;
 }
+#if CONFIG_AV_VOICE
+// Send what the voice side has queued: "begin", the microphone's blocks, "end",
+// "cancel" or "pick". Only this task writes to the socket, so any point between
+// two of its own writes is a packet boundary upstream; the downstream read in
+// progress is a different direction. At most `limit` packets a call, so the
+// receiving is never held up for long. False when a write failed: the session
+// is over (a half-written packet cannot be taken back).
+static bool voice_uplink(int fd, uint32_t session, unsigned limit) {
+    av_voice_packet_t pkt;
+    for (unsigned i=0;i<limit && av_voice_uplink_next(&pkt);i++) {
+        uint8_t wire[AV_HEADER_BYTES];
+        av_header_t h={.type=pkt.type,.session=session,.pts_ms=pkt.pts,.length=pkt.length};
+        av_header_encode(wire,&h);
+        const bool sent=io_all(fd,wire,sizeof(wire),true,1000) &&
+                        io_all(fd,(void *)pkt.payload,pkt.length,true,1000);
+        av_voice_uplink_done();
+        if (!sent) { ESP_LOGW(TAG,"VOICE not sent"); return false; }
+    }
+    return true;
+}
+
+// Wait for the next header to start arriving, sending the microphone's blocks
+// meanwhile: a paused or audio-only stream can be quiet for seconds, and the
+// header read would otherwise keep the uplink waiting the whole time.
+static bool voice_wait_readable(int fd, uint32_t session, unsigned deadline_ms) {
+    if (transport_is_usb(fd)) return true;
+    const int64_t end=esp_timer_get_time()+(int64_t)deadline_ms*1000;
+    while (!stopping() && av_voice_uplink_busy() && esp_timer_get_time()<end) {
+        if (!voice_uplink(fd,session,8)) return false;
+        fd_set readfds; FD_ZERO(&readfds); FD_SET(fd,&readfds);
+        struct timeval tv={.tv_sec=0,.tv_usec=20000};
+        if (select(fd+1,&readfds,NULL,NULL,&tv)>0) break;
+    }
+    return true;
+}
+#endif
 static void receive_task(void *arg) {
     (void)arg;
     s_rx_stage="connect";
@@ -1510,6 +1600,13 @@ static void receive_task(void *arg) {
             s_rx_stage="status-send";
             send_status(fd,stream.session);
         }
+#if CONFIG_AV_VOICE
+        if (stream.configured) {
+            s_rx_stage="voice-send";
+            if (!voice_uplink(fd,stream.session,8)) break;
+            if (!voice_wait_readable(fd,stream.session,header_deadline_ms)) break;
+        }
+#endif
         s_rx_stage="header-read";
         memset(&h,0,sizeof(h));
         if (!io_all(fd,wire,sizeof(wire),false,header_deadline_ms)) break;
@@ -1580,10 +1677,17 @@ static void receive_task(void *arg) {
             // video, which then arrived stale and was dropped.
             // Only STOP ends the wait: every audio-task exit path sets it.
             int64_t wait_start=esp_timer_get_time();
+            bool voice_ok=true;
             while (!stopping() && uxQueueMessagesWaiting(s.audio)>PCM_QUEUE-4) {
                 s_rx_stage="audio-flow-control";
+#if CONFIG_AV_VOICE
+                // Held here for as long as the sound is ahead; the uplink is the
+                // other direction and carries on.
+                if (!voice_uplink(fd,stream.session,2)) { voice_ok=false; break; }
+#endif
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
+            if (!voice_ok) break;
             atomic_fetch_add(&s.rx_wait_us,(uint32_t)(esp_timer_get_time()-wait_start));
             if (stopping()) break;
             s_rx_stage="audio-read";
@@ -1703,9 +1807,20 @@ static void receive_task(void *arg) {
             s_rx_stage="switch-read";
             if (!io_all(fd,control,h.length,false,AV_READ_DEADLINE_MS)) break;
             take_switch(control,h.length);
+        } else if (h.type==AV_VOICE_RESULT) {
+            // Read whatever the build, so the stream stays in step; a build
+            // without voice never said it could take one, so never gets one.
+            s_rx_stage="voice-result-read";
+            if (!io_all(fd,control,h.length,false,AV_READ_DEADLINE_MS)) break;
+#if CONFIG_AV_VOICE
+            av_voice_post_result(control,h.length);
+#endif
         } else if (h.type==AV_END) { clean=true; break; }
     }
 done:
+#if CONFIG_AV_VOICE
+    atomic_store(&s.voice_session,false);
+#endif
     free(control);
     // Only a real socket is shut down and closed. AV_TRANSPORT_USB is a
     // negative sentinel, not a descriptor, and passing it to close() would
@@ -1722,6 +1837,33 @@ done:
     xEventGroupSetBits(s.events,RX_DONE);
     vTaskDelete(NULL);
 }
+#if CONFIG_AV_VOICE
+// The voice earcons, made here because this task owns the speaker: a short
+// rising pair when recording ends, a low falling pair for "not understood".
+// No assets: a triangle wave from a phase accumulator, 40 ms a chunk, with the
+// first and last few milliseconds faded so the edges do not click.
+typedef struct { unsigned kind, chunk; uint32_t phase; } beep_t;
+static void beep_chunk(beep_t *b, int16_t *pcm) {
+    static const uint16_t rising[]={880,1320}, falling[]={330,262,262};
+    const uint16_t *tone=b->kind==1 ? rising : falling;
+    const unsigned chunks=b->kind==1 ? 2u : 3u;
+    if (!b->kind || b->chunk>=chunks) { b->kind=0; return; }
+    const uint32_t step=(uint32_t)(((uint64_t)tone[b->chunk]<<32)/16000u);
+    for (unsigned i=0;i<AV_AUDIO_SAMPLES;i++) {
+        const uint32_t ph=b->phase;
+        b->phase+=step;
+        // Triangle from the top two bits of the phase: -1..1 scaled to 7000.
+        const int32_t tri=(int32_t)(ph>>16)-32768;            // saw -32768..32767
+        int32_t v=(tri<0 ? -tri : tri)*2-32768;                // triangle
+        v=v*7000/32768;
+        const unsigned at=b->chunk*AV_AUDIO_SAMPLES+i, total=chunks*AV_AUDIO_SAMPLES, fade=80u;
+        if (at<fade) v=v*(int32_t)at/(int32_t)fade;
+        else if (total-at<fade) v=v*(int32_t)(total-at)/(int32_t)fade;
+        pcm[i]=(int16_t)v;
+    }
+    b->chunk++;
+}
+#endif
 static void audio_task(void *arg) {
     (void)arg;
     bool opened=false;
@@ -1825,6 +1967,20 @@ static void audio_task(void *arg) {
             // leaves nothing for the next block to inherit.
             av_adpcm_decode(a.block,AV_AUDIO_SAMPLES,pcm);
         }
+#if CONFIG_AV_VOICE
+        {
+            // Silenced from OK down while the microphone listens: there is no
+            // echo cancellation and the recogniser would transcribe the
+            // programme. Multiplied out here rather than in the codec, which
+            // other tasks must not touch. About 90 ms already in the DMA still
+            // plays.
+            static beep_t beep;
+            if (atomic_load(&s.voice_mute)) memset(pcm,0,sizeof(pcm));
+            const int asked=atomic_exchange(&s.beep,0);
+            if (asked) { beep.kind=(unsigned)asked; beep.chunk=0; beep.phase=0; }
+            if (beep.kind) beep_chunk(&beep,pcm);
+        }
+#endif
         if (!unmuted) {
             unmuted=true;
             bsp_audio_set_mute(false);
@@ -2014,11 +2170,30 @@ typedef struct {
 // The top bar's label for what is on screen (HANDOFF.md 4.1, 4.7-4.10): the
 // channel number and name over the picture, the level and position in the
 // list, or the page's name.
+#if CONFIG_AV_VOICE
+// The words a carried-out voice command heard, shown in the top bar over the
+// picture for two seconds after the panel closes (mock-up 8). Written by the
+// session owner, read when the bar is built.
+static char s_heard_label[UI_VOICE_HEARD_MAX+8];
+static int64_t s_heard_until_us;
+#endif
 static void build_topbar_label(ui_topbar_label_t *label) {
     char number[8], name[UI_MENU_NAME_MAX+2], count[16];
     const char *texts[3];
     uint16_t colors[3];
     unsigned n=0;
+#if CONFIG_AV_VOICE
+    if (ui_menu_voice_up(&s.menu)) {
+        n=ui_overlay_voice_label(&s.menu,texts,colors,count,sizeof(count));
+        ui_topbar_set_label(label,texts,colors,n);
+        return;
+    }
+    if (s.menu.view==UI_VIEW_VIDEO && s_heard_label[0] && esp_timer_get_time()<s_heard_until_us) {
+        texts[0]=s_heard_label; colors[0]=UI_AMBER;
+        ui_topbar_set_label(label,texts,colors,1);
+        return;
+    }
+#endif
     switch (s.menu.view) {
     case UI_VIEW_MENU: {
         const unsigned total=ui_menu_row_count(&s.menu);
@@ -2094,6 +2269,13 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
         // receive rates, the status page how to leave it.
         ui_text_fill(surface,0,bottom,(int)AV_WIDTH,bar,UI_DEEP);
         if (s.menu.view==UI_VIEW_MENU) {
+#if CONFIG_AV_VOICE
+            // With voice on, the bar says how to talk and how to go back (the
+            // rates stay in the log and on the status page).
+            if (atomic_load(&s_voice_keys)) {
+                ui_overlay_bottom_keys(ui_surface_centered(surface),bottom,ui_overlay_voice_hint(&s.menu));
+            } else
+#endif
             ui_overlay_bottom_rates(ui_surface_centered(surface),bottom,atomic_load(&s.fps_x10),
                                     (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
         } else if (s.menu.view==UI_VIEW_STATUS) {
@@ -2156,7 +2338,18 @@ static bool refresh_info_bars(void) {
     const bool critical=soc_now>=0 && soc_now<UI_STATUS_CRITICAL_SOC;
     const bool top_due=!top_drawn || now-top_painted_us>=(critical ? 1000000 : 2000000) ||
                        memcmp(&topbar_label,&topbar_painted,sizeof(topbar_label));
-    const bool bottom_due=want_bottom ? (!bottom_drawn || now-bottom_painted_us>=1000000)
+    bool hint_changed=false;
+#if CONFIG_AV_VOICE
+    {
+        // The hint follows the voice screen at once, not at the next second.
+        static const char *hint_painted;
+        const char *hint=s.menu.view==UI_VIEW_MENU && atomic_load(&s_voice_keys)
+                         ? ui_overlay_voice_hint(&s.menu) : NULL;
+        hint_changed=hint!=hint_painted;
+        hint_painted=hint;
+    }
+#endif
+    const bool bottom_due=want_bottom ? (!bottom_drawn || hint_changed || now-bottom_painted_us>=1000000)
                                       : bottom_drawn;
     if (!top_due && !bottom_due) return true;
     const band_reading_t reading={ wifi_bars(), soc_now, bsp_battery_charging(),
@@ -2273,7 +2466,9 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         ui_overlay_hint(view,&s.menu);
     } else if (s.menu.view==UI_VIEW_MENU) {
         // HANDOFF.md 4.7 and 4.8; the title and position are the top bar's label.
-        ui_overlay_list(view,&s.menu);
+        // The voice screens share the panel (voice control design, mock-ups 2-12).
+        if (ui_menu_voice_up(&s.menu)) ui_overlay_voice(view,&s.menu);
+        else ui_overlay_list(view,&s.menu);
     } else if (s.menu.view==UI_VIEW_PET) {
         ui_overlay_pets(view,&s.menu);
     } else if (s.menu.view==UI_VIEW_BRIGHTNESS) {
@@ -3059,7 +3254,8 @@ static void hw_bench(void) {
 // possible moment.
 static bool picture_live(void)
 {
-    return av_channel_policy_picture_live(s.decoded,esp_timer_get_time(),last_frame_us,VIDEO_STALL_US);
+    return av_channel_policy_picture_live(s.decoded+atomic_load(&s.covered_frames),esp_timer_get_time(),
+                                          last_frame_us,VIDEO_STALL_US);
 }
 
 // Audio-only mode: sound, not picture, is what says the channel is alive.
@@ -3077,7 +3273,7 @@ static bool sound_live(void)
 static bool showed_content(void)
 {
     return listening() ? atomic_load(&s.audio_rx)>=AV_PICTURE_MIN_FRAMES
-                       : av_channel_policy_showed_picture(s.decoded);
+                       : av_channel_policy_showed_picture(s.decoded+atomic_load(&s.covered_frames));
 }
 
 static unsigned pause_seen=UINT_MAX;
@@ -3328,6 +3524,64 @@ static bool animate_waiting_screen(void)
     return paint_waiting_rows((unsigned)y0,(unsigned)y1);
 }
 
+#if CONFIG_AV_VOICE
+// The panel covers the picture: the channel list or a voice screen, with voice
+// on. The picture is then not decoded at all -- each stripe is released from the
+// ring unread -- and the panel is painted on its own schedule instead of riding
+// on the stripes. On the C3 decoding is what saturates the processor in a busy
+// scene, and under an opaque panel it was pure waste. The session, the socket
+// and the sound carry on, so the picture is back with the first frame after the
+// panel closes (stripes the server did not resend show the panel until the
+// round-robin refresh reaches them, as they always have).
+static bool panel_covers(void) {
+    return atomic_load(&s_voice_keys) && s.menu.view==UI_VIEW_MENU;
+}
+// Whether the frame being received was started under the panel.
+static bool s_frame_covered;
+static bool covered_drawn;
+static uint32_t covered_sig;
+static int64_t covered_painted_us;
+// What the panel shows, folded into one number, so a change repaints it.
+static uint32_t panel_sig(void) {
+    const ui_menu_t *m=&s.menu;
+    const ui_voice_t *v=&m->voice;
+    uint32_t h=2166136261u;
+    const uint32_t words[]={ (uint32_t)m->view,(uint32_t)v->screen,v->selected,v->scroll,v->row_count,
+                             v->highlight,m->selected,m->scroll,m->at_groups,m->group,m->count,
+                             v->elapsed_ds/10u,v->recorded_ds };
+    for (unsigned i=0;i<sizeof(words)/sizeof(words[0]);i++) h=(h^words[i])*16777619u;
+    for (unsigned i=0;i<UI_VOICE_BARS;i++) h=(h^v->levels[i])*16777619u;
+    for (unsigned i=0;i<12 && v->heard[i];i++) h=(h^(uint8_t)v->heard[i])*16777619u;
+    for (unsigned i=0;i<12 && v->status[i];i++) h=(h^(uint8_t)v->status[i])*16777619u;
+    return h;
+}
+// Paint the panel's rows when what it shows changed (at most every 30 ms, the
+// loudness bars every 100 ms) and once a second regardless.
+static bool paint_covered_panel(void) {
+    const int64_t now=esp_timer_get_time();
+    const uint32_t sig=panel_sig();
+    const bool bars=ui_menu_voice_up(&s.menu) && s.menu.voice.screen==UI_VOICE_LISTENING;
+    if (covered_drawn) {
+        const int64_t since=now-covered_painted_us;
+        if (sig==covered_sig && since<1000000) return true;
+        if (since<(bars ? 100000 : 30000)) return true;
+    }
+    drain_display();
+    for (unsigned y=(unsigned)AV_VIDEO_Y_OFFSET;y<(unsigned)(AV_HEIGHT-AV_VIDEO_Y_OFFSET) && !stopping();
+         y+=AV_STRIPE_ROWS) {
+        overlay_stripe(y,s.stripe[0]);
+        if (bsp_display_raw_submit_nowait(y,AV_STRIPE_ROWS,s.stripe[0])!=ESP_OK ||
+            bsp_display_raw_drain(1,200)!=ESP_OK) {
+            fail("panel DMA");
+            return false;
+        }
+    }
+    covered_drawn=true;
+    covered_sig=sig;
+    covered_painted_us=now;
+    return true;
+}
+#endif
 static void video_task(void *arg) {
     (void)arg;
     int64_t pkt_start_us=0;
@@ -3347,6 +3601,13 @@ static void video_task(void *arg) {
         if (waiting_screen_stale() && !paint_waiting_screen()) break;
         if (!animate_waiting_screen()) break;
         if (!refresh_info_bars()) break;
+#if CONFIG_AV_VOICE
+        if (panel_covers() && picture_live() && !listening()) {
+            if (!paint_covered_panel()) break;
+        } else {
+            covered_drawn=false;
+        }
+#endif
         video_t v;
         if(!xQueueReceive(s.video,&v,pdMS_TO_TICKS(20))) { if(rx_done()) break; continue; }
         // The clock is waited on once per frame, at the packet that opens it.
@@ -3388,12 +3649,22 @@ static void video_task(void *arg) {
             // otherwise show the viewer something that has already passed.
             s.skipping=stopping() || estimated_pts()-(int64_t)v.pts>100;
             s.drawn_stripes=0;
+#if CONFIG_AV_VOICE
+            // Decided once a frame, so no frame is half decoded. A frame under
+            // the panel is never late: it is only counted, not shown.
+            s_frame_covered=panel_covers() && picture_live() && covered_drawn;
+            if(s_frame_covered && !stopping()) s.skipping=false;
+#endif
             if(s.skipping) { s.dropped++; atomic_fetch_add(&s.rx_frame_skipped,1u); }
         }
         if(!s.skipping) {
             if(v.packet_start) { pkt_start_us=esp_timer_get_time(); pkt_ok=true; }
             // Audio-only: a server that still sends pictures is not drawn.
-            if(!v.dropped && !listening()) {
+            if(!v.dropped && !listening()
+#if CONFIG_AV_VOICE
+               && !s_frame_covered
+#endif
+               ) {
 #if AV_VIDEO_Y_OFFSET > 0
                 if(s.decoded == 0 && v.stripe == 0) {
                     ui_text_fill(stripe_surface(0, s.stripe[0]), 0, 0, (int)AV_WIDTH,
@@ -3419,6 +3690,10 @@ static void video_task(void *arg) {
                 if(!push_stripe(v.data,v.length,v.stripe,y)) pkt_ok=false;
                 s.drawn_stripes++;
             }
+#if CONFIG_AV_VOICE
+            // Under the panel: counted as received, released undrawn below.
+            else if(!v.dropped && s_frame_covered) s.drawn_stripes++;
+#endif
         }
         if(!s.skipping && v.packet_end) {
             int64_t start=pkt_start_us;
@@ -3426,6 +3701,18 @@ static void video_task(void *arg) {
             if (s.drawn_stripes > atomic_load(&s.rx_max_stripes)) {
                 atomic_store(&s.rx_max_stripes, s.drawn_stripes);
             }
+#if CONFIG_AV_VOICE
+            if(s_frame_covered) {
+                // A whole frame arrived under the panel: the picture is alive.
+                if(s.drawn_stripes>=AV_STRIPES) {
+                    atomic_fetch_add(&s.covered_frames,1u);
+                    last_frame_us=esp_timer_get_time();
+                }
+                s.drawn_stripes=0;
+                if(v.data) ring_release(&v);
+                continue;
+            }
+#endif
             if(drawn && s.drawn_stripes>=AV_STRIPES) {
                 s.decoded++;
                 {
@@ -3604,9 +3891,381 @@ static void set_audio_only(bool on)
     xEventGroupSetBits(s.events,STOP);
 }
 
+#if CONFIG_AV_VOICE
+// ---------------------------------------------------------------------------
+// Push-to-talk glue. av_voice_policy.c decides; this carries its effects out
+// on the session owner, which owns the menu, the channel and the settings.
+// ---------------------------------------------------------------------------
+static av_voice_policy_t s_vp;
+// The result on screen (its words and candidates), owned here; freed when the
+// panel goes.
+static av_voice_reply_t *s_voice_reply;
+// What was carried out, copied out of the result, for the "done" screen's row,
+// and that row's name and number as the server gave them (or "" for none).
+static av_voice_do_t s_voice_done;
+static char s_voice_done_label[UI_MENU_NAME_MAX];
+static char s_voice_done_lead[4];
+static bool s_voice_done_tv;   // the row is a channel (a TV icon when it has no number)
+static int64_t s_voice_tick_us;
+// A voice command asked for a channel: pump_keys reports the switch.
+static bool s_voice_switching;
+
+static void voice_mute(bool on) { atomic_store(&s.voice_mute,on); }
+
+static void voice_forget(void) {
+    free(s_voice_reply);
+    s_voice_reply=NULL;
+}
+
+static av_voice_where_t voice_where(void) {
+    if (s.menu.view==UI_VIEW_VIDEO) return AV_VOICE_AT_PLAYING;
+    if (s.menu.view==UI_VIEW_MENU) return AV_VOICE_AT_LIST;
+    return AV_VOICE_AT_PAGE;
+}
+
+static void voice_no_act(av_voice_do_t *act) {
+    memset(act,0,sizeof(*act));
+    act->volume=act->brightness=act->audio_only=act->pet=-1;
+}
+
+// A channel as a row of the voice panel: its number in the list, its name, its
+// group at the right.
+static void voice_channel_row(ui_voice_row_t *row, const char *id) {
+    memset(row,0,sizeof(*row));
+    channel_name_of(id,row->label,sizeof(row->label));
+    for (unsigned i=0;i<s.menu.count;i++) {
+        if (strcmp(s.menu.entries[i].id,id)) continue;
+        snprintf(row->lead,sizeof(row->lead),"%02u",(i+1u)%100u);
+        if (s.menu.group_count>1 && s.menu.entries[i].group<s.menu.group_count) {
+            snprintf(row->right,sizeof(row->right),"%s",s.menu.groups[s.menu.entries[i].group]);
+        }
+        return;
+    }
+    row->icon=UI_ICON_TV;
+}
+
+// Draw what the policy says is on screen.
+static void voice_draw(void) {
+    ui_voice_t *v=&s.menu.voice;
+    const av_voice_reply_t *r=s_voice_reply;
+    switch (s_vp.state) {
+    case AV_VOICE_LISTENING:
+        ui_menu_voice_show(&s.menu,UI_VOICE_LISTENING);
+        v->heard[0]=v->status[0]='\0';
+        av_voice_levels(v->levels);
+        v->elapsed_ds=s_vp.captured_ms/100u;
+        break;
+    case AV_VOICE_SENDING:
+    case AV_VOICE_WAITING:
+        ui_menu_voice_show(&s.menu,UI_VOICE_RECOGNISING);
+        v->recorded_ds=av_voice_recorded_ds();
+        snprintf(v->heard,sizeof(v->heard),"%s",r && r->state==AV_VOICE_STATE_PARTIAL ? r->heard : "");
+        v->status[0]='\0';
+        break;
+    case AV_VOICE_SHOWING: {
+        ui_voice_screen_t screen=UI_VOICE_ERROR;
+        switch (s_vp.shown) {
+        case AV_VOICE_SHOWN_DONE: screen=UI_VOICE_DONE; break;
+        case AV_VOICE_SHOWN_NOT_UNDERSTOOD: screen=UI_VOICE_NOT_UNDERSTOOD; break;
+        case AV_VOICE_SHOWN_UNAVAILABLE: screen=UI_VOICE_UNAVAILABLE; break;
+        case AV_VOICE_SHOWN_SETUP: screen=UI_VOICE_SETUP; break;
+        default: break;
+        }
+        ui_menu_voice_show(&s.menu,screen);
+        const bool words=r && screen!=UI_VOICE_UNAVAILABLE;
+        snprintf(v->heard,sizeof(v->heard),"%s",words ? r->heard : "");
+        snprintf(v->status,sizeof(v->status),"%s",words ? r->reply : "");
+        if (screen==UI_VOICE_DONE && (s_voice_done_label[0] || s_voice_done.channel[0])) {
+            // The matched row (mock-up 4): the server's label and number, or
+            // the channel as the list names it.
+            if (s_voice_done_label[0]) {
+                ui_voice_row_t *row=&v->rows[0];
+                memset(row,0,sizeof(*row));
+                snprintf(row->label,sizeof(row->label),"%s",s_voice_done_label);
+                snprintf(row->lead,sizeof(row->lead),"%s",s_voice_done_lead);
+                row->icon=s_voice_done_tv ? UI_ICON_TV : UI_ICON_FILM;
+            } else {
+                voice_channel_row(&v->rows[0],s_voice_done.channel);
+            }
+            v->row_count=1;
+            ui_menu_voice_select(&s.menu,0);
+            if (!v->status[0] && s_voice_done.channel[0]) snprintf(v->status,sizeof(v->status),"换台中…");
+        } else if (screen==UI_VOICE_SETUP) {
+            v->row_count=2;
+            ui_menu_voice_select(&s.menu,s_vp.selected);
+        }
+        break;
+    }
+    case AV_VOICE_CHOOSING: {
+        ui_menu_voice_show(&s.menu,UI_VOICE_CHOICES);
+        snprintf(v->heard,sizeof(v->heard),"%s",r ? r->heard : "");
+        snprintf(v->status,sizeof(v->status),"%s",r ? r->reply : "");
+        unsigned n=0;
+        for (unsigned k=0;r && k<r->choice_count && n<UI_VOICE_ROWS_MAX-1u;k++,n++) {
+            ui_voice_row_t *row=&v->rows[n];
+            memset(row,0,sizeof(*row));
+            snprintf(row->label,sizeof(row->label),"%s",r->choices[k].label);
+            snprintf(row->lead,sizeof(row->lead),"%s",r->choices[k].lead);
+            const av_voice_do_t *act=&r->choices[k].act;
+            row->icon=act->channel[0] ? UI_ICON_TV : act->setup ? UI_ICON_WIFI
+                     : !strcmp(act->page,"close") ? UI_ICON_CROSS : UI_ICON_FILM;
+        }
+        if (s_vp.list_row) {
+            ui_voice_row_t *none=&v->rows[n++];
+            memset(none,0,sizeof(*none));
+            snprintf(none->label,sizeof(none->label),"都不是，打开频道表");
+            none->icon=UI_ICON_MORE;
+            none->muted=true;
+        }
+        v->row_count=n;
+        ui_menu_voice_select(&s.menu,s_vp.selected);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// Carry out what a result (or a picked candidate) asks of the device: the same
+// paths the phone's AV_SWITCH and the keys take. True when a channel switch
+// was asked for.
+static bool voice_carry_out(const av_voice_do_t *act) {
+    bool switching=false;
+    if (act->channel[0]) {
+        if (request_switch(act->channel)) {
+            char name[UI_MENU_NAME_MAX];
+            channel_name_of(act->channel,name,sizeof(name));
+            ui_menu_banner(&s.menu,name,NULL);
+            ui_menu_banner_place(&s.menu,act->channel);
+            ESP_LOGI(TAG,"Voice: switching to %s",act->channel);
+            switching=true;
+        } else {
+            ESP_LOGI(TAG,"Voice: already on %s",act->channel);
+        }
+    }
+    if (act->volume>=0) {
+        s.volume=(uint8_t)act->volume;
+        ui_menu_show_volume(&s.menu,s.volume);
+        atomic_store(&s.settings_dirty,true);
+        atomic_store(&s.status_dirty,true);
+    }
+    if (act->brightness>=0 && (unsigned)act->brightness<AV_BRIGHTNESS_COUNT) {
+        s.menu.brightness=(unsigned)act->brightness;
+        bsp_display_backlight(av_brightness_percent(s.menu.brightness));
+        ui_menu_show_brightness(&s.menu);
+        atomic_store(&s.settings_dirty,true);
+        atomic_store(&s.status_dirty,true);
+    }
+    if (act->pet>=0 && (unsigned)act->pet<ui_pet_count()) {
+        atomic_store(&s.pet,(unsigned)act->pet);
+        av_store_save_pet((uint8_t)act->pet);
+        atomic_store(&s.status_dirty,true);
+        if (s.menu.view==UI_VIEW_VIDEO) ui_menu_show_pet(&s.menu,(unsigned)act->pet,ui_pet_count());
+    }
+    if (act->setup) {
+        // Chosen on screen (the server sends setup as a choice, as it ends playback).
+        ESP_LOGW(TAG,"Voice: entering setup, as chosen on screen");
+        atomic_store(&s_setup_request,true);
+        xEventGroupSetBits(s.events,STOP);
+    }
+    if (act->page[0]) {
+        // "close" (cancel, "never mind"): the panel has already gone.
+        if (!strcmp(act->page,"status")) ui_menu_open_status(&s.menu);
+        else if (!strcmp(act->page,"brightness")) ui_menu_open_brightness(&s.menu);
+        else if (!strcmp(act->page,"pets")) ui_menu_open_pets(&s.menu,atomic_load(&s.pet),ui_pet_count());
+        else if (!strcmp(act->page,"list")) { ui_menu_set_rows(&s.menu,menu_rows()); ui_menu_open(&s.menu); }
+    }
+    if (act->audio_only>=0) set_audio_only(act->audio_only==1);
+    return switching;
+}
+
+// Whether carrying `act` out leaves something the panel should show for a
+// moment (a channel, or an action the relay did) or takes the screen itself.
+static bool voice_act_closes(const av_voice_do_t *act) {
+    return !act->channel[0] && (act->volume>=0 || act->brightness>=0 || act->audio_only>=0 ||
+                                act->pet>=0 || act->page[0] || act->setup);
+}
+
+// The heard words in the top bar for two seconds once the panel is gone.
+static void voice_heard_label(const char *heard, int64_t after_us) {
+    if (!heard || !heard[0]) return;
+    snprintf(s_heard_label,sizeof(s_heard_label),"\xE3\x80\x8C%s\xE3\x80\x8D",heard);
+    s_heard_until_us=esp_timer_get_time()+after_us+2000000;
+}
+
+static bool voice_pick(void);
+static void voice_apply(unsigned e) {
+    if (!e) return;
+    if (e & AV_VOICE_DO_DISCARD) { av_voice_capture_discard(); voice_mute(false); }
+    if (e & AV_VOICE_DO_CANCEL) av_voice_send_cancel(s_vp.id);
+    if (e & AV_VOICE_DO_CAPTURE) {
+        if (av_voice_capture_start()) voice_mute(true);
+        else (void)av_voice_lost(&s_vp);   // the hold will say "unavailable"
+    }
+    if (e & AV_VOICE_DO_BEGIN) av_voice_capture_begin(s_vp.id);
+    if (e & AV_VOICE_DO_FINISH) av_voice_capture_finish();
+    if (e & AV_VOICE_DO_UNMUTE) voice_mute(false);
+    if (e & AV_VOICE_DO_BEEP_END) atomic_store(&s.beep,1);
+    if (e & AV_VOICE_DO_BEEP_FAIL) atomic_store(&s.beep,2);
+    if (e & AV_VOICE_DO_BACK) ui_menu_back(&s.menu);
+    if (e & AV_VOICE_DO_CLOSE) { ui_menu_close(&s.menu); voice_forget(); }
+    if (e & AV_VOICE_DO_LIST) {
+        ui_menu_set_rows(&s.menu,menu_rows());
+        ui_menu_voice_to_list(&s.menu);
+        voice_forget();
+    }
+    if (e & AV_VOICE_DO_SHOW) voice_draw();
+    if (e & AV_VOICE_DO_PICK) s_voice_switching|=voice_pick();
+    if (e & AV_VOICE_DO_SETUP) {
+        ESP_LOGW(TAG,"Voice: entering setup, as confirmed on screen");
+        atomic_store(&s_setup_request,true);
+        xEventGroupSetBits(s.events,STOP);
+    }
+}
+
+static bool voice_pick(void) {
+    if (!s_voice_reply || s_vp.selected>=s_voice_reply->choice_count) return false;
+    const av_voice_choice_t *c=&s_voice_reply->choices[s_vp.selected];
+    if (c->ref[0]) {
+        ESP_LOGI(TAG,"Voice: candidate %u goes to the server",s_vp.selected+1u);
+        av_voice_send_pick(s_vp.id,c->ref);
+        voice_apply(av_voice_picked_remote(&s_vp));
+        return false;
+    }
+    s_voice_done=c->act;   // copied: the reply may be freed below
+    snprintf(s_voice_done_label,sizeof(s_voice_done_label),"%s",c->label);
+    snprintf(s_voice_done_lead,sizeof(s_voice_done_lead),"%s",c->lead);
+    s_voice_done_tv=c->act.channel[0]!='\0';
+    const bool closes=voice_act_closes(&s_voice_done);
+    if (closes) voice_heard_label(s_voice_reply->heard,0);
+    voice_apply(av_voice_picked_done(&s_vp,closes));
+    return voice_carry_out(&s_voice_done);
+}
+
+static void voice_on_reply(av_voice_reply_t *r) {
+    const bool fresh=r->id==s_vp.id && (s_vp.state==AV_VOICE_WAITING || s_vp.state==AV_VOICE_SENDING);
+    if (!fresh) {
+        ESP_LOGI(TAG,"Voice result %" PRIu32 " dropped: not the one waited for (%" PRIu32 ", state %d)",
+                 r->id,s_vp.id,(int)s_vp.state);
+        free(r);
+        return;
+    }
+    // What the server decided. "intent":"none" with nothing to do is "not
+    // understood"; nothing to do with another intent is the relay having
+    // acted already (pause, seek, an episode), and its reply is shown.
+    av_voice_result_t res;
+    bool list_row=false;
+    if (r->state==AV_VOICE_STATE_ERROR) res=AV_VOICE_RES_ERROR;
+    else if (r->state==AV_VOICE_STATE_PARTIAL) res=AV_VOICE_RES_PARTIAL;
+    else if (r->act.present && r->act.setup) res=AV_VOICE_RES_SETUP;
+    else if (r->act.present) res=voice_act_closes(&r->act) ? AV_VOICE_RES_DONE_CLOSE : AV_VOICE_RES_DONE;
+    else if (r->choice_count) {
+        res=AV_VOICE_RES_CHOICES;
+        // "None of these, open the list" only follows channels.
+        for (unsigned k=0;k<r->choice_count;k++) list_row|=r->choices[k].act.channel[0]!='\0';
+    }
+    else if (!strcmp(r->intent,"none") || (!r->intent[0] && !r->reply[0])) res=AV_VOICE_RES_NOT_UNDERSTOOD;
+    else res=AV_VOICE_RES_DONE;
+    voice_forget();
+    s_voice_reply=r;
+    voice_no_act(&s_voice_done);
+    s_voice_done_label[0]=s_voice_done_lead[0]='\0';
+    if (res==AV_VOICE_RES_DONE || res==AV_VOICE_RES_DONE_CLOSE) {
+        s_voice_done=r->act;
+        snprintf(s_voice_done_label,sizeof(s_voice_done_label),"%s",r->label);
+        snprintf(s_voice_done_lead,sizeof(s_voice_done_lead),"%s",r->lead);
+        s_voice_done_tv=r->act.channel[0] || !strcmp(r->intent,"channel");
+    }
+    if (res==AV_VOICE_RES_DONE_CLOSE || (res==AV_VOICE_RES_DONE && !r->act.channel[0])) {
+        voice_heard_label(r->heard,res==AV_VOICE_RES_DONE ? (int64_t)AV_VOICE_DONE_MS*1000 : 0);
+    }
+    ESP_LOGI(TAG,"Voice result %" PRIu32 ": kind %d, %u candidates",r->id,(int)res,r->choice_count);
+    voice_apply(av_voice_on_result(&s_vp,r->id,res,r->choice_count,list_row));
+    if (res==AV_VOICE_RES_DONE || res==AV_VOICE_RES_DONE_CLOSE) s_voice_switching|=voice_carry_out(&s_voice_done);
+}
+
+// Voice gestures on or off with the server's offer (and never during setup):
+// the BSP reports OK's hold only while they are on.
+static void voice_keys_update(void) {
+    const bool want=atomic_load(&s_voice_offered) && !atomic_load(&s_setup_active);
+    if (want==atomic_load(&s_voice_keys)) return;
+    atomic_store(&s_voice_keys,want);
+    bsp_button_set_ok_hold(want);
+    if (!want) {
+        voice_apply(av_voice_reset(&s_vp));
+        voice_forget();
+        voice_mute(false);
+        if (ui_menu_voice_up(&s.menu)) ui_menu_close(&s.menu);
+    }
+    ESP_LOGI(TAG,"Voice keys %s",want ? "on (hold OK to talk)" : "off");
+}
+
+// Once per pass of any loop that reads keys: time, the microphone, results.
+static void voice_pump(void) {
+    voice_keys_update();
+    const int64_t now=esp_timer_get_time();
+    const uint32_t elapsed=s_voice_tick_us ? (uint32_t)((now-s_voice_tick_us)/1000) : 0u;
+    if (!s_voice_tick_us || elapsed) s_voice_tick_us=now;
+    if (s_vp.state==AV_VOICE_IDLE) s_vp.max_ms=atomic_load(&s_voice_max_ms);
+    voice_apply(av_voice_tick(&s_vp,elapsed));
+    if (av_voice_take_captured()) voice_apply(av_voice_captured(&s_vp));
+    av_voice_reply_t *r=av_voice_take_reply();
+    if (r) voice_on_reply(r);
+    // The session went away under an utterance.
+    if (!atomic_load(&s.voice_session) &&
+        (av_voice_capturing(&s_vp) || s_vp.state==AV_VOICE_WAITING)) {
+        ESP_LOGW(TAG,"Voice: the session ended under the utterance");
+        voice_apply(av_voice_lost(&s_vp));
+    }
+    // Something else took the panel (a page, the phone, a timeout).
+    if (av_voice_panel_up(&s_vp) && !ui_menu_voice_up(&s.menu)) {
+        voice_apply(av_voice_reset(&s_vp));
+        voice_forget();
+    }
+    // The live readings.
+    if (ui_menu_voice_up(&s.menu)) {
+        if (s_vp.state==AV_VOICE_LISTENING) {
+            av_voice_levels(s.menu.voice.levels);
+            s.menu.voice.elapsed_ds=s_vp.captured_ms/100u;
+        } else if (s_vp.state==AV_VOICE_SENDING || s_vp.state==AV_VOICE_WAITING) {
+            s.menu.voice.recorded_ds=av_voice_recorded_ds();
+        }
+    }
+    av_voice_poll(atomic_load(&s.voice_session));
+}
+
+// A gesture through the voice policy first. False: carry on with what it meant
+// before voice (`item` may have become an OK click).
+static bool voice_key(key_ev_t *item) {
+    av_voice_gesture_t g;
+    switch (item->ev) {
+    case BSP_BTN_PRESS:   g=AV_VOICE_G_PRESS; break;
+    case BSP_BTN_CLICK:   g=AV_VOICE_G_CLICK; break;
+    case BSP_BTN_DOUBLE:  g=AV_VOICE_G_DOUBLE; break;
+    case BSP_BTN_TRIPLE:  g=AV_VOICE_G_TRIPLE; break;
+    case BSP_BTN_HOLD:    g=AV_VOICE_G_HOLD; break;
+    case BSP_BTN_RELEASE: g=AV_VOICE_G_RELEASE; break;
+    default:              g=AV_VOICE_G_LONG; break;
+    }
+    const av_voice_key_t key=item->key==BSP_BTN_OK ? AV_VOICE_KEY_OK
+                            : item->key==BSP_BTN_UP ? AV_VOICE_KEY_UP : AV_VOICE_KEY_DOWN;
+    const av_voice_ctx_t ctx={ atomic_load(&s_voice_keys), atomic_load(&s.voice_session), voice_where() };
+    const av_voice_state_t before=s_vp.state;
+    const unsigned e=av_voice_on_key(&s_vp,&ctx,key,g);
+    if (e!=AV_VOICE_DO_PASS && (e || before!=s_vp.state)) {
+        ESP_LOGI(TAG,"voice key %d ev %d: state %d -> %d effects 0x%x",(int)item->key,(int)item->ev,
+                 (int)before,(int)s_vp.state,e);
+    }
+    voice_apply(e & ~(unsigned)(AV_VOICE_DO_PASS|AV_VOICE_DO_PASS_CLICK));
+    if (e & AV_VOICE_DO_PASS_CLICK) { item->ev=BSP_BTN_CLICK; return false; }
+    return !(e & AV_VOICE_DO_PASS);
+}
+#endif
+
 // Applies one gesture. Called only from the session owner (main loop), so it can
 // touch s.channel while no connection is being built.
-static void process_key(const key_ev_t *item) {
+static void process_key(const key_ev_t *event) {
+    const key_ev_t *item=event;
     bool up = item->key==BSP_BTN_UP;
 
     // No gesture asks for a capture, and that is deliberate: every button on
@@ -3629,6 +4288,15 @@ static void process_key(const key_ev_t *item) {
         }
         return;
     }
+
+#if CONFIG_AV_VOICE
+    // Voice first: OK down starts the microphone, a hold talks, and inside the
+    // panel the keys pick, cancel and go back. Whatever it passes on means what
+    // it meant before.
+    key_ev_t routed=*event;
+    if (voice_key(&routed)) return;
+    item=&routed;
+#endif
 
     // While the list, the status page or the backlight page is open the keys
     // belong to the overlay: a gesture must not both adjust something here and
@@ -3743,10 +4411,19 @@ static void process_key(const key_ev_t *item) {
             // The backlight. It is set once and then left alone, so it takes the
             // gesture that responds immediately and is harder to reach by
             // accident -- holding a button for a second and a half is not
-            // something a stray touch does.
+            // something a stray touch does. (With voice on, holding OK talks,
+            // and this is never reached.)
             ui_menu_open_brightness(&s.menu);
             return;
         }
+#if BSP_OK_TRIPLE_IS_BRIGHTNESS
+        if (item->ev==BSP_BTN_TRIPLE) {
+            // With voice on, the Xingzhi's only backlight gesture moves here: a
+            // triple-click is reported only while voice is on.
+            ui_menu_open_brightness(&s.menu);
+            return;
+        }
+#endif
         return;
     }
     // Which arrow gesture means volume is a board fact. Both boards now click for
@@ -4167,6 +4844,9 @@ static bool pump_keys(uint32_t wait_ms) {
     key_ev_t item;
     bool first=true;
     bool acted=false;
+#if CONFIG_AV_VOICE
+    voice_pump();
+#endif
     while (xQueueReceive(s.keys,&item,first?pdMS_TO_TICKS(wait_ms):0)) {
         first=false;
         acted=true;
@@ -4217,6 +4897,16 @@ static bool pump_keys(uint32_t wait_ms) {
         ui_menu_show_hint(&s.menu,(ui_hint_t)asked,atomic_load(&s.remote_hint_seconds));
     }
     if (atomic_exchange(&s.frames_resumed,false)) ui_menu_hint_resumed(&s.menu);
+#if CONFIG_AV_VOICE
+    // The keys just read may have finished an utterance or picked a candidate.
+    voice_pump();
+    if (s_voice_switching) {
+        // A voice command chose a channel: request_switch() has already ended
+        // the session, exactly as a choice from the list does.
+        s_voice_switching=false;
+        return true;
+    }
+#endif
     // The server's request, applied exactly as if the viewer had picked the
     // channel from the list: same checks, same banner.
     if (atomic_load(&s.remote_switch)) {
@@ -4359,6 +5049,9 @@ void av_player_main(void) {
     // Buttons come up before the mode decision, because leaving setup needs one.
     if(bsp_button_init(on_key,NULL)!=ESP_OK) ESP_LOGW(TAG,"Buttons unavailable");
     ui_menu_init(&s.menu);
+#if CONFIG_AV_VOICE
+    av_voice_policy_init(&s_vp,AV_VOICE_MAX_MS_DEFAULT);
+#endif
 
     // Now that the menu exists, restore what the viewer last chose. NVS is
     // already up by this point: wifi_init() above initializes it for the
@@ -4484,6 +5177,12 @@ void av_player_main(void) {
 #endif
         s.audio_high=s.video_high=0; s.clock_us=0;
         atomic_store(&s.media_started,false);
+#if CONFIG_AV_VOICE
+        // A new socket: the server knows nothing of the last one's utterances.
+        atomic_store(&s.voice_session,false);
+        atomic_store(&s.covered_frames,0u);
+        av_voice_session_reset();
+#endif
         // A pause belongs to the session it was asked in.
         atomic_store(&s.paused,false);
         // Back to "dialling", but only when that is worth saying.

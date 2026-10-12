@@ -382,6 +382,7 @@ void ui_menu_open(ui_menu_t *menu)
     if (!menu || menu->count == 0) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_MENU;
     menu->timeout_ms = UI_MENU_TIMEOUT_MS;
     menu->action = UI_ACTION_NONE;
@@ -404,6 +405,15 @@ void ui_menu_back(ui_menu_t *menu)
     if (!menu) {
         return;
     }
+    if (ui_menu_voice_up(menu)) {
+        // Out of the voice screens: to the list they were over, else closed.
+        if (menu->voice.over_list) {
+            ui_menu_voice_to_list(menu);
+        } else {
+            ui_menu_close(menu);
+        }
+        return;
+    }
     if (menu->view == UI_VIEW_MENU && !menu->at_groups && two_levels(menu)) {
         menu->at_groups = true;
         menu->selected = row_of_group(menu, menu->group);
@@ -420,6 +430,7 @@ void ui_menu_open_brightness(ui_menu_t *menu)
     if (!menu) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_BRIGHTNESS;
     // Same timeout discipline as the status page: the page closes itself, so a
     // viewer who walks away cannot leave the arrows bound to brightness and be
@@ -444,6 +455,7 @@ void ui_menu_open_status(ui_menu_t *menu)
     if (!menu) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_STATUS;
     menu->timeout_ms = UI_MENU_STATUS_MS;
     menu->action = UI_ACTION_NONE;
@@ -456,6 +468,87 @@ void ui_menu_close(ui_menu_t *menu)
     }
     menu->view = UI_VIEW_VIDEO;
     menu->timeout_ms = 0;
+    ui_menu_voice_clear(menu);
+}
+
+void ui_menu_voice_clear(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    menu->voice.screen = UI_VOICE_NONE;
+    menu->voice.row_count = 0;
+    menu->voice.highlight = false;
+    menu->voice.selected = 0;
+    menu->voice.scroll = 0;
+}
+
+void ui_menu_voice_show(ui_menu_t *menu, ui_voice_screen_t screen)
+{
+    if (!menu) {
+        return;
+    }
+    if (screen == UI_VOICE_NONE) {
+        ui_menu_voice_to_list(menu);
+        return;
+    }
+    if (menu->voice.screen == UI_VOICE_NONE) {
+        // Coming into the voice screens: remember whether the list was there.
+        menu->voice.over_list = menu->view == UI_VIEW_MENU;
+    }
+    if (menu->voice.screen != screen) {
+        menu->voice.row_count = 0;
+        menu->voice.highlight = false;
+        menu->voice.selected = 0;
+        menu->voice.scroll = 0;
+    }
+    menu->voice.screen = screen;
+    menu->view = UI_VIEW_MENU;
+    menu->timeout_ms = 0;
+    menu->action = UI_ACTION_NONE;
+}
+
+bool ui_menu_voice_up(const ui_menu_t *menu)
+{
+    return menu && menu->view == UI_VIEW_MENU && menu->voice.screen != UI_VOICE_NONE;
+}
+
+void ui_menu_voice_to_list(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    const bool over_list = menu->voice.over_list && menu->view == UI_VIEW_MENU;
+    ui_menu_voice_clear(menu);
+    menu->voice.over_list = false;
+    if (menu->count == 0) {
+        ui_menu_close(menu);
+        return;
+    }
+    if (over_list) {
+        menu->view = UI_VIEW_MENU;
+        menu->timeout_ms = UI_MENU_TIMEOUT_MS;
+        follow_selection(menu, menu->visible_rows);
+        return;
+    }
+    ui_menu_open(menu);
+}
+
+void ui_menu_voice_select(ui_menu_t *menu, unsigned row)
+{
+    if (!menu || menu->voice.row_count == 0) {
+        return;
+    }
+    if (row >= menu->voice.row_count) {
+        row = menu->voice.row_count - 1u;
+    }
+    menu->voice.highlight = true;
+    menu->voice.selected = row;
+    if (row < menu->voice.scroll) {
+        menu->voice.scroll = row;
+    } else if (row >= menu->voice.scroll + UI_VOICE_ROWS_SHOWN) {
+        menu->voice.scroll = row - UI_VOICE_ROWS_SHOWN + 1u;
+    }
 }
 
 void ui_menu_set_rows(ui_menu_t *menu, unsigned rows)
@@ -474,7 +567,8 @@ void ui_menu_step(ui_menu_t *menu, int delta)
 
 void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows)
 {
-    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0 || delta == 0) {
+    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0 || delta == 0 ||
+        ui_menu_voice_up(menu)) {
         return;
     }
     if (rows) {
@@ -498,7 +592,7 @@ void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows)
 
 void ui_menu_confirm(ui_menu_t *menu)
 {
-    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0) {
+    if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0 || ui_menu_voice_up(menu)) {
         return;
     }
     if (menu->at_groups) {
@@ -596,6 +690,7 @@ void ui_menu_open_pets(ui_menu_t *menu, unsigned current, unsigned count)
     if (!menu || count == 0) {
         return;
     }
+    ui_menu_voice_clear(menu);
     menu->view = UI_VIEW_PET;
     menu->pet_count = count;
     menu->pet_current = current < count ? current : 0;

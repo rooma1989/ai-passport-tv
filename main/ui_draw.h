@@ -36,6 +36,7 @@ typedef enum {
     UI_ICON_LINK,
     UI_ICON_PHONE,
     UI_ICON_REWIND,
+    UI_ICON_MIC,     // the voice panel's microphone
     UI_ICON_COUNT
 } ui_icon_t;
 

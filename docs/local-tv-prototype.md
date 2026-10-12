@@ -103,6 +103,52 @@ PTS can be lower than an immediately preceding audio PTS. Loops must maintain
 continuous PTS/sequence or start a new session; `duration_ms` describes server
 material, not a firmware-enforced session timeout.
 
+### Voice (push-to-talk), kinds 10-12
+
+Firmware built with `CONFIG_AV_VOICE` adds `"voice":1` to HELLO. Voice is turned
+on only by a CONFIG carrying `"voice":{"max_s":N}` (N >= 1; the device caps an
+utterance at min(N, 10) s); a CONFIG without it turns it off, and the keys are
+then exactly what they were. The authority for the numbers is
+`main/av_protocol.h` (`AV_VOICE_CTL`, `AV_VOICE`, `AV_VOICE_RESULT`,
+`AV_VOICE_RESULT_MAX`, `AV_VOICE_BLOCKS_MAX`); `server/protocol.py` mirrors them
+and a host test compares the two.
+
+| Kind | Direction | Header | Payload |
+| --- | --- | --- | --- |
+| VOICE_CTL (10) | device to server | session = the session's, seq 0, PTS 0 (like STATUS) | JSON: `{"op":"begin","id":n,"rate":16000,"codec":"adpcm"}`, `{"op":"end","id":n}`, `{"op":"cancel","id":n}`, `{"op":"pick","id":n,"ref":"..."}` |
+| VOICE (11) | device to server | seq 0, PTS = 40 x the block's index from the utterance's first block | exactly 324 bytes: one IMA ADPCM block in the AUDIO layout above, 640 samples of 16 kHz microphone audio; at most 250 per utterance |
+| VOICE_RESULT (12) | server to device | the session's next seq, PTS 0, flags 0 (like SWITCH) | JSON, 1..2048 bytes |
+
+- `id` counts utterances from 1 per boot. "begin" goes when OK has been held for
+  `CONFIG_AV_VOICE_HOLD_MS` (450 ms), but capture starts at OK press-down, so the
+  first blocks after "begin" are the pre-roll recorded before it (block 0 is the
+  press). The encoder runs continuously over the utterance and every block
+  carries its own state, so a block lost to a full uplink ring (`dropped=` in the
+  log; the PTS then skips) does not disturb the next.
+- "end" follows the last block, about 120 ms after OK is let go. "cancel" (▲
+  while listening or recognising, or a new press that abandons an unfinished
+  utterance) drops whatever is unsent; a "begin" that never left the device is
+  simply forgotten. "pick" answers a candidate that carries `ref`; the server
+  answers it with a result for the same `id`.
+- Only the receive task writes the socket. It sends these between its own
+  reads: at the top of each packet, while it waits for an audio slot, and, while
+  an utterance is in flight, in 20 ms slices before a header read, so a quiet
+  stream (paused, audio only) does not hold the uplink up. A failed or partial
+  write ends the session, like any other.
+- A result is read into the control buffer, parsed into a fixed structure
+  (no transcript is logged) and handed to the session owner. One whose `id` is
+  not the utterance being waited for (a cancel, a newer one) is dropped.
+- Fields used: `state` (`final`, `error`; `partial` would update the words while
+  recognising, not sent by the server in phase 1), `heard`, `reply`, `intent`
+  (`none` is "not understood": the low earcon), `label` and `lead` (the row shown
+  for a single match), `do` with one of `channel`, `volume`, `brightness` (step
+  index), `audio_only`, `pet`, `page` (`status`, `close`; the device also accepts
+  `list`, `brightness`, `pets`) or `setup`, and `choices` (up to 6
+  `{label, lead, do | ref}`). A clear match is carried out at once through the
+  same paths as AV_SWITCH; no `do` and no `choices` shows `reply` (the relay
+  acted) unless `intent` is `none`. "None of these, open the channel list" is
+  added after the candidates only when they are channels.
+
 ## Media conversion and compatibility
 
 Both `prepare` and `import-video` generate actual baseline 160x120 YUV420 JPEGs;
@@ -151,6 +197,16 @@ network configuration are unchanged. See [server instructions](../server/README.
   DMA buffers. The standalone control,
   buttons, Wi-Fi event loop and BSP remain owned for the boot lifetime, while
   per-session allocations are released. There is no return-to-LVGL transition.
+- Voice (`main/av_voice.c`, `main/av_voice_policy.c`): nothing is held until OK
+  goes down. Then one block of about 9.9 KB (a 24-block uplink ring of 328 bytes,
+  the 1280-byte block accumulator, a 640-byte read chunk and a spare block) and a
+  task (3072-byte stack on the C3, 4096 on the S3, priority 6) are allocated;
+  both go when the capture has stopped and the ring is drained, or at once on a
+  click. A result costs about 1.1 KB while it is on screen, plus the cJSON tree
+  (a few KB) for the moment it is parsed in the receive task. The TV's sound is
+  zeroed in the audio task from press-down until the capture ends; while the
+  list or a voice screen covers the picture the video task releases each stripe
+  undecoded and repaints the panel on its own.
 - Five seconds without receive progress triggers reset; no fixed total session
   timeout is imposed. Normal END drains queued work; reconnect backs off one
   second, clears all state and starts a new handshake. Continuous-PTS server

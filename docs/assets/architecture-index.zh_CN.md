@@ -46,13 +46,15 @@
 | 文件 | 负责什么 |
 | --- | --- |
 | [`main/av_channel_policy.c`/`.h`](../../main/av_channel_policy.h) | "这个频道是否出过画面"的记录，以及跳到下一频道的决策。 |
-| [`main/av_adpcm.c`/`.h`](../../main/av_adpcm.h) | 音频包的 IMA ADPCM 块解码（324 字节 → 640 个采样）；块格式写在头文件和 [`docs/local-tv-prototype.md`](../local-tv-prototype.zh_CN.md) 里。由 `audio_task()` 调用。 |
+| [`main/av_adpcm.c`/`.h`](../../main/av_adpcm.h) | 音频包的 IMA ADPCM 块解码（324 字节 → 640 个采样），以及麦克风上行用的编码器；块格式写在头文件和 [`docs/local-tv-prototype.md`](../local-tv-prototype.zh_CN.md) 里。由 `audio_task()` 调用。 |
 | [`main/av_provision.cpp`/`.h`](../../main/av_provision.h) | Wi-Fi station/AP 生命周期（C++，封装 `esp-wifi-connect`）。 |
 | [`main/av_provision_policy.c`/`.h`](../../main/av_provision_policy.h) | 纯启动模式判定（`AV_BOOT_PLAY` vs `AV_BOOT_SETUP`），无 ESP-IDF 依赖。 |
 | [`main/av_settings.c`/`.h`](../../main/av_settings.h) | 亮度/音量的分档表（固定档位而非连续值）。 |
 | [`main/av_store.c`/`.h`](../../main/av_store.h) | 音量/亮度/服务器地址的 NVS 持久化。 |
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
-| [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机——纯逻辑，无 LVGL。 |
+| [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机，以及频道列表面板里的语音子状态——纯逻辑，无 LVGL。 |
+| [`main/av_voice_policy.c`/`.h`](../../main/av_voice_policy.h) | 按住说话：每种语音状态下每个按键做什么、按住与短按的区分、各种超时——纯逻辑，有主机测试。 |
+| [`main/av_voice.c`/`.h`](../../main/av_voice.h) | 设备端的按住说话：录音任务、高通、ADPCM、由 `receive_task()` 发出的上行环形缓冲、`AV_VOICE_RESULT` 解析。与播放器的衔接在 `av_player.c` 的 `voice_*`。 |
 | [`main/ui_text.c`/`.h`](../../main/ui_text.h) | 直接画到屏幕条带上的位图文字（非 LVGL）；CJK 字形来自 `ui_font_cjk.bin`，由 `tools/make_font.py` 重新生成。 |
 | [`main/ui_draw.c`/`.h`](../../main/ui_draw.h) | 设备端 UI 设计稿的图标、宠物和像素图形（点线、切角矩形、10 格进度条、不透明面板）；素材在 `main/xiaozhi_tv_ui_assets.h`，由设计稿导出。 |
 | [`main/ui_status.c`/`.h`](../../main/ui_status.h) | 顶条：左侧标签（播放时是台号和台名）和右侧的信号、电量。 |
@@ -124,6 +126,7 @@
 | 画质、帧率、条带/几何参数 | `main/av_protocol.h`（`AV_VIDEO_*`、`AV_FPS`）、`server/frames.py`、`server/rate.py`、`main/av_player.c` 的 `video_task`/`push_stripe` |
 | 音画同步、drift、卡顿、会话重置 | `server/timeline.py`、`server/pts.py`、`main/av_player.c` 的 `audio_task`/`video_task`、`docs/development/state-20260916.md` |
 | 设备按键、屏幕菜单、横幅、音量/亮度 HUD | `main/ui_menu.c`/`.h`、`main/av_player.c` 的 `process_key()`、`main/av_settings.c` |
+| 语音控制、麦克风 | `main/av_voice_policy.c`、`main/av_voice.c`、`components/bsp/src/*/bsp_mic.c`、`components/bsp/src/bsp_button_events.c`、`docs/superpowers/specs/2026-10-12-voice-control-design.md` |
 | Wi-Fi/服务器地址配网流程、captive portal | `main/av_provision.cpp`、`main/av_provision_policy.c`、`main/av_player.c` 的 `run_setup_mode()` |
 | 服务端打包/分发/发布 | `tools/build_server.py`、`packaging/tv-server.spec`、`.github/workflows/build-server.yml` |
 | 固件构建、CI、发布产物 | `tools/validate.sh`、`sdkconfig.av-prototype`、`.github/workflows/build-firmware.yml` |
