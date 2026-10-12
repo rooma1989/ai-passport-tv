@@ -159,15 +159,17 @@ If it does not enter setup by itself, or you need to change the address later: *
 
 ## Day-to-day use
 
-Three buttons, six gestures:
+Three buttons:
 
 | Action | What it does |
 | --- | --- |
 | **Short press ↑ / ↓** | Adjust volume, in steps of 10% |
 | **Long press ↑ / ↓** | Change channel |
 | **Short press OK** | Open the channel list (↑↓ to move, OK to choose) |
-| **Long press OK** | Adjust brightness, in steps of 10% |
-| **Double-click ↑** | Status page: current channel, WiFi signal, battery |
+| **Long press OK** | Brightness page |
+| **Double-click ↑ / ↓** | Brightness up / down, a step at a time |
+| **Double-click OK** | Status page: current channel, WiFi signal, battery |
+| **Short press OK on the status page** | Sound only (the pet instead of the picture), and back |
 | **Hold ↑ on the status page** | Enter setup again |
 
 Volume and brightness are remembered across power cycles.

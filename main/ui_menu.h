@@ -46,7 +46,8 @@ typedef struct {
 // What the level indicator at the top of the picture is showing.
 typedef enum {
     UI_LEVEL_VOLUME = 0,
-    UI_LEVEL_BRIGHTNESS,   // set from the phone; the keys use the brightness page
+    UI_LEVEL_BRIGHTNESS,   // set from the phone
+    UI_LEVEL_BRIGHTNESS_KEYS,  // stepped with the keys (the Passport's double-clicked arrows)
 } ui_level_t;
 
 // The box in the middle of the picture after a seek or "next" from the phone.
@@ -202,6 +203,8 @@ void ui_menu_pet_confirm(ui_menu_t *menu);
 // Show the backlight in the same indicator, as the phone set it. Whichever of
 // the two came last is the one shown.
 void ui_menu_show_brightness(ui_menu_t *menu);
+// The same, stepped on the device itself.
+void ui_menu_show_brightness_keys(ui_menu_t *menu);
 
 // Fill banner_number and banner_detail for channel `id`, from the loaded list.
 // `id` not in the list leaves both empty.

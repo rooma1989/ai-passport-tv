@@ -3711,9 +3711,15 @@ static void process_key(const key_ev_t *item) {
             return;
         }
         if (item->ev==BSP_BTN_DOUBLE) {
+#if BSP_DOUBLE_OK_IS_STATUS
+            // The status page (on the Passport the arrows' double-click is the
+            // backlight); audio-only is a click of OK there.
+            ui_menu_open_status(&s.menu);
+#else
             // Audio-only on or off, straight from playback: the one OK gesture
             // left, and quick to reach without looking at the screen.
             set_audio_only(!listening());
+#endif
             return;
         }
         if (item->ev==BSP_BTN_LONG) {
@@ -3765,9 +3771,18 @@ static void process_key(const key_ev_t *item) {
         return;
     }
     if (item->ev==BSP_BTN_DOUBLE) {
+#if BSP_DOUBLE_OK_IS_STATUS
+        // The backlight, a step at a time like the volume: ▲ brighter, ▼ dimmer.
+        s.menu.brightness=av_brightness_step(s.menu.brightness,up);
+        bsp_display_backlight(av_brightness_percent(s.menu.brightness));
+        ui_menu_show_brightness_keys(&s.menu);
+        atomic_store(&s.settings_dirty,true);
+        atomic_store(&s.status_dirty,true);
+#else
         // The status page needs a gesture of its own: a long press on either
         // arrow already means volume, and a long press on OK opens the list.
         ui_menu_open_status(&s.menu);
+#endif
         return;
     }
     if (arrow_ev!=BSP_BTN_CLICK) return;

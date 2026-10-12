@@ -463,6 +463,9 @@ static void test_level_indicator(void)
     check(ui_menu_volume_visible(&menu) && menu.level == UI_LEVEL_VOLUME, "volume shows");
     ui_menu_show_brightness(&menu);
     check(ui_menu_volume_visible(&menu) && menu.level == UI_LEVEL_BRIGHTNESS, "brightness takes over");
+    ui_menu_show_brightness_keys(&menu);
+    check(ui_menu_volume_visible(&menu) && menu.level == UI_LEVEL_BRIGHTNESS_KEYS,
+          "brightness stepped on the device shows in the same indicator");
     check(ui_menu_tick(&menu, 1500) && !ui_menu_volume_visible(&menu), "and goes after 1.5 s");
 }
 

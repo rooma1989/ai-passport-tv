@@ -646,6 +646,15 @@ void ui_menu_show_brightness(ui_menu_t *menu)
     menu->level = UI_LEVEL_BRIGHTNESS;
 }
 
+void ui_menu_show_brightness_keys(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    menu->volume_ms = UI_MENU_VOLUME_MS;
+    menu->level = UI_LEVEL_BRIGHTNESS_KEYS;
+}
+
 void ui_menu_banner_place(ui_menu_t *menu, const char *id)
 {
     if (!menu) {

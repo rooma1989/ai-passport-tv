@@ -4,7 +4,16 @@
 #include "ui_overlay.h"
 
 #ifdef ESP_PLATFORM
-#include "sdkconfig.h"   /* CONFIG_AV_MUSE_DUAL */
+#include "sdkconfig.h"   /* CONFIG_AV_MUSE_DUAL, the board */
+#endif
+
+// The key that opens the status page, as the hints name it: a double-click of
+// OK on the AI Passport, of ▲ on the Xingzhi board (bsp's BSP_DOUBLE_OK_IS_STATUS).
+// On the host, render_ui.sh --passport defines UI_RENDER_PASSPORT.
+#if defined(ESP_PLATFORM) ? !defined(CONFIG_AV_BOARD_XINGZHI_CUBE_154) : defined(UI_RENDER_PASSPORT)
+#define UI_STATUS_KEY "OK"
+#else
+#define UI_STATUS_KEY "\xE2\x96\xB2"
 #endif
 
 #include "qrcodegen.h"
@@ -25,7 +34,7 @@ void ui_overlay_level(ui_surface_t surface, const ui_menu_t *menu, unsigned brig
     if (!menu || !ui_menu_volume_visible(menu) || !covers(surface, 30, 75)) {
         return;
     }
-    const bool bright = menu->level == UI_LEVEL_BRIGHTNESS;
+    const bool bright = menu->level == UI_LEVEL_BRIGHTNESS || menu->level == UI_LEVEL_BRIGHTNESS_KEYS;
     unsigned percent = bright ? brightness_percent : menu->volume;
     if (percent > 100u) percent = 100u;
     // Muted is the volume at 0; a backlight is never off.
@@ -36,7 +45,7 @@ void ui_overlay_level(ui_surface_t surface, const ui_menu_t *menu, unsigned brig
     ui_draw_icon(surface, bright ? UI_ICON_SUN : UI_ICON_VOLUME, 16, 38, 1, accent);
     const int pen = ui_text_draw(surface, 40, 38, bright ? "亮度" : (mute ? "静音" : "音量"),
                                  mute ? UI_MUTED : UI_PAPER, UI_INK);
-    if (bright) {
+    if (menu->level == UI_LEVEL_BRIGHTNESS) {
         // Cells only: a padded box would reach back over the end of 亮度.
         ui_text_draw_scaled(surface, pen, 38, " \xC2\xB7 手机", 1, UI_MUTED, UI_INK);
     }
@@ -456,7 +465,7 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
             ui_text_fill(surface, 103 + 14 * (int)i, 162, 6, 6, i == lit ? UI_AMBER : UI_RULE);
         }
         ui_draw_dotted_hline(surface, 16, 223, 186, UI_RULE);
-        ui_overlay_key_hint(surface, 194, "双击\xE2\x96\xB2 状态与配网");
+        ui_overlay_key_hint(surface, 194, "双击" UI_STATUS_KEY " 状态与配网");
         break;
     }
     case UI_WAIT_SERVER: {
@@ -471,7 +480,7 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
         centred(surface, 126, "正在连接服务器", UI_PAPER);
         centred(surface, 150, page->line, UI_MUTED);
         ui_draw_dotted_hline(surface, 16, 223, 186, UI_RULE);
-        ui_overlay_key_hint(surface, 194, "双击\xE2\x96\xB2 状态与改地址");
+        ui_overlay_key_hint(surface, 194, "双击" UI_STATUS_KEY " 状态与改地址");
         break;
     }
     case UI_WAIT_CHANNEL: {
@@ -502,7 +511,7 @@ void ui_overlay_wait(ui_surface_t surface, const ui_wait_page_t *page, unsigned 
         centred(surface, 114, page->line, UI_MUTED);
         ui_draw_dotted_hline(surface, 16, 223, 150, UI_RULE);
         int pen = ui_text_draw_scaled(surface, 46, 164, "1 ", 1, UI_AMBER, UI_INK);
-        ui_overlay_key_line(surface, pen, 164, "双击\xE2\x96\xB2 打开状态", UI_INK);
+        ui_overlay_key_line(surface, pen, 164, "双击" UI_STATUS_KEY " 打开状态", UI_INK);
         pen = ui_text_draw_scaled(surface, 46, 188, "2 ", 1, UI_AMBER, UI_INK);
         ui_overlay_key_line(surface, pen, 188, "长按\xE2\x96\xB2 改地址", UI_INK);
         break;
