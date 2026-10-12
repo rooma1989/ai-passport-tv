@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- **AI Passport keys no longer lag in busy scenes**: its server holds the picture to 110 kB/s (`TV_RATE_START=110000`); at up to 165 kB/s the ESP32-C3 spent all its time decoding and drawing, dropped to 9.5-11 frames a second and answered keys late.
 - **Smoother when a Bilibili stream drops**: the relay's ffmpeg reconnects and continues the download itself, and when a stream still breaks mid-episode the relay resumes exactly where it broke instead of 10 s earlier (that rewind is kept for coming back after a channel change), so the picture no longer jumps back.
 - **One phone remote for several devices**: the relay reads every device's now-playing file (`--extra-device name:now-playing:events`) and drives the one that changed channel last, or the one picked at the top of the page; switches, casts and controls go to that device's own events file. The AI Passport's server now takes relay events too.
 - **YouTube node no longer OOM-killed**: it runs one yt-dlp at a time, and a second request for the same video waits and takes the cached result (a channel start connects twice). Two concurrent resolutions, each with a deno, overran the unit's 400M and the node crash-looped with the device stuck on "connecting". The template's `MemoryMax` is now 600M.

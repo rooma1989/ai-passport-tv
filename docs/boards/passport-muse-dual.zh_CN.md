@@ -50,9 +50,11 @@ python -m esptool --chip esp32c3 -p PORT write-flash 0x400000 build-muse-dual/tv
 ## 服务器
 
 画面尺寸是每个服务器进程固定的，而且一次只服务一台设备，所以 Passport 在星智那台旁边有自己的实例：
-`tv-passport`，照抄 `tv-xingzhi`，改成 `TV_GEOMETRY=320x180`、`TV_FPS=12`、端口 8097，
+`tv-passport`，照抄 `tv-xingzhi`，改成 `TV_GEOMETRY=320x180`、`TV_FPS=12`、`TV_RATE_START=110000`、端口 8097，
 用自己的 `TV_DATA_DIR`、正在播放文件和中转事件文件（`TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv-passport/relay-events.json`）。
 中转用 `--extra-device Passport:/var/lib/ai-passport-tv-passport/now-playing.json:/var/lib/ai-passport-tv-passport/relay-events.json`
 认识它；手机遥控自动跟着最近换过台的那台设备，也可以在页面顶上点名遥控哪一台。云服务器的防火墙也要放行这个端口。
 
-一路 Passport 画面约 150–200 kB/s。公网带宽 3 Mbit/s 的主机上，两台同时看会分摊带宽，两边画质都会下降。
+码率比星智的 200000 低，因为 ESP32-C3 解不动更多：复杂画面每秒 140–165 KB 时，解码和刷屏的耗时超过了实际时长，帧率掉到每秒 9.5–11 帧，按键也要等画面平静下来才响应。每秒 110 KB 以下它有余量。
+
+一路 Passport 约 120–150 kB/s（画面加声音）。公网带宽 3 Mbit/s 的主机上，两台同时看会分摊带宽，两边画质都会下降。

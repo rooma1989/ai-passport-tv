@@ -60,7 +60,7 @@ Don't flash this build's bootloader, partition table or `ota_data_initial.bin`.
 
 The geometry is fixed per server process and one device is served at a time,
 so the Passport has its own instance next to the Xingzhi one: `tv-passport`, a
-copy of `tv-xingzhi` with `TV_GEOMETRY=320x180`, `TV_FPS=12`, port 8097, its own
+copy of `tv-xingzhi` with `TV_GEOMETRY=320x180`, `TV_FPS=12`, `TV_RATE_START=110000`, port 8097, its own
 `TV_DATA_DIR`, now-playing file and relay events file
 (`TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv-passport/relay-events.json`).
 The relay is told about it with
@@ -68,5 +68,11 @@ The relay is told about it with
 the phone remote then follows whichever device changed channel last, or the
 one picked at the top of the page. Open the port in the cloud firewall as well.
 
-A Passport stream is about 150-200 kB/s. On a host with 3 Mbit/s of public
+The byte rate is lower than the Xingzhi's 200000 because the ESP32-C3 cannot
+decode much more: in busy scenes at 140-165 kB/s of picture its decode and
+panel work took longer than the time it covered, frames fell to 9.5-11 a
+second, and keys answered late until the scene calmed down. Below about
+110 kB/s it keeps up with room to spare.
+
+A Passport stream is about 120-150 kB/s (picture plus sound). On a host with 3 Mbit/s of public
 bandwidth, two devices watching at once share it and both lose quality.
