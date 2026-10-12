@@ -188,6 +188,23 @@ class State:
                     return n + 1
             return next((n + 1 for n, b in enumerate(ids) if b not in creator.watched), 1)
 
+    def play_from(self, cid: str, n: int) -> Video | None:
+        """剧集台改从第 n 集（从 1 数）接着播：前面的都算看过，第 n 集和后面的都算没看过。
+
+        第 n 集如果正是看到一半的那一集（下一次本来就播它、且有进度），接着它的进度；
+        否则从头播。其他集的进度都清掉，不然 next_video 会先去续播它们。
+        不是剧集台、或没有第 n 集时返回 None，什么都不改。
+        """
+        with self.lock:
+            creator = self.get(cid)
+            if creator is None or creator.kind != "series" or not 1 <= n <= len(creator.videos):
+                return None
+            video = creator.videos[n - 1]
+            keep = creator.positions.get(video.bvid) if self.episode(cid) == n else None
+            creator.watched = [v.bvid for v in creator.videos[:n - 1]]
+            creator.positions = {video.bvid: keep} if keep is not None else {}
+            return video
+
     def save_position(self, cid: str, bvid: str, seconds: float) -> None:
         with self.lock:
             creator = self.get(cid)

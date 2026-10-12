@@ -185,6 +185,49 @@ class SeriesStateTests(unittest.TestCase):
         self.assertEqual(self.state.episode(cid), 1)
         self.assertEqual(self.state.next_video(cid)[0].bvid, "ep1/1")
 
+    def test_play_from_an_episode(self):
+        cid = self.add(count=5).id
+        self.state.mark_watched(cid, "ep1/1")
+        self.state.save_position(cid, "ep2/2", 300.0)
+        self.state.mark_watched(cid, "ep4/4")
+        # Forward: everything before counts as watched, it and later as not.
+        self.assertEqual(self.state.play_from(cid, 4).bvid, "ep4/4")
+        creator = self.state.get(cid)
+        self.assertEqual(creator.watched, ["ep1/1", "ep2/2", "ep3/3"])
+        self.assertEqual(creator.positions, {}, "other episodes' progress would be resumed first")
+        self.assertEqual(self.state.next_video(cid), (creator.videos[3], 0.0))
+        self.assertEqual(self.state.episode(cid), 4)
+        # Back: later episodes are unwatched again.
+        self.state.mark_watched(cid, "ep4/4")
+        self.state.play_from(cid, 2)
+        self.assertEqual(self.state.get(cid).watched, ["ep1/1"])
+        self.assertEqual(self.state.next_video(cid)[0].bvid, "ep2/2")
+        # The first episode: nothing watched.
+        self.state.play_from(cid, 1)
+        self.assertEqual(self.state.get(cid).watched, [])
+
+    def test_play_from_keeps_the_episode_in_progress_only(self):
+        cid = self.add(count=3).id
+        self.state.mark_watched(cid, "ep1/1")
+        self.state.save_position(cid, "ep2/2", 300.0)
+        self.state.play_from(cid, 2)
+        self.assertEqual(self.state.next_video(cid), (self.state.get(cid).videos[1], 290.0),
+                         "the episode already being watched carries on")
+        # A position on an episode that is not the one in progress is not kept.
+        self.state.save_position(cid, "ep3/3", 100.0)
+        self.state.play_from(cid, 3)
+        self.assertEqual(self.state.next_video(cid), (self.state.get(cid).videos[2], 0.0))
+
+    def test_play_from_refuses_bad_episodes_and_creators(self):
+        cid = self.add().id
+        self.state.mark_watched(cid, "ep1/1")
+        for n in (0, 4, -1):
+            self.assertIsNone(self.state.play_from(cid, n))
+        self.assertEqual(self.state.get(cid).watched, ["ep1/1"], "nothing changed")
+        up = self.state.add("bilibili", "1", "UP", videos("a", "b"), now=0.0).id
+        self.assertIsNone(self.state.play_from(up, 1))
+        self.assertIsNone(self.state.play_from("sr09", 1))
+
     def test_kind_persisted_and_old_files_are_creators(self):
         self.add()
         self.state.add("bilibili", "1", "UP", videos("a"), now=0.0)
