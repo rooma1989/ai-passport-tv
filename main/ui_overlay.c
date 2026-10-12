@@ -590,12 +590,14 @@ void ui_overlay_setup(ui_surface_t surface, const ui_setup_page_t *page, bool bl
     ui_text_fill(surface, 0, 0, surface.width, 30, UI_DEEP);
     ui_text_fill(surface, 0, 30, surface.width, 180, UI_INK);
     ui_text_fill(surface, 0, 210, surface.width, 30, UI_DEEP);
+    // At the panel's own edges, like every other page's top bar.
+    const ui_surface_t bar = ui_surface_whole(surface);
     char number[12];
     snprintf(number, sizeof(number), "%u/%u", page->index + 1u, page->count);
-    int pen = ui_text_draw_scaled(surface, 20, 7, number, 1, UI_AMBER, UI_DEEP);
-    ui_text_draw_scaled(surface, pen + 6, 7, page->title ? page->title : "", 1, UI_PAPER, UI_DEEP);
+    int pen = ui_text_draw_scaled(bar, 20, 7, number, 1, UI_AMBER, UI_DEEP);
+    ui_text_draw_scaled(bar, pen + 6, 7, page->title ? page->title : "", 1, UI_PAPER, UI_DEEP);
     for (unsigned k = 0; k < page->count && k < 4u; k++) {
-        ui_text_fill(surface, 196 + 8 * (int)k, 13, 4, 4, k == page->index ? UI_AMBER : UI_RULE);
+        ui_text_fill(bar, bar.width - 44 + 8 * (int)k, 13, 4, 4, k == page->index ? UI_AMBER : UI_RULE);
     }
 
     if (!page->status) {

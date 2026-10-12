@@ -103,7 +103,7 @@ static void test_draw(void)
     enum { W = 160, H = 160 };
     static uint8_t buf[W * H * 2];
     memset(buf, 0x55, sizeof(buf));   // neither black nor white
-    ui_surface_t surface = { buf, W, 0, H };
+    ui_surface_t surface = { buf, W, 0, H, 0, 0 };
     ui_qr_draw(surface, x, y, scale, qr);
 
     const int quiet = UI_QR_QUIET * scale;
@@ -118,7 +118,7 @@ static void test_draw(void)
     memset(striped, 0x55, sizeof(striped));
     for (int row = 0; row < H; row += 12) {
         int rows = H - row < 12 ? H - row : 12;
-        ui_surface_t strip = { striped + (size_t)row * W * 2u, W, row, rows };
+        ui_surface_t strip = { striped + (size_t)row * W * 2u, W, row, rows, 0, 0 };
         ui_qr_draw(strip, x, y, scale, qr);
     }
     check(memcmp(buf, striped, sizeof(buf)) == 0, "stripe-by-stripe drawing matches");

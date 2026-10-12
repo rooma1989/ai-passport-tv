@@ -264,9 +264,10 @@ groups at the playing channel's group; OK opens a group, a long press on OK goes
 back a level and then closes. A dead channel is skipped to the next one in its
 group.
 
-Click and long press are swapped relative to the Passport because these are the
-case's volume keys (`BSP_ARROW_CLICK_IS_VOLUME`). Up and down follow the keys'
-physical order rather than the printed VOL−/VOL+, which read backwards in use.
+A click steps the volume and a long press the channel, because these are the
+case's volume keys (`BSP_ARROW_CLICK_IS_VOLUME`); the Passport now does the same.
+Up and down follow the keys' physical order rather than the printed VOL−/VOL+,
+which read backwards in use.
 
 ## Board-specific fixes, all measured on one device
 

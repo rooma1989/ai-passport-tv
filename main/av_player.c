@@ -1887,7 +1887,7 @@ static unsigned menu_rows(void) {
 
 // Rows of the panel a stripe covers, as a drawing surface.
 static ui_surface_t stripe_surface(unsigned stripe_y, uint8_t *pixels) {
-    ui_surface_t surface = { pixels, (int)AV_WIDTH, (int)stripe_y, (int)AV_STRIPE_ROWS };
+    ui_surface_t surface = { pixels, (int)AV_WIDTH, (int)stripe_y, (int)AV_STRIPE_ROWS, 0, 0 };
     return surface;
 }
 
@@ -2077,12 +2077,12 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
         // receive rates, the status page how to leave it.
         ui_text_fill(surface,0,bottom,(int)AV_WIDTH,bar,UI_DEEP);
         if (s.menu.view==UI_VIEW_MENU) {
-            ui_overlay_bottom_rates(surface,bottom,atomic_load(&s.fps_x10),
+            ui_overlay_bottom_rates(ui_surface_centered(surface),bottom,atomic_load(&s.fps_x10),
                                     (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
         } else if (s.menu.view==UI_VIEW_STATUS) {
-            ui_overlay_status_bottom(surface,bottom,atomic_load(&s.audio_only));
+            ui_overlay_status_bottom(ui_surface_centered(surface),bottom,atomic_load(&s.audio_only));
         } else if (s.menu.view==UI_VIEW_PET) {
-            ui_overlay_pet_bottom(surface,bottom);
+            ui_overlay_pet_bottom(ui_surface_centered(surface),bottom);
         }
     }
 }
@@ -2245,27 +2245,30 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
     if (s.menu.view!=UI_VIEW_VIDEO) {
         ui_draw_panel(surface,(int)AV_VIDEO_Y_OFFSET,(int)(AV_HEIGHT-AV_VIDEO_Y_OFFSET));
     }
+    // The screens are laid out 240 wide: on a wider panel they are drawn in
+    // its middle, their full-width backgrounds still reaching its edges.
+    const ui_surface_t view=ui_surface_centered(surface);
     if (s.menu.view==UI_VIEW_VIDEO) {
         // HANDOFF.md 4.4 and 4.5, drawn by ui_overlay.c: the level box, the
         // channel banner, the seek box.
-        ui_overlay_level(surface,&s.menu,av_brightness_percent(s.menu.brightness));
-        ui_overlay_banner(surface,&s.menu);
-        ui_overlay_hint(surface,&s.menu);
+        ui_overlay_level(view,&s.menu,av_brightness_percent(s.menu.brightness));
+        ui_overlay_banner(view,&s.menu);
+        ui_overlay_hint(view,&s.menu);
     } else if (s.menu.view==UI_VIEW_MENU) {
         // HANDOFF.md 4.7 and 4.8; the title and position are the top bar's label.
-        ui_overlay_list(surface,&s.menu);
+        ui_overlay_list(view,&s.menu);
     } else if (s.menu.view==UI_VIEW_PET) {
-        ui_overlay_pets(surface,&s.menu);
+        ui_overlay_pets(view,&s.menu);
     } else if (s.menu.view==UI_VIEW_BRIGHTNESS) {
         // 4.9. Drawn without a channel list, so the backlight is reachable on a
         // device that has not connected to a server yet.
-        ui_overlay_brightness(surface,av_brightness_percent(s.menu.brightness));
+        ui_overlay_brightness(view,av_brightness_percent(s.menu.brightness));
     } else {
         // 4.10. The readings are rebuilt once a second, not per stripe: this runs
         // for every stripe of every frame, and building them in place meant a
         // Wi-Fi driver call and a critical section several times a frame.
         refresh_status_page();
-        ui_overlay_status(surface,&status_page);
+        ui_overlay_status(view,&status_page);
     }
     // In the waiting screen the overlay owns the whole panel, bars included.
     if (s.menu.view!=UI_VIEW_VIDEO &&
@@ -3162,7 +3165,7 @@ static bool paint_pause_band(void)
     const unsigned bottom=top+((64u+rows-1u)/rows)*rows;
     for (unsigned y=top;y<bottom && !stopping();y+=rows) {
         ui_surface_t strip=stripe_surface(y,s.stripe[0]);
-        ui_overlay_pause(strip,(int)top,(int)bottom,atomic_load(&s.pet),title);
+        ui_overlay_pause(ui_surface_centered(strip),(int)top,(int)bottom,atomic_load(&s.pet),title);
         if(bsp_display_raw_submit_nowait(y,rows,s.stripe[0])!=ESP_OK ||
            bsp_display_raw_drain(1,200)!=ESP_OK) {
             fail("pause band DMA");
@@ -3176,7 +3179,7 @@ static bool paint_pause_band(void)
         for (unsigned y=AV_HEIGHT-bar;y<AV_HEIGHT && !stopping();y+=rows) {
             unsigned n=AV_HEIGHT-y < rows ? AV_HEIGHT-y : rows;
             ui_surface_t strip=stripe_surface(y,s.stripe[0]);
-            ui_overlay_pause_hint(strip,(int)(AV_HEIGHT-bar),(int)AV_HEIGHT);
+            ui_overlay_pause_hint(ui_surface_centered(strip),(int)(AV_HEIGHT-bar),(int)AV_HEIGHT);
             if(bsp_display_raw_submit_nowait(y,n,s.stripe[0])!=ESP_OK ||
                bsp_display_raw_drain(1,200)!=ESP_OK) {
                 fail("pause band DMA");
@@ -3258,7 +3261,7 @@ static bool paint_waiting_rows(unsigned y0, unsigned y1) {
         if (y<(unsigned)UI_TOPBAR_H) {
             ui_status_draw(strip,(int)AV_WIDTH,&label,reading.bars,reading.soc,reading.charging,false);
         }
-        ui_overlay_wait(strip,&waiting_page,tick);
+        ui_overlay_wait(ui_surface_centered(strip),&waiting_page,tick);
         // On top, so a page covers the screen rather than competing with it:
         // the status page and the list paint their own panel and bars.
         overlay_stripe(y,s.stripe[0]);
@@ -3723,10 +3726,11 @@ static void process_key(const key_ev_t *item) {
         }
         return;
     }
-    // Which arrow gesture means volume is a board fact: the Xingzhi case prints
-    // VOL+/VOL- on these keys, so there a click steps the volume and a long press
-    // changes channel -- the Passport's mapping swapped. Only click and long press
-    // trade places; the double-click below means the same on every board.
+    // Which arrow gesture means volume is a board fact. Both boards now click for
+    // the volume and hold to change channel: the Xingzhi case prints VOL+/VOL- on
+    // these keys, and on the Passport that is what they were reached for too.
+    // Only click and long press trade places; the double-click below means the
+    // same on every board.
     bsp_btn_ev_t arrow_ev=item->ev;
 #if BSP_ARROW_CLICK_IS_VOLUME
     if (arrow_ev==BSP_BTN_CLICK) arrow_ev=BSP_BTN_LONG;
@@ -3926,7 +3930,7 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page
 
     for(unsigned y=(y0/AV_STRIPE_ROWS)*AV_STRIPE_ROWS;y<y1 && y<AV_HEIGHT && !stopping();y+=AV_STRIPE_ROWS) {
         ui_surface_t strip=stripe_surface(y,buffer);
-        ui_overlay_setup(strip,&view,blink_on);
+        ui_overlay_setup(ui_surface_centered(strip),&view,blink_on);
         if(bsp_display_raw_submit(y,AV_STRIPE_ROWS,buffer,200)!=ESP_OK ||
            bsp_display_raw_wait(200)!=ESP_OK) {
             fail("setup screen DMA");

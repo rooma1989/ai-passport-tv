@@ -229,18 +229,26 @@ void ui_text_fill(ui_surface_t surface, int x, int y, int w, int h, uint16_t col
     if (bottom > limit) {
         bottom = limit;
     }
-    int left = x < 0 ? 0 : x;
+    // A fill across the whole of a narrower view also covers its sides.
+    int min_x = 0, max_x = surface.width;
+    if (surface.pad > 0 && x <= 0 && x + w >= surface.width) {
+        min_x = -surface.pad;
+        max_x = surface.width + surface.pad;
+        x = min_x;
+        w = max_x - min_x;
+    }
+    int left = x < min_x ? min_x : x;
     int right = x + w;
-    if (right > surface.width) {
-        right = surface.width;
+    if (right > max_x) {
+        right = max_x;
     }
     if (top >= bottom || left >= right) {
         return;
     }
+    const ptrdiff_t pitch = surface.stride ? surface.stride : surface.width;
     uint8_t high = (uint8_t)(color >> 8), low = (uint8_t)(color & 0xFFu);
     for (int row = top; row < bottom; row++) {
-        uint8_t *pixel = surface.pixels + ((size_t)(row - surface.origin_y) * surface.width
-                                           + (size_t)left) * 2u;
+        uint8_t *pixel = surface.pixels + ((ptrdiff_t)(row - surface.origin_y) * pitch + left) * 2;
         for (int column = left; column < right; column++) {
             *pixel++ = high;
             *pixel++ = low;

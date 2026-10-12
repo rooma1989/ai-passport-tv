@@ -163,8 +163,8 @@ Three buttons, six gestures:
 
 | Action | What it does |
 | --- | --- |
-| **Short press ↑ / ↓** | Change channel |
-| **Long press ↑ / ↓** | Adjust volume, in steps of 10% |
+| **Short press ↑ / ↓** | Adjust volume, in steps of 10% |
+| **Long press ↑ / ↓** | Change channel |
 | **Short press OK** | Open the channel list (↑↓ to move, OK to choose) |
 | **Long press OK** | Adjust brightness, in steps of 10% |
 | **Double-click ↑** | Status page: current channel, WiFi signal, battery |

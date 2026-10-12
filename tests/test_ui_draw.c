@@ -31,7 +31,7 @@ static uint16_t pixel(int x, int y)
 
 static ui_surface_t clear(void)
 {
-    ui_surface_t surface = { buf, W, 0, H };
+    ui_surface_t surface = { buf, W, 0, H, 0, 0 };
     ui_text_fill(surface, 0, 0, W, H, BACK);
     return surface;
 }
@@ -109,7 +109,7 @@ static void test_pet(void)
     memcpy(whole, buf, sizeof(buf));
     (void)clear();
     for (int y = 0; y < H; y += 12) {
-        ui_surface_t stripe = { buf + (size_t)y * W * 2, W, y, 12 };
+        ui_surface_t stripe = { buf + (size_t)y * W * 2, W, y, 12, 0, 0 };
         ui_draw_pet(stripe, 4, 1, 84, 38, 3);
     }
     check(memcmp(whole, buf, sizeof(buf)) == 0, "3x by stripes equals 3x whole");

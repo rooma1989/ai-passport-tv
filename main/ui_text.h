@@ -9,12 +9,50 @@
 // with the high byte first, `width` pixels per row, and the band covers
 // destination rows [origin_y, origin_y + rows). Anything drawn outside is
 // clipped, which is what makes partial-height stripes safe to draw into.
+//
+// `stride` and `pad` are for a view narrower than the panel (see
+// ui_surface_centered); both 0 for the panel itself. A row is `stride` pixels
+// apart, and a fill that spans the view's whole width also covers `pad` pixels
+// on either side of it, so backgrounds and panel bars still reach the panel's
+// edges while everything else is drawn inside the view.
 typedef struct {
     uint8_t *pixels;
     int width;
     int origin_y;
     int rows;
+    int stride;
+    int pad;
 } ui_surface_t;
+
+// The screens are laid out for a 240-pixel-wide panel (the Xingzhi board).
+#define UI_DESIGN_WIDTH 240
+
+// On a wider panel (the AI Passport's 320), a view of the middle
+// UI_DESIGN_WIDTH columns of `panel`, with the sides filled by full-width
+// fills; on a panel that wide or narrower, `panel` itself.
+static inline ui_surface_t ui_surface_centered(ui_surface_t panel)
+{
+    if (panel.stride || panel.width <= UI_DESIGN_WIDTH) {
+        return panel;
+    }
+    const int pad = (panel.width - UI_DESIGN_WIDTH) / 2;
+    ui_surface_t view = { panel.pixels ? panel.pixels + (size_t)pad * 2u : NULL, UI_DESIGN_WIDTH,
+                          panel.origin_y, panel.rows, panel.width, pad };
+    return view;
+}
+
+// The whole panel behind a view from ui_surface_centered, for what belongs to
+// the panel's edges rather than to the layout (a page's title bar); a surface
+// that is not such a view is returned as it is.
+static inline ui_surface_t ui_surface_whole(ui_surface_t view)
+{
+    if (!view.pad) {
+        return view;
+    }
+    ui_surface_t panel = { view.pixels ? view.pixels - (size_t)view.pad * 2u : NULL,
+                           view.width + 2 * view.pad, view.origin_y, view.rows, 0, 0 };
+    return panel;
+}
 
 // Glyph cell height. A line of text occupies exactly this many rows.
 #define UI_TEXT_LINE_H 16u

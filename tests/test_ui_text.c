@@ -40,7 +40,7 @@ static uint8_t buffer[SURFACE_W * SURFACE_ROWS * 2];
 static ui_surface_t surface_at(int origin_y, int rows)
 {
     memset(buffer, 0, sizeof(buffer));
-    ui_surface_t surface = { buffer, SURFACE_W, origin_y, rows };
+    ui_surface_t surface = { buffer, SURFACE_W, origin_y, rows, 0, 0 };
     return surface;
 }
 
@@ -125,6 +125,36 @@ static void test_fill_clips_to_the_band(void)
     ui_surface_t edge = surface_at(0, SURFACE_ROWS);
     ui_text_fill(edge, -10, 0, 20, 1, UI_COLOR_TEXT);
     check(pixel(edge, 0, 0) == UI_COLOR_TEXT, "a rectangle straddling x=0 still draws");
+}
+
+// The Passport's 320-wide panel shows the 240-wide layout in its middle; a
+// fill across the layout's width reaches the panel's edges, anything else
+// stays inside the layout, and ui_surface_whole gets the panel back.
+static void test_centered_view(void)
+{
+    ui_surface_t panel = surface_at(0, 4);
+    ui_surface_t view = ui_surface_centered(panel);
+    check(view.width == UI_DESIGN_WIDTH && view.pad == 40 && view.stride == SURFACE_W,
+          "a 320 panel gives a 240 view with 40 on either side");
+    ui_text_fill(view, 0, 0, view.width, 1, 0x1234);
+    check(pixel(panel, 0, 0) == 0x1234 && pixel(panel, SURFACE_W - 1, 0) == 0x1234,
+          "a full-width fill in the view reaches both panel edges");
+    ui_text_fill(view, 0, 1, 10, 1, 0x5678);
+    check(pixel(panel, 39, 1) == 0 && pixel(panel, 40, 1) == 0x5678 && pixel(panel, 49, 1) == 0x5678
+              && pixel(panel, 50, 1) == 0,
+          "a partial fill lands 40 pixels in, and only there");
+    ui_text_fill(view, -5, 2, 20, 1, 0x9ABC);
+    check(pixel(panel, 39, 2) == 0 && pixel(panel, 40, 2) == 0x9ABC,
+          "a partial fill is still clipped at the view's left edge");
+    ui_text_fill(view, 3, 3, 1, 1, 0x4321);
+    check(pixel(panel, 43, 3) == 0x4321, "rows advance by the panel's stride");
+    ui_surface_t back = ui_surface_whole(view);
+    check(back.pixels == panel.pixels && back.width == SURFACE_W && !back.pad && !back.stride,
+          "ui_surface_whole returns the panel");
+    ui_surface_t narrow = { buffer, UI_DESIGN_WIDTH, 0, 4, 0, 0 };
+    ui_surface_t same = ui_surface_centered(narrow);
+    check(same.pixels == narrow.pixels && same.width == UI_DESIGN_WIDTH && !same.pad && !same.stride,
+          "a 240 panel (the Xingzhi's) is left as it is");
 }
 
 static void test_text_draw_paints_background_then_glyphs(void)
@@ -257,6 +287,7 @@ int main(void)
     test_width_and_truncation();
     test_truncation_never_splits_a_character();
     test_fill_clips_to_the_band();
+    test_centered_view();
     test_text_draw_paints_background_then_glyphs();
     test_draw_off_surface_does_not_write_out_of_bounds();
     test_scaled_text();

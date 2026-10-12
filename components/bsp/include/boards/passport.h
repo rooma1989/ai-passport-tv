@@ -62,8 +62,8 @@
 #define BSP_BTN_ADC_UNIT     ADC_UNIT_1
 #define BSP_BTN_ADC_CHANNEL  ADC_CHANNEL_0    // GPIO0
 #define BSP_BTN_COUNT        3
-// 播放时上/下键:短按换台、长按调音量。
-#define BSP_ARROW_CLICK_IS_VOLUME 0
+// 播放时上/下键:短按调音量、长按换台,和星智板一样(用户更习惯把它们当音量键)。
+#define BSP_ARROW_CLICK_IS_VOLUME 1
 
 // 每键的电压窗口 {min_mV, max_mV};边界取相邻档中点。
 // 确定键上界留宽到 1900,是为了和松开态的 3300mV 拉开距离。

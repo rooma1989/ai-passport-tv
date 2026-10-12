@@ -33,7 +33,7 @@ static uint16_t pixel(int x, int y)
 static void draw_label(const ui_topbar_label_t *label, unsigned bars, int soc, int charging)
 {
     memset(buf, 0, sizeof(buf));
-    ui_surface_t surface = { buf, W, 0, H };
+    ui_surface_t surface = { buf, W, 0, H, 0, 0 };
     ui_status_draw(surface, W, label, bars, soc, charging, false);
 }
 
@@ -149,7 +149,7 @@ static void test_label(void)
 static void test_critical_blink(void)
 {
     memset(buf, 0, sizeof(buf));
-    ui_surface_t surface = { buf, W, 0, H };
+    ui_surface_t surface = { buf, W, 0, H, 0, 0 };
     ui_status_draw(surface, W, NULL, 4, 5, 0, true);
     check(count_in(194, W, UI_VERM) == 0, "below 10% the number blinks off");
     check(count_in(174, 190, UI_VERM) == 4, "but the fill stays");

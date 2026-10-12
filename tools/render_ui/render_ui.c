@@ -10,14 +10,26 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { W = 240, H = 240, SCALE = 2, COLS = 4, ROWS = 7, GAP = 8 };
+// The panel: 240x240 on the Xingzhi board (the default), 320x240 on the AI
+// Passport (render_ui.sh --passport).
+#ifndef RENDER_W
+#define RENDER_W 240
+#endif
+enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 7, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
 static ui_surface_t whole(void)
 {
-    ui_surface_t surface = { screen, W, 0, H };
+    ui_surface_t surface = { screen, W, 0, H, 0, 0 };
     return surface;
+}
+
+// Where the screens are drawn, as on the device: the panel's middle 240
+// columns on the Passport's wider panel, the panel itself on the Xingzhi's.
+static ui_surface_t view(void)
+{
+    return ui_surface_centered(whole());
 }
 
 // Bands of colour where the video would be, so overlays are judged against a
@@ -105,24 +117,24 @@ int main(int argc, char **argv)
     menu = sample_menu();
     ui_menu_banner(&menu, "CCTV-7 国防军事", NULL);
     ui_menu_banner_place(&menu, "ch7");
-    ui_overlay_banner(whole(), &menu);
+    ui_overlay_banner(view(), &menu);
     place(n++);
 
     // 4.4 volume from a key, and muted.
     picture(); bars("07", " CCTV-7 国防军事", 76, 0, 4);
     menu = sample_menu();
     ui_menu_show_volume(&menu, 70);
-    ui_overlay_level(whole(), &menu, 0);
+    ui_overlay_level(view(), &menu, 0);
     place(n++);
     picture(); bars("07", " CCTV-7 国防军事", 76, 0, 4);
     ui_menu_show_volume(&menu, 0);
-    ui_overlay_level(whole(), &menu, 0);
+    ui_overlay_level(view(), &menu, 0);
     place(n++);
 
     // 4.4 backlight from the phone.
     picture(); bars("07", " CCTV-7 国防军事", 76, 0, 4);
     ui_menu_show_brightness(&menu);
-    ui_overlay_level(whole(), &menu, 50);
+    ui_overlay_level(view(), &menu, 50);
     place(n++);
 
     // 4.5 the seek box: forward 30 s, back 2 min, next.
@@ -133,14 +145,14 @@ int main(int argc, char **argv)
         picture(); bars("12", " 老高与小茉 Mr & Mrs Gao", 76, 0, 3);
         menu = sample_menu();
         ui_menu_show_hint(&menu, hints[i].hint, hints[i].seconds);
-        ui_overlay_hint(whole(), &menu);
+        ui_overlay_hint(view(), &menu);
         place(n++);
     }
 
     // 4.6 paused, with the bottom bar.
     picture(); bars("12", " 老高与小茉 Mr & Mrs Gao", 76, 0, 3);
-    ui_overlay_pause(whole(), 84, 156, 0, "为什么古埃及金字塔里没有法老的木乃伊？");
-    ui_overlay_pause_hint(whole(), 210, 240);
+    ui_overlay_pause(view(), 84, 156, 0, "为什么古埃及金字塔里没有法老的木乃伊？");
+    ui_overlay_pause_hint(view(), 210, 240);
     place(n++);
 
     // 4.1 the top bar's states: low, critical, charging, no signal.
@@ -160,22 +172,22 @@ int main(int argc, char **argv)
     ui_menu_scroll_by(&menu, 1, UI_OVERLAY_LIST_ROWS);
     picture(); bars(NULL, "频道分组 4/9", 76, 0, 3);
     ui_draw_panel(whole(), 30, 210);
-    ui_overlay_list(whole(), &menu);
-    ui_overlay_bottom_rates(whole(), 210, 150, 52);
+    ui_overlay_list(view(), &menu);
+    ui_overlay_bottom_rates(view(), 210, 150, 52);
     place(n++);
     ui_menu_scroll_by(&menu, -1, UI_OVERLAY_LIST_ROWS);
     ui_menu_confirm(&menu);
     for (int i = 0; i < 6; i++) ui_menu_scroll_by(&menu, 1, UI_OVERLAY_LIST_ROWS);
     picture(); bars(NULL, "< 央视 11/12", 76, 0, 3);
     ui_draw_panel(whole(), 30, 210);
-    ui_overlay_list(whole(), &menu);
-    ui_overlay_bottom_rates(whole(), 210, 150, 52);
+    ui_overlay_list(view(), &menu);
+    ui_overlay_bottom_rates(view(), 210, 150, 52);
     place(n++);
 
     // 4.9 the backlight page.
     picture(); bars(NULL, "亮度", 76, 0, 3);
     ui_draw_panel(whole(), 30, 210);
-    ui_overlay_brightness(whole(), 50);
+    ui_overlay_brightness(view(), 50);
     place(n++);
 
     // 4.10 the status page with the remote's code.
@@ -185,8 +197,8 @@ int main(int argc, char **argv)
     ui_status_page_t page = { "07", "CCTV-7 国防军事", 3, -62, 76, 0, qr, "手机遥控", false };
     picture(); bars(NULL, "状态", 76, 0, 3);
     ui_draw_panel(whole(), 30, 210);
-    ui_overlay_status(whole(), &page);
-    ui_overlay_status_bottom(whole(), 210, false);
+    ui_overlay_status(view(), &page);
+    ui_overlay_status_bottom(view(), 210, false);
     place(n++);
 
     // 4.2 / 4.3 the waiting screens, and 4.15 the pet picker.
@@ -209,7 +221,7 @@ int main(int argc, char **argv)
         picture();
         if (wait.kind == UI_WAIT_LISTEN) bars("07", " CCTV-7 国防军事", 76, 0, 3);
         else bars(NULL, ui_overlay_wait_label(wait.kind), 76, 0, 3);
-        ui_overlay_wait(whole(), &wait, waits[i].tick);
+        ui_overlay_wait(view(), &wait, waits[i].tick);
         place(n++);
     }
     menu = sample_menu();
@@ -217,9 +229,9 @@ int main(int argc, char **argv)
     for (unsigned i = 0; i < 2; i++) {
         picture(); bars(NULL, i ? "选择宠物 6/11" : "选择宠物 1/11", 76, 0, 3);
         ui_draw_panel(whole(), 30, 210);
-        ui_overlay_pets(whole(), &menu);
+        ui_overlay_pets(view(), &menu);
         ui_text_fill(whole(), 0, 210, W, 30, UI_DEEP);
-        ui_overlay_pet_bottom(whole(), 210);
+        ui_overlay_pet_bottom(view(), 210);
         place(n++);
         for (int k = 0; k < 5; k++) ui_menu_pet_step(&menu, 1);
     }
@@ -243,7 +255,7 @@ int main(int argc, char **argv)
             setup.line1 = line1[i];
             setup.line2 = line2[i];
         }
-        ui_overlay_setup(whole(), &setup, true);
+        ui_overlay_setup(view(), &setup, true);
         place(n++);
     }
 
