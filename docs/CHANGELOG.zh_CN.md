@@ -6,6 +6,7 @@
 
 ## 未发布
 
+- **剧集台（动画片、电视剧）**：在手机的「订阅」标签粘贴 B 站番剧链接（`/bangumi/play/ss…`、`ep…`、`/bangumi/media/md…`）、多集视频或合集的链接，可以顺便起个台名，它就成为「动画影视」组里的一个台（`sr01`…），按集数顺序播，换台回来接着上次那一集。番剧只留免费的集，只能试看的集会跳过。设备的频道列表再加一个台就装不进 CONFIG 包时，中转拒绝添加（`channel_groups.CONFIG_MAX`，现在与媒体服务共用）。
 - **AI Passport：方向键短按调音量、长按换台**，和星智板一样；**双击 ▲/▼ 调亮度**，**双击 OK 打开状态页**（只听声音改在状态页短按 OK 切换；`BSP_DOUBLE_OK_IS_STATUS`，星智的手势不变）。**界面在 320 宽的屏上居中**：所有页面、浮层和只听声音的宠物原本都按星智 240 宽的屏排版，在 Passport 上贴着左边；现在画在屏幕中间，背景仍铺满两边（`ui_surface_centered`），配网页的标题栏仍在屏幕两端。星智的画面逐像素不变。`tools/render_ui/render_ui.sh --passport` 可以画出 Passport 的屏幕。
 - **AI Passport 上和 Muse 固件并存**：用 `sdkconfig.muse-dual` 编译时，播放器装在 Muse 分区表的第二个应用分区（ota_1）里，从 Muse 菜单（Settings > TV）切过来；在状态页双击 OK 回到 Muse。它从不擦除共享的 NVS，自己还没有 Wi-Fi 和音量时沿用 Muse 的，并为 Muse 带回滚的引导程序把自己标记为可用。它有自己的服务器实例（320x180，`tv-passport`），和星智那台并排运行。见 [`docs/boards/passport-muse-dual.md`](boards/passport-muse-dual.md)。
 - **只听声音模式**：只放声音、屏幕只显示宠物，在状态页短按 OK 或在手机上切换；服务器不给这样的设备发画面，改按声音判断台是否正常，10 秒后背光变暗。HELLO 带 `audio_only`，`AV_SWITCH` 可以带它。配网页上以前连过的 Wi-Fi 密码留空就用记住的密码。

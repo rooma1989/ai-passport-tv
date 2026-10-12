@@ -44,6 +44,14 @@ class ClassifyTests(unittest.TestCase):
     def test_relay_channels(self):
         self.assertEqual(cg.classify("cast", "我的投屏"), "我的投屏")
         self.assertEqual(cg.classify("up03", "老高与小茉新视频"), "UP 主")
+        self.assertEqual(cg.classify("sr01", "海尔兄弟"), "动画影视")
+        # A series channel can be moved like a live one.
+        self.assertEqual(cg.group_of("sr01", "海尔兄弟", {"sr01": "其他"}), "其他")
+
+    def test_config_bytes_counts_escaped_names(self):
+        one = cg.config_bytes([("sr01", "AB")])
+        self.assertEqual(cg.config_bytes([("sr01", "AB"), ("sr02", "海尔")]) - one,
+                         len('{"id":"sr02","name":"\\u6d77\\u5c14","g":0},'))
 
     def test_group_order(self):
         self.assertEqual(cg.GROUPS[:2], ("我的投屏", "UP 主"))

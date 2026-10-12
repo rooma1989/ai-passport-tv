@@ -119,6 +119,13 @@ it, and returns to the channel it was on when it ends. The relay records this in
 handshake says it understands one. Older firmware still plays "My cast" when
 picked by hand.
 
+**Series** (cartoons, shows) go below the creators on the same tab: paste a
+Bilibili bangumi link, a multi-part video or a collection, with an optional
+channel name. Each becomes a channel `sr01`… in the Cartoons & films group that
+plays the episodes in order and comes back to the episode it left. Bangumi keep
+only their free episodes. The relay refuses a new channel when the device's
+channel list would outgrow its CONFIG packet; remove a channel first.
+
 Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
 relay uses the unsigned web API rather than yt-dlp.
 

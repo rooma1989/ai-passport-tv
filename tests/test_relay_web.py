@@ -55,6 +55,18 @@ class FakeClient:
     def video(self, bvid):
         return Video(bvid=bvid, title=f"t{bvid}", duration=600, pubdate=0)
 
+    def series_id(self, text):
+        if self.down:
+            raise BilibiliError("offline")
+        match = re.search(r"/bangumi/play/(ss\d+)", text)
+        return match.group(1) if match else None
+
+    def series(self, source):
+        if source == "ss9":
+            raise BilibiliError("ss9: 没有免费的集（都要会员）", permanent=True)
+        return f"番剧{source}", [Video(bvid=f"ep{n}/{n}", title=f"第{n}集", duration=600, pubdate=0)
+                                 for n in (1, 2, 3)]
+
     def media_url(self, bvid):
         if self.down:
             raise BilibiliError("offline")
@@ -354,6 +366,59 @@ class WebTests(unittest.TestCase):
         self.client.down = True
         offline = self.call("POST", "/api/creators", {"url": "https://space.bilibili.com/43"})
         self.assertIn("稍后", offline["error"])
+
+    # ---- series ----
+
+    def test_series_added_played_in_order_and_removed(self):
+        answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7",
+                                                   "name": " 海尔  兄弟 "})
+        self.assertEqual(answer, {"ok": True, "series": {"id": "sr01", "name": "海尔 兄弟", "total": 3}})
+        self.assertIn("sr01 | 海尔 兄弟 | http://127.0.0.1:8099/ch/sr01", self.table.read_text())
+        state = self.call("GET", "/api/state")
+        self.assertEqual(state["series"], [{"id": "sr01", "name": "海尔 兄弟", "episode": 1, "total": 3}])
+        self.assertEqual(state["creators"], [])
+        self.assertTrue(state["room"]["fits"])
+        group = next(g for g in state["groups"] if g["name"] == "动画影视")
+        self.assertEqual(group["channels"][0]["id"], "sr01")
+        self.stream("sr01")
+        self.stream("sr01")
+        self.assertEqual([url for url, _ in self.started],
+                         ["https://media.example/ep1/1.mp4", "https://media.example/ep2/2.mp4"])
+        self.assertEqual(self.call("GET", "/api/state")["series"][0]["episode"], 3)
+        self.assertEqual(self.call("DELETE", "/api/series/sr01"), {"ok": True})
+        self.assertNotIn("sr01", self.table.read_text())
+
+    def test_series_default_name_and_errors(self):
+        answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7"})
+        self.assertEqual(answer["series"]["name"], "番剧ss7")
+        again = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7"})
+        self.assertEqual(again, {"ok": False, "error": "这部剧已经添加过了"})
+        paid = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss9"})
+        self.assertEqual(paid["error"], "没有免费的集（都要会员）")
+        self.assertFalse(self.call("POST", "/api/series", {"url": "https://example.com/"})["ok"])
+        self.assertFalse(self.call("POST", "/api/series", {"url": "https://youtu.be/ytcast00001"})["ok"])
+        self.client.down = True
+        offline = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss8"})
+        self.assertIn("稍后", offline["error"])
+
+    def test_series_refused_when_the_device_list_is_full(self):
+        # A live table already past the device's CONFIG packet: no room for another channel.
+        rows = [f"ch{n:03d} | 很长很长很长的频道名字{n} | https://x/{n}.m3u8" for n in range(90)]
+        self.main.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        self.assertFalse(self.relay.room()["fits"])
+        answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7"})
+        self.assertIn("满了", answer["error"])
+        self.assertIsNone(self.state.get("sr01"))
+
+    def test_series_list_refreshed_twice_a_day(self):
+        self.relay.add_series("https://www.bilibili.com/bangumi/play/ss7")
+        self.state.get("sr01").videos = self.state.get("sr01").videos[:1]
+        self.now += 31 * 60
+        self.relay.refresh_if_stale("sr01")
+        self.assertEqual(len(self.state.get("sr01").videos), 1)
+        self.now += 12 * 3600
+        self.relay.refresh_if_stale("sr01")
+        self.assertEqual(len(self.state.get("sr01").videos), 3)
 
     # ---- streams ----
 
@@ -664,13 +729,14 @@ class PageFieldTests(unittest.TestCase):
 
     def test_page_fields_are_served(self):
         script = web.PAGE.split("<script>", 1)[1]
-        used = set(re.findall(r"\b(?:data|now|data\.now|data\.now\.video|data\.now\.device|data\.youtube|v|d|g|c|h|cr|answer|answer\.creator)\.(\w+)", script))
+        used = set(re.findall(r"\b(?:data|now|data\.now|data\.now\.video|data\.now\.device|data\.youtube|v|d|g|c|h|cr|sr|room|answer|answer\.creator|answer\.series)\.(\w+)", script))
         used -= {"length", "find", "map", "includes"}
         served = {"now", "groups", "creators", "cast", "history", "group_names", "youtube", "state",
                   "channel", "online", "switch", "group", "name", "n", "title", "channels", "id",
                   "site", "at", "since", "left", "total", "ok", "error", "creator",
                   "video", "position", "duration", "paused", "started", "moving",
-                  "device", "volume", "brightness", "steps", "pet", "audio_only"}
+                  "device", "volume", "brightness", "steps", "pet", "audio_only",
+                  "series", "room", "fits", "episode"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

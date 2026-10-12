@@ -23,6 +23,17 @@ MAX_ANSWER_BYTES = 2 * 1024 * 1024
 
 _URL = re.compile(r"(?:https?://)?[A-Za-z0-9.-]+(?:/[^\s]*)?")
 _BVID = re.compile(r"^BV[0-9A-Za-z]{10}$")
+# 番剧链接：/bangumi/play/ss2307、/bangumi/play/ep52309、/bangumi/media/md2307。
+_BANGUMI = re.compile(r"^(ss|ep|md)(\d{1,12})$")
+# 剧集里一集的 id：番剧是「ep<集 id>/<cid>」，多集视频和合集是「<BV 号>/<cid>」。
+_EPISODE = re.compile(r"^(ep\d{1,12}|BV[0-9A-Za-z]{10})/(\d{1,15})$")
+# 从视频标题里猜剧名时去掉的东西：括号里的说明、「全 13 集」「1-125」「1987」之类。
+_NAME_NOISE = re.compile(r"【[^】]*】|\[[^\]]*\]|（[^）]*）|\([^)]*\)|《|》|『[^』]*』"
+                         r"|全\s*\d+\s*[集话]|\d+\s*[集话]全?|\d+\s*全集|\d+\s*-\s*\d+"
+                         r"|全集|合集|完整版|超清|高清|国语|台配|中字|\d+P|4K|修复|(?:19|20)\d\d",
+                         re.IGNORECASE)
+# 开头括号里是这些说明时不是剧名：「【4K/国产动画】」「【480P/美国/动画】」。
+_NAME_TAGS = ("动画", "国产", "上美", "字幕", "/")
 
 
 class SourceError(RuntimeError):
@@ -74,6 +85,40 @@ def parse_video_link(text: str) -> str | None:
     return None
 
 
+def parse_series_link(text: str) -> str | None:
+    """剧集链接 → 来源：番剧是「ss<季 id>」「ep<集 id>」「md<作品 id>」，多集视频或合集是 BV 号。"""
+    for url in _urls(text):
+        parts = [p for p in url.path.split("/") if p]
+        if url.hostname not in ("www.bilibili.com", "bilibili.com", "m.bilibili.com"):
+            continue
+        if len(parts) >= 3 and parts[0] == "bangumi" and parts[1] in ("play", "media") \
+                and _BANGUMI.match(parts[2]):
+            return parts[2]
+        if len(parts) >= 2 and parts[0] == "video" and _BVID.match(parts[1]):
+            return parts[1]
+    return None
+
+
+def _bare_name(text: str) -> str:
+    name = _NAME_NOISE.sub(" ", text)
+    name = re.split(r"[|｜/]", name)[0]
+    return " ".join(name.replace("_", " ").split()).strip(" -—:：·,，")
+
+
+def series_name(title: str) -> str:
+    """多集视频的标题常是「【4K修复】阿凡提的故事 (1979) 14集全【上美】」，取出剧名。
+
+    「【舒克和贝塔】4K修复全13集」「【数码宝贝 第一季】全54集」这种，剧名在开头的括号里。
+    """
+    title = (title or "").strip()
+    bracket = re.match(r"\s*【([^】]+)】", title)
+    if bracket and not any(tag in bracket.group(1) for tag in _NAME_TAGS):
+        name = _bare_name(bracket.group(1))
+        if len(name) >= 2:
+            return name
+    return _bare_name(title) or title
+
+
 def short_link(text: str) -> str | None:
     """App 分享出来的 b23.tv 短链。"""
     for url in _urls(text):
@@ -118,7 +163,8 @@ class Bilibili:
             self._cookie = ""
             raise BilibiliError(f"{path}: code={answer.get('code')} {answer.get('message', '')}",
                                 permanent=True)
-        return answer.get("data") or {}
+        # 番剧（pgc）接口的内容在 result 里，其余在 data 里。
+        return answer.get("data") or answer.get("result") or {}
 
     def uploads(self, mid: str) -> list[Video]:
         data = self._call("/x/space/arc/list", mid=mid, ps=LIST_SIZE, pn=1)
@@ -138,6 +184,9 @@ class Bilibili:
         return name, self.uploads(mid)
 
     def media_url(self, bvid: str) -> str:
+        episode = _EPISODE.match(bvid)
+        if episode:
+            return self._episode_url(episode.group(1), episode.group(2))
         view = self._call("/x/web-interface/view", bvid=bvid)
         cid = view.get("cid")
         if not cid:
@@ -148,6 +197,78 @@ class Bilibili:
         if not durl or not durl[0].get("url"):
             raise BilibiliError(f"{bvid}: 没有可播放的地址", permanent=True)
         return durl[0]["url"]
+
+    def _episode_url(self, part: str, cid: str) -> str:
+        if part.startswith("ep"):
+            play = self._call("/pgc/player/web/playurl", ep_id=part[2:], cid=cid, qn=16, fnval=1)
+            # 会员集在没登录时只给几分钟试看。
+            if play.get("is_preview"):
+                raise BilibiliError(f"{part}: 只能试看（需要会员）", permanent=True)
+        else:
+            play = self._call("/x/player/playurl", bvid=part, cid=cid, qn=16, fnval=1,
+                              platform="html5")
+        durl = play.get("durl") or []
+        if not durl or not durl[0].get("url"):
+            raise BilibiliError(f"{part}/{cid}: 没有可播放的地址", permanent=True)
+        return durl[0]["url"]
+
+    # ---- 剧集 ----
+
+    def series_id(self, text: str) -> str | None:
+        """剧集链接 → 来源（番剧统一成「ss<季 id>」，多集视频或合集是 BV 号）。"""
+        source = parse_series_link(self._expand(text))
+        if source is None or source.startswith(("ss", "BV")):
+            return source
+        if source.startswith("ep"):
+            season = self._call("/pgc/view/web/season", ep_id=source[2:])
+        else:
+            season = self._call("/pgc/review/user", media_id=source[2:]).get("media") or {}
+        if not season.get("season_id"):
+            raise BilibiliError(f"{source}: 找不到这部番剧", permanent=True)
+        return f"ss{season['season_id']}"
+
+    def series(self, source: str) -> tuple[str, list[Video]]:
+        """(剧名, 按顺序的各集)。番剧只留不要会员的集。"""
+        try:
+            if source.startswith("ss"):
+                return self._season(source[2:])
+            return self._multipart(source)
+        except (KeyError, TypeError, ValueError) as error:
+            raise BilibiliError(f"{source}: 剧集信息格式不对：{error}") from None
+
+    def _season(self, season_id: str) -> tuple[str, list[Video]]:
+        season = self._call("/pgc/view/web/season", season_id=season_id)
+        name = str(season.get("season_title") or season.get("title") or "")
+        episodes = []
+        for e in season.get("episodes") or []:
+            # status 2 是免费；13 是会员专享。
+            if e.get("status") != 2 or "会员" in str(e.get("badge") or ""):
+                continue
+            title = str(e.get("show_title") or "") or f"第{e.get('title')}集 {e.get('long_title') or ''}"
+            episodes.append(Video(bvid=f"ep{int(e['id'])}/{int(e['cid'])}", title=title.strip(),
+                                  duration=int(e.get("duration") or 0) // 1000, pubdate=0))
+        if not episodes:
+            raise BilibiliError(f"ss{season_id}: 没有免费的集（都要会员）", permanent=True)
+        return name, episodes
+
+    def _multipart(self, bvid: str) -> tuple[str, list[Video]]:
+        view = self._call("/x/web-interface/view", bvid=bvid)
+        pages = view.get("pages") or []
+        if len(pages) > 1:
+            return series_name(str(view.get("title", ""))), [
+                Video(bvid=f"{bvid}/{int(p['cid'])}",
+                      title=str(p.get("part") or f"P{p.get('page')}"),
+                      duration=int(p.get("duration") or 0), pubdate=0)
+                for p in pages]
+        # 一集一个视频、由 UP 主编成「合集」的。
+        season = view.get("ugc_season") or {}
+        episodes = [Video(bvid=f"{e['bvid']}/{int(e['cid'])}", title=str(e.get("title", "")),
+                          duration=int((e.get("arc") or {}).get("duration") or 0), pubdate=0)
+                    for section in season.get("sections") or []
+                    for e in section.get("episodes") or []]
+        if len(episodes) > 1:
+            return str(season.get("title") or series_name(str(view.get("title", "")))), episodes
+        raise BilibiliError(f"{bvid}: 只有一集，不是剧集", permanent=True)
 
     def _expand(self, text: str) -> str:
         """App 分享的 b23.tv 短链先换成真实地址。"""

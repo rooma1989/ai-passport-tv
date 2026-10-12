@@ -26,10 +26,11 @@ from .timeline import (BASIS_COMMON_DECODE, ContentTimeline,
                        VERDICT_PLACED)
 from .media import AUDIO_CHUNK_MS, FPS, default_palette
 from .protocol import AUDIO_BYTES, AUDIO_PCM_BYTES, HEADER
-# 控制包（CONFIG）字节上限，与固件 main/av_protocol.h 同步修改。
-TV_CONTROL_MAX = 7168
-# 频道数与频道 id 长度上限，与固件同步；设备会拒绝更长的列表，须在服务端先行限制。
-TV_CHANNEL_MAX = 128
+# 控制包（CONFIG）字节上限与频道数上限，与固件 main/av_protocol.h 同步修改（定义在 channel_groups，
+# 中转加台时也要用）；设备会拒绝更长的列表，须在服务端先行限制。
+TV_CONTROL_MAX = channel_groups.CONFIG_MAX
+TV_CHANNEL_MAX = channel_groups.CHANNEL_MAX
+# 频道 id 长度上限，与固件同步。
 TV_CHANNEL_ID_MAX = 16
 # 频道表单行的字节上限，仅用于限定 channels.txt 的读取量；留足余量以容纳四字段形式。
 MAX_CHANNEL_LINE_BYTES = 512
@@ -146,10 +147,7 @@ def parse_channels(text: str) -> tuple[dict[str, str], dict[str, str]]:
         raise ValueError("channel table contains no channels")
     # 数量合规但列表超过 CONFIG 包上限时，设备收不到任何频道（JSON 转义后每个汉字占 6 字节）；
     # 与数量超限一样只告警，不拒绝启动。
-    packet = len(json.dumps({"groups": list(channel_groups.GROUPS),
-                             "channel_list": [{"id": k, "name": labels[k], "g": 0}
-                                              for k in channels]},
-                            ensure_ascii=True, separators=(",", ":")).encode("ascii"))
+    packet = channel_groups.config_bytes((k, labels[k]) for k in channels)
     if packet > TV_CONTROL_MAX or dropped:
         total = len(channels) + dropped
         # 数量超限与名称过长分别提示，避免误导操作者。

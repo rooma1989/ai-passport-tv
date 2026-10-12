@@ -246,13 +246,23 @@
       </div>
       <ol class="rows" id="creatorList"></ol>
       <div class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播。</div>
+      <div class="mast"><h1>剧集</h1><span class="tag" id="seriesCount"></span></div>
+      <div class="box">
+        <input id="seriesLink" placeholder="番剧页链接，或多集视频 / 合集的链接">
+        <div class="inline" style="margin-top:8px">
+          <input id="seriesName" placeholder="台名（可不填，自动取剧名）" maxlength="20">
+          <button class="go" id="addSeries">添加</button>
+        </div>
+      </div>
+      <ol class="rows" id="seriesList"></ol>
+      <div class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。番剧只播免费的集。</div>
       <div class="foot"><a href="/TV/" target="_blank" rel="noreferrer">使用说明</a><button id="newcode">换一个扫码码</button></div>
     </section>
   </main>
   <nav>
     <button class="on" data-page="remote">遥控</button>
     <button data-page="cast">投屏</button>
-    <button data-page="creators">UP 主</button>
+    <button data-page="creators">订阅</button>
   </nav>
 </div>
 <div class="toast" id="toast"></div>
@@ -522,6 +532,28 @@ function renderCreators() {
   }
 }
 
+function renderSeries() {
+  const list = $("seriesList");
+  list.innerHTML = "";
+  const room = data.room || {};
+  $("seriesCount").textContent = (data.series || []).length + " 部" + (room.fits === false ? " · 列表已满" : "");
+  if (!(data.series || []).length) { list.appendChild(el("li", "empty", "还没有添加剧集")); return; }
+  for (const sr of data.series) {
+    const li = el("li");
+    const row = el("div", "row");
+    const remove = el("button", "remove", "删除");
+    remove.onclick = async () => {
+      if (!confirm("删除「" + sr.name + "」这个台？看到哪一集也会忘掉。")) return;
+      const answer = await call("DELETE", "api/series/" + sr.id);
+      if (!answer.ok) toast(answer.error, true);
+      refresh();
+    };
+    row.append(el("span", "t", sr.name), el("span", "src", "第 " + sr.episode + " / " + sr.total + " 集"), remove);
+    li.appendChild(row);
+    list.appendChild(li);
+  }
+}
+
 // 滑条：小智报告的音量和亮度；拖动时不被刷新覆盖。
 let adjusting_dial = "";
 function renderDials() {
@@ -618,6 +650,7 @@ function render() {
   renderChannels();
   renderHistory();
   renderCreators();
+  renderSeries();
 }
 
 async function refresh() {
@@ -700,6 +733,15 @@ $("add").onclick = () => busy($("add"), async () => {
   const answer = await call("POST", "api/creators", { url: $("creator").value });
   if (answer.ok) { $("creator").value = ""; toast("已添加「" + answer.creator.name + "」"); refresh(); }
   else toast(answer.error, true);
+});
+
+$("addSeries").onclick = () => busy($("addSeries"), async () => {
+  toast("正在取集数…");
+  const answer = await call("POST", "api/series", { url: $("seriesLink").value, name: $("seriesName").value });
+  if (answer.ok) {
+    $("seriesLink").value = ""; $("seriesName").value = "";
+    toast("已添加「" + answer.series.name + "」，共 " + answer.series.total + " 集"); refresh();
+  } else toast(answer.error, true);
 });
 
 $("newcode").onclick = async () => {

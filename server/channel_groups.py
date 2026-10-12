@@ -14,6 +14,12 @@ CAST = "我的投屏"
 CREATORS = "UP 主"
 GROUPS = (CAST, CREATORS, "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "其他")
 OTHER = "其他"
+# 剧集台（中转的 sr01…）默认放的组；和直播台一样可以在手机上改。
+SERIES = "动画影视"
+# 设备的频道列表放在一个 CONFIG 包里：包长和台数的上限，与固件 main/av_protocol.h 的
+# AV_CONTROL_MAX、AV_CHANNEL_MAX 一致。中转加台前也按这个算，免得列表超长、设备一个台都收不到。
+CONFIG_MAX = 7168
+CHANNEL_MAX = 128
 
 # 港澳台电视台的名字片段；先于「卫视」判断，香港卫视因此归这里。
 _HK_TW = ("香港", "凤凰", "TVBS", "东森", "华视", "民视", "三立", "中视", "中天", "台视", "耀才")
@@ -28,6 +34,8 @@ def classify(channel_id: str, name: str) -> str:
         return CAST
     if channel_id.startswith("up") and channel_id[2:].isdigit():
         return CREATORS
+    if channel_id.startswith("sr") and channel_id[2:].isdigit():
+        return SERIES
     if name.upper().startswith("CCTV"):
         return "央视"
     if any(part in name for part in _HK_TW):
@@ -70,6 +78,13 @@ def save_overrides(path: Path, overrides: dict[str, str]) -> None:
     tmp.write_text(json.dumps(overrides, ensure_ascii=False, indent=1), encoding="utf-8")
     os.chmod(tmp, 0o644)
     os.replace(tmp, path)
+
+
+def config_bytes(names) -> int:
+    """频道列表下发给设备时 CONFIG 包大约的字节数（JSON 转义后每个汉字占 6 字节）。"""
+    return len(json.dumps({"groups": list(GROUPS),
+                           "channel_list": [{"id": k, "name": v, "g": 0} for k, v in names]},
+                          ensure_ascii=True, separators=(",", ":")).encode("ascii"))
 
 
 def read_table(path: Path) -> list[tuple[str, str]]:

@@ -1,4 +1,7 @@
-"""中转的持久状态：关注的 UP 主、看过的视频、播放进度。
+"""中转的持久状态：关注的 UP 主和剧集、看过的视频、播放进度。
+
+剧集（番剧、多集视频、合集）和 UP 主共用一种台：UP 主的视频新的在前，剧集按集数顺序排，
+「下一个没看过的」因此对 UP 主是最新的，对剧集是下一集。
 
 下一个视频只由状态决定，不看请求次数：电视服务每次起播还会另开一个短连接采样调色板，
 按请求计数会让每次换台都跳过一个视频。
@@ -16,12 +19,21 @@ from pathlib import Path
 
 # 每个 UP 主只看最近这么多个投稿。
 LIST_SIZE = 20
+# 一部剧最多留这么多集（蜡笔小新近 900 集）。
+SERIES_SIZE = 1000
 # 投稿列表的缓存时间；B 站对列表接口限流。
 LIST_MAX_AGE_S = 30 * 60
+# 剧集的集数表很少变，半天看一次有没有更新。
+SERIES_MAX_AGE_S = 12 * 3600
 # 续播时往回退几秒，接上中断前的内容。
 RESUME_BACK_S = 10
 # 频道名会进设备的 CONFIG 包，UP 主数量受包长限制。
 MAX_CREATORS = 12
+# 剧集台的个数上限；实际多半先碰到设备频道列表的字节上限（见 channel_groups.CONFIG_MAX）。
+MAX_SERIES = 40
+# 台的种类：id 前缀、个数上限、保留的视频数、列表缓存时间。
+KINDS = {"up": ("up", MAX_CREATORS, LIST_SIZE, LIST_MAX_AGE_S),
+         "series": ("sr", MAX_SERIES, SERIES_SIZE, SERIES_MAX_AGE_S)}
 # 投屏历史条数。
 HISTORY_SIZE = 50
 # 手机登录一次管多久，以及最多同时记住几台手机。
@@ -52,6 +64,8 @@ class Creator:
     fetched_at: float = 0.0
     watched: list[str] = field(default_factory=list)
     positions: dict[str, float] = field(default_factory=dict)
+    # "up" 或 "series"；旧状态文件里没有这个字段，都是 UP 主。
+    kind: str = "up"
 
 
 def _creator_from(raw: dict) -> Creator:
@@ -112,18 +126,22 @@ class State:
             return next((c for c in self.creators if c.id == cid), None)
 
     def add(self, site: str, source: str, name: str, videos: list[Video],
-            now: float) -> Creator:
+            now: float, kind: str = "up") -> Creator:
+        prefix, most, size, _ = KINDS[kind]
         with self.lock:
-            if any(c.site == site and c.source == source for c in self.creators):
-                raise ValueError("这个 UP 主已经添加过了")
+            if any(c.site == site and c.source == source and c.kind == kind for c in self.creators):
+                raise ValueError("这个 UP 主已经添加过了" if kind == "up" else "这部剧已经添加过了")
             used = {c.id for c in self.creators}
-            free = [f"up{n:02d}" for n in range(1, MAX_CREATORS + 1) if f"up{n:02d}" not in used]
+            free = [f"{prefix}{n:02d}" for n in range(1, most + 1)
+                    if f"{prefix}{n:02d}" not in used]
             if not free:
-                raise ValueError(f"最多只能添加 {MAX_CREATORS} 个 UP 主")
+                raise ValueError(f"最多只能添加 {most} 个 UP 主" if kind == "up"
+                                 else f"最多只能添加 {most} 部剧")
             creator = Creator(id=free[0], site=site, source=source, name=name,
-                              videos=list(videos[:LIST_SIZE]), fetched_at=now)
+                              videos=list(videos[:size]), fetched_at=now, kind=kind)
             self.creators.append(creator)
-            self.creators.sort(key=lambda c: c.id)
+            # UP 主在前，剧集在后，各自按编号排。
+            self.creators.sort(key=lambda c: (c.kind != "up", c.id))
             return creator
 
     def remove(self, cid: str) -> bool:
@@ -137,14 +155,14 @@ class State:
             creator = self.get(cid)
             if creator is None:
                 return
-            creator.videos = list(videos[:LIST_SIZE])
+            creator.videos = list(videos[:KINDS[creator.kind][2]])
             creator.fetched_at = now
             listed = {v.bvid for v in creator.videos}
             creator.watched = [b for b in creator.watched if b in listed]
             creator.positions = {b: p for b, p in creator.positions.items() if b in listed}
 
     def next_video(self, cid: str) -> tuple[Video, float] | None:
-        """有进度的视频先续播；否则最新的未看视频；都看过就清掉标记从最新的开始。"""
+        """有进度的视频先续播；否则列表里第一个没看过的；都看过就清掉标记从头开始。"""
         with self.lock:
             creator = self.get(cid)
             if creator is None or not creator.videos:
@@ -157,6 +175,18 @@ class State:
                     return video, 0.0
             creator.watched = []
             return creator.videos[0], 0.0
+
+    def episode(self, cid: str) -> int:
+        """剧集台下一次播第几集（从 1 数），只看不改；都看完了算第 1 集。"""
+        with self.lock:
+            creator = self.get(cid)
+            if creator is None or not creator.videos:
+                return 0
+            ids = [v.bvid for v in creator.videos]
+            for n, bvid in enumerate(ids):
+                if bvid in creator.positions:
+                    return n + 1
+            return next((n + 1 for n, b in enumerate(ids) if b not in creator.watched), 1)
 
     def save_position(self, cid: str, bvid: str, seconds: float) -> None:
         with self.lock:

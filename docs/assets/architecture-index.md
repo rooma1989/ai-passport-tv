@@ -88,7 +88,7 @@ Supporting modules, each already host-testable and already covered by
 | [`server/netident.py`](../../server/netident.py) | Works out this computer's own reachable address to print for the device. |
 | [`server/usb_link.py`](../../server/usb_link.py) | Socket-shaped adapter over the USB-serial transport (measurement builds only). |
 | [`server/live_sender.py`](../../server/live_sender.py) | Opt-in v2 sender (`TV_LIVE_ENGINE=v2`); see [`docs/development/live-sender-v2.md`](../development/live-sender-v2.md) for scope/limits before touching it. |
-| [`server/relay/`](../../server/relay/web.py) | Video relay for creator channels: Bilibili client, watched/position state, generated channel table, MPEG-TS streams and the key-protected page. Separate service (`python3 -m server.relay`). |
+| [`server/relay/`](../../server/relay/web.py) | Video relay for creator and series channels: Bilibili client, watched/position state, generated channel table, MPEG-TS streams and the key-protected page. Separate service (`python3 -m server.relay`). |
 | [`server/channel_groups.py`](../../server/channel_groups.py) | Channel groups: classification by name, the phone's overrides, and the CONFIG group list. |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | What is playing (for the phone) and turning the relay's events into SWITCH packets or a channel at HELLO. |
 | [`server/fault.py`](../../server/fault.py) | Fault-injection harness for controlled device experiments (B02-R); not part of the shipped server path. |

@@ -5,6 +5,7 @@ before: each channel start also opens a short connection to sample the palette,
 so counting requests would skip a video every time the channel is chosen.
 """
 
+import json
 import os
 import stat
 import sys
@@ -137,6 +138,65 @@ class StateTests(unittest.TestCase):
     def test_old_file_without_cast_loads(self):
         self.path.write_text('{"creators": []}')
         self.assertIsNone(State(self.path).cast)
+
+
+class SeriesStateTests(unittest.TestCase):
+    """A series is a channel whose list is the episodes in order."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "relay-state.json"
+        self.state = State(self.path)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def episodes(self, count):
+        return [Video(bvid=f"ep{n}/{n}", title=f"第{n}集", duration=600, pubdate=0)
+                for n in range(1, count + 1)]
+
+    def add(self, source="ss1", count=3):
+        return self.state.add("bilibili", source, "海尔兄弟", self.episodes(count), now=0.0,
+                              kind="series")
+
+    def test_own_ids_after_creators(self):
+        self.assertEqual(self.add().id, "sr01")
+        self.state.add("bilibili", "1", "UP", videos("a"), now=0.0)
+        self.assertEqual([c.id for c in self.state.creators], ["up01", "sr01"])
+        # The same source may be an UP channel and a series without clashing.
+        self.assertEqual(self.add("ss2").id, "sr02")
+        with self.assertRaises(ValueError):
+            self.add("ss1")
+
+    def test_long_series_kept_whole(self):
+        cid = self.add(count=relay_state.LIST_SIZE * 10).id
+        self.assertEqual(len(self.state.get(cid).videos), relay_state.LIST_SIZE * 10)
+
+    def test_plays_in_order_and_resumes(self):
+        cid = self.add().id
+        self.assertEqual(self.state.episode(cid), 1)
+        self.state.mark_watched(cid, "ep1/1")
+        self.assertEqual(self.state.next_video(cid)[0].bvid, "ep2/2")
+        self.state.save_position(cid, "ep2/2", 300.0)
+        self.assertEqual(self.state.next_video(cid), (self.state.get(cid).videos[1], 290.0))
+        self.assertEqual(self.state.episode(cid), 2)
+        self.state.mark_watched(cid, "ep2/2")
+        self.state.mark_watched(cid, "ep3/3")
+        self.assertEqual(self.state.episode(cid), 1)
+        self.assertEqual(self.state.next_video(cid)[0].bvid, "ep1/1")
+
+    def test_kind_persisted_and_old_files_are_creators(self):
+        self.add()
+        self.state.add("bilibili", "1", "UP", videos("a"), now=0.0)
+        self.state.save()
+        again = State(self.path)
+        self.assertEqual([(c.id, c.kind) for c in again.creators], [("up01", "up"), ("sr01", "series")])
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        for c in data["creators"]:
+            del c["kind"]
+        data["creators"] = [c for c in data["creators"] if c["id"] == "up01"]
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(State(self.path).creators[0].kind, "up")
 
 
 class HistoryAndSessionTests(unittest.TestCase):

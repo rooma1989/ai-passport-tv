@@ -16,7 +16,12 @@ NAME_COLUMNS = 20
 
 def label(creator) -> str:
     """设备频道列表里显示的名字。"""
-    name = " ".join(creator.name.replace("|", " ").split())
+    return label_text(creator.name) or creator.id
+
+
+def label_text(name: str) -> str:
+    """名字截到 NAME_COLUMNS 格；去掉会破坏表格式的竖线。"""
+    name = " ".join(name.replace("|", " ").split())
     kept, used = [], 0
     for char in name:
         width = 1 if ord(char) < 128 else 2
@@ -24,7 +29,7 @@ def label(creator) -> str:
             break
         kept.append(char)
         used += width
-    return "".join(kept).strip() or creator.id
+    return "".join(kept).strip()
 
 
 def render(creators) -> str:

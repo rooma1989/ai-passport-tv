@@ -20,7 +20,7 @@ from pathlib import Path
 from .. import channel_groups, now_playing
 from . import events, stream, table, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
-from .state import LIST_MAX_AGE_S, RESUME_BACK_S, SESSION_S, State, Video
+from .state import KINDS, RESUME_BACK_S, SESSION_S, State, Video
 
 # 一次请求里最多跳过几个放不了的视频，之后返回 503，让电视服务稍后再来。
 MAX_SKIPS = 3
@@ -28,8 +28,8 @@ MAX_SKIPS = 3
 MAX_QUICK_FAILURES = 3
 QUICK_FAILURE_S = 5.0
 MAX_BODY_BYTES = 4096
-_CHANNEL = re.compile(r"^/ch/(up\d\d|cast)$")
-_CREATOR = re.compile(r"^/api/creators/(up\d\d)$")
+_CHANNEL = re.compile(r"^/ch/(up\d\d|sr\d\d|cast)$")
+_CREATOR = re.compile(r"^/api/(?:creators|series)/(up\d\d|sr\d\d)$")
 _HISTORY = re.compile(r"^/api/history/(bilibili|youtube)/([A-Za-z0-9_-]{1,32})$")
 _CODE = re.compile(r"^/r/([A-Za-z2-7]{20})$")
 COOKIE = "tvs"
@@ -41,6 +41,15 @@ SEEK_BRIDGE_S = 15.0
 PAUSE_MAX_S = 30 * 60
 # 最多每分钟问一次 YouTube 节点的健康状态。
 YOUTUBE_HEALTH_S = 60
+# CONFIG 包里除频道列表外还有会话号、遥控地址等，加台时给它们留的字节数。
+CONFIG_SPARE_BYTES = 512
+# 剧集台的名字最多这么多个字符；手机上可以自己起名。
+SERIES_NAME_MAX = 20
+
+
+def _relay_channel(cid: str) -> bool:
+    """中转推流的台：投屏、UP 主、剧集。"""
+    return cid == table.CAST_ID or (cid[:2] in ("up", "sr") and cid[2:].isdigit())
 
 
 class Relay:
@@ -92,23 +101,30 @@ class Relay:
         with self.state.lock:
             text = table.render(self.state.creators)
         if table.write_if_changed(self.channels_out, text):
-            self.log(f"频道表已更新：{len(self.state.creators)} 个 UP 主")
+            self.log(f"频道表已更新：{len(self.state.creators)} 个台")
 
     # ---- 播放 ----
 
+    def _stale(self, creator) -> bool:
+        return creator is not None and \
+            self.clock() - creator.fetched_at >= KINDS[creator.kind][3]
+
     def refresh_if_stale(self, cid: str) -> None:
-        creator = self.state.get(cid)
-        if creator is None or self.clock() - creator.fetched_at < LIST_MAX_AGE_S:
+        if not self._stale(self.state.get(cid)):
             return
         with self._refresh_lock:
             creator = self.state.get(cid)
-            if creator is None or self.clock() - creator.fetched_at < LIST_MAX_AGE_S:
+            if not self._stale(creator):
                 return
             try:
-                videos = self._client(creator.site).uploads(creator.source)
+                client = self._client(creator.site)
+                if creator.kind == "series":
+                    videos = client.series(creator.source)[1]
+                else:
+                    videos = client.uploads(creator.source)
             except SourceError as error:
                 # 拿不到就继续用缓存的列表。
-                self.log(f"{cid} 刷新投稿列表失败，用缓存：{error}")
+                self.log(f"{cid} 刷新视频列表失败，用缓存：{error}")
                 return
             if videos:
                 self.state.set_videos(cid, videos, self.clock())
@@ -256,10 +272,10 @@ class Relay:
     # ---- 播放控制 ----
 
     def _playing_entry(self):
-        """(台, 正在推的流)；只对投屏台和 UP 主台有效。"""
+        """(台, 正在推的流)；只对中转推流的台（投屏、UP 主、剧集）有效。"""
         playing = now_playing.read(self.now_playing_in, self.clock())
         cid = playing["channel"]
-        if not playing["online"] or not (cid == table.CAST_ID or cid.startswith("up")):
+        if not playing["online"] or not _relay_channel(cid):
             return cid, None
         with self._active_lock:
             return cid, self._active.get(cid)
@@ -413,7 +429,7 @@ class Relay:
         return channel_groups.load_overrides(self.groups_out)
 
     def channel_rows(self) -> list[tuple[str, str]]:
-        """(id, 显示名)：投屏台、UP 主，再接直播频道表。"""
+        """(id, 显示名)：投屏台、UP 主、剧集，再接直播频道表。"""
         with self.state.lock:
             rows = [(table.CAST_ID, table.CAST_LABEL)]
             rows += [(c.id, table.label(c)) for c in self.state.creators]
@@ -436,7 +452,7 @@ class Relay:
         title = ""
         if cid == table.CAST_ID and self.state.cast is not None:
             title = self.state.cast.title
-        elif cid.startswith("up"):
+        elif _relay_channel(cid):
             title = self._titles.get(cid, "")
         return {"channel": cid, "online": playing["online"], "switch": playing["switch"],
                 "group": found[0] if found else "", "name": found[1]["name"] if found else "",
@@ -541,12 +557,14 @@ class Relay:
         with self.state.lock:
             creators = [{"id": c.id, "name": c.name, "site": c.site,
                          "left": sum(v.bvid not in c.watched for v in c.videos),
-                         "total": len(c.videos)} for c in self.state.creators]
+                         "total": len(c.videos)} for c in self.state.creators if c.kind == "up"]
+            series = [{"id": c.id, "name": c.name, "episode": self.state.episode(c.id),
+                       "total": len(c.videos)} for c in self.state.creators if c.kind == "series"]
             cast = ({"title": self.state.cast.title, "done": self.state.cast_done}
                     if self.state.cast is not None else None)
             history = [dict(h) for h in self.state.history]
         summary = {"now": self.now(groups), "groups": groups, "creators": creators,
-                   "cast": cast, "history": history,
+                   "series": series, "room": self.room(), "cast": cast, "history": history,
                    "group_names": list(channel_groups.GROUPS[2:])}
         if self.clients.get("youtube") is not None:
             summary["youtube"] = {"state": self.youtube_state()}
@@ -575,6 +593,48 @@ class Relay:
         self.write_table()
         self.log(f"添加 UP 主 {creator.id} {name}（mid {mid}，{len(videos)} 个投稿）")
         return {"ok": True, "creator": {"id": creator.id, "name": name}}
+
+    def room(self, extra: str = "") -> dict:
+        """设备频道列表还剩多少：字节和台数。extra 是准备加的台名。"""
+        rows = self.channel_rows() + ([("sr00", extra)] if extra else [])
+        used = channel_groups.config_bytes(rows) + CONFIG_SPARE_BYTES
+        return {"bytes": max(0, channel_groups.CONFIG_MAX - used),
+                "channels": max(0, channel_groups.CHANNEL_MAX - len(rows)),
+                "fits": used <= channel_groups.CONFIG_MAX and len(rows) <= channel_groups.CHANNEL_MAX}
+
+    def add_series(self, text: str, name: str = "") -> dict:
+        """番剧、多集视频或合集成为一个台，按集数顺序播，记住看到哪一集。"""
+        text, name = (text or "").strip(), " ".join((name or "").split())[:SERIES_NAME_MAX]
+        if not text:
+            return {"ok": False, "error": "请先粘贴链接"}
+        if _site_of(text) != "bilibili":
+            return {"ok": False, "error": "剧集暂时只支持 B 站"}
+        client = self.clients["bilibili"]
+        try:
+            source = client.series_id(text)
+            if source is None:
+                return {"ok": False, "error": "看不懂这个链接。请粘贴番剧页链接，或多集视频（合集）的链接"}
+            title, episodes = client.series(source)
+        except SourceError as error:
+            self.log(f"添加剧集失败：{error}")
+            if not error.permanent:
+                return {"ok": False, "error": "B 站暂时连不上或拒绝了请求，请稍后再试"}
+            # 「只有一集」「都要会员」之类原样告诉用户；接口的错误码换成人话。
+            reason = str(error).split(": ", 1)[-1]
+            if reason.startswith("code="):
+                reason = "B 站说这个放不了（可能已删除或需要会员）"
+            return {"ok": False, "error": reason}
+        name = name or title or source
+        if not self.room(table.label_text(name))["fits"]:
+            return {"ok": False, "error": "小电视的频道列表满了，先删掉几个台再加"}
+        try:
+            creator = self.state.add("bilibili", source, name, episodes, self.clock(), kind="series")
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        self.state.save()
+        self.write_table()
+        self.log(f"添加剧集 {creator.id} {name}（{source}，{len(creator.videos)} 集）")
+        return {"ok": True, "series": {"id": creator.id, "name": name, "total": len(creator.videos)}}
 
     def cast(self, text: str) -> dict:
         text = (text or "").strip()
@@ -621,10 +681,10 @@ class Relay:
 
     def remove_creator(self, cid: str) -> dict:
         if not self.state.remove(cid):
-            return {"ok": False, "error": "没有这个 UP 主"}
+            return {"ok": False, "error": "没有这个台"}
         self.state.save()
         self.write_table()
-        self.log(f"删除 UP 主 {cid}")
+        self.log(f"删除 {cid}")
         return {"ok": True}
 
 
@@ -819,6 +879,13 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/history/play":
                 self._json(relay.replay(str(body.get("site") or ""), str(body.get("id") or "")))
+                return
+            if path == "/api/series":
+                url, name = body.get("url"), body.get("name") or ""
+                if not isinstance(url, str) or not isinstance(name, str):
+                    self._json({"ok": False, "error": "请求格式不对"}, 400)
+                    return
+                self._json(relay.add_series(url, name))
                 return
             if path in ("/api/creators", "/api/cast"):
                 url = body.get("url")
