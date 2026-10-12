@@ -186,6 +186,7 @@
     </div>
     <section class="page on" id="remote">
       <div class="mast"><h1>小智电视</h1><button id="adjust">调整分组</button></div>
+      <div class="seg" id="devs" hidden></div>
       <div class="screen off" id="screen">
         <div class="top"><span class="ch" id="ch">— —</span><span class="grp" id="grp"></span></div>
         <div class="nm" id="nm">正在连接…</div>
@@ -248,14 +249,14 @@
       <div class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播。</div>
       <div class="mast"><h1>剧集</h1><span class="tag" id="seriesCount"></span></div>
       <div class="box">
-        <input id="seriesLink" placeholder="番剧页链接，或多集视频 / 合集的链接">
+        <input id="seriesLink" placeholder="B 站番剧 / 多集视频 / 合集，或 YouTube 播放列表链接">
         <div class="inline" style="margin-top:8px">
           <input id="seriesName" placeholder="台名（可不填，自动取剧名）" maxlength="20">
           <button class="go" id="addSeries">添加</button>
         </div>
       </div>
       <ol class="rows" id="seriesList"></ol>
-      <div class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。番剧只播免费的集。</div>
+      <div class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。番剧只播免费的集；YouTube 每集第一次播要等 20～40 秒。</div>
       <div class="foot"><a href="/TV/" target="_blank" rel="noreferrer">使用说明</a><button id="newcode">换一个扫码码</button></div>
     </section>
   </main>
@@ -413,8 +414,36 @@ function renderScreen() {
     screen.className = "screen off";
     $("ch").textContent = "— —";
     $("grp").textContent = "";
-    $("nm").textContent = "小智没在线";
+    $("nm").textContent = devName() + "没在线";
     $("ti").textContent = "打开小电视后这里会显示正在播的台";
+  }
+}
+
+// 遥控的是哪台：设备名用在「××没在线」之类的提示里。
+function devName() {
+  const d = data && data.devices ? data.devices.find((x) => x.target) : null;
+  return d ? d.name : "小智";
+}
+
+// 不止一台设备时，顶上列出来：「自动」跟着最近换过台的那台，也可以点名遥控某一台。
+function renderDevices() {
+  const devs = $("devs");
+  const list = data.devices || [];
+  devs.hidden = list.length < 2;
+  devs.innerHTML = "";
+  if (list.length < 2) return;
+  const pick = async (id) => {
+    const answer = await call("POST", "api/target", { device: id });
+    if (!answer.ok) toast(answer.error, true);
+    refresh();
+  };
+  const auto = el("button", data.auto ? "on" : "", "自动");
+  auto.onclick = () => pick("");
+  devs.appendChild(auto);
+  for (const d of list) {
+    const button = el("button", !data.auto && d.target ? "on" : "", d.name + (d.online ? (data.auto && d.target ? " ●" : "") : " · 离线"));
+    button.onclick = () => pick(d.id);
+    devs.appendChild(button);
   }
 }
 
@@ -548,7 +577,7 @@ function renderSeries() {
       if (!answer.ok) toast(answer.error, true);
       refresh();
     };
-    row.append(el("span", "t", sr.name), el("span", "src", "第 " + sr.episode + " / " + sr.total + " 集"), remove);
+    row.append(el("span", "t", sr.name), el("span", "src", siteTag(sr.site) + " · 第 " + sr.episode + " / " + sr.total + " 集"), remove);
     li.appendChild(row);
     list.appendChild(li);
   }
@@ -591,7 +620,7 @@ function renderPets() {
   $("petkind").textContent = PETS[sel][2];
   const state = $("petstate");
   if (cur === null) {
-    state.className = ""; state.textContent = data.now.online ? "小电视的固件太旧，换不了宠物" : "小智没在线";
+    state.className = ""; state.textContent = data.now.online ? "小电视的固件太旧，换不了宠物" : devName() + "没在线";
   } else if (sel === cur) {
     state.className = "on"; state.textContent = "● 电视上正在用";
   } else {
@@ -634,7 +663,7 @@ function renderListen() {
   button.className = on ? "on" : "";
   button.textContent = on ? "开" : "关";
   $("listenNote").textContent = listenPending ? "切换中…"
-    : !known ? (d ? "固件太旧，用不了" : "小智没在线")
+    : !known ? (d ? "固件太旧，用不了" : devName() + "没在线")
     : on ? "只放声音，省流量也省电" : "只放声音，屏幕只显示宠物";
 }
 
@@ -643,6 +672,7 @@ function render() {
   renderPets();
   renderListen();
   renderNotice();
+  renderDevices();
   renderScreen();
   renderDials();
   renderPlayer();

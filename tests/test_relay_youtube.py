@@ -104,6 +104,29 @@ class ClientTests(unittest.TestCase):
             client.video("jNQXAC9IVRw")
         self.assertTrue(caught.exception.permanent)
 
+    def test_playlist_links(self):
+        for text in ["https://www.youtube.com/playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw",
+                     "https://m.youtube.com/watch?v=jNQXAC9IVRw&list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw&index=3",
+                     "看这个 https://youtube.com/playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw&si=x"]:
+            self.assertEqual(youtube.parse_playlist_link(text), "PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw", text)
+        for text in ["https://evil.cn/playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw",
+                     "https://www.youtube.com/playlist?list=--exec", "https://youtu.be/jNQXAC9IVRw",
+                     "https://www.youtube.com/watch?v=jNQXAC9IVRw"]:
+            self.assertIsNone(youtube.parse_playlist_link(text), text)
+
+    def test_playlist_series(self):
+        client = self.client({"/yt/playlist": {"name": "灌籃高手", "videos": [
+            {"id": "aaaaaaaaaaa", "title": "第1集", "duration": 1400},
+            {"id": "bbbbbbbbbbb", "title": "第2集", "duration": 1390}, {"id": "bad"}]}})
+        name, videos = client.series("PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw")
+        self.assertEqual(name, "灌籃高手")
+        self.assertEqual([(v.bvid, v.site) for v in videos], [("aaaaaaaaaaa", "youtube"), ("bbbbbbbbbbb", "youtube")])
+        self.assertEqual(self.calls, [("/yt/playlist", {"list": "PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw"})])
+        client = self.client({"/yt/playlist": {"name": "x", "videos": [{"id": "aaaaaaaaaaa"}]}})
+        with self.assertRaises(BilibiliError) as caught:
+            client.series("PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw")
+        self.assertTrue(caught.exception.permanent)
+
     def test_health(self):
         client = self.client({"/yt/health": {"state": "login", "at": 5.0, "version": "v"}})
         self.assertEqual(client.health()["state"], "login")

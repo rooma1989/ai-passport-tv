@@ -60,12 +60,23 @@ class Relay:
                  main_channels: Path | None = None, groups_out: Path | None = None,
                  now_playing_in: Path | None = None, remote_url_out: Path | None = None,
                  public_url: str = "",
+                 device_name: str = "小智", extra_devices=(),
                  log=print, clock=time.time, monotonic=time.monotonic,
                  starter=stream.start, pumper=stream.pump):
         self.state = state
         # 每个网站一个客户端；YouTube 只经 cstone 节点，没配置时为 None。
         self.clients = {"bilibili": client, "youtube": youtube}
         self.events_out = Path(events_out) if events_out is not None else None
+        # 遥控的设备：每台一个电视服务，各写各的「正在播放」、各读各的事件文件。
+        # 第一台来自 now_playing_in / events_out，其余是 extra_devices 的 (名字, 正在播放, 事件)。
+        self.devices = [{"id": "d0", "name": device_name,
+                         "now": Path(now_playing_in) if now_playing_in else None,
+                         "events": self.events_out}]
+        self.devices += [{"id": f"d{n}", "name": name, "now": Path(now) if now else None,
+                          "events": Path(out) if out else None}
+                         for n, (name, now, out) in enumerate(extra_devices, start=1)]
+        # 手机选定遥控哪一台；None 是自动（跟着最近换过台的在线设备）。
+        self._target: str | None = None
         self.channels_out = Path(channels_out)
         self.ffmpeg = ffmpeg
         self.key = key
@@ -77,10 +88,9 @@ class Relay:
         self._quick_failures: dict[tuple[str, str], int] = {}
         # 刷新列表要访问 B 站，同一时间只让一个请求去做。
         self._refresh_lock = threading.Lock()
-        # 手机遥控：直播频道表（只读）、分组调整（只由这里写）、电视服务写的「正在播放」。
+        # 手机遥控：直播频道表（只读）、分组调整（只由这里写）；「正在播放」在 self.devices 里。
         self.main_channels = Path(main_channels) if main_channels else None
         self.groups_out = Path(groups_out) if groups_out else None
-        self.now_playing_in = Path(now_playing_in) if now_playing_in else None
         self.remote_url_out = Path(remote_url_out) if remote_url_out else None
         self.public_url = public_url.rstrip("/")
         # 每个台最后起播的视频标题，给手机上的「正在播放」用。
@@ -184,11 +194,13 @@ class Relay:
         self.state.save()
 
     def _event(self, action: str, channel: str = "", value: int | None = None, text: str = "") -> None:
-        if self.events_out is None:
+        target = self.target()
+        if target["events"] is None:
             return
         try:
-            seq = events.write_event(self.events_out, action, channel=channel, value=value, text=text)
-            self.log(f"事件 {seq} {action} {channel or ('' if value is None else value)}".rstrip())
+            seq = events.write_event(target["events"], action, channel=channel, value=value, text=text)
+            self.log(f"事件 {seq} {target['name']} {action} "
+                     f"{channel or ('' if value is None else value)}".rstrip())
         except OSError as error:
             self.log(f"写事件失败：{error}")
 
@@ -273,7 +285,7 @@ class Relay:
 
     def _playing_entry(self):
         """(台, 正在推的流)；只对中转推流的台（投屏、UP 主、剧集）有效。"""
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         cid = playing["channel"]
         if not playing["online"] or not _relay_channel(cid):
             return cid, None
@@ -308,7 +320,7 @@ class Relay:
         paused = self._paused
         if paused is None or paused["cid"] != cid:
             return None
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         if self.clock() - paused["at"] > PAUSE_MAX_S or (playing["online"] and playing["channel"] != cid):
             self._paused = None
             return None
@@ -336,7 +348,7 @@ class Relay:
         return {"ok": True, "at": self.clock(), "position": position}
 
     def resume(self) -> dict:
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         if self._paused_on(playing["channel"]) is None:
             return {"ok": False, "error": "现在没有暂停"}
         self._paused = None
@@ -423,6 +435,33 @@ class Relay:
         self.log("换了新的扫码码，已登录的手机需要重新扫码")
         return {"ok": True}
 
+    # ---- 设备 ----
+
+    def target(self) -> dict:
+        """手机现在遥控的那台：选定的；自动时是在线设备里最近开始会话（换台）的那台。"""
+        if self._target is not None:
+            chosen = next((d for d in self.devices if d["id"] == self._target), None)
+            if chosen is not None:
+                return chosen
+        now = self.clock()
+        online = [(now_playing.read(d["now"], now)["since"], n) for n, d in enumerate(self.devices)
+                  if now_playing.read(d["now"], now)["online"]]
+        return self.devices[max(online)[1]] if online else self.devices[0]
+
+    def playing(self) -> dict:
+        return now_playing.read(self.target()["now"], self.clock())
+
+    def set_target(self, device: str | None) -> dict:
+        if device is not None and device not in {d["id"] for d in self.devices}:
+            return {"ok": False, "error": "没有这台设备"}
+        self._target = device
+        return {"ok": True}
+
+    def device_rows(self) -> list[dict]:
+        target, now = self.target()["id"], self.clock()
+        return [{"id": d["id"], "name": d["name"], "online": now_playing.read(d["now"], now)["online"],
+                 "target": d["id"] == target} for d in self.devices]
+
     # ---- 频道与遥控 ----
 
     def _overrides(self) -> dict:
@@ -446,7 +485,7 @@ class Relay:
         return [{"name": g, "channels": grouped[g]} for g in channel_groups.GROUPS if grouped[g]]
 
     def now(self, groups: list[dict]) -> dict:
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         cid = playing["channel"]
         found = next(((g["name"], c) for g in groups for c in g["channels"] if c["id"] == cid), None)
         title = ""
@@ -462,9 +501,9 @@ class Relay:
 
     def device(self, volume=None, brightness=None) -> dict:
         """手机调音量（0–100，按 10 取整）或亮度档位。"""
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         if not playing["online"]:
-            return {"ok": False, "error": "小智没在线"}
+            return {"ok": False, "error": f"{self.target()['name']}没在线"}
         status = playing["device"]
         if status is None:
             return {"ok": False, "error": "小电视的固件太旧，需要更新才能用手机调音量和亮度"}
@@ -483,9 +522,9 @@ class Relay:
 
     def set_pet(self, pet) -> dict:
         """手机换宠物：0..PET_COUNT-1。"""
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         if not playing["online"]:
-            return {"ok": False, "error": "小智没在线"}
+            return {"ok": False, "error": f"{self.target()['name']}没在线"}
         status = playing["device"]
         if status is None or "pet" not in status:
             return {"ok": False, "error": "小电视的固件太旧，需要更新才能换宠物"}
@@ -496,9 +535,9 @@ class Relay:
 
     def set_audio(self, on) -> dict:
         """手机开关只听声音。"""
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         if not playing["online"]:
-            return {"ok": False, "error": "小智没在线"}
+            return {"ok": False, "error": f"{self.target()['name']}没在线"}
         status = playing["device"]
         if status is None or "audio_only" not in status:
             return {"ok": False, "error": "小电视的固件太旧，需要更新才能只听声音"}
@@ -523,9 +562,9 @@ class Relay:
     def switch(self, channel: str) -> dict:
         if channel not in {cid for cid, _ in self.channel_rows()}:
             return {"ok": False, "error": "没有这个台"}
-        playing = now_playing.read(self.now_playing_in, self.clock())
+        playing = self.playing()
         if not playing["online"]:
-            return {"ok": False, "error": "小智没在线"}
+            return {"ok": False, "error": f"{self.target()['name']}没在线"}
         if not playing["switch"]:
             return {"ok": False, "error": "小电视的固件不支持遥控，请在小电视上手动换台"}
         self._event("switch", channel=channel)
@@ -558,13 +597,14 @@ class Relay:
             creators = [{"id": c.id, "name": c.name, "site": c.site,
                          "left": sum(v.bvid not in c.watched for v in c.videos),
                          "total": len(c.videos)} for c in self.state.creators if c.kind == "up"]
-            series = [{"id": c.id, "name": c.name, "episode": self.state.episode(c.id),
+            series = [{"id": c.id, "name": c.name, "site": c.site, "episode": self.state.episode(c.id),
                        "total": len(c.videos)} for c in self.state.creators if c.kind == "series"]
             cast = ({"title": self.state.cast.title, "done": self.state.cast_done}
                     if self.state.cast is not None else None)
             history = [dict(h) for h in self.state.history]
         summary = {"now": self.now(groups), "groups": groups, "creators": creators,
                    "series": series, "room": self.room(), "cast": cast, "history": history,
+                   "devices": self.device_rows(), "auto": self._target is None,
                    "group_names": list(channel_groups.GROUPS[2:])}
         if self.clients.get("youtube") is not None:
             summary["youtube"] = {"state": self.youtube_state()}
@@ -607,28 +647,30 @@ class Relay:
         text, name = (text or "").strip(), " ".join((name or "").split())[:SERIES_NAME_MAX]
         if not text:
             return {"ok": False, "error": "请先粘贴链接"}
-        if _site_of(text) != "bilibili":
-            return {"ok": False, "error": "剧集暂时只支持 B 站"}
-        client = self.clients["bilibili"]
+        site = _site_of(text)
+        client = self.clients.get(site)
+        if client is None:
+            return {"ok": False, "error": "YouTube 还没配置好，剧集暂时只能用 B 站"}
         try:
             source = client.series_id(text)
             if source is None:
-                return {"ok": False, "error": "看不懂这个链接。请粘贴番剧页链接，或多集视频（合集）的链接"}
+                return {"ok": False, "error": "看不懂这个链接。请粘贴 B 站番剧页、多集视频（合集）的链接，"
+                                              "或 YouTube 播放列表的链接（带 list=）"}
             title, episodes = client.series(source)
         except SourceError as error:
             self.log(f"添加剧集失败：{error}")
             if not error.permanent:
-                return {"ok": False, "error": "B 站暂时连不上或拒绝了请求，请稍后再试"}
+                return {"ok": False, "error": f"{_SITE_NAMES[site]}暂时连不上或拒绝了请求，请稍后再试"}
             # 「只有一集」「都要会员」之类原样告诉用户；接口的错误码换成人话。
             reason = str(error).split(": ", 1)[-1]
-            if reason.startswith("code="):
-                reason = "B 站说这个放不了（可能已删除或需要会员）"
+            if reason.startswith(("code=", "404")):
+                reason = f"{_SITE_NAMES[site].strip()}说这个放不了（可能已删除、私享或需要会员）"
             return {"ok": False, "error": reason}
         name = name or title or source
         if not self.room(table.label_text(name))["fits"]:
             return {"ok": False, "error": "小电视的频道列表满了，先删掉几个台再加"}
         try:
-            creator = self.state.add("bilibili", source, name, episodes, self.clock(), kind="series")
+            creator = self.state.add(site, source, name, episodes, self.clock(), kind="series")
         except ValueError as error:
             return {"ok": False, "error": str(error)}
         self.state.save()
@@ -840,6 +882,10 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/code":
                 self._json(relay.new_code())
+                return
+            if path == "/api/target":
+                device = body.get("device")
+                self._json(relay.set_target(device if isinstance(device, str) and device else None))
                 return
             if path == "/api/switch":
                 self._json(relay.switch(str(body.get("channel") or "")))

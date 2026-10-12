@@ -61,8 +61,12 @@ Don't flash this build's bootloader, partition table or `ota_data_initial.bin`.
 The geometry is fixed per server process and one device is served at a time,
 so the Passport has its own instance next to the Xingzhi one: `tv-passport`, a
 copy of `tv-xingzhi` with `TV_GEOMETRY=320x180`, `TV_FPS=12`, port 8097, its own
-`TV_DATA_DIR` and now-playing file, and no relay events (the phone remote
-drives the Xingzhi unit). Open the port in the cloud firewall as well.
+`TV_DATA_DIR`, now-playing file and relay events file
+(`TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv-passport/relay-events.json`).
+The relay is told about it with
+`--extra-device Passport:/var/lib/ai-passport-tv-passport/now-playing.json:/var/lib/ai-passport-tv-passport/relay-events.json`;
+the phone remote then follows whichever device changed channel last, or the
+one picked at the top of the page. Open the port in the cloud firewall as well.
 
 A Passport stream is about 150-200 kB/s. On a host with 3 Mbit/s of public
 bandwidth, two devices watching at once share it and both lose quality.

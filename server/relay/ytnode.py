@@ -4,6 +4,7 @@
 阿里云从不直连 YouTube：它带着 X-Key、只信任本节点的自签证书来调用这里。
 
     GET /yt/list?channel=<频道地址>   最新 20 个投稿
+    GET /yt/playlist?list=<列表 id>   播放列表的全部视频（剧集用，按列表顺序）
     GET /yt/info?id=<视频 id>         标题、时长、所属频道
     GET /yt/stream?id=<视频 id>&ss=<秒> 压成小码流的 MPEG-TS，实时速度输出
 
@@ -28,6 +29,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LIST_SIZE = 20
+# 播放列表（剧集）最多取这么多个，和中转的 SERIES_SIZE 一致。
+PLAYLIST_SIZE = 1000
 # 1 核的机器，同时转码最多两路。
 MAX_STREAMS = 2
 RUN_TIMEOUT_S = 120
@@ -41,6 +44,7 @@ CHUNK_BYTES = 64 * 1024
 # 先要 360p 的 H.264+AAC 合体格式（18），没有再取 360p 以内的最好的。
 FORMAT = "18/b[height<=360]/bv*[height<=360]+ba/b"
 _ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_PLAYLIST = re.compile(r"^(?:PL|OL|UU|FL|RD)[A-Za-z0-9_-]{8,64}$")
 _CHANNEL = re.compile(r"^https://www\.youtube\.com/(@[^/?#\s]+|(?:channel|c|user)/[A-Za-z0-9_-]+)$")
 
 
@@ -69,6 +73,11 @@ def list_args(tools: Tools, channel: str) -> list[str]:
                            "--", channel.rstrip("/") + "/videos"]
 
 
+def playlist_args(tools: Tools, playlist: str) -> list[str]:
+    return _base(tools) + ["--flat-playlist", "--playlist-end", str(PLAYLIST_SIZE), "-J",
+                           "--", f"https://www.youtube.com/playlist?list={playlist}"]
+
+
 def info_args(tools: Tools, video_id: str) -> list[str]:
     return _base(tools) + ["-J", "--no-playlist", "-f", FORMAT,
                            "--", f"https://www.youtube.com/watch?v={video_id}"]
@@ -85,6 +94,14 @@ def listing_summary(listing: dict) -> dict:
               for e in listing.get("entries") or [] if _ID.match(str(e.get("id", "")))]
     return {"name": listing.get("channel") or listing.get("uploader") or listing.get("title") or "",
             "channel_url": listing.get("channel_url") or "", "videos": videos[:LIST_SIZE]}
+
+
+def playlist_summary(listing: dict) -> dict:
+    # 列表里删掉或私享的视频，平铺列表里标题是 [Deleted video] / [Private video]，时长为空。
+    videos = [{"id": e["id"], "title": e.get("title") or "", "duration": int(e.get("duration") or 0)}
+              for e in listing.get("entries") or [] if _ID.match(str(e.get("id", "")))
+              and e.get("title") not in ("[Deleted video]", "[Private video]")]
+    return {"name": listing.get("title") or "", "videos": videos[:PLAYLIST_SIZE]}
 
 
 def stream_inputs(info: dict) -> list[tuple[str, dict]]:
@@ -148,6 +165,9 @@ class Node:
         self.streams = threading.BoundedSemaphore(MAX_STREAMS)
         self._info: dict[str, tuple[float, dict]] = {}
         self._info_lock = threading.Lock()
+        # 一次只跑一个 yt-dlp：每个要带一个 deno，两个并发在 400M 的内存上限里会被 OOM 杀掉。
+        # 设备每次起播连两次（先采样调色板），同一视频的第二个请求等第一个解析完直接用缓存。
+        self._ytdlp = threading.Lock()
         self.clock = time.monotonic
         # 最近一次 YouTube 解析的结果，给中转判断 cookies 是否过期：
         # unknown（还没解析过）、ok、login（要求登录）、error（其他失败）。
@@ -161,14 +181,25 @@ class Node:
         """不走缓存解析一次测试视频，只为更新健康状态。"""
         self.ytdlp_json(info_args(self.tools, CHECK_VIDEO))
 
-    def video_info(self, video_id: str) -> tuple[int, dict | str]:
-        now = self.clock()
+    def _cached(self, video_id: str):
         with self._info_lock:
             cached = self._info.get(video_id)
-            if cached and now - cached[0] < INFO_CACHE_S:
-                return 200, cached[1]
-        code, info = self.ytdlp_json(info_args(self.tools, video_id))
+            if cached and self.clock() - cached[0] < INFO_CACHE_S:
+                return cached[1]
+        return None
+
+    def video_info(self, video_id: str) -> tuple[int, dict | str]:
+        info = self._cached(video_id)
+        if info is not None:
+            return 200, info
+        with self._ytdlp:
+            # 等锁期间别的请求可能已经解析好了。
+            info = self._cached(video_id)
+            if info is not None:
+                return 200, info
+            code, info = self._ytdlp_json(info_args(self.tools, video_id))
         if code == 200:
+            now = self.clock()
             with self._info_lock:
                 self._info = {k: v for k, v in self._info.items() if now - v[0] < INFO_CACHE_S}
                 self._info[video_id] = (now, info)
@@ -178,6 +209,10 @@ class Node:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
 
     def ytdlp_json(self, args: list[str]) -> tuple[int, dict | str]:
+        with self._ytdlp:
+            return self._ytdlp_json(args)
+
+    def _ytdlp_json(self, args: list[str]) -> tuple[int, dict | str]:
         try:
             code, out, err = self.run(args)
         except subprocess.TimeoutExpired:
@@ -234,6 +269,13 @@ def _handler(node: Node):
                     return
                 code, data = node.ytdlp_json(list_args(node.tools, channel))
                 self._json(code, listing_summary(data) if code == 200 else data)
+            elif parts.path == "/yt/playlist":
+                playlist = query.get("list", "")
+                if not _PLAYLIST.match(playlist):
+                    self._json(400, "bad playlist")
+                    return
+                code, data = node.ytdlp_json(playlist_args(node.tools, playlist))
+                self._json(code, playlist_summary(data) if code == 200 else data)
             elif parts.path == "/yt/info":
                 video_id = query.get("id", "")
                 if not _ID.match(video_id):

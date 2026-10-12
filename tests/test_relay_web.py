@@ -17,6 +17,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from server import now_playing
 from server.relay import events, web
 from server.relay.bilibili import BilibiliError
 from server.relay.state import State, Video
@@ -104,6 +105,13 @@ class FakeYouTube:
 
     def video(self, video_id):
         return Video(bvid=video_id, title="yt cast", duration=60, pubdate=0, site="youtube")
+
+    def series_id(self, text):
+        return "PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw" if "list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw" in text else None
+
+    def series(self, playlist):
+        return "灌籃高手", [Video(bvid=f"slamdunk00{n}", title=f"第{n}集", duration=1400, pubdate=0,
+                                  site="youtube") for n in (1, 2)]
 
     def open(self, video_id, offset):
         self.opened.append((video_id, offset))
@@ -375,7 +383,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(answer, {"ok": True, "series": {"id": "sr01", "name": "海尔 兄弟", "total": 3}})
         self.assertIn("sr01 | 海尔 兄弟 | http://127.0.0.1:8099/ch/sr01", self.table.read_text())
         state = self.call("GET", "/api/state")
-        self.assertEqual(state["series"], [{"id": "sr01", "name": "海尔 兄弟", "episode": 1, "total": 3}])
+        self.assertEqual(state["series"], [{"id": "sr01", "name": "海尔 兄弟", "site": "bilibili", "episode": 1, "total": 3}])
         self.assertEqual(state["creators"], [])
         self.assertTrue(state["room"]["fits"])
         group = next(g for g in state["groups"] if g["name"] == "动画影视")
@@ -388,6 +396,17 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.call("DELETE", "/api/series/sr01"), {"ok": True})
         self.assertNotIn("sr01", self.table.read_text())
 
+    def test_youtube_playlist_series_streams_through_the_node(self):
+        answer = self.call("POST", "/api/series", {
+            "url": "https://www.youtube.com/playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw", "name": "灌篮高手"})
+        self.assertEqual(answer["series"], {"id": "sr01", "name": "灌篮高手", "total": 2})
+        self.assertEqual(self.call("GET", "/api/state")["series"][0]["site"], "youtube")
+        self.stream("sr01")
+        self.stream("sr01")
+        self.assertEqual(self.youtube.opened, [("slamdunk001", 0.0), ("slamdunk002", 0.0)])
+        self.assertEqual(self.started, [])
+        self.assertIn("播放列表", self.call("POST", "/api/series", {"url": "https://www.youtube.com/@ltt"})["error"])
+
     def test_series_default_name_and_errors(self):
         answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7"})
         self.assertEqual(answer["series"]["name"], "番剧ss7")
@@ -396,7 +415,6 @@ class WebTests(unittest.TestCase):
         paid = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss9"})
         self.assertEqual(paid["error"], "没有免费的集（都要会员）")
         self.assertFalse(self.call("POST", "/api/series", {"url": "https://example.com/"})["ok"])
-        self.assertFalse(self.call("POST", "/api/series", {"url": "https://youtu.be/ytcast00001"})["ok"])
         self.client.down = True
         offline = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss8"})
         self.assertIn("稍后", offline["error"])
@@ -536,6 +554,56 @@ class WebTests(unittest.TestCase):
     def test_unknown_channel(self):
         self.assertEqual(self.stream("up09")[0], 404)
         self.assertEqual(self.status(f"http://127.0.0.1:{self.streams.server_address[1]}/x")[0], 404)
+
+
+class DeviceTests(unittest.TestCase):
+    """Two devices on their own media servers: the phone follows the one in use."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.now = 1000.0
+        self.xz_now, self.xz_events = root / "xz-now.json", root / "xz-events.json"
+        self.pp_now, self.pp_events = root / "pp-now.json", root / "pp-events.json"
+        main = root / "channels.txt"
+        main.write_text("ch000 | CCTV1 | https://x/1.m3u8\nch001 | 湖南卫视 | https://x/2.m3u8\n",
+                        encoding="utf-8")
+        self.relay = web.Relay(State(root / "state.json"), FakeClient(), root / "relay.txt", "/opt/ff", KEY,
+                               events_out=self.xz_events, now_playing_in=self.xz_now,
+                               main_channels=main, device_name="小智",
+                               extra_devices=[("Passport", self.pp_now, self.pp_events)],
+                               log=lambda _m: None, clock=lambda: self.now)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def names(self):
+        return [(d["name"], d["online"], d["target"]) for d in self.relay.summary()["devices"]]
+
+    def test_follows_the_device_in_use(self):
+        self.assertEqual(self.names(), [("小智", False, True), ("Passport", False, False)])
+        now_playing.write(self.pp_now, "ch000", True, True, now=self.now, since=self.now - 50)
+        self.assertEqual(self.names(), [("小智", False, False), ("Passport", True, True)])
+        self.assertTrue(self.relay.switch("ch001")["ok"])
+        self.assertEqual(events.read_event(self.pp_events).channel, "ch001")
+        self.assertIsNone(events.read_event(self.xz_events))
+        # Both online: the one whose session (channel) started last.
+        now_playing.write(self.xz_now, "ch001", True, True, now=self.now, since=self.now - 10)
+        self.assertEqual(self.relay.target()["name"], "小智")
+        self.relay.switch("ch000")
+        self.assertEqual(events.read_event(self.xz_events).channel, "ch000")
+
+    def test_phone_picks_a_device(self):
+        now_playing.write(self.xz_now, "ch001", True, True, now=self.now, since=self.now)
+        now_playing.write(self.pp_now, "ch000", True, True, now=self.now, since=self.now - 50)
+        self.assertEqual(self.relay.set_target("d1"), {"ok": True})
+        self.assertEqual(self.relay.summary()["now"]["channel"], "ch000")
+        self.assertFalse(self.relay.summary()["auto"])
+        self.relay.switch("ch001")
+        self.assertEqual(events.read_event(self.pp_events).channel, "ch001")
+        self.assertFalse(self.relay.set_target("d9")["ok"])
+        self.relay.set_target(None)
+        self.assertEqual(self.relay.target()["name"], "小智")
 
 
 class PlaybackControlTests(unittest.TestCase):
@@ -736,7 +804,7 @@ class PageFieldTests(unittest.TestCase):
                   "site", "at", "since", "left", "total", "ok", "error", "creator",
                   "video", "position", "duration", "paused", "started", "moving",
                   "device", "volume", "brightness", "steps", "pet", "audio_only",
-                  "series", "room", "fits", "episode"}
+                  "series", "room", "fits", "episode", "devices", "auto", "target"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

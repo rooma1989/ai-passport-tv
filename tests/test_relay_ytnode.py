@@ -173,6 +173,55 @@ class NodeTests(unittest.TestCase):
         resolves = [args for args in self.runs if args[0] == TOOLS.ytdlp]
         self.assertEqual(len(resolves), 1)
 
+    def test_concurrent_starts_resolve_once_and_never_overlap(self):
+        """Two yt-dlp (each with a deno) at once overran the 400 MB unit and were OOM-killed."""
+        running, overlap = [0], [False]
+        gate = threading.Lock()
+        plain = self.node.run
+
+        def slow_run(args):
+            with gate:
+                running[0] += 1
+                overlap[0] = overlap[0] or running[0] > 1
+            threading.Event().wait(0.2)
+            try:
+                return plain(args)
+            finally:
+                with gate:
+                    running[0] -= 1
+
+        self.node.run = slow_run
+        answers = []
+        threads = [threading.Thread(target=lambda path=path: answers.append(self.get(path).status))
+                   for path in ("/yt/info?id=jNQXAC9IVRw", "/yt/info?id=jNQXAC9IVRw",
+                                "/yt/list?channel=https%3A%2F%2Fwww.youtube.com%2F%40LinusTechTips")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(answers, [200, 200, 200])
+        self.assertFalse(overlap[0])
+        resolves = [args for args in self.runs if args[0] == TOOLS.ytdlp and "--flat-playlist" not in args]
+        self.assertEqual(len(resolves), 1)
+
+    def test_playlist(self):
+        answer = self.get("/yt/playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw")
+        self.assertEqual(answer.status, 200)
+        data = json.loads(answer.read())
+        self.assertEqual([v["id"] for v in data["videos"]], ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+        self.assertTrue(self.runs[-1][-1].endswith("playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw"))
+        self.assertIn(str(ytnode.PLAYLIST_SIZE), self.runs[-1])
+        for bad in ("--exec", "PLx", "PL%26x%3D1aaaaaaaaaa"):
+            self.assertEqual(self.get(f"/yt/playlist?list={bad}").status, 400, bad)
+
+    def test_playlist_drops_deleted_entries(self):
+        listing = {"title": "灌籃高手", "entries": [
+            {"id": "aaaaaaaaaaa", "title": "第1集", "duration": 1400},
+            {"id": "bbbbbbbbbbb", "title": "[Deleted video]", "duration": None},
+            {"id": "ccccccccccc", "title": "[Private video]"}]}
+        self.assertEqual(ytnode.playlist_summary(listing),
+                         {"name": "灌籃高手", "videos": [{"id": "aaaaaaaaaaa", "title": "第1集", "duration": 1400}]})
+
     def health(self):
         answer = self.get("/yt/health")
         self.assertEqual(answer.status, 200)

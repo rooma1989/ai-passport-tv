@@ -21,6 +21,8 @@ HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
 SHORT_HOST = "youtu.be"
 _ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _CHANNEL_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+# 播放列表 id（剧集用）；与节点 ytnode._PLAYLIST 一致。
+_PLAYLIST = re.compile(r"^(?:PL|OL|UU|FL|RD)[A-Za-z0-9_-]{8,64}$")
 # 列投稿要让节点跑一次 yt-dlp，十几秒是常态。
 JSON_TIMEOUT_S = 90
 # 流在节点起播前要先取地址、开转码，之后每次读之间不应超过这个时间。
@@ -70,6 +72,17 @@ def parse_video_link(text: str) -> str | None:
                 candidate = parts[1]
         if candidate and _ID.match(candidate):
             return candidate
+    return None
+
+
+def parse_playlist_link(text: str) -> str | None:
+    """带 list= 的链接（播放列表页，或列表里某个视频的播放页）→ 播放列表 id。"""
+    for url in _urls(text):
+        if url.hostname not in HOSTS:
+            continue
+        playlist = (urllib.parse.parse_qs(url.query).get("list") or [""])[0]
+        if _PLAYLIST.match(playlist):
+            return playlist
     return None
 
 
@@ -156,6 +169,22 @@ class YouTube:
 
     def video_id(self, text: str) -> str | None:
         return parse_video_link(text)
+
+    def series_id(self, text: str) -> str | None:
+        return parse_playlist_link(text)
+
+    def series(self, playlist: str) -> tuple[str, list[Video]]:
+        """(列表名, 按列表顺序的视频)。"""
+        answer = self._call("/yt/playlist", list=playlist)
+        try:
+            videos = [Video(bvid=v["id"], title=str(v.get("title") or ""),
+                            duration=int(v.get("duration") or 0), pubdate=0, site="youtube")
+                      for v in answer.get("videos") or [] if _ID.match(str(v.get("id", "")))]
+        except (KeyError, TypeError, ValueError) as error:
+            raise SourceError(f"youtube 播放列表格式不对：{error}") from None
+        if len(videos) < 2:
+            raise SourceError(f"{playlist}: 播放列表里不到两个能看的视频", permanent=True)
+        return str(answer.get("name") or playlist), videos
 
     def video(self, video_id: str) -> Video:
         answer = self._call("/yt/info", id=video_id)

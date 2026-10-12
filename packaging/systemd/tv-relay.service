@@ -12,7 +12,7 @@ User=tvserver
 Group=tvserver
 WorkingDirectory=/opt/ai-passport-tv
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3.11 -m server.relay --state /var/lib/ai-passport-tv/relay-state.json --channels-out /var/lib/ai-passport-tv/relay-channels.txt --key-file /etc/ai-passport-tv/relay-key --events-out /var/lib/ai-passport-tv/relay-events.json --cstone /etc/ai-passport-tv/cstone.json --main-channels /var/lib/ai-passport-tv/channels.txt --groups-out /var/lib/ai-passport-tv/channel-groups.json --now-playing /var/lib/ai-passport-tv/now-playing.json --remote-url-out /var/lib/ai-passport-tv/remote-url.txt --public-url https://iewww.com --ffmpeg /opt/ai-passport-tv/ffmpeg-btbn-8.1
+ExecStart=/usr/bin/python3.11 -m server.relay --state /var/lib/ai-passport-tv/relay-state.json --channels-out /var/lib/ai-passport-tv/relay-channels.txt --key-file /etc/ai-passport-tv/relay-key --events-out /var/lib/ai-passport-tv/relay-events.json --cstone /etc/ai-passport-tv/cstone.json --main-channels /var/lib/ai-passport-tv/channels.txt --groups-out /var/lib/ai-passport-tv/channel-groups.json --now-playing /var/lib/ai-passport-tv/now-playing.json --extra-device Passport:/var/lib/ai-passport-tv-passport/now-playing.json:/var/lib/ai-passport-tv-passport/relay-events.json --remote-url-out /var/lib/ai-passport-tv/remote-url.txt --public-url https://iewww.com --ffmpeg /opt/ai-passport-tv/ffmpeg-btbn-8.1
 Restart=always
 RestartSec=3
 # Remuxing only (-c copy), so it needs little CPU; keep the websites responsive.

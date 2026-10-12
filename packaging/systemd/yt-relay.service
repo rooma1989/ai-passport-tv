@@ -16,10 +16,11 @@ Environment=HOME=/var/lib/yt-relay
 ExecStart=/usr/bin/python3 /opt/yt-relay/ytnode.py --port 47443 --cert /etc/yt-relay/cert.pem --tls-key /etc/yt-relay/tls-key.pem --key-file /etc/yt-relay/key --cookies /var/lib/yt-relay/cookies.txt
 Restart=always
 RestartSec=5
-# One core shared with the proxy: keep it responsive.
+# One core shared with the proxy: keep it responsive. yt-dlp with deno peaks
+# near 330 MB alone, so 400M with two ffmpeg streams on top was OOM-killed.
 Nice=10
 CPUQuota=70%
-MemoryMax=400M
+MemoryMax=600M
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
