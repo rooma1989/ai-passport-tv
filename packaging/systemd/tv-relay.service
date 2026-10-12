@@ -23,6 +23,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/ai-passport-tv
+# Each --extra-device's events file must be writable too, e.g. the AI Passport's:
+# ReadWritePaths=/var/lib/ai-passport-tv-passport
 PrivateTmp=true
 
 [Install]
