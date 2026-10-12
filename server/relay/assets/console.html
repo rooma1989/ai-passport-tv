@@ -1,0 +1,1288 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#1c1915">
+<link rel="icon" href="icon-180.png">
+<title>小智电视 · 电脑版</title>
+<style>
+  /* 和手机遥控（remote.html）同一套颜色和字体，只是排成宽屏。 */
+  :root {
+    --ink: #1c1915; --ink-deep: #0f0d0b; --side: #161310; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
+    --dim: #8c8170; --faint: #6e6455; --red: #d2553f; --amber: #ffb547; --amber-soft: #f3dfb4; --hover: #231f19;
+    --serif: "Songti SC", "STSong", "Noto Serif SC", serif;
+    --mono: "Menlo", "SF Mono", ui-monospace, monospace;
+    --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--ink); color: var(--paper); font: 15px/1.5 var(--sans); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  [hidden] { display: none !important; }
+
+  /* ---- 登录 ---- */
+  #login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 32px 16px; }
+  .signin { display: grid; grid-template-columns: auto minmax(0, 360px); gap: 44px; align-items: center;
+            border: 1px solid var(--rule); background: var(--ink-deep); padding: 40px 44px; max-width: 860px; }
+  .qrbox { width: 248px; height: 248px; background: var(--paper-hi); position: relative; }
+  .qrbox svg { display: block; width: 100%; height: 100%; }
+  .qrbox .over { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+                 gap: 12px; background: rgba(15,13,11,.88); color: var(--paper-hi); font: 16px var(--serif); text-align: center; padding: 16px; }
+  .qrbox .over button { background: var(--red); border: 0; color: #fff4e6; padding: 8px 18px; letter-spacing: 2px; }
+  .signin .tag { font-size: 12px; color: var(--red); letter-spacing: 3px; }
+  .signin h1 { margin: 6px 0 14px; font: 700 28px/1.3 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
+  .signin ol { margin: 0; padding-left: 20px; color: var(--paper); font: 15px/1.8 var(--serif); }
+  .signin .code { margin: 16px 0 6px; font: 600 38px/1 var(--mono); color: var(--amber); letter-spacing: 8px;
+                  text-shadow: 0 0 10px rgba(255,181,71,.25); }
+  .signin .meta { font: 13px var(--mono); color: var(--dim); }
+  .signin .meta.ok { color: var(--amber); }
+  .signin .meta.bad { color: var(--red); }
+  .signin .help { margin-top: 18px; font-size: 12px; color: var(--faint); }
+
+  /* ---- 外框：左边导航，右边内容 ---- */
+  #app { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100vh; }
+  aside { background: var(--side); border-right: 1px solid var(--rule); display: flex; flex-direction: column;
+          position: sticky; top: 0; height: 100vh; }
+  .brand { padding: 22px 22px 18px; border-bottom: 1px solid var(--rule); }
+  .brand b { display: block; font: 700 22px/1 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
+  .brand span { display: block; margin-top: 8px; font-size: 12px; color: var(--red); letter-spacing: 3px; }
+  aside nav { flex: 1; padding: 10px 0; }
+  aside nav button { display: flex; width: 100%; align-items: baseline; gap: 10px; background: none; border: 0;
+                     padding: 11px 22px; color: var(--dim); font: 16px var(--serif); letter-spacing: 2px; text-align: left; }
+  aside nav button i { font: 11px var(--mono); font-style: normal; color: var(--faint); width: 18px; }
+  aside nav button:hover { color: var(--paper-hi); background: var(--hover); }
+  aside nav button.on { color: var(--paper-hi); box-shadow: inset 3px 0 0 var(--red); background: var(--hover); }
+  .who { padding: 16px 22px 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--dim); }
+  .who b { display: block; font: 15px var(--serif); color: var(--paper-hi); }
+  .who button { margin-top: 8px; background: none; border: 0; padding: 0; color: var(--red); font: 13px var(--serif); }
+
+  main { min-width: 0; padding: 0 32px 48px; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 72px;
+         border-bottom: 1px solid var(--rule); margin-bottom: 24px; flex-wrap: wrap; }
+  .top h2 { margin: 0; font: 600 24px var(--serif); letter-spacing: 3px; color: var(--paper-hi); }
+  .devpick { display: flex; gap: 6px; flex-wrap: wrap; }
+  .devpick button { background: none; border: 1px solid var(--rule); padding: 6px 14px; color: var(--dim); font: 14px var(--serif); }
+  .devpick button:hover { border-color: var(--dim); color: var(--paper); }
+  .devpick button.on { border-color: var(--red); color: var(--paper-hi); background: var(--hover); }
+  .devpick button em { font-style: normal; font-size: 11px; margin-left: 6px; color: var(--faint); }
+  .devpick button em.live { color: var(--amber); }
+  .notice { background: var(--red); color: #fff4e6; padding: 10px 16px; margin: 16px 0 0; font: 15px var(--serif); }
+
+  .page { display: none; }
+  .page.on { display: block; }
+  .card { border: 1px solid var(--rule); background: var(--ink-deep); }
+  .h3 { display: flex; justify-content: space-between; align-items: baseline; margin: 0 0 10px; padding-bottom: 6px;
+        border-bottom: 1px solid var(--rule); font: 17px var(--serif); color: var(--paper-hi); }
+  .h3 small { font: 12px var(--mono); color: var(--faint); }
+  .hint { color: var(--faint); font-size: 12px; margin: 8px 0 0; }
+  .empty { padding: 18px 0; color: var(--faint); font: 15px var(--serif); }
+  .linkbtn { background: none; border: 0; padding: 0; color: var(--dim); font: 14px var(--serif); }
+  .linkbtn:hover { color: var(--paper-hi); }
+  .linkbtn.red { color: var(--red); }
+  .linkbtn.on { color: var(--red); }
+  input[type=text], textarea { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule); color: var(--paper);
+                               font: 15px/1.5 var(--sans); padding: 10px 12px; border-radius: 0; }
+  input[type=text]:focus, textarea:focus { outline: none; border-color: var(--dim); }
+  textarea { min-height: 90px; resize: vertical; }
+  ::placeholder { color: var(--faint); }
+  .go { background: var(--red); color: #fff4e6; border: 0; padding: 10px 22px; font: 16px var(--serif); letter-spacing: 3px; flex: none; }
+  .ghost { background: none; border: 1px solid var(--rule); color: var(--paper); padding: 9px 18px; font: 15px var(--serif); flex: none; }
+  .ghost:hover { border-color: var(--dim); }
+  .inline { display: flex; gap: 8px; }
+
+  /* ---- 遥控 ---- */
+  .remote { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 32px; align-items: start; }
+  .screen { padding: 18px 20px 16px; }
+  .screen .row1 { display: flex; justify-content: space-between; align-items: baseline; }
+  .screen .ch { font: 600 46px/1 var(--mono); color: var(--amber); text-shadow: 0 0 10px rgba(255,181,71,.3); }
+  .screen .grp { font: 13px var(--mono); color: var(--red); }
+  .screen .nm { margin-top: 12px; font: 21px/1.4 var(--serif); color: var(--amber-soft); }
+  .screen .ti { margin-top: 4px; font: 15px/1.5 var(--serif); color: var(--dim); min-height: 22px; }
+  .screen.off .ch { color: var(--faint); text-shadow: none; }
+  .screen.switching .ch { color: var(--amber); animation: blink 1.2s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  .player { margin-top: 14px; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; }
+  input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--rule); }
+  input[type=range]::-moz-range-track { height: 2px; background: var(--rule); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -6px; background: var(--red); border: 0; }
+  input[type=range]::-moz-range-thumb { width: 14px; height: 14px; background: var(--red); border: 0; border-radius: 0; }
+  input[type=range]:disabled { opacity: .35; }
+  .times { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--dim); }
+  .controls { display: flex; gap: 6px; margin-top: 10px; }
+  .controls button { flex: 1; background: none; border: 1px solid var(--rule); color: var(--paper); padding: 8px 0; font: 14px var(--serif); }
+  .controls button:hover { border-color: var(--red); color: var(--red); }
+  .controls button.main { color: var(--amber); border-color: #5a4a2c; }
+  .dials { margin-top: 18px; padding-top: 14px; border-top: 1px dotted var(--rule); display: grid; gap: 6px; }
+  .dial { display: flex; align-items: center; gap: 12px; }
+  .dial > span { flex: none; width: 34px; font: 14px var(--serif); color: var(--dim); }
+  .dial input { flex: 1; }
+  .dial b { flex: none; width: 46px; text-align: right; font: 600 13px var(--mono); color: var(--amber); }
+  .dials.off b { color: var(--faint); }
+  .switch { flex: none; width: 56px; height: 26px; border: 1px solid var(--rule); background: var(--ink); color: var(--faint); font: 12px var(--serif); padding: 0; }
+  .switch.on { background: var(--red); border-color: var(--red); color: var(--ink-deep); }
+  .dial em { flex: 1; font: 13px var(--serif); font-style: normal; color: var(--faint); }
+  .pets { margin-top: 18px; padding-top: 14px; border-top: 1px dotted var(--rule); }
+  .pets .h3 { border: 0; margin: 0 0 6px; padding: 0; font-size: 15px; }
+  .petgrid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+  .petgrid button { background: none; border: 0; padding: 6px 0 4px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+                    font-size: 11px; color: var(--dim); }
+  .petgrid button:hover { background: var(--hover); }
+  .petgrid button.cur { box-shadow: inset 0 0 0 2px var(--red); color: var(--amber); background: var(--hover); }
+  .petgrid img { width: 40px; height: 40px; image-rendering: pixelated; }
+  .groups { display: flex; gap: 22px; flex-wrap: wrap; border-bottom: 1px solid var(--rule); margin-bottom: 14px; }
+  .groups button { background: none; border: 0; padding: 6px 0 8px; color: var(--dim); font: 16px var(--serif); }
+  .groups button:hover { color: var(--paper); }
+  .groups button.on { color: var(--paper-hi); box-shadow: inset 0 -2px 0 var(--red); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+  .chcard { display: flex; flex-direction: column; gap: 4px; min-height: 74px; text-align: left; padding: 10px 12px;
+            background: var(--ink-deep); border: 1px solid var(--rule); color: var(--paper); }
+  .chcard:hover { border-color: var(--dim); background: var(--hover); }
+  .chcard .n { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--red); }
+  .chcard .n span { color: var(--faint); }
+  .chcard .t { font: 16px/1.35 var(--serif); overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+               -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .chcard.air { border-color: #5a4a2c; }
+  .chcard.air .t, .chcard.air .n span { color: var(--amber); }
+  .chcard.pending .n span { color: var(--amber); animation: blink 1.2s ease-in-out infinite; }
+  .chcard select { margin-top: auto; background: var(--ink); color: var(--paper); border: 1px solid var(--rule); font: 13px var(--serif); padding: 3px; }
+
+  /* ---- 表格（设备、订阅、投屏历史、登录列表、邀请） ---- */
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font: 12px var(--sans); color: var(--faint); font-weight: 400; padding: 0 12px 8px 0; border-bottom: 1px solid var(--rule); }
+  td { padding: 12px 12px 12px 0; border-bottom: 1px dotted var(--rule); vertical-align: baseline; }
+  td.t { font: 16px var(--serif); color: var(--paper-hi); }
+  td.m { font: 12px var(--mono); color: var(--dim); white-space: nowrap; }
+  td.a { text-align: right; white-space: nowrap; }
+  td.a button + button { margin-left: 14px; }
+  td .sub { display: block; font: 13px var(--serif); color: var(--dim); margin-top: 2px; }
+  .live { color: var(--amber); }
+  .off { color: var(--faint); }
+  tr.tap { cursor: pointer; }
+  tr.tap:hover td { background: var(--hover); }
+  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 36px; align-items: start; }
+  .block { margin-bottom: 32px; }
+  .block .inline { margin: 12px 0 14px; }
+
+  /* ---- 抽屉（选集）和弹窗（二维码、改名） ---- */
+  .shade { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 10; }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(520px, 100vw); background: var(--ink); border-left: 1px solid var(--rule);
+            z-index: 11; display: flex; flex-direction: column; }
+  .drawer header { padding: 20px 24px 14px; border-bottom: 1px solid var(--rule); }
+  .drawer header .crumb { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--amber); }
+  .drawer header h3 { margin: 6px 0 4px; font: 600 24px/1.3 var(--serif); color: var(--paper-hi); }
+  .drawer header p { margin: 0; font-size: 13px; color: var(--dim); }
+  .drawer .list { flex: 1; overflow-y: auto; }
+  .ep { display: flex; gap: 12px; align-items: baseline; padding: 10px 24px; border-bottom: 1px dotted var(--rule); cursor: pointer;
+        content-visibility: auto; contain-intrinsic-size: auto 44px; }
+  .ep:hover { background: var(--hover); }
+  .ep .n { width: 36px; flex: none; font: 13px var(--mono); color: var(--red); }
+  .ep .t { flex: 1; min-width: 0; font: 15px var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ep .s { flex: none; font: 12px var(--mono); color: var(--faint); }
+  .ep.seen .t, .ep.seen .n { color: var(--faint); }
+  .ep.cur { background: var(--hover); box-shadow: inset 3px 0 0 var(--red); }
+  .ep.cur .t, .ep.cur .s { color: var(--amber); }
+  .ep.pending .s { color: var(--amber); animation: blink 1.2s ease-in-out infinite; }
+  .modal { position: fixed; z-index: 11; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(440px, calc(100vw - 32px));
+           background: var(--ink); border: 1px solid var(--rule); padding: 24px; }
+  .modal h3 { margin: 0 0 12px; font: 600 20px var(--serif); color: var(--paper-hi); }
+  .modal .qrbox { margin: 8px auto 14px; width: 220px; height: 220px; }
+  .modal .link { font: 12px/1.5 var(--mono); color: var(--amber); word-break: break-all; background: var(--ink-deep);
+                 border: 1px solid var(--rule); padding: 8px 10px; user-select: all; }
+  .modal .row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+  .modal p { margin: 8px 0; color: var(--dim); font-size: 13px; }
+
+  .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: var(--paper-hi); color: var(--ink);
+           padding: 9px 18px; font: 14px var(--serif); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; max-width: 80vw; }
+  .toast.on { opacity: 1; }
+  .toast.bad { background: var(--red); color: #fff4e6; }
+
+  /* 窄屏：导航挪到顶上一行，两栏变一栏。 */
+  @media (max-width: 1023px) {
+    #app { grid-template-columns: minmax(0, 1fr); }
+    aside { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--rule); }
+    .brand { border: 0; padding: 14px 16px; }
+    .brand span { display: none; }
+    aside nav { display: flex; flex-wrap: wrap; padding: 0; }
+    aside nav button { width: auto; padding: 14px 12px; }
+    aside nav button i { display: none; }
+    aside nav button.on { box-shadow: inset 0 -2px 0 var(--red); }
+    .who { border: 0; margin-left: auto; padding: 10px 16px; }
+    main { padding: 0 16px 40px; }
+    .remote, .cols { grid-template-columns: minmax(0, 1fr); }
+    .signin { grid-template-columns: minmax(0, 1fr); justify-items: center; padding: 28px 20px; gap: 24px; }
+  }
+</style>
+</head>
+<body>
+<!-- 没登录：二维码 + 6 位登录码，等手机确认。 -->
+<section id="login" hidden>
+  <div class="signin">
+    <div class="qrbox" id="qr"><div class="over" id="qrOver">正在生成二维码…</div></div>
+    <div>
+      <div class="tag">小智电视 · 电脑版</div>
+      <h1>用手机扫码登录</h1>
+      <ol>
+        <li>用<b>已经登录小智电视</b>的手机扫左边的二维码，在手机上点「确认登录」。</li>
+        <li>扫码打开的浏览器没有登录的话：从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 电脑登录」里输入：</li>
+      </ol>
+      <div class="code" id="code">··· ···</div>
+      <div class="meta" id="loginState">正在准备…</div>
+      <div class="help">登录后这台电脑记住 30 天。只有家里人能用：没有账号的话，请向管理员要邀请链接，在手机上打开。</div>
+    </div>
+  </div>
+</section>
+
+<div id="app" hidden>
+  <aside>
+    <div class="brand"><b>小智电视</b><span>电脑版</span></div>
+    <nav id="nav">
+      <button data-page="remote" class="on"><i>01</i>遥控</button>
+      <button data-page="devices" class="noguest"><i>02</i>设备</button>
+      <button data-page="subs" class="noguest"><i>03</i>订阅</button>
+      <button data-page="cast"><i>04</i>投屏</button>
+      <button data-page="settings"><i>05</i>设置</button>
+      <button data-page="invites" id="navInvites" hidden><i>06</i>邀请</button>
+    </nav>
+    <div class="who"><b id="meName">—</b><span id="meRole"></span><br><button id="logout">退出登录</button></div>
+  </aside>
+
+  <main>
+    <div class="top">
+      <h2 id="pageTitle">遥控</h2>
+      <div class="devpick" id="devpick"></div>
+    </div>
+    <div class="notice" id="notice" hidden></div>
+
+    <!-- 遥控 -->
+    <section class="page on" id="remote">
+      <div class="remote">
+        <div>
+          <div class="card screen off" id="screen">
+            <div class="row1"><span class="ch" id="ch">— —</span><span class="grp" id="grp"></span></div>
+            <div class="nm" id="nm">正在连接…</div>
+            <div class="ti" id="ti"></div>
+            <div class="player" id="player" hidden>
+              <input type="range" id="seek" min="0" max="100" step="1" value="0">
+              <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+              <div class="controls">
+                <button id="back">退 30 秒</button>
+                <button id="pause" class="main">暂停</button>
+                <button id="fwd">进 30 秒</button>
+                <button id="prev" hidden>上一集</button>
+                <button id="next">下一个</button>
+              </div>
+            </div>
+            <div class="controls" id="epbar" hidden><button id="openEps">选集 · <span id="epnow"></span></button></div>
+            <div class="dials off" id="dials">
+              <label class="dial"><span>音量</span><input type="range" id="vol" min="0" max="100" step="10" value="0"><b id="volv">--</b></label>
+              <label class="dial"><span>亮度</span><input type="range" id="bri" min="0" max="4" step="1" value="0"><b id="briv">--</b></label>
+              <div class="dial"><span>只听</span><em id="listenNote">只放声音，屏幕只显示宠物</em><button class="switch" id="listen">关</button></div>
+            </div>
+            <div class="pets">
+              <div class="h3">宠物 <small id="petNote"></small></div>
+              <div class="petgrid" id="petgrid"></div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="groups" id="groups"></div>
+          <div class="grid" id="channels"></div>
+          <p class="hint">点一下，小电视就换到这个台。<button class="linkbtn noguest" id="adjust">调整分组</button></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设备 -->
+    <section class="page" id="devices">
+      <div class="block">
+        <div class="h3">我的小电视 <small id="devCount"></small></div>
+        <table>
+          <thead><tr><th>名字</th><th>型号 · 固件</th><th>状态</th><th>正在播</th><th>访客</th><th></th></tr></thead>
+          <tbody id="devRows"></tbody>
+        </table>
+      </div>
+      <div class="block" style="max-width: 640px">
+        <div class="h3">绑定新的小电视</div>
+        <div class="inline">
+          <input type="text" id="claim" placeholder="小电视屏幕上的 20 位绑定码" autocomplete="off">
+          <button class="go" id="bind">绑定</button>
+        </div>
+        <p class="hint">新的小电视连上网以后，屏幕上会显示绑定码；也可以用手机扫它状态页上的二维码绑定。
+          「访客码」给家里来的客人扫：只能遥控这一台，看不到你的订阅；「换码」后扫旧码进来的访客要重新扫。</p>
+      </div>
+    </section>
+
+    <!-- 订阅 -->
+    <section class="page" id="subs">
+      <div class="cols">
+        <div class="block">
+          <div class="h3">UP 主 <small id="upCount"></small></div>
+          <div class="inline">
+            <input type="text" id="creatorLink" placeholder="B 站 UP 主 / YouTube 频道主页，或他们的任意视频链接">
+            <button class="go" id="addCreator">添加</button>
+          </div>
+          <table><tbody id="creatorRows"></tbody></table>
+          <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播。</p>
+        </div>
+        <div class="block">
+          <div class="h3">剧集 <small id="seriesCount"></small></div>
+          <div class="inline">
+            <input type="text" id="seriesLink" placeholder="B 站番剧 / 多集视频 / 合集，或 YouTube 播放列表链接">
+          </div>
+          <div class="inline">
+            <input type="text" id="seriesName" placeholder="台名（可不填，自动取剧名）" maxlength="20">
+            <button class="go" id="addSeries">添加</button>
+          </div>
+          <table><tbody id="seriesRows"></tbody></table>
+          <p class="hint">每部剧是一个台（在「动画影视」组里），按顺序播，换台回来接着上次的地方。点一部剧选集。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 投屏 -->
+    <section class="page" id="cast">
+      <div class="block" style="max-width: 760px">
+        <div class="h3">粘贴即播 <small id="castTo"></small></div>
+        <textarea id="castLink" placeholder="粘贴 B 站或 YouTube 视频链接"></textarea>
+        <div class="inline" style="margin-top: 10px"><button class="go" id="castGo">在小电视上播放</button></div>
+      </div>
+      <div class="block noguest">
+        <div class="h3">放过的 <small>最多 50 个</small></div>
+        <table>
+          <thead><tr><th>视频</th><th>来源</th><th>时间</th><th></th></tr></thead>
+          <tbody id="historyRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="page" id="settings">
+      <div class="block">
+        <div class="h3">登录的地方 <small>手机、电脑，和你设备上的访客</small></div>
+        <table>
+          <thead><tr><th>类型</th><th>浏览器</th><th>网络</th><th>最近使用</th><th>登录时间</th><th></th></tr></thead>
+          <tbody id="sessionRows"></tbody>
+        </table>
+        <div class="inline" style="margin-top: 14px">
+          <button class="ghost" id="logoutOthers">退出其他所有登录</button>
+          <button class="ghost" id="logout2">退出这台电脑</button>
+        </div>
+        <p class="hint">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机要再扫一次邀请或小电视的码，电脑要再扫码）；访客不受影响，可以单独退出。</p>
+      </div>
+      <div class="block" id="ytBlock" hidden>
+        <div class="h3">YouTube 节点</div>
+        <p id="ytState"></p>
+      </div>
+      <div class="block"><a class="linkbtn" href="/TV/" target="_blank" rel="noreferrer">使用说明 ›</a></div>
+    </section>
+
+    <!-- 邀请（管理员） -->
+    <section class="page" id="invites">
+      <div class="block" style="max-width: 640px">
+        <div class="h3">邀请家人</div>
+        <div class="inline">
+          <input type="text" id="inviteName" placeholder="家人的名字（可不填）" maxlength="20">
+          <button class="go" id="invite">生成邀请</button>
+        </div>
+        <p class="hint">邀请链接 7 天内有效、只能用一次。发给家人，在手机浏览器里打开、点「接受邀请」，那台手机就登录了；之后电脑扫码登录。</p>
+      </div>
+      <div class="block">
+        <div class="h3">最近的邀请</div>
+        <table>
+          <thead><tr><th>名字</th><th>生成</th><th>到期</th><th>状态</th></tr></thead>
+          <tbody id="inviteRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="shade" id="shade" hidden></div>
+<div class="drawer" id="drawer" hidden>
+  <header>
+    <div class="crumb"><button class="linkbtn" id="epClose">关闭 ×</button><span id="epId"></span></div>
+    <h3 id="epName"></h3>
+    <p id="epSum"></p>
+  </header>
+  <div class="list" id="epList"></div>
+</div>
+<div class="modal" id="modal" hidden></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const PAGES = { remote: "遥控", devices: "设备", subs: "订阅", cast: "投屏", settings: "设置", invites: "邀请" };
+// 和固件 xiaozhi_tv_ui_assets.h 的 PETS[] 同序（同 remote.html）。
+const PETS = [["diandian", "电电"], ["doudou", "豆豆"], ["mimi", "咪咪"], ["bobo", "波波"], ["kaka", "卡卡"], ["dengdeng", "灯灯"],
+              ["anan", "按按"], ["tietie", "铁铁"], ["piaopiao", "飘飘"], ["jiujiu", "啾啾"], ["cici", "刺刺"]];
+let me = null;            // {name, role, kind}
+let data = null;          // /api/state
+let page = "remote";
+let chosen = "";          // 电脑上选的设备；空 = 跟着手机（最近换过台的那台）
+let group = "";
+let pending = null;       // 换台、跳转后到设备真的过去之前
+let adjusting = false;
+let fetchedAt = 0;
+let dragging = false;
+let dialBusy = "";
+let listenPending = null;
+let toastTimer = 0;
+
+// ---------- 小工具 ----------
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function button(text, cls, onclick) {
+  const b = el("button", cls || "linkbtn", text);
+  b.onclick = onclick;
+  return b;
+}
+function toast(text, bad) {
+  const t = $("toast");
+  t.textContent = text;
+  t.className = "toast on" + (bad ? " bad" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = "toast"; }, 2800);
+}
+function pad(n) { return String(n).padStart(2, "0"); }
+function clock(seconds) {
+  seconds = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(seconds / 3600), m = Math.floor(seconds / 60) % 60, s = seconds % 60;
+  return (h ? h + ":" + pad(m) : m) + ":" + pad(s);
+}
+function when(at) {
+  if (!at) return "—";
+  const d = new Date(at * 1000), now = new Date();
+  const time = pad(d.getHours()) + ":" + pad(d.getMinutes());
+  if (d.toDateString() === now.toDateString()) return "今天 " + time;
+  if (d.toDateString() === new Date(now.getTime() - 86400000).toDateString()) return "昨天 " + time;
+  return (d.getMonth() + 1) + "月" + d.getDate() + "日 " + time;
+}
+function siteTag(site) { return site === "youtube" ? "YouTube" : "B 站"; }
+
+class SignedOut extends Error {}
+async function call(method, path, body) {
+  const options = { method, credentials: "same-origin", headers: {} };
+  if (body !== undefined) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  if (response.status === 404) throw new SignedOut("登录已失效");
+  return response.json();
+}
+async function busy(btn, work) {
+  btn.disabled = true;
+  try { await work(); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else toast(error.message || "网络不通", true); }
+  finally { btn.disabled = false; }
+}
+
+// 遥控类的请求都点名设备：电脑选的那台，不影响手机。
+function deviceId() {
+  if (!data) return "";
+  const d = (data.devices || []).find((x) => x.id === chosen) || (data.devices || []).find((x) => x.target);
+  return d ? d.id : "";
+}
+function deviceName() {
+  const d = data && (data.devices || []).find((x) => x.id === deviceId());
+  return d ? d.name : "小电视";
+}
+function withDevice(body) {
+  const id = deviceId();
+  return id ? Object.assign({ device: id }, body || {}) : (body || {});
+}
+
+// ---------- 登录 ----------
+
+let ticketRun = 0;
+async function boot() {
+  let status;
+  try { status = await call("GET", "api/login/status"); }
+  catch (error) { setTimeout(boot, 3000); return; }
+  if (!status.signed_in) { showLogin(); return; }
+  me = status.me;
+  showApp();
+}
+
+function showLogin() {
+  me = null;
+  data = null;
+  $("app").hidden = true;
+  $("login").hidden = false;
+  newTicket(0);
+}
+
+function signedOut() {
+  if (!$("login").hidden) return;
+  toast("登录已失效，请重新扫码", true);
+  showLogin();
+}
+
+// 二维码 2 分钟过期；页面开着时自动换新的，最多换 5 次（约 10 分钟），之后点一下再换。
+async function newTicket(round) {
+  const run = ++ticketRun;
+  const over = $("qrOver");
+  over.hidden = false;
+  over.replaceChildren(el("span", "", "正在生成二维码…"));
+  let answer;
+  try {
+    const response = await fetch("api/login/ticket", { method: "POST", credentials: "same-origin" });
+    answer = await response.json();
+  } catch (error) { answer = { ok: false, error: "网络不通，过一会儿再试" }; }
+  if (run !== ticketRun) return;
+  if (!answer.ok) { expired(answer.error); return; }
+  $("qr").querySelector("svg") && $("qr").querySelector("svg").remove();
+  $("qr").insertAdjacentHTML("afterbegin", answer.svg);   // 服务器画的二维码，只有数字和固定颜色
+  over.hidden = true;
+  $("code").textContent = answer.code;
+  const deadline = Date.now() + answer.ttl * 1000;
+  const state = $("loginState");
+  const countdown = setInterval(() => {
+    if (run !== ticketRun) { clearInterval(countdown); return; }
+    const left = Math.round((deadline - Date.now()) / 1000);
+    if (state.dataset.fixed) return;
+    state.className = "meta";
+    state.textContent = left > 0 ? "等待手机确认 · " + clock(left) + " 后过期" : "过期了";
+  }, 1000);
+  state.dataset.fixed = "";
+  state.className = "meta";
+  state.textContent = "等待手机确认 · " + clock(answer.ttl) + " 后过期";
+  while (run === ticketRun) {
+    let result;
+    const began = Date.now();
+    try {
+      const response = await fetch("api/login/poll", { method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ poll: answer.poll }) });
+      result = await response.json();
+    } catch (error) { result = { state: "pending" }; await sleep(3000); }
+    if (run !== ticketRun) return;
+    if (result.state === "ok") {
+      clearInterval(countdown);
+      state.className = "meta ok";
+      state.dataset.fixed = "1";
+      state.textContent = "手机已确认，正在登录…";
+      ticketRun++;
+      boot();
+      return;
+    }
+    if (result.state === "denied") { clearInterval(countdown); expired("手机上点了取消"); return; }
+    if (result.state === "expired") {
+      clearInterval(countdown);
+      if (round < 5 && !document.hidden) { newTicket(round + 1); return; }
+      expired("二维码过期了");
+      return;
+    }
+    if (Date.now() - began < 1500) await sleep(2000);   // 服务器忙时会立刻回答「还在等」
+  }
+}
+
+function expired(text) {
+  const over = $("qrOver");
+  over.hidden = false;
+  over.replaceChildren(el("span", "", text), button("刷新二维码", "", () => newTicket(0)));
+  $("code").textContent = "··· ···";
+  $("loginState").textContent = "";
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+// ---------- 外框 ----------
+
+function showApp() {
+  ticketRun++;
+  $("login").hidden = true;
+  $("app").hidden = false;
+  $("meName").textContent = me.name;
+  $("meRole").textContent = me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人";
+  $("navInvites").hidden = me.role !== "admin";
+  for (const b of document.querySelectorAll(".noguest")) b.hidden = me.role === "guest";
+  try { chosen = localStorage.getItem("console.device") || ""; } catch (error) {}
+  let saved = "remote";
+  try { saved = localStorage.getItem("console.page") || "remote"; } catch (error) {}
+  go(PAGES[saved] && !(me.role === "guest" && !["remote", "cast", "settings"].includes(saved))
+     && !(saved === "invites" && me.role !== "admin") ? saved : "remote");
+  refresh();
+  schedule(5000);
+}
+
+function go(name) {
+  page = name;
+  for (const b of document.querySelectorAll("#nav button")) b.classList.toggle("on", b.dataset.page === name);
+  for (const p of document.querySelectorAll(".page")) p.classList.toggle("on", p.id === name);
+  $("pageTitle").textContent = PAGES[name];
+  $("devpick").hidden = !["remote", "cast"].includes(name);
+  try { localStorage.setItem("console.page", name); } catch (error) {}
+  if (name === "devices") loadDevices();
+  if (name === "settings") loadSessions();
+  if (name === "invites") loadInvites();
+}
+for (const b of document.querySelectorAll("#nav button")) b.onclick = () => go(b.dataset.page);
+
+async function logout() {
+  try { await call("POST", "api/logout"); } catch (error) {}
+  showLogin();
+}
+$("logout").onclick = logout;
+$("logout2").onclick = logout;
+
+// ---------- 数据 ----------
+
+async function refresh() {
+  if ($("app").hidden) return;
+  const id = chosen;
+  try {
+    data = await call("GET", "api/state" + (id ? "?device=" + encodeURIComponent(id) : ""));
+  } catch (error) {
+    if (!(error instanceof SignedOut)) return;
+    if (id) { chosen = ""; return refresh(); }   // 选的设备没了（解绑、换了主人）
+    signedOut();
+    return;
+  }
+  fetchedAt = Date.now();
+  settlePending();
+  render();
+}
+
+let timer = 0;
+function schedule(delay) {
+  clearTimeout(timer);
+  timer = setTimeout(async () => {
+    if (!document.hidden) await refresh();
+    schedule(pending || listenPending ? 1000 : 5000);
+  }, delay);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("app").hidden) refresh(); });
+
+function render() {
+  if (!data) return;
+  renderNotice();
+  renderPicker();
+  renderScreen();
+  renderPlayer();
+  renderDials();
+  renderPets();
+  renderGroups();
+  renderChannels();
+  renderSubs();
+  renderHistory();
+  followEpisodes();
+}
+
+function renderNotice() {
+  const state = data.youtube ? data.youtube.state : "";
+  const text = state === "login" ? "YouTube 需要更新 cookies（管理员用小号重新导出，见使用说明），B 站不受影响"
+    : state === "unreachable" ? "YouTube 暂时不可用（连不上海外节点）" : "";
+  $("notice").hidden = !text;
+  $("notice").textContent = text;
+  $("ytBlock").hidden = !data.youtube;
+  if (data.youtube) $("ytState").textContent = { ok: "正常", login: "cookies 过期了，需要重新导出", error: "出错了",
+    unreachable: "连不上", unknown: "还不知道" }[state] || state;
+}
+
+function renderPicker() {
+  const box = $("devpick");
+  box.replaceChildren();
+  const list = data.devices || [];
+  if (chosen && !list.some((d) => d.id === chosen)) chosen = "";
+  if (list.length > 1) {
+    const auto = el("button", chosen ? "" : "on", "自动");
+    auto.title = "跟着最近换过台的那台";
+    auto.onclick = () => pick("");
+    box.appendChild(auto);
+  }
+  const current = deviceId();
+  for (const d of list) {
+    const b = el("button", (list.length === 1 || chosen) && d.id === current ? "on" : "", d.name);
+    b.appendChild(el("em", d.online ? "live" : "", d.online ? (!chosen && d.id === current && list.length > 1 ? "● 自动" : "● 在线") : "离线"));
+    b.onclick = () => pick(d.id);
+    box.appendChild(b);
+  }
+  $("castTo").textContent = list.length ? "投到：" + deviceName() : "";
+}
+
+function pick(id) {
+  chosen = id;
+  try { localStorage.setItem("console.device", id); } catch (error) {}
+  pending = null;
+  group = "";      // 跟着这台正在播的台所在的组
+  refresh();
+}
+
+// ---------- 遥控 ----------
+
+function startPending(channel, name, at, slow, kind, target, label) {
+  pending = { kind: kind || "switch", channel, name, at, target, label, deadline: Date.now() + (slow ? 45000 : 20000) };
+  render();
+  schedule(800);
+}
+
+function settlePending() {
+  if (!pending) return;
+  const now = data.now, v = now.video;
+  const done = pending.kind === "seek"
+    ? now.channel !== pending.channel || (v && !v.paused && v.started >= pending.at - 1)
+    : now.online && now.channel === pending.channel && now.since >= pending.at - 1;
+  if (done) pending = null;
+  else if (Date.now() > pending.deadline) {
+    toast(pending.kind === "seek" ? "跳转好像没成功，再试一次" : "切换好像没成功，再点一次试试", true);
+    pending = null;
+  }
+}
+
+function nowTitle(now) {
+  if (!now.episode) return now.title || "";
+  return "第 " + now.episode + " / " + now.total + " 集" + (now.title ? " · " + now.title : "");
+}
+
+function renderScreen() {
+  const now = data.now, screen = $("screen");
+  let cls = "card screen", ch = "CH " + pad(now.n || 0), grp = now.group, nm = now.name || now.channel, ti = nowTitle(now);
+  if (pending && pending.kind === "seek") { cls += " switching"; ti = pending.label || "跳转中…"; }
+  else if (pending) { cls += " switching"; ch = "CH ··"; grp = ""; nm = "正在切到「" + pending.name + "」"; ti = "切换中…"; }
+  else if (now.online && now.video && now.video.paused) ti = "已暂停 · " + nowTitle(now);
+  else if (!(now.online && now.channel)) {
+    cls += " off"; ch = "— —"; grp = "";
+    const none = !(data.devices || []).length;
+    nm = none ? "还没有绑定小电视" : deviceName() + "没在线";
+    ti = none ? "到「设备」页输入小电视屏幕上的绑定码" : "打开小电视后这里会显示正在播的台";
+  }
+  screen.className = cls;
+  $("ch").textContent = ch;
+  $("grp").textContent = grp;
+  $("nm").textContent = nm;
+  $("ti").textContent = ti;
+}
+
+function renderPlayer() {
+  const v = data.now.online ? data.now.video : null;
+  const series = data.now.online && data.now.total > 0;
+  $("epbar").hidden = !series;
+  if (series) $("epnow").textContent = data.now.episode ? "第 " + data.now.episode + " / " + data.now.total + " 集" : "共 " + data.now.total + " 集";
+  $("player").hidden = !v;
+  if (!v) return;
+  $("prev").hidden = !series;
+  $("prev").disabled = data.now.episode === 1;
+  $("next").textContent = series ? "下一集" : "下一个";
+  const seeking = pending && pending.kind === "seek" && pending.target != null;
+  const position = seeking ? pending.target : v.paused || !v.moving ? v.position : v.position + (Date.now() - fetchedAt) / 1000;
+  const duration = v.duration || 0;
+  const bar = $("seek");
+  bar.disabled = !duration;
+  if (!dragging) {
+    bar.max = String(Math.max(1, Math.floor(duration)));
+    bar.value = String(Math.min(Math.floor(position), Math.floor(duration)));
+    $("pos").textContent = clock(position);
+  }
+  $("dur").textContent = duration ? clock(duration) : "--:--";
+  $("pause").textContent = v.paused ? "继续" : "暂停";
+}
+setInterval(() => { if (data && !document.hidden && page === "remote") renderPlayer(); }, 1000);
+
+async function control(path, body) {
+  try {
+    const answer = await call("POST", path, withDevice(body));
+    if (!answer.ok) { toast(answer.error, true); return; }
+    if (path === "api/pause") { toast("已暂停"); refresh(); return; }
+    if (path === "api/resume") { toast("继续播放"); refresh(); return; }
+    if (path === "api/next") { toast(data.now.total ? "下一集" : "下一个"); startPending(data.now.channel, data.now.name, answer.at, true, "seek"); return; }
+    if (path === "api/previous") {
+      if (answer.note) { toast(answer.note); return; }
+      toast("上一集：第 " + answer.episode + " 集");
+      startPending(data.now.channel, data.now.name, answer.at, true, "seek", null, "换到第 " + answer.episode + " 集…");
+      return;
+    }
+    toast("已跳到 " + clock(answer.position) + "，马上接上");
+    startPending(data.now.channel, data.now.name, answer.at, true, "seek", answer.position);
+  } catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); }
+}
+$("back").onclick = () => control("api/seek", { delta: -30 });
+$("fwd").onclick = () => control("api/seek", { delta: 30 });
+$("next").onclick = () => control("api/next");
+$("prev").onclick = () => control("api/previous");
+$("pause").onclick = () => control(data.now.video && data.now.video.paused ? "api/resume" : "api/pause");
+$("seek").addEventListener("input", () => { dragging = true; $("pos").textContent = clock(Number($("seek").value)); });
+$("seek").addEventListener("change", () => { dragging = false; control("api/seek", { position: Number($("seek").value) }); });
+
+function renderDials() {
+  const d = data.now.online ? data.now.device : null;
+  $("dials").className = "dials" + (d ? "" : " off");
+  $("vol").disabled = $("bri").disabled = !d;
+  if (!d) { $("volv").textContent = $("briv").textContent = "--"; }
+  else {
+    $("bri").max = String(Math.max(0, d.steps - 1));
+    if (dialBusy !== "vol") { $("vol").value = String(d.volume); $("volv").textContent = d.volume + "%"; }
+    if (dialBusy !== "bri") { $("bri").value = String(d.brightness); $("briv").textContent = (d.brightness + 1) + "/" + d.steps; }
+  }
+  const known = d && typeof d.audio_only === "number";
+  let on = known && d.audio_only === 1;
+  if (listenPending) {
+    if (known && (d.audio_only === 1) === listenPending.want) listenPending = null;
+    else if (Date.now() > listenPending.deadline) { listenPending = null; toast("小电视好像没切过去，再点一次试试", true); }
+    else on = listenPending.want;
+  }
+  const sw = $("listen");
+  sw.disabled = !known || !!listenPending;
+  sw.className = "switch" + (on ? " on" : "");
+  sw.textContent = on ? "开" : "关";
+  $("listenNote").textContent = listenPending ? "切换中…" : !known ? (d ? "固件太旧，用不了" : deviceName() + "没在线")
+    : on ? "只放声音，省流量也省电" : "只放声音，屏幕只显示宠物";
+}
+function dial(id, key, label) {
+  const input = $(id);
+  input.addEventListener("input", () => { dialBusy = id; $(id + "v").textContent = label(Number(input.value)); });
+  input.addEventListener("change", async () => {
+    const body = {};
+    body[key] = Number(input.value);
+    try {
+      const answer = await call("POST", "api/device", withDevice(body));
+      if (!answer.ok) toast(answer.error, true);
+    } catch (error) { if (error instanceof SignedOut) signedOut(); }
+    finally { setTimeout(() => { dialBusy = ""; refresh(); }, 1500); }
+  });
+}
+dial("vol", "volume", (v) => v + "%");
+dial("bri", "brightness", (v) => (v + 1) + "/" + (data && data.now.device ? data.now.device.steps : "?"));
+$("listen").onclick = () => busy($("listen"), async () => {
+  const d = data && data.now.device;
+  if (!d || typeof d.audio_only !== "number") return;
+  const want = d.audio_only !== 1;
+  const answer = await call("POST", "api/audio", withDevice({ on: want }));
+  if (!answer.ok) { toast(answer.error, true); return; }
+  listenPending = { want, deadline: Date.now() + 15000 };
+  render();
+  schedule(1000);
+});
+
+function renderPets() {
+  const d = data.now.online ? data.now.device : null;
+  const cur = d && typeof d.pet === "number" ? d.pet : null;
+  $("petNote").textContent = cur === null ? (d ? "固件太旧，换不了" : deviceName() + "没在线") : "现在是" + PETS[cur][1] + " · 点一只换上";
+  const grid = $("petgrid");
+  if (grid.childElementCount !== PETS.length) {
+    PETS.forEach((pet, i) => {
+      const b = el("button");
+      const img = el("img");
+      img.src = "pets/" + pet[0] + "_mood0.png"; img.alt = "";
+      b.append(img, el("span", "", pet[1]));
+      b.onclick = () => busy(b, async () => {
+        const answer = await call("POST", "api/pet", withDevice({ pet: i }));
+        if (!answer.ok) { toast(answer.error, true); return; }
+        toast("已换上" + pet[1]);
+        setTimeout(refresh, 2500);
+      });
+      grid.appendChild(b);
+    });
+  }
+  [...grid.children].forEach((b, i) => { b.className = i === cur ? "cur" : ""; b.disabled = cur === null; });
+}
+
+function renderGroups() {
+  const names = data.groups.map((g) => g.name);
+  if (!names.includes(group)) group = data.now.group && names.includes(data.now.group) ? data.now.group : names[0];
+  const box = $("groups");
+  box.replaceChildren();
+  for (const g of data.groups) {
+    const b = el("button", g.name === group ? "on" : "", g.name);
+    b.onclick = () => { group = g.name; renderGroups(); renderChannels(); };
+    box.appendChild(b);
+  }
+}
+
+function renderChannels() {
+  const grid = $("channels");
+  grid.replaceChildren();
+  const current = data.groups.find((g) => g.name === group);
+  if (!current) return;
+  const sites = {};
+  for (const c of data.creators) sites[c.id] = c.site;
+  for (const s of data.series || []) sites[s.id] = s.site;
+  const movable = !["我的投屏", "UP 主"].includes(group);
+  for (const c of current.channels) {
+    const air = !pending && c.id === data.now.channel && data.now.online;
+    const going = pending && pending.kind === "switch" && c.id === pending.channel;
+    const card = el("button", "chcard" + (air ? " air" : "") + (going ? " pending" : ""));
+    const n = el("div", "n", pad(c.n));
+    n.appendChild(el("span", "", going ? "切换中…" : air ? "播放中" : sites[c.id] ? siteTag(sites[c.id]) : c.id === "cast" ? "投屏" : ""));
+    card.append(n, el("div", "t", c.name));
+    if (adjusting && movable) {
+      const select = el("select");
+      for (const name of data.group_names) {
+        const option = el("option", "", name);
+        option.value = name;
+        option.selected = name === group;
+        select.appendChild(option);
+      }
+      select.onclick = (event) => event.stopPropagation();
+      select.onchange = async () => {
+        try {
+          const answer = await call("POST", "api/groups", { channel: c.id, group: select.value });
+          if (!answer.ok) toast(answer.error, true); else toast("已移到「" + select.value + "」");
+        } catch (error) { if (error instanceof SignedOut) signedOut(); }
+        refresh();
+      };
+      card.appendChild(select);
+    } else {
+      card.onclick = () => busy(card, async () => {
+        if (air || going) return;
+        const answer = await call("POST", "api/switch", withDevice({ channel: c.id }));
+        if (answer.ok) startPending(c.id, c.name, answer.at, !movable);
+        else toast(answer.error, true);
+      });
+    }
+    grid.appendChild(card);
+  }
+}
+$("adjust").onclick = () => {
+  adjusting = !adjusting;
+  $("adjust").textContent = adjusting ? "完成" : "调整分组";
+  $("adjust").classList.toggle("on", adjusting);
+  if (data) renderChannels();
+};
+
+// ---------- 选集（抽屉） ----------
+
+let eps = null, epPending = 0, epLoading = false;
+
+async function openEpisodes(id) {
+  eps = null; epPending = 0;
+  const sr = (data.series || []).find((x) => x.id === id);
+  $("epId").textContent = id.toUpperCase();
+  $("epName").textContent = sr ? sr.name : "";
+  $("epSum").textContent = "正在取集数…";
+  $("epList").replaceChildren();
+  $("shade").hidden = $("drawer").hidden = false;
+  await loadEpisodes(id, true);
+}
+function closeOverlays() {
+  $("shade").hidden = $("drawer").hidden = $("modal").hidden = true;
+  eps = null;
+}
+$("epClose").onclick = closeOverlays;
+$("shade").onclick = closeOverlays;
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeOverlays(); });
+
+async function loadEpisodes(id, scroll) {
+  epLoading = true;
+  let answer;
+  const id2 = deviceId();
+  try { answer = await call("GET", "api/series/" + id + "/episodes" + (id2 ? "?device=" + encodeURIComponent(id2) : "")); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  finally { epLoading = false; }
+  if ($("drawer").hidden) return;
+  if (!answer.ok) { toast(answer.error, true); closeOverlays(); return; }
+  eps = answer;
+  renderEpisodes(scroll);
+}
+
+function renderEpisodes(scroll) {
+  const list = $("epList");
+  const mark = eps.playing || eps.next;
+  const frag = document.createDocumentFragment();
+  for (const ep of eps.episodes) {
+    const row = el("div", "ep" + (ep.state === "watched" && ep.n !== mark ? " seen" : "") + (ep.n === mark ? " cur" : "") + (ep.n === epPending ? " pending" : ""));
+    row.dataset.n = String(ep.n);
+    const label = ep.n === epPending ? "切换中…" : ep.n === eps.playing ? "播放中"
+      : ep.state === "current" ? (ep.position ? "看到 " + clock(ep.position) : "接着播")
+      : ep.state === "watched" ? "看过" : ep.duration ? clock(ep.duration) : "";
+    row.append(el("span", "n", pad(ep.n)), el("span", "t", ep.title || "第 " + ep.n + " 集"), el("span", "s", label));
+    frag.appendChild(row);
+  }
+  list.replaceChildren(frag);
+  $("epName").textContent = eps.name;
+  $("epSum").textContent = "共 " + eps.total + " 集 · " + (eps.playing ? "正在播第 " + eps.playing + " 集" : "下次从第 " + eps.next + " 集播")
+    + " · 点一集，" + deviceName() + "就从这一集播";
+  if (scroll) { const cur = list.querySelector(".ep.cur"); if (cur) cur.scrollIntoView({ block: "center" }); }
+}
+$("epList").onclick = async (event) => {
+  const row = event.target.closest(".ep");
+  if (!row || !eps || epPending) return;
+  const n = Number(row.dataset.n);
+  if (n === eps.playing) { toast("正在播这一集"); return; }
+  const id = eps.id, name = eps.name;
+  epPending = n;
+  renderEpisodes(false);
+  try {
+    const answer = await call("POST", "api/series/" + id + "/play", withDevice({ episode: n }));
+    if (!answer.ok) toast(answer.error, true);
+    else if (answer.note) toast(answer.note);
+    else { toast("马上播第 " + answer.episode + " 集"); startPending(id, name, answer.at, true, answer.cut ? "seek" : "switch", null, "换到第 " + answer.episode + " 集…"); }
+  } catch (error) { if (error instanceof SignedOut) signedOut(); }
+  finally { epPending = 0; await loadEpisodes(id, false); }
+};
+function followEpisodes() {
+  if (!eps || epLoading || epPending || $("drawer").hidden) return;
+  const sr = (data.series || []).find((x) => x.id === eps.id);
+  const playing = data.now.online && data.now.channel === eps.id ? data.now.episode : 0;
+  if ((sr && sr.episode !== eps.next) || playing !== eps.playing) loadEpisodes(eps.id, false);
+}
+$("openEps").onclick = () => { if (data && data.now.total) openEpisodes(data.now.channel); };
+
+// ---------- 订阅 ----------
+
+function removeButton(kind, item) {
+  return button("删除", "linkbtn red", async (event) => {
+    event.stopPropagation();
+    if (!confirm("删除「" + item.name + "」这个台？" + (kind === "series" ? "看到哪一集也会忘掉。" : ""))) return;
+    try {
+      const answer = await call("DELETE", "api/" + kind + "/" + item.id);
+      if (!answer.ok) toast(answer.error, true);
+    } catch (error) { if (error instanceof SignedOut) signedOut(); }
+    refresh();
+  });
+}
+
+function renderSubs() {
+  if (!me || me.role === "guest") return;
+  const ups = $("creatorRows");
+  ups.replaceChildren();
+  $("upCount").textContent = data.creators.length + " / 12";
+  if (!data.creators.length) ups.appendChild(emptyRow("还没有添加 UP 主", 3));
+  for (const c of data.creators) {
+    const tr = el("tr");
+    const a = el("td", "a");
+    a.appendChild(removeButton("creators", c));
+    tr.append(el("td", "t", c.name), el("td", "m", siteTag(c.site) + " · 未看 " + c.left + " / " + c.total), a);
+    ups.appendChild(tr);
+  }
+  const rows = $("seriesRows");
+  rows.replaceChildren();
+  const room = data.room || {};
+  $("seriesCount").textContent = (data.series || []).length + " 部" + (room.fits === false ? " · 频道列表已满" : "");
+  if (!(data.series || []).length) rows.appendChild(emptyRow("还没有添加剧集", 3));
+  for (const s of data.series || []) {
+    const tr = el("tr", "tap");
+    tr.onclick = () => openEpisodes(s.id);
+    const a = el("td", "a");
+    a.append(button("选集 ›", "linkbtn", (event) => { event.stopPropagation(); openEpisodes(s.id); }), removeButton("series", s));
+    tr.append(el("td", "t", s.name), el("td", "m", siteTag(s.site) + " · 第 " + s.episode + " / " + s.total + " 集"), a);
+    rows.appendChild(tr);
+  }
+}
+function emptyRow(text, span) {
+  const tr = el("tr");
+  const td = el("td", "empty", text);
+  td.colSpan = span;
+  tr.appendChild(td);
+  return tr;
+}
+$("addCreator").onclick = () => busy($("addCreator"), async () => {
+  toast("正在添加…");
+  const answer = await call("POST", "api/creators", { url: $("creatorLink").value });
+  if (answer.ok) { $("creatorLink").value = ""; toast("已添加「" + answer.creator.name + "」"); refresh(); }
+  else toast(answer.error, true);
+});
+$("addSeries").onclick = () => busy($("addSeries"), async () => {
+  toast("正在取集数…");
+  const answer = await call("POST", "api/series", { url: $("seriesLink").value, name: $("seriesName").value });
+  if (answer.ok) {
+    $("seriesLink").value = ""; $("seriesName").value = "";
+    toast("已添加「" + answer.series.name + "」，共 " + answer.series.total + " 集"); refresh();
+  } else toast(answer.error, true);
+});
+
+// ---------- 投屏 ----------
+
+function renderHistory() {
+  if (!me || me.role === "guest") return;
+  const rows = $("historyRows");
+  rows.replaceChildren();
+  if (!data.history.length) rows.appendChild(emptyRow("还没有投过视频", 4));
+  for (const h of data.history) {
+    const tr = el("tr");
+    const a = el("td", "a");
+    a.append(button("重播", "linkbtn", () => busy(a.firstChild, async () => {
+      const answer = await call("POST", "api/history/play", withDevice({ site: h.site, id: h.id }));
+      if (answer.ok) { toast("马上播放《" + answer.title + "》"); startPending("cast", "我的投屏", answer.at, true); }
+      else toast(answer.error, true);
+    })), button("删除", "linkbtn red", async () => {
+      try {
+        const answer = await call("DELETE", "api/history/" + h.site + "/" + encodeURIComponent(h.id));
+        if (!answer.ok) toast(answer.error, true);
+      } catch (error) { if (error instanceof SignedOut) signedOut(); }
+      refresh();
+    }));
+    tr.append(el("td", "t", h.title || h.id), el("td", "m", siteTag(h.site)), el("td", "m", when(h.at)), a);
+    rows.appendChild(tr);
+  }
+}
+$("castGo").onclick = () => busy($("castGo"), async () => {
+  toast("正在取视频…");
+  const answer = await call("POST", "api/cast", withDevice({ url: $("castLink").value }));
+  if (answer.ok) { $("castLink").value = ""; toast("马上播放《" + answer.title + "》"); startPending("cast", "我的投屏", answer.at, true); }
+  else toast(answer.error, true);
+});
+
+// ---------- 设备 ----------
+
+async function loadDevices() {
+  let answer;
+  try { answer = await call("GET", "api/console/devices"); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  const rows = $("devRows");
+  rows.replaceChildren();
+  $("devCount").textContent = answer.devices.length + " 台";
+  if (!answer.devices.length) rows.appendChild(emptyRow("还没有绑定小电视", 6));
+  for (const d of answer.devices) {
+    const tr = el("tr");
+    const name = el("td", "t", d.name);
+    name.appendChild(el("span", "sub", d.mine ? "我的" : "家人共用"));
+    const state = el("td", "m");
+    state.appendChild(el("span", d.online ? "live" : "off", d.online ? "● 在线" : "离线"));
+    if (!d.online && d.last_seen) state.appendChild(el("span", "sub", "最后连接 " + when(d.last_seen)));
+    const playing = el("td", "t", d.online ? (d.channel_name || d.channel || "—") : "—");
+    if (d.online && d.title) playing.appendChild(el("span", "sub", d.title));
+    const actions = el("td", "a");
+    if (d.mine) {
+      actions.append(
+        button("改名", "linkbtn", () => renameDevice(d)),
+        button("访客码", "linkbtn", () => guestCode(d)),
+        ...(d.legacy ? [] : [button("重新配对", "linkbtn", () => repairDevice(d)), button("解绑", "linkbtn red", () => unbindDevice(d))]));
+    }
+    tr.append(name, el("td", "m", d.model_name + (d.fw ? " · " + d.fw : "") + (d.legacy ? " · 旧固件" : "")), state, playing,
+              el("td", "m", d.mine ? (d.guests ? d.guests + " 个" : "无") : "—"), actions);
+    rows.appendChild(tr);
+  }
+}
+
+function modal(title, ...nodes) {
+  const box = $("modal");
+  box.replaceChildren(el("h3", "", title), ...nodes);
+  $("shade").hidden = box.hidden = false;
+}
+async function renameDevice(d) {
+  const value = prompt("新名字（最多 20 个字）", d.name);
+  if (!value) return;
+  try {
+    const answer = await call("POST", "api/devices/" + d.id, { name: value });
+    if (!answer.ok) toast(answer.error, true); else toast("已改名为「" + answer.name + "」");
+  } catch (error) { if (error instanceof SignedOut) signedOut(); }
+  loadDevices(); refresh();
+}
+async function unbindDevice(d) {
+  if (!confirm("解绑「" + d.name + "」？解绑后它会显示新的绑定码，谁绑定就归谁；你的订阅不受影响。")) return;
+  try {
+    const answer = await call("POST", "api/devices/" + d.id + "/unbind", {});
+    if (!answer.ok) toast(answer.error, true); else toast("已解绑");
+  } catch (error) { if (error instanceof SignedOut) signedOut(); }
+  loadDevices(); refresh();
+}
+async function repairDevice(d) {
+  if (!confirm("小电视刷过机（清空了存储）、连不上了才需要：10 分钟内让它重新连上网络，它的新密钥会被记住。继续？")) return;
+  try {
+    const answer = await call("POST", "api/devices/" + d.id + "/repair", {});
+    toast(answer.ok ? answer.note : answer.error, !answer.ok);
+  } catch (error) { if (error instanceof SignedOut) signedOut(); }
+}
+async function qrSvg(text) {
+  const answer = await call("POST", "api/qr", { text });
+  return answer.ok ? answer.svg : "";
+}
+async function guestCode(d) {
+  if (!d.guest_link) { toast("这台还没有访客码", true); return; }
+  const box = el("div", "qrbox");
+  try { box.innerHTML = await qrSvg(d.guest_link); } catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  const rotate = button("换一个码", "ghost", async () => {
+    if (!confirm("换码后，扫旧码进来的访客都要重新扫；你和家人不受影响。确定？")) return;
+    try {
+      const answer = await call("POST", "api/code", { device: d.id });
+      if (!answer.ok) { toast(answer.error, true); return; }
+      toast("已换新码，小电视换台后显示新的二维码");
+      closeOverlays();
+      loadDevices();
+    } catch (error) { if (error instanceof SignedOut) signedOut(); }
+  });
+  const row = el("div", "row");
+  row.append(rotate, button("关闭", "go", closeOverlays));
+  modal("「" + d.name + "」的访客码", box,
+        el("p", "", "客人用手机相机或微信扫这个码，就能遥控这一台（换台、音量、投屏），看不到你的订阅，也碰不到别的设备。小电视状态页上的二维码是同一个。"),
+        el("div", "link", d.guest_link), row);
+}
+$("bind").onclick = () => busy($("bind"), async () => {
+  const claim = $("claim").value.replace(/[\s-]/g, "").toUpperCase();
+  if (!claim) { toast("请先输入绑定码", true); return; }
+  const answer = await call("POST", "api/bind", { claim });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  $("claim").value = "";
+  toast("已绑定「" + answer.device.name + "」，小电视几秒后换成你的频道");
+  loadDevices(); refresh();
+});
+
+// ---------- 设置 ----------
+
+async function loadSessions() {
+  let answer;
+  try { answer = await call("GET", "api/sessions"); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  const rows = $("sessionRows");
+  rows.replaceChildren();
+  const kinds = { phone: "手机", pc: "电脑", guest: "访客" };
+  for (const s of answer.sessions) {
+    const tr = el("tr");
+    const kind = el("td", "t", kinds[s.kind] || s.kind);
+    if (s.kind === "guest") kind.appendChild(el("span", "sub", s.device_name || s.device_id));
+    if (s.current) kind.appendChild(el("span", "sub live", "这台电脑"));
+    const a = el("td", "a");
+    if (!s.current) a.appendChild(button("退出", "linkbtn red", async () => {
+      try {
+        const result = await call("POST", "api/sessions/revoke", { id: s.id });
+        if (!result.ok) toast(result.error, true);
+      } catch (error) { if (error instanceof SignedOut) signedOut(); }
+      loadSessions();
+    }));
+    tr.append(kind, el("td", "m", s.browser), el("td", "m", s.ip_prefix || "—"), el("td", "m", when(s.last_seen)), el("td", "m", when(s.created_at)), a);
+    rows.appendChild(tr);
+  }
+  if (!answer.sessions.length) rows.appendChild(emptyRow("没有别的登录", 6));
+}
+$("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
+  if (!confirm("退出你在别的手机和电脑上的登录？它们要重新登录才能用。")) return;
+  const answer = await call("POST", "api/sessions/revoke", { others: true });
+  toast(answer.ok ? "已退出 " + answer.count + " 个登录" : answer.error, !answer.ok);
+  loadSessions();
+});
+
+// ---------- 邀请（管理员） ----------
+
+async function loadInvites() {
+  let answer;
+  try { answer = await call("GET", "api/invites"); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  const rows = $("inviteRows");
+  rows.replaceChildren();
+  if (!answer.invites.length) rows.appendChild(emptyRow("还没有邀请过", 4));
+  for (const i of answer.invites) {
+    const tr = el("tr");
+    const state = i.state === "used" ? "已接受" + (i.used_by_name ? "：" + i.used_by_name : "") : i.state === "expired" ? "过期了" : "等待接受";
+    tr.append(el("td", "t", i.name || "（没写名字）"), el("td", "m", when(i.created_at)), el("td", "m", when(i.expires_at)),
+              el("td", "m " + (i.state === "open" ? "live" : ""), state));
+    rows.appendChild(tr);
+  }
+}
+$("invite").onclick = () => busy($("invite"), async () => {
+  const answer = await call("POST", "api/invites", { name: $("inviteName").value });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  $("inviteName").value = "";
+  const box = el("div", "qrbox");
+  box.innerHTML = await qrSvg(answer.link);
+  const copy = button("复制链接", "ghost", async () => {
+    try { await navigator.clipboard.writeText(answer.link); toast("已复制"); } catch (error) { toast("请手动选中复制", true); }
+  });
+  const row = el("div", "row");
+  row.append(copy, button("关闭", "go", closeOverlays));
+  modal("邀请链接", box, el("p", "", "家人用手机扫码或打开这个链接，点「接受邀请」。7 天内有效、只能用一次。"), el("div", "link", answer.link), row);
+  loadInvites();
+});
+
+boot();
+</script>
+</body>
+</html>

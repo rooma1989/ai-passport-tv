@@ -194,6 +194,7 @@
   .gate { position: fixed; inset: 0; background: var(--ink); display: none; align-items: center; justify-content: center;
           padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
   .gate.on { display: flex; }
+  a.pclogin { margin-top: 14px; text-decoration: none; }
 </style>
 </head>
 <body>
@@ -304,6 +305,8 @@
           <button class="go" id="bind">绑定</button>
         </div>
         <div class="hint">新的小电视连上网以后，屏幕上会显示绑定码；也可以在小电视状态页（双击按键打开）扫二维码绑定。</div>
+        <!-- 电脑版（多用户阶段 2）：输入电脑屏幕上的 6 位登录码、退出已登录的电脑，页面是 login.html。 -->
+        <a class="petline pclogin" href="login"><span>电脑</span><b>登录电脑版：输入电脑屏幕上的 6 位码</b><i>›</i></a>
         <div id="adminBox" hidden>
           <div class="box inline">
             <input id="inviteName" placeholder="家人的名字（可不填）" maxlength="20">

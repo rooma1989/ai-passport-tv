@@ -165,6 +165,41 @@ class Accounts:
         return self._all("SELECT kind, device_id, created_at, last_seen, expires_at, user_agent, ip_prefix "
                          "FROM session WHERE user_id=? ORDER BY last_seen DESC", (user_id,))
 
+    # 阶段 2：电脑版「设置」里的登录列表。id 是令牌哈希的前 16 个十六进制数字：认得出是哪一个，
+    # 又推不出令牌本身。列出自己的会话，加上自己（主人）设备上的访客会话。
+
+    def session_list(self, user_id: int, current: str | None = None) -> list[dict]:
+        mine = db.sha256(current) if current else b""
+        rows = self._all(
+            "SELECT s.token_sha256, s.kind, s.device_id, s.created_at, s.last_seen, s.user_agent, s.ip_prefix, "
+            "d.name AS device_name FROM session s LEFT JOIN device d ON d.id=s.device_id "
+            "WHERE s.expires_at > ? AND (s.user_id=? OR (s.kind='guest' AND s.device_id IN "
+            "(SELECT device_id FROM device_member WHERE user_id=? AND role='owner'))) "
+            "ORDER BY s.last_seen DESC", (self.clock(), user_id, user_id))
+        for row in rows:
+            token_hash = row.pop("token_sha256")
+            row["id"] = token_hash.hex()[:16]
+            row["current"] = token_hash == mine
+        return rows
+
+    def revoke_session_id(self, user_id: int, session_id: str) -> bool:
+        """退出某一个：自己的，或自己设备上的访客。"""
+        if not re.fullmatch(r"[0-9a-f]{16}", session_id or ""):
+            return False
+        removed = self._run(
+            "DELETE FROM session WHERE substr(lower(hex(token_sha256)), 1, 16)=? AND (user_id=? OR "
+            "(kind='guest' AND device_id IN (SELECT device_id FROM device_member WHERE user_id=? AND role='owner')))",
+            (session_id, user_id, user_id))
+        if removed:
+            self.audit("session.revoke", user_id)
+        return removed > 0
+
+    def revoke_other_sessions(self, user_id: int, current: str) -> int:
+        """退出自己别的所有登录（手机、电脑），留下现在这个；访客不动。"""
+        removed = self._run("DELETE FROM session WHERE user_id=? AND token_sha256 != ?", (user_id, db.sha256(current)))
+        self.audit("session.revoke_others", user_id, detail=f"n={removed}")
+        return removed
+
     def count_sessions(self) -> int:
         return self._one("SELECT COUNT(*) AS n FROM session")["n"]
 
@@ -190,6 +225,12 @@ class Accounts:
         if row is None or row["used_by"] is not None or row["expires_at"] <= self.clock():
             return None
         return {"role": row["role"], "name": row["name"], "expires_at": row["expires_at"]}
+
+    def invite_list(self, limit: int = 30) -> list[dict]:
+        """最近的邀请（管理员的电脑版「邀请」页）：名字、时间、谁用了；不含码本身（库里也没有）。"""
+        return self._all("SELECT i.name, i.role, i.created_at, i.expires_at, i.used_at, u.name AS used_by_name "
+                         "FROM invite i LEFT JOIN user u ON u.id=i.used_by ORDER BY i.created_at DESC LIMIT ?",
+                         (limit,))
 
     def accept_invite(self, code: str, name: str, user_agent: str = "", ip: str = "") -> tuple[int, str]:
         """用掉邀请：建用户、发一个手机会话。返回 (用户 id, 会话)。邀请无效时 ValueError。"""

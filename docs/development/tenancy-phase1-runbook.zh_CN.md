@@ -240,11 +240,43 @@ database …`，然后 `voice: on, relay per device`），每次调中转都点�
 | 语音说「这台电视没有连到视频中转」 | 没设 `TV_RELAY_KEY_FILE`；或者（只在单用户时）没设 `TV_RELAY_DEVICE`。 |
 | 媒体日志有 `relay_catalog=relay status 404` | 单用户：`TV_RELAY_DEVICE` 不是中转里设备的 id 或名字。多用户：认出的设备不是 active（未绑定、退役、封禁）。 |
 
+## 阶段 2：电脑版
+
+电脑版是多用户中转的一部分，没有新的单元、端口或参数。单用户中转（没有 `--db`）对电脑版的所有
+路径都回答 404：先切到 `--db`。上线步骤：
+
+1. 按第 0 步复制新的 `server/`。中转第一次启动时给 `tv.db` 加一列（`login_ticket.poll_sha256`，
+   `ALTER TABLE ... ADD COLUMN`），库里别的都不动，旧代码照样能用升级后的文件。保险起见先按第 4 节备份。
+2. nginx：加上 [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) 里的 `/TV/L/`，
+   `nginx -t` 后重新加载。`/tv/console` 已经在 `/tv/` 里了。
+3. `systemctl restart tv-relay`。电视服务不用动。
+
+检查：在电脑上打开 `https://<site>/tv/console`，屏幕上有二维码和 6 位登录码。用已登录的手机扫码
+（打开的浏览器没登录时，页面会让你改用桌面图标），或者打开遥控「订阅 → 登录电脑版」输入登录码；
+看一眼显示的浏览器和网段，点确认。电脑一两秒内就登录了。它的「设置」页列出这次登录，「退出登录」结束它。
+
+工作方式和限制：
+
+| | |
+| --- | --- |
+| 路径 | 页面 `/tv/console`；扫码落地和手机确认页 `/TV/L/<票据>`（中转里是 `/l/<票据>`）和 `/tv/login`（输入登录码、已登录的电脑）；接口 `POST /api/login/ticket`、`POST /api/login/poll`、`GET /api/login/info`、`POST /api/login/confirm`、`GET /api/login/status`、`GET /api/sessions`、`POST /api/sessions/revoke`、`POST /api/logout`、`GET /api/console/devices`、`GET /api/invites`（管理员）、`POST /api/qr`；`GET /api/state?device=<id>` 只看某一台，不改手机选的那台 |
+| 票据 | 26 位 id（130 位）只在二维码里，6 位登录码（去掉 I、L、O、0、1）在屏幕上，另一个 256 位的轮询密钥只在页面里；除登录码外都只存 SHA-256。2 分钟过期，只能用一次；电脑每次长轮询最多等 25 秒 |
+| 谁能确认 | 用户已登录的手机或电脑会话（cookie）；访客和密钥都不行。确认页显示电脑的浏览器和 /24 网段，和手机不在同一网段时提醒 |
+| 限流 | 每个网段（/24 或 /48）10 分钟最多 12 张票据；每个用户、每个网段 10 分钟最多输错 10 次登录码；同时最多 100 张有效票据、32 个挂着的长轮询（多出来的立刻回答，页面再来） |
+| 电脑会话 | 30 天，cookie `tvs`，`HttpOnly; Secure; SameSite=Lax; Path=/tv/`；「设置」里和手机、你设备上的访客列在一起；「退出其他所有登录」只留下当前这个 |
+| 跨站请求 | 所有 POST 和 DELETE（两种模式都是）在浏览器表明来自别的网站时（`Sec-Fetch-Site: cross-site`/`same-site`，或 `Origin` 的主机和 `Host` 不同）一律 404；没有这两个头的请求（电视服务、curl）不受影响 |
+| 页面 | `Content-Security-Policy` 不允许任何外部来源，`frame-ancestors 'none'`，`X-Frame-Options: DENY`；二维码由中转自己画（`server/relay/qr.py`，移植自固件用的同一个库） |
+
+管理员的密钥链接仍是应急登录：在电脑上打开 `https://<site>/tv/?k=<密钥>`，再打开 `/tv/console`。
+电脑版的「邀请」页（只有管理员看得到）发的邀请链接和手机上的一样；完整的管理后台是阶段 3。
+
+电脑版里还没有：每个用户隐藏、排序直播台和提议新台；主人以外的设备成员（电脑版显示设备的访客码，
+就是现有的访客链接）；管理后台。
+
 ## 留给以后的阶段
 
-电脑控制台和扫码登录（阶段 2，`login_ticket` 表已经建好）；每个用户隐藏、排序直播台和提议新台
-（阶段 2；`user_state` 给 `hidden`/`order` 留了位置）；主人以外的设备成员（表已建好，没有界面）；
-管理网页和指标（阶段 3）；媒体网关、每台设备一个工作进程、型号配置和准入控制（阶段 4）。
+每个用户隐藏、排序直播台和提议新台（`user_state` 给 `hidden`/`order` 留了位置）；主人以外的设备成员
+（表已建好，没有界面）；管理网页和指标（阶段 3）；媒体网关、每台设备一个工作进程、型号配置和准入控制（阶段 4）。
 
 ## 未验证
 
@@ -255,3 +287,6 @@ database …`，然后 `voice: on, relay per device`），每次调中转都点�
 - 绑定画面和 `bound: 0` 只对着服务器测过；两种固件在屏幕上怎么画这张画面没在设备上看过。
 - 手机上的流程是在桌面浏览器里按手机宽度、对着本机中转和合成状态检查的，没在 iPhone 主屏幕
   应用或微信里试过。
+- 电脑版是在桌面应用的 Chromium 窗格里按 1440 和 900 像素宽、对着本机中转、合成状态、假的视频网站
+  和假设备检查的；二维码由这个浏览器的 `BarcodeDetector` 识别，没用手机相机或微信扫过。没在 Safari、
+  Firefox、Edge 里试过，也没经过 nginx。
