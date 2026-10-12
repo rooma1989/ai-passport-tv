@@ -74,5 +74,15 @@ panel work took longer than the time it covered, frames fell to 9.5-11 a
 second, and keys answered late until the scene calmed down. Below about
 110 kB/s it keeps up with room to spare.
 
+The firmware does not rely on that cap alone. On this single-core chip a busy
+scene keeps the video task (priority 5) ready all the time, and the task that
+takes the keys -- the main task running `av_player_main()`, priority 1 -- did
+not run until the scene calmed down. The Passport's board header sets
+`BSP_KEYS_ABOVE_VIDEO 1`, which lifts that task to priority 6, just above the
+video task; it sleeps on the key queue in 50 ms waits, so the picture loses
+little, and sound (7) stays above it. Each key logs
+`key <n> ev <n> waited <ms> ms`, the time from the button task to the handler.
+The dual-core Xingzhi sets it to 0 and keeps its priorities.
+
 A Passport stream is about 120-150 kB/s (picture plus sound). On a host with 3 Mbit/s of public
 bandwidth, two devices watching at once share it and both lose quality.

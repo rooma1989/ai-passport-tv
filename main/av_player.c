@@ -240,7 +240,24 @@ typedef struct {
 } video_t;
 // A queued button gesture. Carrying the event type (not just the key) is what
 // lets a click mean "next channel" while a long press means "volume".
-typedef struct { bsp_btn_t key; bsp_btn_ev_t ev; } key_ev_t;
+// at_ms is when the button task saw the gesture, so the session owner can log how
+// long a key waited for it (0 for keys that did not come from a button).
+typedef struct { bsp_btn_t key; bsp_btn_ev_t ev; uint32_t at_ms; } key_ev_t;
+// Task priorities. The session owner -- the task that runs av_player_main(),
+// which takes the keys -- is the main task at priority 1, below all three.
+//
+// On a single core that is the AI Passport's problem: a busy scene keeps the
+// video task ready all the time (measured: 13-16 s of decode and panel work per
+// 10 s at 140-165 kB/s), so nothing at priority 1 runs and a key waits until the
+// scene calms down. BSP_KEYS_ABOVE_VIDEO lifts the session owner just above the
+// video task; it only wakes for a key or its 50 ms checks, so the picture loses
+// little, and sound stays above it. The dual-core Xingzhi keeps its priorities.
+#define AV_VIDEO_TASK_PRIO 5
+#define AV_RX_TASK_PRIO    6
+#define AV_AUDIO_TASK_PRIO 7
+#ifndef BSP_KEYS_ABOVE_VIDEO
+#define BSP_KEYS_ABOVE_VIDEO 0
+#endif
 // Channel switching reconnects with a new id, so a switch is just a session
 // restart. One writer (the key path) sets a pending flag; the session owner
 // applies it, which avoids touching the string while a connection is being made.
@@ -734,7 +751,7 @@ static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *ctx) {
     // page. Callbacks run in the button task, so only enqueue and drop when
     // full; never block or do work here.
     if (ev!=BSP_BTN_CLICK && ev!=BSP_BTN_LONG && ev!=BSP_BTN_DOUBLE) return;
-    key_ev_t item={.key=key,.ev=ev};
+    key_ev_t item={.key=key,.ev=ev,.at_ms=(uint32_t)(esp_timer_get_time()/1000)};
     xQueueSend(s.keys,&item,0);
 }
 // WiFi connection state arrives through the provisioning bridge, which owns the
@@ -4153,6 +4170,10 @@ static bool pump_keys(uint32_t wait_ms) {
     while (xQueueReceive(s.keys,&item,first?pdMS_TO_TICKS(wait_ms):0)) {
         first=false;
         acted=true;
+        if(item.at_ms) {
+            ESP_LOGI(TAG,"key %d ev %d waited %"PRIu32" ms",(int)item.key,(int)item.ev,
+                     (uint32_t)(esp_timer_get_time()/1000)-item.at_ms);
+        }
         process_key(&item);
     }
     // Anything the phone asks for counts as the viewer being here, for the
@@ -4295,6 +4316,9 @@ void av_player_main(void) {
     // Filled by wifi_init(): whether a network is known, from the setup page's
     // store or from this build's compiled-in credentials.
     bool has_network=false;
+#if BSP_KEYS_ABOVE_VIDEO
+    vTaskPrioritySet(NULL,AV_VIDEO_TASK_PRIO+1);
+#endif
     s.events=xEventGroupCreate(); s.keys=xQueueCreate(8,sizeof(key_ev_t));
     if(!s.events || !s.keys) { ESP_LOGE(TAG,"Control allocation failed"); return; }
     // The display and the WiFi stack are required; audio is not started here,
@@ -4543,13 +4567,13 @@ void av_player_main(void) {
         // goes back to waiting. Audio stays above both at 7 because the sound is
         // the timeline everything else is paced against.
         shot_maybe_request();
-        if(xTaskCreate(video_task,"av_video",4096,NULL,5,NULL)!=pdPASS) { fail("video task allocation"); xEventGroupSetBits(s.events,VIDEO_DONE); }
+        if(xTaskCreate(video_task,"av_video",4096,NULL,AV_VIDEO_TASK_PRIO,NULL)!=pdPASS) { fail("video task allocation"); xEventGroupSetBits(s.events,VIDEO_DONE); }
         // One chunk of PCM now lives on this stack beside the queued ADPCM block,
         // 324 bytes more than the PCM-only layout needed, so the stack grows a
         // kilobyte; the queue gave back about 23 KB. The high-water mark is
         // logged when the task ends -- trim this to what that says.
-        if(xTaskCreate(audio_task,"av_audio",5120,NULL,7,NULL)!=pdPASS) { fail("audio task allocation"); xEventGroupSetBits(s.events,AUDIO_DONE); }
-        if(xTaskCreate(receive_task,"av_rx",5120,NULL,6,NULL)!=pdPASS) { fail("receive task allocation"); xEventGroupSetBits(s.events,RX_DONE); }
+        if(xTaskCreate(audio_task,"av_audio",5120,NULL,AV_AUDIO_TASK_PRIO,NULL)!=pdPASS) { fail("audio task allocation"); xEventGroupSetBits(s.events,AUDIO_DONE); }
+        if(xTaskCreate(receive_task,"av_rx",5120,NULL,AV_RX_TASK_PRIO,NULL)!=pdPASS) { fail("receive task allocation"); xEventGroupSetBits(s.events,RX_DONE); }
         int64_t session_start=esp_timer_get_time();
         int64_t next_metrics=session_start+10000000;
         int64_t next_battery=session_start;

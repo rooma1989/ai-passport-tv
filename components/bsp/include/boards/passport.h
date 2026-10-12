@@ -66,6 +66,8 @@
 #define BSP_ARROW_CLICK_IS_VOLUME 1
 // 双击:OK 打开状态页、上/下键调亮度(只听声音在状态页里短按 OK 切换)。
 #define BSP_DOUBLE_OK_IS_STATUS   1
+// 单核 C3:复杂画面时解码任务一直占着 CPU,按键得等画面平静才处理;把处理按键的会话任务提到解码之上。
+#define BSP_KEYS_ABOVE_VIDEO      1
 
 // 每键的电压窗口 {min_mV, max_mV};边界取相邻档中点。
 // 确定键上界留宽到 1900,是为了和松开态的 3300mV 拉开距离。

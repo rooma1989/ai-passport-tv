@@ -53,6 +53,8 @@
 #define BSP_ARROW_CLICK_IS_VOLUME 1
 // 双击:上/下键打开状态页、OK 切换只听声音(与 Passport 不同)。
 #define BSP_DOUBLE_OK_IS_STATUS   0
+// 双核 S3 不缺 CPU,会话任务保持原来的优先级(与 Passport 不同)。
+#define BSP_KEYS_ABOVE_VIDEO      0
 #define BSP_BTN_GPIO_UP      39          // 最上面的键(外壳印"音量-")
 #define BSP_BTN_GPIO_DOWN    40          // 第二个键(外壳印"音量+")
 #define BSP_BTN_GPIO_OK      0           // BOOT 键,也是下载模式的 strapping 脚
