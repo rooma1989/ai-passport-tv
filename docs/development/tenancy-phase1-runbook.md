@@ -266,13 +266,54 @@ series channel, "pause". The media log shows `device=legacy-...` then
 | Voice says the TV is not connected to the relay | `TV_RELAY_KEY_FILE` unset; or, single-user only, `TV_RELAY_DEVICE` unset. |
 | Media log shows `relay_catalog=relay status 404` | Single-user: `TV_RELAY_DEVICE` is not a relay device id or name. Multi-user: the admitted device is not active (unbound, retired, banned). |
 
+## Phase 2: the PC console
+
+The console is part of the multi-user relay; there is no new unit, port or
+flag. The single-user relay (no `--db`) answers 404 for every console path:
+switch to `--db` first. Deploying it:
+
+1. Copy the new `server/` as in step 0. On its first start the relay adds one
+   column to `tv.db` (`login_ticket.poll_sha256`, `ALTER TABLE ... ADD COLUMN`);
+   nothing else in the database changes, and older code keeps working against
+   the upgraded file. Back up first as in section 4 anyway.
+2. nginx: add the `/TV/L/` location from
+   [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf), then
+   `nginx -t` and reload. `/tv/console` is already covered by `/tv/`.
+3. `systemctl restart tv-relay`. The media units need nothing.
+
+Check: open `https://<site>/tv/console` on a computer. It shows a QR code and
+a six-character code. On a signed-in phone either scan the QR code (if the
+browser that opens has no session, the page says to use the home-screen app
+instead) or open the remote, Subscriptions, "Sign in the PC version", type the
+code, check the browser and network shown, and confirm. The computer signs in
+within a second or two. Its settings page lists the session; "Sign out" ends it.
+
+How it works and its limits:
+
+| | |
+| --- | --- |
+| Paths | page `/tv/console`; QR landing and phone confirm page `/TV/L/<ticket>` (relay `/l/<ticket>`) and `/tv/login` (typed code, list of signed-in PCs); API `POST /api/login/ticket`, `POST /api/login/poll`, `GET /api/login/info`, `POST /api/login/confirm`, `GET /api/login/status`, `GET /api/sessions`, `POST /api/sessions/revoke`, `POST /api/logout`, `GET /api/console/devices`, `GET /api/invites` (admin), `POST /api/qr`; `GET /api/state?device=<id>` shows one device without changing the phone's choice |
+| Ticket | 26-character id (130 bits) only in the QR code, 6-character code (alphabet without I, L, O, 0, 1) on the screen, a separate 256-bit poll secret kept by the page; all three stored as SHA-256 except the short code. Expires in 2 minutes, single use; the PC long-polls up to 25 s per request |
+| Who confirms | a signed-in phone or PC session of a user (cookie); not a guest, not the key. The confirm page shows the PC's browser and /24 network and warns when it differs from the phone's |
+| Limits | 12 tickets per 10 minutes per network (/24 or /48); 10 wrong codes per 10 minutes per user and per network; at most 100 live tickets and 32 waiting long polls (more answer at once and the page retries) |
+| PC session | 30 days, cookie `tvs` with `HttpOnly; Secure; SameSite=Lax; Path=/tv/`, listed under Settings with phones and the guests of your devices; "Sign out other sessions" keeps only the current one |
+| Cross-site requests | every POST and DELETE (both relay modes) is refused (404) when the browser says it comes from another site (`Sec-Fetch-Site: cross-site`/`same-site`, or an `Origin` whose host differs from `Host`); requests without those headers (the media server, curl) are unchanged |
+| Pages | `Content-Security-Policy` without any external source, `frame-ancestors 'none'`, `X-Frame-Options: DENY`; QR codes are drawn by the relay (`server/relay/qr.py`, a port of the library the firmware uses) |
+
+The admin's key link stays the break-glass sign-in: open `https://<site>/tv/?k=<key>`
+on the computer, then `/tv/console`. The console's Invite page (admin only) makes
+the same invite links as the phone; a full admin backend is phase 3.
+
+Not in the console yet: per-user hiding and ordering of live channels and
+channel proposals; device members other than the owner (the console shows the
+device's guest QR code, which is the existing guest link); the admin backend.
+
 ## Left for later phases
 
-PC console and scan-to-sign-in (phase 2, the `login_ticket` table exists
-already); hiding and reordering live channels per user and proposals (phase 2;
-`user_state` has room for `hidden`/`order`); device members other than the owner
-(table exists, no UI); admin web pages and metrics (phase 3); the media gate with
-per-device workers, model profiles and admission control (phase 4).
+Per-user hiding and ordering of live channels and proposals (`user_state` has
+room for `hidden`/`order`); device members other than the owner (table exists,
+no UI); admin web pages and metrics (phase 3); the media gate with per-device
+workers, model profiles and admission control (phase 4).
 
 ## Not verified
 
@@ -286,3 +327,8 @@ per-device workers, model profiles and admission control (phase 4).
   only; how each firmware draws the picture was not looked at on a device.
 - Phone flows were checked in a desktop browser at phone width against a local
   relay with synthetic state, not on an iPhone home-screen app or in WeChat.
+- The PC console was checked in the desktop app's Chromium pane at 1440 and 900
+  px wide, against a local relay with synthetic state, fake video sites and a
+  fake device; the QR code was decoded by that browser's `BarcodeDetector`, not
+  by a phone camera or WeChat. Not tried in Safari, Firefox or Edge, nor behind
+  nginx.
