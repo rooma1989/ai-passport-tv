@@ -70,27 +70,34 @@ def from_relay(answer) -> dict | None:
     return payload(answer.get("title"), answer.get("episode", 0), answer.get("total", 0))
 
 
-def fetch(url: str | None, timeout: float = TIMEOUT_S, opener=urllib.request.urlopen) -> dict | None:
-    """问中转；出错、超时、404 都是 None（设备照旧只画频道）。"""
+def answer(url: str | None, timeout: float = TIMEOUT_S, opener=urllib.request.urlopen) -> dict | None:
+    """中转的原话（一个 JSON 对象）；出错、超时、404、不是对象都是 None。"""
     if not url:
         return None
     try:
-        with opener(url, timeout=timeout) as answer:
-            return from_relay(json.loads(answer.read(4096).decode("utf-8")))
+        with opener(url, timeout=timeout) as reply:
+            data = json.loads(reply.read(4096).decode("utf-8"))
     except (OSError, ValueError, urllib.error.URLError):
         return None
+    return data if isinstance(data, dict) else None
+
+
+def fetch(url: str | None, timeout: float = TIMEOUT_S, opener=urllib.request.urlopen) -> dict | None:
+    """问中转；出错、超时、404 都是 None（设备照旧只画频道）。"""
+    return from_relay(answer(url, timeout, opener))
 
 
 class Fetch:
-    """在后台线程里问，发送循环不等它（片源重开时用）。"""
+    """在后台线程里问，发送循环不等它（片源重开时用）。`parse` 把中转的原话变成要的东西，
+    默认是「正在加载」的 payload；进度条用 server/progress.py 的 from_relay。"""
 
-    def __init__(self, url: str, opener=urllib.request.urlopen):
-        self.result: dict | None = None
-        self._thread = threading.Thread(target=self._run, args=(url, opener), daemon=True)
+    def __init__(self, url: str, opener=urllib.request.urlopen, parse=from_relay):
+        self.result = None
+        self._thread = threading.Thread(target=self._run, args=(url, opener, parse), daemon=True)
         self._thread.start()
 
-    def _run(self, url: str, opener) -> None:
-        self.result = fetch(url, opener=opener)
+    def _run(self, url: str, opener, parse) -> None:
+        self.result = parse(answer(url, opener=opener))
 
     @property
     def done(self) -> bool:

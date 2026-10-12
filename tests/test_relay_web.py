@@ -626,7 +626,7 @@ class WebTests(unittest.TestCase):
         with urllib.request.urlopen(base + "/info/sr01", timeout=5) as answer:
             self.assertEqual(answer.headers["Content-Type"], "application/json; charset=utf-8")
             self.assertEqual(json.loads(answer.read()),
-                             {"channel": "sr01", "title": "第1集", "episode": 1, "total": 3})
+                             {"channel": "sr01", "title": "第1集", "episode": 1, "total": 3, "duration": 600})
         self.assertEqual(self.status(base + "/info/sr09")[0], 404)
         self.assertEqual(self.status(base + "/info/ch000")[0], 404)
         self.assertEqual(self.status(base + "/info/")[0], 404)
@@ -985,14 +985,16 @@ class PlaybackControlTests(unittest.TestCase):
     def test_stream_info_names_what_plays_or_would_open(self):
         self.series()
         self.assertEqual(self.relay.stream_info("sr01"),
-                         {"channel": "sr01", "title": "第1集", "episode": 1, "total": 3},
-                         "before the stream opens: what it would open")
+                         {"channel": "sr01", "title": "第1集", "episode": 1, "total": 3, "duration": 600},
+                         "before the stream opens: what it would open (no offset: nothing streams)")
         thread = self.serve("sr01")
         self.assertEqual(self.relay.stream_info("sr01")["episode"], 1)
+        self.assertEqual(self.relay.stream_info("sr01")["offset"], 0.0, "streaming: from where")
         self.relay.next()
         thread.join(2)
         self.assertEqual(self.relay.stream_info("sr01")["episode"], 2, "after next: the next episode")
-        self.assertEqual(self.relay.stream_info("up01"), {"channel": "up01", "title": "ta"})
+        self.assertNotIn("offset", self.relay.stream_info("sr01"), "cut: not streaming any more")
+        self.assertEqual(self.relay.stream_info("up01"), {"channel": "up01", "title": "ta", "duration": 600})
         self.assertIsNone(self.relay.stream_info("up09"))
         self.assertIsNone(self.relay.stream_info("cast"), "nothing cast yet")
         self.relay.cast("https://www.bilibili.com/video/BV1aZpw6DEKJ")
@@ -1018,6 +1020,25 @@ class PlaybackControlTests(unittest.TestCase):
         self.assertEqual(events.read_event(self.events).action, "resume")
         self.serve()
         self.assertEqual(self.started[-1], ("https://media.example/a.mp4", 50.0))
+
+    def test_stream_info_offset_follows_seek_and_pause(self):
+        """The progress bar's anchor: the new stream after a seek or a pause starts where it says."""
+        thread = self.serve()
+        self.mono += 30 + web.PLAYBACK_LAG_S
+        self.assertTrue(self.relay.seek(delta=60)["ok"])
+        thread.join(2)
+        self.assertNotIn("offset", self.relay.stream_info("up01"), "between the cut and the new stream")
+        thread = self.serve()
+        info = self.relay.stream_info("up01")
+        self.assertEqual((info["duration"], info["offset"]), (600, 90.0))
+        self.mono += 10 + web.PLAYBACK_LAG_S
+        self.relay.pause()
+        thread.join(2)
+        self.relay.resume()
+        self.serve()
+        self.assertEqual(self.relay.stream_info("up01")["offset"], 100.0)
+        self.relay.state.get("up01").videos[0].duration = 0
+        self.assertNotIn("duration", self.relay.stream_info("up01"), "length unknown: no bar")
 
     def test_pause_expires_and_ends_on_another_channel(self):
         from server import now_playing

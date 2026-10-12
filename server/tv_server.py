@@ -38,7 +38,7 @@ from .media import (AUDIO_CHUNK_MS, AUDIO_LEAD_MS, DURATION_MS, FPS,
 from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packet,
                        ProtocolError, json_bytes, json_object, receive_packet,
                        send_packet, _write_slice)
-from . import episode_info, now_playing, reconnect
+from . import episode_info, now_playing, progress, reconnect
 from .cast_switch import SwitchWatcher
 from .voice.session import VoiceService
 from .tenancy import gate as tenancy_gate, unbound as tenancy_unbound
@@ -307,6 +307,10 @@ class AVServer:
         # _loading_shown：这次会话里设备上正挂着的「正在加载」，新片源起来时发 {"loading": 0} 收掉。
         self.device_info = False
         self._loading_shown: dict | None = None
+        # 自己画进度条的固件（HELLO 里 "progress": 1），见 server/progress.py：片源开始供数据时问一次中转
+        # 视频多长、从哪推起，告诉设备一个锚点，之后设备按自己的音频时钟走。
+        self.device_progress = False
+        self.progress = progress.Tracker(self._progress_fetch)
         # 只听声音的设备：这次会话不发画面（HELLO 里 "audio_only": 1）。
         self.device_audio_only = False
         # 上次握手时设备报的开机时长；变小说明设备重启过。
@@ -547,6 +551,40 @@ class AVServer:
         url = episode_info.info_url(CHANNELS.get(self.channel_name))
         return episode_info.Fetch(url) if url else None
 
+    @staticmethod
+    def _progress_fetch(url: str):
+        return episode_info.Fetch(url, parse=progress.from_relay)
+
+    def _progress_send(self, connection: socket.socket, session: int, seq: int, payload: dict | None) -> int:
+        if payload is None:
+            return seq
+        self.phase = "progress_send"
+        send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes(payload)))
+        return seq + 1
+
+    def progress_begin(self, at: int) -> None:
+        """新片源开始供数据，它第一块声音的线上时间戳是 at：在后台问中转它多长、从哪推起。"""
+        if self.device_progress:
+            self.progress.begin(episode_info.info_url(CHANNELS.get(self.channel_name)), at)
+
+    def progress_flush(self, connection: socket.socket, session: int, seq: int) -> int:
+        """问到了就把锚点发给设备。返回下一个序号。"""
+        if not self.device_progress:
+            return seq
+        return self._progress_send(connection, session, seq, self.progress.poll())
+
+    def progress_stop(self, connection: socket.socket, session: int, seq: int, stop_at: int) -> int:
+        """断流、暂停：设备时钟走到 stop_at（最后一块真声音之后）时进度条停下。"""
+        if not self.device_progress:
+            return seq
+        return self._progress_send(connection, session, seq, self.progress.stopped(stop_at))
+
+    def progress_resumed(self, connection: socket.socket, session: int, seq: int, at: int) -> int:
+        """原片源自己缓过来：进度从停下的地方接着走。"""
+        if not self.device_progress:
+            return seq
+        return self._progress_send(connection, session, seq, self.progress.resumed(at))
+
     def _playing_info(self, channel_id: str) -> dict | None:
         """会话开始时 CONFIG 里的 "playing"：只给会画的固件、只对中转的台。"""
         if not self.device_info:
@@ -674,6 +712,7 @@ class AVServer:
                                        CHANNEL_AGENTS.get(channel_id, ""))
         self.channel_name = channel_id
         self._loading_shown = None
+        self.progress.reset()
         try:
             session = secrets.randbelow(0xFFFFFFFF) + 1
             self.session_id = session
@@ -744,6 +783,9 @@ class AVServer:
             if not failed and not channel.prebuffered():
                 failed = "no_media"
             resume = None
+            if not failed:
+                # 片源的第一块声音时间戳为 0（见 _pace_live 的 stamp_base）。
+                self.progress_begin(0)
             if failed:
                 wire = reconnect.WireState(seq=2, audio_pts=0)
                 now = time.monotonic()
@@ -942,6 +984,7 @@ class AVServer:
             decision = self.switch_watcher.poll(self.channel_name, now)
             # 先于下面的控制：取走「正在加载」时连同「下一个」提示一起取走。
             seq = self.info_flush(connection, session, seq)
+            seq = self.progress_flush(connection, session, seq)
             if decision is not None and self.device_switches:
                 kind, target = decision
                 self.logger(f"session={session} cast {kind} {target or self.channel_name}")
@@ -1277,6 +1320,8 @@ class AVServer:
             self.device_hints = greeting.get("hint") == 1
             # 新固件自己画「正在加载 第 n 集 · 标题」（"info": 1）：CONFIG 带 playing，SWITCH 带 loading。
             self.device_info = greeting.get("info") == 1
+            # 新固件自己画进度条（"progress": 1）：SWITCH 带 progress。
+            self.device_progress = greeting.get("progress") == 1
             self.device_audio_only = greeting.get("audio_only") == 1
             self.voice.reset()
             self.device_status = None

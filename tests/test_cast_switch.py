@@ -722,3 +722,77 @@ class EpisodeInfoTests(unittest.TestCase):
         loading = [p["loading"] for p in payloads if "loading" in p]
         self.assertEqual(loading, [{"title": "第2集", "episode": 2, "total": 3}, 0],
                          "the next episode while it opens, then cleared")
+
+
+class ProgressTests(unittest.TestCase):
+    """Firmware that says "progress": 1 is given anchors for its progress bar (server/progress.py)."""
+
+    setUp = SessionTests.setUp
+    tearDown = SessionTests.tearDown
+    relay = EpisodeInfoTests.relay
+    session = EpisodeInfoTests.session
+
+    ANSWER = {"channel": "sr01", "title": "第1集", "episode": 1, "total": 3, "duration": 600, "offset": 12}
+
+    def test_anchor_only_to_firmware_that_draws_it(self):
+        asked = self.relay([self.ANSWER])
+        _, payloads = self.session({"progress": 1}, lambda _t: None, seconds=1.0)
+        self.assertEqual([p for p in payloads if "progress" in p],
+                         [{"progress": {"dur": 600000, "pos": 12000, "at": 0}}],
+                         "once, at the session's first sound")
+        self.assertEqual(asked, ["/info/sr01"])
+        _, payloads = self.session({"info": 1}, lambda _t: None, seconds=1.0)
+        self.assertFalse([p for p in payloads if "progress" in p], "older firmware gets nothing new")
+
+    def test_live_channel_gets_nothing(self):
+        self.relay([self.ANSWER])
+        self.live.CHANNELS["sr01"] = "https://example.com/live.m3u8"
+        _, payloads = self.session({"progress": 1}, lambda _t: None, seconds=1.0)
+        self.assertFalse([p for p in payloads if "progress" in p])
+
+    def test_source_restart_stops_then_anchors_the_new_source(self):
+        import time
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_live_transcode import StubChannel
+        self.relay([self.ANSWER, dict(self.ANSWER, offset=0)])
+
+        class Ending(StubChannel):
+            def __init__(self):
+                super().__init__(audio_chunks=20, video_frames=6)
+                self.failed = True
+
+        class Slow(StubChannel):
+            def start(self):
+                time.sleep(0.4)
+
+        made = []
+
+        def factory(url, ffmpeg="ffmpeg", user_agent=""):
+            made.append(url)
+            return Ending() if len(made) == 1 else Slow()
+
+        _, payloads = self.session({"progress": 1}, lambda _t: None, factory=factory, seconds=4.0)
+        anchors = [p["progress"] for p in payloads if "progress" in p]
+        self.assertGreaterEqual(len(anchors), 3, anchors)
+        self.assertEqual(anchors[0], {"dur": 600000, "pos": 12000, "at": 0})
+        self.assertEqual(anchors[1], {"dur": 600000, "pos": 12000, "at": 0, "stop": 800},
+                         "stopped after the 20 blocks of sound")
+        new = anchors[2]
+        self.assertEqual((new["dur"], new["pos"]), (600000, 0))
+        self.assertGreater(new["at"], 800, "the new source's first sound comes after the silence")
+        self.assertEqual(new["at"] % 40, 0)
+        self.assertNotIn("stop", new)
+
+    def test_pause_stops_the_bar_before_the_band(self):
+        self.relay([self.ANSWER])
+        wrote = []
+
+        def script(elapsed):
+            if elapsed > 0.5 and not wrote:
+                wrote.append(1)
+                events.write_event(self.events, "pause", text="第1集")
+
+        _, payloads = self.session({"progress": 1, "pause": 1}, script, seconds=1.5)
+        keys = [next(iter(p)) for p in payloads if "progress" in p or "paused" in p]
+        self.assertEqual(keys, ["progress", "progress", "paused"], payloads)
+        self.assertIn("stop", payloads[[next(iter(p)) for p in payloads].index("paused") - 1]["progress"])

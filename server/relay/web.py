@@ -435,22 +435,36 @@ class Relay:
 
     def stream_info(self, cid: str, slot: str = "") -> dict | None:
         """这一路流放的是什么：正在推的那个视频；还没推（或刚被跳转、下一个掐断）时，是现在打开
-        会选的那个（只看不改、不访问网站）。电视服务在会话开始、片源重开时问，转给设备。"""
+        会选的那个（只看不改、不访问网站）。电视服务在会话开始、片源重开时问，转给设备。
+
+        进度条用的两项：duration（视频总长，秒；不知道时没有）；正在推流时再加 offset（这一路流从
+        第几秒推起，秒），电视服务据此告诉设备它的进度（server/progress.py）。
+        """
         dev = self._stream_device(slot)
         if dev is None:
             return None
         state = self._state_of(dev)
+        with self._active_lock:
+            entry = self._active.get((slot, cid))
+        if entry is not None and entry["abort"]:
+            entry = None
         if cid == table.CAST_ID:
             cast = self._cast_of(dev)
             with cast.lock:
                 video = cast.cast
-            return self._describe(state, cid, video)
-        if state.get(cid) is None:
+        elif state.get(cid) is None:
             return None
-        with self._active_lock:
-            entry = self._active.get((slot, cid))
-        video = entry["video"] if entry is not None and not entry["abort"] else state.peek_video(cid)
-        return self._describe(state, cid, video)
+        else:
+            video = entry["video"] if entry is not None else state.peek_video(cid)
+        info = self._describe(state, cid, video)
+        if info is None:
+            return None
+        duration = int(getattr(video, "duration", 0) or 0)
+        if duration > 0:
+            info["duration"] = duration
+        if entry is not None and entry["video"].bvid == video.bvid:
+            info["offset"] = round(float(entry["offset"]), 1)
+        return info
 
     def _loading(self, dev: dict, cid: str, state: State, video) -> None:
         """设备正在播的台马上换片源（下一个、上一集、选集）：先告诉它要加载什么。"""
