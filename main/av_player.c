@@ -512,6 +512,13 @@ typedef struct {
     ui_episode_t info_playing, info_loading;
     atomic_uint info_playing_gen, info_loading_gen;
     atomic_bool info_loaded;
+    // How far a relay channel's video has played (SWITCH "progress", from a
+    // server told "progress": 1): an anchor on this session's sound clock,
+    // moved on by the video task with estimated_pts(). Written by the receive
+    // task under list_lock, read by the video task the same way; progress_gen
+    // moves on every anchor so pump_keys brings the times up.
+    ui_progress_t progress;
+    atomic_uint progress_gen;
     // Push-to-talk (CONFIG_AV_VOICE). voice_session: this session's CONFIG
     // offered voice and the socket is up, so an utterance can be sent; written
     // by the receive task. voice_mute: the TV's sound is silenced from OK down
@@ -1168,12 +1175,43 @@ static void take_switch(char *buf, size_t n) {
         if (parse_episode(loading,&episode)) {
             taskENTER_CRITICAL(&list_lock);
             s.info_loading=episode;
+            // Another video: the bar comes back with its anchor.
+            ui_progress_forget(&s.progress);
             taskEXIT_CRITICAL(&list_lock);
             atomic_store(&s.info_loaded,false);
             atomic_fetch_add(&s.info_loading_gen,1u);
         } else if (cJSON_IsNumber(loading) || cJSON_IsFalse(loading)) {
             atomic_store(&s.info_loaded,true);
         }
+        cJSON_Delete(j);
+        return;
+    }
+    // Where the video is on this session's sound clock ({"progress": {"dur",
+    // "pos", "at"[, "stop"]}}, all ms), or nothing known ({"progress": 0}).
+    const cJSON *progress=cJSON_GetObjectItemCaseSensitive(j,"progress");
+    if (progress) {
+        const cJSON *dur=cJSON_GetObjectItemCaseSensitive(progress,"dur");
+        const cJSON *pos=cJSON_GetObjectItemCaseSensitive(progress,"pos");
+        const cJSON *at=cJSON_GetObjectItemCaseSensitive(progress,"at");
+        const cJSON *stop=cJSON_GetObjectItemCaseSensitive(progress,"stop");
+        // A day is the longest the server sends; a clock past 2^32 ms is not a session.
+        const double day_ms=86400000.0, clock_max=4294967295.0;
+        const bool anchor=cJSON_IsObject(progress) && cJSON_IsNumber(dur) && cJSON_IsNumber(pos) &&
+            cJSON_IsNumber(at) && dur->valuedouble>=1 && dur->valuedouble<=day_ms &&
+            pos->valuedouble>=0 && pos->valuedouble<=day_ms &&
+            at->valuedouble>=0 && at->valuedouble<=clock_max;
+        const bool stopped=anchor && cJSON_IsNumber(stop) && stop->valuedouble>=0 &&
+            stop->valuedouble<=clock_max;
+        taskENTER_CRITICAL(&list_lock);
+        if (anchor) {
+            (void)ui_progress_anchor(&s.progress,(uint32_t)dur->valuedouble,(uint32_t)pos->valuedouble,
+                                     (uint32_t)at->valuedouble,stopped,
+                                     stopped ? (uint32_t)stop->valuedouble : 0u);
+        } else {
+            ui_progress_forget(&s.progress);
+        }
+        taskEXIT_CRITICAL(&list_lock);
+        atomic_fetch_add(&s.progress_gen,1u);
         cJSON_Delete(j);
         return;
     }
@@ -1202,9 +1240,17 @@ static void take_switch(char *buf, size_t n) {
         double seconds=cJSON_GetObjectItemCaseSensitive(j,"seek")->valuedouble;
         if (seconds>86400) seconds=86400;
         if (seconds<-86400) seconds=-86400;
+        // The bar goes there at once and waits for the new source's anchor.
+        const int64_t clock=estimated_pts();
+        taskENTER_CRITICAL(&list_lock);
+        ui_progress_seek(&s.progress,(int)seconds,(uint32_t)(clock>0 ? clock : 0));
+        taskEXIT_CRITICAL(&list_lock);
         atomic_store(&s.remote_hint_seconds,(int)seconds);
         atomic_store(&s.remote_hint,seconds<0 ? (int)UI_HINT_BACK : (int)UI_HINT_FORWARD);
     } else if (cJSON_GetObjectItemCaseSensitive(j,"next")) {
+        taskENTER_CRITICAL(&list_lock);
+        ui_progress_forget(&s.progress);
+        taskEXIT_CRITICAL(&list_lock);
         atomic_store(&s.remote_hint_seconds,0);
         atomic_store(&s.remote_hint,(int)UI_HINT_NEXT);
     } else {
@@ -1457,6 +1503,8 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
         (void)parse_episode(cJSON_GetObjectItemCaseSensitive(j,"playing"),&playing);
         taskENTER_CRITICAL(&list_lock);
         s.info_playing=playing;
+        // The anchors are on this session's sound clock: none carries over.
+        ui_progress_forget(&s.progress);
         taskEXIT_CRITICAL(&list_lock);
         atomic_fetch_add(&s.info_playing_gen,1u);
     }
@@ -1557,6 +1605,8 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"hint",1) &&
         // And which episode plays and loads (CONFIG "playing", SWITCH "loading").
         cJSON_AddNumberToObject(j,"info",1) &&
+        // And how far a relay video has played (SWITCH "progress").
+        cJSON_AddNumberToObject(j,"progress",1) &&
         // The pet in use; its presence also says SWITCH may carry "pet".
         cJSON_AddNumberToObject(j,"pet",(double)atomic_load(&s.pet)) &&
         // Audio-only mode; its presence also says SWITCH may carry "audio_only".
@@ -2341,6 +2391,55 @@ static void build_topbar_label(ui_topbar_label_t *label) {
     ui_topbar_set_label(label,texts,colors,n);
 }
 
+// A relay video's progress in the bottom bar (HELLO "progress": 1): a line
+// along the bar's top under a picture, the times with it for a few seconds;
+// in audio-only mode a bar with the times, always. Worked out from the anchor
+// and the sound clock by progress_view(); `progress_painted` is what the bar
+// holds, so it is repainted only when that changes -- about once a second
+// with the times up, when the line grows a pixel otherwise. Nothing known (a
+// live channel, an older server): the bar stays as blank as it always was.
+// Only the video task touches these.
+typedef struct {
+    bool on;            // a relay video of known length is playing
+    bool listen;        // audio-only: the full bar, times always
+    bool times;         // over a picture: the times are up
+    unsigned fill;      // lit pixels of the panel-wide line
+    uint32_t shown_s;   // the played second the times show (0 without them)
+    uint32_t pos_ms, dur_ms;
+} progress_view_t;
+static progress_view_t progress_painted;
+static void progress_view(progress_view_t *out, bool listen) {
+    memset(out,0,sizeof(*out));
+    ui_progress_t p;
+    taskENTER_CRITICAL(&list_lock);
+    p=s.progress;
+    taskEXIT_CRITICAL(&list_lock);
+    const int64_t clock=estimated_pts();
+    uint32_t pos;
+    if (!ui_progress_position(&p,(uint32_t)(clock>0 ? clock : 0),&pos)) return;
+    out->on=true;
+    out->listen=listen;
+    out->times=listen || ui_menu_progress_label(&s.menu);
+    out->fill=ui_progress_fill(pos,p.dur_ms,AV_WIDTH);
+    out->shown_s=out->times ? pos/1000u : 0u;
+    out->pos_ms=pos;
+    out->dur_ms=p.dur_ms;
+}
+// Whether the bar would look different (pos_ms itself is not compared: the
+// pixels and the second shown are what can be seen).
+static bool progress_differs(const progress_view_t *a, const progress_view_t *b) {
+    return a->on!=b->on || a->listen!=b->listen || a->times!=b->times || a->fill!=b->fill ||
+           a->shown_s!=b->shown_s || a->dur_ms!=b->dur_ms;
+}
+// Draw `progress_painted` into a stripe of the panel, if the stripe reaches the bottom bar.
+static void progress_stripe(ui_surface_t surface) {
+    const progress_view_t *v=&progress_painted;
+    const int top=(int)(AV_HEIGHT-AV_VIDEO_Y_OFFSET);
+    if (!v->on || AV_VIDEO_Y_OFFSET<30u || surface.origin_y+surface.rows<=top) return;
+    if (v->listen) ui_overlay_progress_bar(ui_surface_centered(surface),top,v->pos_ms,v->dur_ms);
+    else ui_overlay_progress_line(surface,top,v->pos_ms,v->dur_ms,v->times);
+}
+
 // Readings for the black bars around the picture, drawn into whichever stripe
 // overlaps a bar and nothing else. The picture covers rows
 // [AV_VIDEO_Y_OFFSET, AV_HEIGHT-AV_VIDEO_Y_OFFSET), so these rows belong to the
@@ -2378,6 +2477,8 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
         } else if (s.menu.view==UI_VIEW_PET) {
             ui_overlay_pet_bottom(ui_surface_centered(surface),bottom);
         }
+    } else if (!bottom_info && last>bottom) {
+        progress_stripe(surface);
     }
 }
 
@@ -2420,6 +2521,7 @@ static bool refresh_info_bars(void) {
     if (!picture_live() && !listen_screen) {
         top_drawn=false;
         bottom_drawn=true;
+        memset(&progress_painted,0,sizeof(progress_painted));
         return true;
     }
     const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
@@ -2444,8 +2546,20 @@ static bool refresh_info_bars(void) {
         hint_painted=hint;
     }
 #endif
+    // The progress under the picture or the pet, when the page does not own
+    // the bar: repainted when it looks different, at most four times a second
+    // unless it comes or goes.
+    progress_view_t progress;
+    memset(&progress,0,sizeof(progress));
+    if (!want_bottom) progress_view(&progress,listen_screen && !picture_live());
+    const bool progress_due=!want_bottom && progress_differs(&progress,&progress_painted) &&
+        (progress.on!=progress_painted.on || progress.times!=progress_painted.times ||
+         now-bottom_painted_us>=250000);
+    // Paused over the picture, the bar is the pause band's ("手机点「继续」播放",
+    // the line still): the frames still draining must not repaint it.
+    const bool band_owns=atomic_load(&s.paused) && s.menu.view==UI_VIEW_VIDEO;
     const bool bottom_due=want_bottom ? (!bottom_drawn || hint_changed || now-bottom_painted_us>=1000000)
-                                      : bottom_drawn;
+                                      : !band_owns && (bottom_drawn || progress_due);
     if (!top_due && !bottom_due) return true;
     const band_reading_t reading={ wifi_bars(), soc_now, bsp_battery_charging(),
                                    critical && (now/1000000)%2 };
@@ -2457,6 +2571,7 @@ static bool refresh_info_bars(void) {
         top_painted_us=now;
     }
     if (bottom_due) {
+        progress_painted=progress;
         if (!paint_band((unsigned)AV_HEIGHT-bar,bar,&reading,want_bottom)) return false;
         bottom_drawn=want_bottom;
         bottom_painted_us=now;
@@ -3491,11 +3606,16 @@ static bool paint_pause_band(void)
     // The bottom bar says how to carry on. bottom_drawn makes the first
     // refresh after the picture returns blank it again.
     const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
+    progress_view(&progress_painted,false);
+    progress_painted.times=false;
+    progress_painted.shown_s=0;
     if (bar>=UI_TEXT_LINE_H+2u*UI_TEXT_PAD_Y) {
         for (unsigned y=AV_HEIGHT-bar;y<AV_HEIGHT && !stopping();y+=rows) {
             unsigned n=AV_HEIGHT-y < rows ? AV_HEIGHT-y : rows;
             ui_surface_t strip=stripe_surface(y,s.stripe[0]);
             ui_overlay_pause_hint(ui_surface_centered(strip),(int)(AV_HEIGHT-bar),(int)AV_HEIGHT);
+            // A relay video's line, still: the server stopped it before the pause.
+            progress_stripe(strip);
             if(bsp_display_raw_submit_nowait(y,n,s.stripe[0])!=ESP_OK ||
                bsp_display_raw_drain(1,200)!=ESP_OK) {
                 fail("pause band DMA");
@@ -3589,6 +3709,9 @@ static bool paint_waiting_rows(unsigned y0, unsigned y1) {
         s_wait_says_loading=waiting_page.kind==UI_WAIT_CHANNEL;
         overlay_stripe(y,s.stripe[0]);
         s_wait_says_loading=false;
+        // Listening, the bar under the pet is in the bottom bar, which the
+        // pet's own rows reach into (the stripe at 204 holds 210..215).
+        if (waiting_page.kind==UI_WAIT_LISTEN && s.menu.view==UI_VIEW_VIDEO) progress_stripe(strip);
         // Through the queueing entry point and drained in the same breath: the
         // waiting screen redraws on its own schedule and wants the simple
         // synchronous behaviour, not the overlap playback uses.
@@ -3615,6 +3738,13 @@ static bool paint_waiting_screen(void)
     snprintf(shown_channel,sizeof(shown_channel),"%s",s.channel);
     build_waiting_page();
     refresh_listen_inputs(&waiting_page);
+    // The whole panel is painted, the bottom bar with it: what it holds now.
+    if (waiting_page.kind==UI_WAIT_LISTEN && s.menu.view==UI_VIEW_VIDEO) {
+        progress_view(&progress_painted,true);
+        bottom_painted_us=esp_timer_get_time();
+    } else {
+        memset(&progress_painted,0,sizeof(progress_painted));
+    }
     int y0, y1;
     waiting_frame=ui_overlay_wait_frame(waiting_page.kind,waiting_tick(),&y0,&y1);
     return paint_waiting_rows(0,AV_HEIGHT);
@@ -4266,6 +4396,8 @@ static void voice_on_reply(av_voice_reply_t *r) {
         free(r);
         return;
     }
+    // A voice command may have moved the video: the times come up.
+    ui_menu_show_progress(&s.menu);
     // What the server decided. "intent":"none" with nothing to do is "not
     // understood"; nothing to do with another intent is the relay having
     // acted already (pause, seek, an episode), and its reply is shown.
@@ -4972,6 +5104,10 @@ static void info_reset(void) {
     ui_menu_loading_done(&s.menu);
     ui_menu_loading_shown(&s.menu);
     ui_menu_set_playing(&s.menu,NULL);
+    taskENTER_CRITICAL(&list_lock);
+    ui_progress_forget(&s.progress);
+    taskEXIT_CRITICAL(&list_lock);
+    s.menu.progress_ms=0;
 }
 static uint32_t pictures_drawn(void) {
     return s.decoded+atomic_load(&s.covered_frames);
@@ -5067,6 +5203,17 @@ static bool pump_keys(uint32_t wait_ms) {
     }
     if (atomic_exchange(&s.frames_resumed,false)) ui_menu_hint_resumed(&s.menu);
     info_pump();
+    {
+        // The played and total times come up for a few seconds after a key,
+        // anything from the phone, a pause or resume, and every new anchor (a
+        // seek, another episode, a source back after a stall).
+        static unsigned progress_seen, pause_label_seen;
+        const unsigned progress_now=atomic_load(&s.progress_gen);
+        const unsigned pause_now=atomic_load(&s.pause_gen);
+        if (acted || progress_now!=progress_seen || pause_now!=pause_label_seen) ui_menu_show_progress(&s.menu);
+        progress_seen=progress_now;
+        pause_label_seen=pause_now;
+    }
 #if CONFIG_AV_VOICE
     // The keys just read may have finished an utterance or picked a candidate.
     voice_pump();

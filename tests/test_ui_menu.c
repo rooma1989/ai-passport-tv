@@ -668,6 +668,81 @@ static void test_episode_loading(void)
     check(!ui_episode_known(&menu.playing), "forgotten");
 }
 
+
+static void test_progress(void)
+{
+    ui_progress_t p;
+    ui_progress_forget(&p);
+    uint32_t pos = 1;
+    check(!ui_progress_position(&p, 5000, &pos) && pos == 1, "nothing known");
+    ui_progress_seek(&p, 30, 1000);
+    check(!p.known && !p.seeking, "a seek with nothing known is nothing");
+    check(!ui_progress_anchor(&p, 0, 0, 0, false, 0) && !p.known, "no length, no bar");
+
+    // 23:40 long, at 12 s when the sound clock read 0: it moves with the clock.
+    check(ui_progress_anchor(&p, 1420000, 12000, 0, false, 0), "anchor");
+    check(ui_progress_position(&p, 0, &pos) && pos == 12000, "at the anchor");
+    check(ui_progress_position(&p, 60000, &pos) && pos == 72000, "a minute on");
+    check(ui_progress_position(&p, 5000000, &pos) && pos == 1420000, "never past the end");
+    // An anchor for a later clock reading (a new source after a silence).
+    ui_progress_anchor(&p, 1420000, 300000, 64000, false, 0);
+    check(ui_progress_position(&p, 10000, &pos) && pos == 300000, "before its first sound: at its start");
+    check(ui_progress_position(&p, 74000, &pos) && pos == 310000, "10 s after");
+
+    // Stopped (a stall, a pause): the bar stays where the sound ran out.
+    ui_progress_anchor(&p, 1420000, 300000, 64000, true, 70000);
+    check(ui_progress_position(&p, 68000, &pos) && pos == 304000, "the queued sound still plays");
+    check(ui_progress_position(&p, 99000, &pos) && pos == 306000, "then it stops");
+    ui_progress_anchor(&p, 1420000, 300000, 64000, true, 1000);
+    check(ui_progress_position(&p, 99000, &pos) && pos == 300000, "a stop before the anchor is the anchor");
+
+    // A seek: there at once, still, through the old source's stop, until the new anchor.
+    ui_progress_anchor(&p, 1420000, 0, 0, false, 0);
+    ui_progress_seek(&p, 30, 60000);
+    check(p.seeking && ui_progress_position(&p, 61000, &pos) && pos == 90000, "jumped 30 s on, at once");
+    check(ui_progress_position(&p, 65000, &pos) && pos == 90000, "and still");
+    ui_progress_seek(&p, 30, 65000);
+    check(ui_progress_position(&p, 66000, &pos) && pos == 120000, "a second seek adds to the first");
+    ui_progress_anchor(&p, 1420000, 0, 0, true, 66000);
+    check(p.seeking && ui_progress_position(&p, 67000, &pos) && pos == 120000, "the cut does not undo it");
+    ui_progress_anchor(&p, 1420000, 119000, 70000, false, 0);
+    check(!p.seeking && ui_progress_position(&p, 71000, &pos) && pos == 120000, "the new source takes over");
+    ui_progress_seek(&p, -600, 71000);
+    check(ui_progress_position(&p, 71000, &pos) && pos == 0, "not before the start");
+    ui_progress_seek(&p, 86400, 71000);
+    check(ui_progress_position(&p, 71000, &pos) && pos == 1420000, "nor past the end");
+    check(ui_progress_position(&p, 71000 + 20000, &pos) && pos == 140000,
+          "no new source within 20 s: back to the anchor");
+
+    // Pixels and times.
+    check(ui_progress_fill(0, 1420000, 320) == 0, "none played");
+    check(ui_progress_fill(710000, 1420000, 320) == 160, "half");
+    check(ui_progress_fill(1420000, 1420000, 320) == 320 && ui_progress_fill(9, 0, 320) == 0, "ends");
+    char played[16], total[16];
+    ui_progress_times(754000, 1420000, played, total, sizeof(played));
+    check(!strcmp(played, "12:34") && !strcmp(total, "23:40"), "12:34 / 23:40");
+    ui_progress_times(5000, 185000, played, total, sizeof(played));
+    check(!strcmp(played, "0:05") && !strcmp(total, "3:05"), "0:05 / 3:05");
+    ui_progress_times(754000, 5020000, played, total, sizeof(played));
+    check(!strcmp(played, "0:12:34") && !strcmp(total, "1:23:40"), "an hour or more: H:MM:SS for both");
+    ui_progress_times(9000000, 3600000, played, total, sizeof(played));
+    check(!strcmp(played, "1:00:00") && !strcmp(total, "1:00:00"), "played never past the total");
+
+    // The times under the picture: with the banner, and 4 s after a key.
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    check(!ui_menu_progress_label(&menu), "down at first");
+    ui_menu_show_progress(&menu);
+    check(ui_menu_progress_label(&menu), "up after a key");
+    check(!ui_menu_tick(&menu, 3900) && ui_menu_progress_label(&menu), "3.9 s: still up, no repaint asked");
+    (void)ui_menu_tick(&menu, 100);
+    check(!ui_menu_progress_label(&menu), "4 s: down");
+    ui_menu_banner(&menu, "犬夜叉", NULL);
+    check(ui_menu_progress_label(&menu), "up with the banner");
+    ui_progress_forget(&p);
+    check(!p.known, "forgotten");
+}
+
 int main(void)
 {
     test_voice_screens_share_the_panel();
@@ -695,6 +770,7 @@ int main(void)
     test_seek_hint();
     test_pet_picker();
     test_episode_loading();
+    test_progress();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

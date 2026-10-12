@@ -164,6 +164,50 @@ void ui_overlay_pause_hint(ui_surface_t surface, int top, int bottom)
     ui_text_draw(surface, (surface.width - ui_text_width(how)) / 2, top + 7, how, UI_MUTED, UI_DEEP);
 }
 
+void ui_overlay_progress_line(ui_surface_t panel, int top, uint32_t pos_ms, uint32_t dur_ms, bool times)
+{
+    if (dur_ms == 0 || !covers(panel, top, top + 30)) {
+        return;
+    }
+    // Two rows: thin enough to leave the picture alone, thick enough to see.
+    const int lit = (int)ui_progress_fill(pos_ms, dur_ms, (unsigned)panel.width);
+    ui_text_fill(panel, 0, top, lit, 2, UI_AMBER);
+    ui_text_fill(panel, lit, top, panel.width - lit, 2, UI_RULE);
+    if (!times) {
+        return;
+    }
+    char played[16], total[16];
+    ui_progress_times(pos_ms, dur_ms, played, total, sizeof(played));
+    const ui_surface_t view = ui_surface_centered(panel);
+    const char *slash = " / ";
+    const int width = ui_text_width(played) + ui_text_width(slash) + ui_text_width(total);
+    int pen = (view.width - width) / 2;
+    pen = ui_text_draw_scaled(view, pen, top + 8, played, 1, UI_PAPER, UI_DEEP);
+    pen = ui_text_draw_scaled(view, pen, top + 8, slash, 1, UI_MUTED, UI_DEEP);
+    ui_text_draw_scaled(view, pen, top + 8, total, 1, UI_MUTED, UI_DEEP);
+}
+
+void ui_overlay_progress_bar(ui_surface_t surface, int top, uint32_t pos_ms, uint32_t dur_ms)
+{
+    if (dur_ms == 0 || !covers(surface, top, top + 30)) {
+        return;
+    }
+    char played[16], total[16];
+    ui_progress_times(pos_ms, dur_ms, played, total, sizeof(played));
+    // The times on the row the other bottom-bar lines use, the bar on their
+    // middle (the font's x-height), 4 px tall.
+    const int left = ui_text_draw_scaled(surface, 16, top + 7, played, 1, UI_PAPER, UI_DEEP) + 8;
+    const int right_text = 224 - ui_text_width(total);
+    ui_text_draw_scaled(surface, right_text, top + 7, total, 1, UI_MUTED, UI_DEEP);
+    const int right = right_text - 8;
+    if (right <= left) {
+        return;
+    }
+    const int lit = (int)ui_progress_fill(pos_ms, dur_ms, (unsigned)(right - left));
+    ui_text_fill(surface, left, top + 14, lit, 4, UI_AMBER);
+    ui_text_fill(surface, left + lit, top + 14, right - left - lit, 4, UI_RULE);
+}
+
 // ---- Menus and pages ----
 
 #define LIST_TOP 36

@@ -31,6 +31,11 @@
 // first; audio-only mode has none).
 #define UI_MENU_LOADING_MAX_MS 30000
 #define UI_MENU_LOADING_AFTER_MS 3000
+// The played and total times under the picture after a key or a seek.
+#define UI_MENU_PROGRESS_MS 4000
+// A seek's preview gives up after this much sound clock without the new
+// source's anchor, and the bar follows the old anchor again.
+#define UI_PROGRESS_SEEK_MS 20000
 // The pet picker closes after this long untouched, and this long after a choice.
 #define UI_MENU_PET_MS 20000
 #define UI_MENU_PET_CHOSEN_MS 1000
@@ -657,6 +662,14 @@ bool ui_menu_tick(ui_menu_t *menu, int64_t elapsed_ms)
             changed = true;
         }
     }
+    // No repaint asked for: the times are in the bottom bar, which the player
+    // repaints when what it shows changes.
+    if (menu->progress_ms > 0) {
+        menu->progress_ms -= elapsed_ms;
+        if (menu->progress_ms < 0) {
+            menu->progress_ms = 0;
+        }
+    }
     if (menu->view != UI_VIEW_VIDEO && menu->timeout_ms > 0) {
         menu->timeout_ms -= elapsed_ms;
         if (menu->timeout_ms <= 0) {
@@ -972,4 +985,123 @@ bool ui_menu_loading_band(const ui_menu_t *menu)
 bool ui_menu_loading_up(const ui_menu_t *menu)
 {
     return menu && menu->loading_ms > 0;
+}
+
+
+void ui_progress_forget(ui_progress_t *progress)
+{
+    if (progress) {
+        memset(progress, 0, sizeof(*progress));
+    }
+}
+
+bool ui_progress_anchor(ui_progress_t *progress, uint32_t dur_ms, uint32_t pos_ms, uint32_t at_ms,
+                        bool stopped, uint32_t stop_ms)
+{
+    if (!progress || dur_ms == 0) {
+        return false;
+    }
+    const bool keep_seek = progress->known && progress->seeking && stopped;
+    progress->known = true;
+    progress->dur_ms = dur_ms;
+    progress->pos_ms = pos_ms < dur_ms ? pos_ms : dur_ms;
+    progress->at_ms = at_ms;
+    progress->stopped = stopped;
+    progress->stop_ms = stopped && stop_ms > at_ms ? stop_ms : at_ms;
+    if (!keep_seek) {
+        progress->seeking = false;
+    } else if (progress->seek_ms > dur_ms) {
+        progress->seek_ms = dur_ms;
+    }
+    return true;
+}
+
+// Where the anchor puts the video at `clock_ms`, the seek aside.
+static uint32_t anchored(const ui_progress_t *progress, uint32_t clock_ms)
+{
+    uint32_t end = clock_ms;
+    if (progress->stopped && end > progress->stop_ms) {
+        end = progress->stop_ms;
+    }
+    const uint64_t pos = (uint64_t)progress->pos_ms + (end > progress->at_ms ? end - progress->at_ms : 0u);
+    return pos < progress->dur_ms ? (uint32_t)pos : progress->dur_ms;
+}
+
+bool ui_progress_position(const ui_progress_t *progress, uint32_t clock_ms, uint32_t *pos_ms)
+{
+    if (!progress || !progress->known) {
+        return false;
+    }
+    uint32_t pos;
+    if (progress->seeking && (clock_ms < progress->seek_at_ms ||
+                              clock_ms - progress->seek_at_ms < UI_PROGRESS_SEEK_MS)) {
+        pos = progress->seek_ms;
+    } else {
+        pos = anchored(progress, clock_ms);
+    }
+    if (pos_ms) {
+        *pos_ms = pos;
+    }
+    return true;
+}
+
+void ui_progress_seek(ui_progress_t *progress, int seconds, uint32_t clock_ms)
+{
+    uint32_t now;
+    if (!ui_progress_position(progress, clock_ms, &now)) {
+        return;
+    }
+    int64_t target = (int64_t)now + (int64_t)seconds * 1000;
+    if (target < 0) {
+        target = 0;
+    }
+    if (target > (int64_t)progress->dur_ms) {
+        target = progress->dur_ms;
+    }
+    progress->seeking = true;
+    progress->seek_ms = (uint32_t)target;
+    progress->seek_at_ms = clock_ms;
+}
+
+unsigned ui_progress_fill(uint32_t pos_ms, uint32_t dur_ms, unsigned width)
+{
+    if (dur_ms == 0) {
+        return 0;
+    }
+    if (pos_ms >= dur_ms) {
+        return width;
+    }
+    return (unsigned)((uint64_t)pos_ms * width / dur_ms);
+}
+
+static void progress_time(uint32_t ms, bool hours, char *out, size_t size)
+{
+    const unsigned total = ms / 1000u;
+    if (hours) {
+        snprintf(out, size, "%u:%02u:%02u", total / 3600u, total / 60u % 60u, total % 60u);
+    } else {
+        snprintf(out, size, "%u:%02u", total / 60u, total % 60u);
+    }
+}
+
+void ui_progress_times(uint32_t pos_ms, uint32_t dur_ms, char *played, char *total, size_t size)
+{
+    if (!played || !total || !size) {
+        return;
+    }
+    const bool hours = dur_ms >= 3600u * 1000u;
+    progress_time(pos_ms < dur_ms ? pos_ms : dur_ms, hours, played, size);
+    progress_time(dur_ms, hours, total, size);
+}
+
+void ui_menu_show_progress(ui_menu_t *menu)
+{
+    if (menu) {
+        menu->progress_ms = UI_MENU_PROGRESS_MS;
+    }
+}
+
+bool ui_menu_progress_label(const ui_menu_t *menu)
+{
+    return menu && (menu->progress_ms > 0 || menu->banner_ms > 0);
 }

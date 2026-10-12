@@ -69,6 +69,24 @@ typedef struct {
     unsigned total;     // episodes in the series; 0 when unknown
 } ui_episode_t;
 
+// How far a relay channel's video has played, from a server told "progress": 1
+// (SWITCH "progress"). The server says once where the video is at a moment of
+// this session's sound clock -- the audio PTS the device plays, in ms -- and the
+// device moves the bar on with that clock, so nothing is sent per second. All
+// times are milliseconds. Kept by av_player.c under its list lock: the receive
+// task writes it, the video task reads it.
+typedef struct {
+    bool known;            // a length and an anchor are known
+    uint32_t dur_ms;       // the video's length, > 0
+    uint32_t pos_ms;       // where the video is ...
+    uint32_t at_ms;        // ... when the sound clock reads this
+    bool stopped;          // the source stopped (a stall, a pause) when the
+    uint32_t stop_ms;      // clock read this: the bar stays there
+    bool seeking;          // a seek was asked: the bar shows seek_ms, still,
+    uint32_t seek_ms;      // until the new source's anchor (or
+    uint32_t seek_at_ms;   // UI_PROGRESS_SEEK_MS of clock after the ask)
+} ui_progress_t;
+
 // ---- Voice: the push-to-talk screens share the list's panel ("2-in-1") ----
 //
 // A sub-state of UI_VIEW_MENU: while `voice.screen` is not UI_VOICE_NONE the
@@ -182,6 +200,9 @@ typedef struct {
     int64_t loading_ms;
     bool loading_done;
     unsigned info_seq;
+    // How long the played and total times stay under the picture after a key,
+    // a seek, a pause, a new source (they are also up with the banner).
+    int64_t progress_ms;
 } ui_menu_t;
 
 // Rows the list can show at once, given the screen height and row height.
@@ -320,6 +341,33 @@ void ui_menu_loading_shown(ui_menu_t *menu);
 // Whether the band is drawn over the picture, and whether anything is loading.
 bool ui_menu_loading_band(const ui_menu_t *menu);
 bool ui_menu_loading_up(const ui_menu_t *menu);
+
+// ---- Playback progress ----
+
+// Nothing known: a live channel, a new session, the source changing.
+void ui_progress_forget(ui_progress_t *progress);
+// The server's anchor: the video, `dur_ms` long, is at `pos_ms` when the sound
+// clock reads `at_ms`; with `stopped`, its source stopped when the clock read
+// `stop_ms`. A running anchor ends a seek's preview; a stopped one (the old
+// source cut by the seek) leaves it. False, changing nothing, for a length of 0.
+bool ui_progress_anchor(ui_progress_t *progress, uint32_t dur_ms, uint32_t pos_ms, uint32_t at_ms,
+                        bool stopped, uint32_t stop_ms);
+// The phone or a voice command moved the video by `seconds` (SWITCH "seek"),
+// asked when the clock read `clock_ms`: the bar goes there at once and stays
+// until the new source's anchor. Nothing when nothing is known.
+void ui_progress_seek(ui_progress_t *progress, int seconds, uint32_t clock_ms);
+// Where the video is when the sound clock reads `clock_ms`; false when nothing
+// is known.
+bool ui_progress_position(const ui_progress_t *progress, uint32_t clock_ms, uint32_t *pos_ms);
+// How many of `width` pixels are played.
+unsigned ui_progress_fill(uint32_t pos_ms, uint32_t dur_ms, unsigned width);
+// The played and total times, "12:34" and "23:40"; both "H:MM:SS" when the
+// video is an hour or longer ("0:12:34", "1:02:34").
+void ui_progress_times(uint32_t pos_ms, uint32_t dur_ms, char *played, char *total, size_t size);
+// Keep the times up for UI_MENU_PROGRESS_MS (a key, a seek, a pause, a new source).
+void ui_menu_show_progress(ui_menu_t *menu);
+// Whether the times are up over a picture: with the banner, or after the above.
+bool ui_menu_progress_label(const ui_menu_t *menu);
 
 // ---- Voice screens ----
 

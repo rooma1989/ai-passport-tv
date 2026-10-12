@@ -31,6 +31,16 @@ void ui_overlay_pause(ui_surface_t surface, int top, int bottom, unsigned pet, c
 // The bottom bar while paused, rows [top, bottom): how to carry on.
 void ui_overlay_pause_hint(ui_surface_t surface, int top, int bottom);
 
+// A relay video's progress in the bottom bar, whose first row is `top`, under
+// a picture: the played share of the whole panel's width lit along the bar's
+// top two rows, the rest of them dim; with `times`, "12:34 / 23:40" centred
+// below. `panel` is the panel's own surface (the line reaches its edges).
+void ui_overlay_progress_line(ui_surface_t panel, int top, uint32_t pos_ms, uint32_t dur_ms, bool times);
+
+// The same in audio-only mode, under the pet: the played time at the left,
+// the total at the right, a bar between them.
+void ui_overlay_progress_bar(ui_surface_t surface, int top, uint32_t pos_ms, uint32_t dur_ms);
+
 // ---- Menus and pages (HANDOFF.md 4.7-4.10), drawn on the opaque panel ----
 
 // Rows of the list on screen at once.

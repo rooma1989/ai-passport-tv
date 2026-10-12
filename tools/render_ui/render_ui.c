@@ -18,8 +18,9 @@
 // Seven rows of the screens that existed before voice control, then three of
 // the voice screens (docs/superpowers/specs/2026-10-12-voice-control-design.md),
 // so the first seven rows can be compared with an older sheet pixel for pixel,
-// then one of the episode information (what loads, what plays).
-enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 11, GAP = 8 };
+// then one of the episode information (what loads, what plays), then one of
+// the playback progress.
+enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 12, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -438,6 +439,35 @@ int main(int argc, char **argv)
         ui_overlay_wait(view(), &wait, 4);
         place(n++);
     }
+
+    // Playback progress, on a row of its own: under the picture with the
+    // banner (the times up with it), a key later on an hour-long video (the
+    // times as H:MM:SS), audio-only under the pet, and paused (the line still).
+    n = 11 * COLS;
+    picture(); bars("21", " 犬夜叉", 76, 0, 3);
+    menu = sample_menu();
+    ui_menu_set_playing(&menu, &series);
+    ui_menu_banner(&menu, "犬夜叉", NULL);
+    ui_menu_banner_place(&menu, "f1");
+    ui_overlay_banner(view(), &menu);
+    ui_overlay_progress_line(whole(), 210, 754000, 1420000, ui_menu_progress_label(&menu));
+    place(n++);
+    picture(); bars("02", " 小Lin说", 76, 0, 3);
+    ui_overlay_progress_line(whole(), 210, 3754000, 5020000, true);
+    place(n++);
+    {
+        ui_wait_page_t wait = { .kind = UI_WAIT_LISTEN, .pet = 4, .level = 150, .since_wake = 99 };
+        for (unsigned k = 0; k < UI_LISTEN_BARS; k++) wait.history[k] = (uint8_t)(60 + (k * 53u) % 190u);
+        picture(); bars("21", " 犬夜叉", 76, 0, 3);
+        ui_overlay_wait(view(), &wait, 5);
+        ui_overlay_progress_bar(view(), 210, 754000, 1420000);
+        place(n++);
+    }
+    picture(); bars("12", " 老高与小茉 Mr & Mrs Gao", 76, 0, 3);
+    ui_overlay_pause(view(), 84, 156, 0, "为什么古埃及金字塔里没有法老的木乃伊？");
+    ui_overlay_pause_hint(view(), 210, 240);
+    ui_overlay_progress_line(whole(), 210, 300000, 1420000, false);
+    place(n++);
 
     FILE *out = fopen(argv[1], "wb");
     if (!out) {
