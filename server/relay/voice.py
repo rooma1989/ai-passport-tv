@@ -8,7 +8,8 @@
   认出设备后填上；带密钥的这类请求按那台设备的访客处理（web.py 的 _DEVICE_SCOPED），只能动那一台，
   剧集和进度按设备主人的来。
 
-目录内容：剧集（名字、集数、下一次播第几集）、UP 主全名，和这台设备正在播的台、第几集、是否暂停。
+目录内容：剧集（名字、网站、集数、下一次播第几集）、UP 主（全名、网站），和这台设备正在播的台、
+第几集、是否暂停。网站（bilibili / youtube）用来回答「有哪些 YouTube 频道」。
 设计见 docs/superpowers/specs/2026-10-12-voice-control-design.md 第 3 节。
 """
 
@@ -25,9 +26,10 @@ def catalog(relay, key, caller: Caller = LEGACY) -> dict:
     playing = relay._playing(device)
     cid = playing["channel"]
     with state.lock:
-        series = [{"id": c.id, "name": c.name, "total": len(c.videos), "next": state.episode(c.id)}
-                  for c in state.creators if c.kind == "series"]
-        creators = [{"id": c.id, "name": c.name} for c in state.creators if c.kind != "series"]
+        series = [{"id": c.id, "name": c.name, "site": c.site, "total": len(c.videos),
+                   "next": state.episode(c.id)} for c in state.creators if c.kind == "series"]
+        creators = [{"id": c.id, "name": c.name, "site": c.site}
+                    for c in state.creators if c.kind != "series"]
     episode = 0
     paused = False
     if playing["online"] and cid[:2] == "sr":

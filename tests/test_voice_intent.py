@@ -352,7 +352,8 @@ class IntentTableTests(unittest.TestCase):
             self.assertTrue(d.reply.startswith("正在播"), where)
         elif kind in ("choices", "choices_has"):
             self.assertEqual(d.kind, "choices", where)
-            ids = {c["do"]["channel"] for c in d.choices}
+            # A long group ends with a "next page" row (a ref, not a channel).
+            ids = {c["do"]["channel"] for c in d.choices if "do" in c}
             self.assertLessEqual(len(d.choices), intent.CHOICES_MAX, where)
             if kind == "choices":
                 self.assertEqual(ids, expected[1], where)
@@ -417,6 +418,256 @@ class IntentTableTests(unittest.TestCase):
         d = decide("熊出没第三集", cat)
         self.assertEqual(d.relay, ("episode", {"series": "sr01", "episode": 3}))
         self.assertIn("不知道", decide("熊出没最新一集", cat).reply)
+
+
+# ---- listing a category ----
+# Today's channel set, with the site each relay channel comes from (the relay catalogue's "site").
+TODAY_ROWS = [("cast", "我的投屏", ""), ("up01", "小Lin说", "bilibili"), ("up02", "老高与小茉", "bilibili"),
+              ("up03", "Dulaa Music", "youtube"), ("up04", "王志安", "youtube"),
+              ("up05", "罗翔说刑法", "bilibili"), ("up06", "半佛仙人", "bilibili"),
+              ("up07", "李永乐老师", "bilibili"), ("up08", "影视飓风", "bilibili"),
+              ("up09", "何同学", "bilibili"), ("sr01", "熊出没", "bilibili"), ("sr02", "西游记", "bilibili"),
+              ("sr03", "Peppa Pig 小猪佩奇", "youtube")]
+TODAY_ROWS += [(f"ch{n:03d}", f"CCTV{n + 1}", "") for n in range(17)]
+TODAY_ROWS += [("ch017", "湖南卫视", ""), ("ch018", "浙江卫视", ""), ("ch028", "凤凰中文", ""),
+               ("ch021", "香港卫视", ""), ("ch037", "CGTN英语", ""), ("ch039", "CNA", ""),
+               ("ch070", "薛之谦精选30首(2小时)", ""), ("ch077", "王菲精选145首(10小时)", ""),
+               ("ch050", "猫和老鼠", ""), ("ch090", "中国交通", "")]
+TODAY_CHANNELS = [Channel(cid, name, n, classify(cid, name), site=site)
+                  for n, (cid, name, site) in enumerate(TODAY_ROWS, 1)]
+TODAY = Catalog(TODAY_CHANNELS, current="ch000", volume=50)
+NO_YT_SERIES = Catalog([c for c in TODAY_CHANNELS if c.id != "sr03"], current="ch000")
+# The relay did not answer: relay channels without a site.
+NO_SITES = Catalog([Channel(c.id, c.name, c.number, c.group) for c in TODAY_CHANNELS], current="ch000")
+YT = {"up03", "up04", "sr03"}
+YT_UP = {"up03", "up04"}
+BL_UP = {"up01", "up02", "up05", "up06", "up07", "up08", "up09"}
+SERIES_IDS = {"sr01", "sr02", "sr03"}
+GROUPS_ALL = "groups"
+
+# (utterance, catalogue, expected): a set of channel ids that are listed (over every page),
+# GROUPS_ALL for the overview of groups, or ("none", words in the reply) / ("channel", id).
+LIST_CASES = [
+    # ---- by site ----
+    ("我有哪些youtube频道告诉我。", TODAY, YT),
+    ("我有哪些YouTube频道", TODAY, YT),
+    ("我有哪些YouTube频道？", TODAY, YT),
+    ("有哪些油管频道", TODAY, YT),
+    ("有哪些优兔频道", TODAY, YT),
+    ("油管上有什么", TODAY, YT),
+    ("YouTube 有哪些", TODAY, YT),
+    ("YouTube上都有什么台", TODAY, YT),
+    ("列出YouTube频道", TODAY, YT),
+    ("列出所有的YouTube频道", TODAY, YT),
+    ("显示油管的频道", TODAY, YT),
+    ("告诉我有哪些YouTube频道", TODAY, YT),
+    ("帮我列一下YouTube的频道", TODAY, YT),
+    ("有没有YouTube频道", TODAY, YT),
+    ("我在YouTube上订阅了哪些", TODAY, YT),
+    ("YouTube频道", TODAY, YT),
+    ("youtube的频道有哪些呢", TODAY, YT),
+    ("我有哪些YouTube的频道？告诉我一下。", TODAY, YT),
+    ("YouTube的频道都有哪些", TODAY, YT),
+    ("哪些频道是YouTube的", TODAY, YT),
+    ("小智小智，有哪些YouTube频道", TODAY, YT),
+    ("我想知道有哪些YouTube频道", TODAY, YT),
+    ("我的youtube频道", TODAY, YT),
+    ("B站有哪些频道", TODAY, BL_UP | {"sr01", "sr02"}),
+    ("哔哩哔哩上有什么", TODAY, BL_UP | {"sr01", "sr02"}),
+    # ---- creators ----
+    ("B站的UP主有哪些", TODAY, BL_UP),
+    ("b站的up主有哪些？", TODAY, BL_UP),
+    ("哔哩哔哩的up主有哪些", TODAY, BL_UP),
+    ("bilibili有哪些up主", TODAY, BL_UP),
+    ("B站UP主", TODAY, BL_UP),
+    ("你给我列一下B站的UP主", TODAY, BL_UP),
+    ("B 站 UP 主有哪些", TODAY, BL_UP),
+    ("油管的up主有哪些", TODAY, YT_UP),
+    ("YouTube上的博主有哪些", TODAY, YT_UP),
+    ("我订阅了哪些UP主", TODAY, BL_UP | YT_UP),
+    ("我订阅了哪些UP主。", TODAY, BL_UP | YT_UP),
+    ("有哪些up主", TODAY, BL_UP | YT_UP),
+    ("我关注了哪些博主", TODAY, BL_UP | YT_UP),
+    ("UP主都有谁", TODAY, BL_UP | YT_UP),
+    ("列出所有UP主", TODAY, BL_UP | YT_UP),
+    # ---- series ----
+    ("有哪些剧", TODAY, SERIES_IDS),
+    ("有什么剧集", TODAY, SERIES_IDS),
+    ("都有哪些电视剧", TODAY, SERIES_IDS),
+    ("我有哪些连续剧", TODAY, SERIES_IDS),
+    ("YouTube有哪些剧集", TODAY, {"sr03"}),
+    ("B站的剧集有哪些", TODAY, {"sr01", "sr02"}),
+    ("有哪些YouTube的剧", NO_YT_SERIES, ("none", "还没有 YouTube 剧集")),
+    ("有哪些YouTube的剧", NO_SITES, ("none", "中转")),
+    ("我有哪些youtube频道告诉我。", NO_SITES, ("none", "中转")),
+    # ---- groups ----
+    ("有哪些动画片", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有什么动画", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有没有动画片", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有什么好看的电影", TODAY, {"sr01", "sr02", "sr03", "ch050"}),
+    ("有哪些卫视", TODAY, {"ch017", "ch018"}),
+    ("卫视有哪些", TODAY, {"ch017", "ch018"}),
+    ("央视有哪些台", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("中央台有哪些频道", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("CCTV有哪些频道", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("列出央视的台", TODAY, {f"ch{n:03d}" for n in range(17)}),
+    ("有什么音乐台", TODAY, {"ch070", "ch077"}),
+    ("有什么歌可以听", TODAY, {"ch070", "ch077"}),
+    ("请问有哪些卫视台", TODAY, {"ch017", "ch018"}),
+    ("有哪些台湾台", TODAY, {"ch028", "ch021"}),
+    ("有哪些港台频道", TODAY, {"ch028", "ch021"}),
+    ("有哪些香港台", TODAY, {"ch028", "ch021"}),
+    ("国际频道", TODAY, {"ch037", "ch039"}),
+    ("有哪些国际台", TODAY, {"ch037", "ch039"}),
+    ("国外的台有哪些", TODAY, {"ch037", "ch039"}),
+    ("其他频道有哪些", TODAY, {"ch090"}),
+    ("有哪些动画片", Catalog([c for c in TODAY_CHANNELS if c.group != "动画影视"]), ("none", "动画影视")),
+    # ---- everything: the groups first ----
+    ("都有什么台", TODAY, GROUPS_ALL),
+    ("有什么可以看的", TODAY, GROUPS_ALL),
+    ("有什么可以看的。", TODAY, GROUPS_ALL),
+    ("有哪些频道", TODAY, GROUPS_ALL),
+    ("你这里有什么节目", TODAY, GROUPS_ALL),
+    ("一共有多少个台", TODAY, GROUPS_ALL),
+    ("列出所有频道", TODAY, GROUPS_ALL),
+    ("告诉我都有哪些台", TODAY, GROUPS_ALL),
+    ("有什么", TODAY, GROUPS_ALL),
+    # ---- not a list: a channel is named, or two different groups ----
+    ("有没有湖南卫视", TODAY, ("channel", "ch017")),
+    ("有没有熊出没", TODAY, ("channel", "sr01")),
+    ("央视电影", TODAY, ("channel", "ch005")),
+    ("电视剧", TODAY, ("channel", "ch007")),
+    ("我的投屏", TODAY, ("channel", "cast")),
+    ("看王志安", TODAY, ("channel", "up04")),
+    ("王菲的歌", TODAY, ("channel", "ch077")),
+]
+
+
+def listed_ids(d, cat):
+    """Every channel the answer lists, following the "next page" rows."""
+    ids, seen = [], 0
+    while True:
+        ids += [c["do"]["channel"] for c in d.choices if "do" in c]
+        more = [c["ref"] for c in d.choices if "ref" in c]
+        if not more:
+            return ids
+        seen += 1
+        assert seen < 50, "paging never ends"
+        d = intent.list_page(more[-1], cat)
+
+
+class ListTests(unittest.TestCase):
+    def test_list_table(self):
+        self.assertGreaterEqual(len(LIST_CASES), 70)
+        for text, cat, expected in LIST_CASES:
+            with self.subTest(text=text):
+                d = decide(text, cat)
+                where = f"{text!r} -> {d}"
+                self.assertLessEqual(len(d.reply), 40, where)
+                if isinstance(expected, tuple) and expected[0] == "channel":
+                    self.assertEqual((d.kind, d.do), ("channel", {"channel": expected[1]}), where)
+                elif isinstance(expected, tuple):
+                    self.assertEqual((d.kind, d.do, d.choices), ("none", None, None), where)
+                    self.assertIn(expected[1], d.reply, where)
+                elif expected == GROUPS_ALL:
+                    self.assertEqual(d.kind, "list", where)
+                    self.assertTrue(all("ref" in c for c in d.choices), where)
+                    self.assertIn("个台", d.reply, where)
+                else:
+                    self.assertIn(d.kind, ("list", "choices"), where)
+                    self.assertIsNone(d.do, where)
+                    ids = listed_ids(d, cat)
+                    self.assertEqual(len(ids), len(set(ids)), where)
+                    self.assertEqual(set(ids), expected, where)
+
+    def test_the_failing_transcript(self):
+        d = decide("我有哪些youtube频道告诉我。", TODAY)
+        self.assertEqual(d.kind, "list")
+        self.assertEqual(d.reply, "YouTube 频道有 3 个")
+        self.assertEqual([c["do"]["channel"] for c in d.choices], ["up03", "up04", "sr03"])
+        self.assertEqual(d.choices[0], {"label": "Dulaa Music", "lead": f"{TODAY.channel('up03').number:02d}",
+                                        "do": {"channel": "up03"}})
+
+    def test_replies(self):
+        self.assertEqual(decide("我订阅了哪些UP主", TODAY).reply, "UP 主有 9 个")
+        self.assertEqual(decide("油管的up主有哪些", TODAY).reply, "YouTube UP 主有 2 个")
+        self.assertEqual(decide("B站的UP主有哪些", TODAY).reply, "B站 UP 主有 7 个")
+        self.assertEqual(decide("B站有哪些频道", TODAY).reply, "B站频道有 9 个")
+        self.assertEqual(decide("有哪些卫视", TODAY).reply, "卫视有 2 个台")
+        self.assertEqual(decide("有哪些YouTube的剧", NO_YT_SERIES).reply, "还没有 YouTube 剧集")
+        self.assertEqual(decide("都有什么台", TODAY).reply, f"一共 {len(TODAY_CHANNELS)} 个台，分 9 组")
+
+    def test_paging(self):
+        d = decide("央视有哪些台", TODAY)
+        self.assertEqual(d.reply, "央视有 17 个台")
+        self.assertEqual(len(d.choices), intent.CHOICES_MAX)
+        self.assertEqual([c["label"] for c in d.choices[:5]], ["CCTV1", "CCTV2", "CCTV3", "CCTV4", "CCTV5"])
+        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 12 个", "lead": "", "ref": "ls:..2:5"})
+        d = intent.list_page("ls:..2:5", TODAY)
+        self.assertEqual(d.reply, "央视 第 6-10 个，共 17 个")
+        self.assertEqual(d.choices[0]["label"], "CCTV6")
+        self.assertEqual(d.choices[5]["ref"], "ls:..2:10")
+        d = intent.list_page("ls:..2:10", TODAY)
+        self.assertEqual(d.choices[5]["label"], "下一页 · 还有 2 个")
+        d = intent.list_page("ls:..2:15", TODAY)
+        self.assertEqual([c["label"] for c in d.choices], ["CCTV16", "CCTV17"])
+        self.assertEqual(d.reply, "央视 第 16-17 个，共 17 个")
+        # Six fit without a "next page" row; seven do not.
+        self.assertEqual(len(decide("B站UP主", TODAY).choices), 6)
+        self.assertEqual(decide("B站UP主", TODAY).choices[5]["ref"], "ls:bl.up.:5")
+        six = decide("B站UP主", Catalog([c for c in TODAY_CHANNELS if c.id != "up09"])).choices
+        self.assertEqual(len(six), 6)
+        self.assertTrue(all("do" in c for c in six))
+
+    def test_groups_open_their_lists(self):
+        d = decide("有什么可以看的", TODAY)
+        self.assertEqual(d.choices[0], {"label": "我的投屏 · 1 个台", "lead": "", "ref": "ls:..0:0"})
+        self.assertEqual(d.choices[2]["label"], "央视 · 17 个台")
+        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 4 个", "lead": "", "ref": "ls:..:5"})
+        rest = intent.list_page("ls:..:5", TODAY)
+        self.assertEqual([c["label"].split(" · ")[0] for c in rest.choices], ["国际", "音乐", "动画影视", "其他"])
+        opened = intent.list_page(d.choices[1]["ref"], TODAY)
+        self.assertEqual(opened.reply, "UP 主有 9 个台")
+        self.assertEqual(opened.choices[0]["do"], {"channel": "up01"})
+
+    def test_refs_fit_the_device(self):
+        """The firmware keeps a ref in 32 bytes (printable, no quote or backslash), a label in 48."""
+        for site in ("", "youtube", "bilibili"):
+            for kind in ("", "up", "series"):
+                for group in ("",) + intent.GROUP_ORDER:
+                    ref = intent.list_ref(intent.Category(site, kind, group), 125)
+                    self.assertLessEqual(len(ref), 31)
+                    self.assertTrue(all(" " <= ch < "\x7f" and ch not in '"\\' for ch in ref), ref)
+                    self.assertEqual(intent.parse_list_ref(ref), (intent.Category(site, kind, group), 125))
+        for text, cat, _ in LIST_CASES:
+            for choice in decide(text, cat).choices or []:
+                self.assertLessEqual(len(choice["label"].encode("utf-8")), 47, choice)
+
+    def test_stale_and_bad_refs(self):
+        # The list got shorter between the pages: start again.
+        d = intent.list_page("ls:..2:40", TODAY)
+        self.assertEqual(d.choices[0]["label"], "CCTV1")
+        for bad in ("ls:", "ls:xx..:0", "ls:..99:0", "ls:..2:", "ep:sr01:3", "ls:..2:5;"):
+            self.assertIsNone(intent.list_page(bad, TODAY), bad)
+
+
+class NotFoundTests(unittest.TestCase):
+    def test_a_named_series_or_channel_that_is_not_there(self):
+        for text, name in (("葫芦娃第三集", "葫芦娃"), ("葫芦娃第3集", "葫芦娃"), ("葫芦娃最新一集", "葫芦娃"),
+                           ("我要看葫芦娃", "葫芦娃"), ("播放小猪佩奇", "小猪佩奇"), ("打开小猪佩奇", "小猪佩奇"),
+                           ("切到葫芦娃", "葫芦娃"), ("看熊大", "熊大")):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                self.assertEqual((d.kind, d.do, d.relay), ("none", None, None))
+                self.assertEqual(d.reply, f"没有找到「{name}」")
+
+    def test_plain_nonsense_is_still_not_understood(self):
+        for text in ("今天天气怎么样", "那个那个什么来着", "看什么好", "看不了", "什么", "看看", "打开", "来点",
+                     "我要看电视"):
+            with self.subTest(text=text):
+                d = decide(text, LIVE)
+                if d.kind == "none":
+                    self.assertEqual(d.reply, intent.REPLY_UNKNOWN)
 
 
 class NumberTests(unittest.TestCase):

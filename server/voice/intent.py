@@ -1,13 +1,14 @@
 """语音指令 → 决定。纯函数，不碰网络、不碰套接字，单测覆盖（tests/test_voice_intent.py）。
 
-规则优先：先认固定说法（音量、亮度、暂停、配网……），再认「X 第 N 集」，最后把剩下的话当成
-频道名做精确、别名、编号、分组、模糊匹配。设计见
+规则优先：先认固定说法（音量、亮度、暂停、配网……），再认「有哪些 YouTube 频道」这类问一类台的
+话，再认「X 第 N 集」，最后把剩下的话当成频道名做精确、别名、编号、分组、模糊匹配。设计见
 docs/superpowers/specs/2026-10-12-voice-control-design.md 第 3 节。
 
 结果分三类，由 session.py 发给设备或交给中转：
 - 设备自己做的：`do` 里是 AV_SWITCH 认识的键（channel、volume、brightness、audio_only）
   外加新的 page、setup；
-- 几个候选让用户选：`choices`，每项带 `do`，或带 `ref`（选中后要服务端调中转）；
+- 几个候选让用户选：`choices`，每项带 `do`，或带 `ref`（选中后设备发 pick，服务端再回一个结果：
+  选集 `ep:…`，列表翻页或打开一组 `ls:…`）；
 - 中转做的（选集、暂停、继续、跳转、上一集、下一集）：`relay`，由 session 带着设备名调用。
 """
 
@@ -17,6 +18,7 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from ..channel_groups import GROUPS as GROUP_ORDER
 from . import match
 
 # 一次最多给几个候选：设备的面板放 6 行。
@@ -33,15 +35,18 @@ VOLUME_STEP = 10
 VOLUME_BIG_STEP = 30
 SEEK_DEFAULT_S = 30
 LABEL_COLUMNS = 20
+# 列一类台时一页几个：放不下时第 6 行是「下一页」。
+PAGE_SIZE = 5
 
 # 与 server/relay/table.py、channel_groups.py 的 id 规则一致：中转推流的台。
 _RELAY_ID = re.compile(r"^(cast|up\d+|sr\d+)$")
 _SERIES_ID = re.compile(r"^sr\d+$")
+_CREATOR_ID = re.compile(r"^up\d+$")
 
 REPLY_UNKNOWN = "没听懂，再说一次？"
 REPLY_EMPTY = "没听清，再说一次？"
 REPLY_SWITCH = "换台中…"
-REPLY_HELP = "可以说：湖南卫视、熊出没第3集、大声一点、暂停、只听声音"
+REPLY_HELP = "可以说：湖南卫视、熊出没第3集、有哪些台、大声一点、暂停、只听声音"
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,8 @@ class Channel:
     group: str = ""
     # 中转给的全名（频道表里的名字可能被截短），只用于匹配。
     full_name: str = ""
+    # 中转的台来自哪个网站：「bilibili」「youtube」；直播台、或中转没说时为空。
+    site: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,11 @@ _SUFFIX_FILLERS = ("好不好", "好吗", "可以吗", "行吗", "行不行", "�
 _VERBS = ("切换到", "切换成", "切换", "切到", "换到", "换成", "转到", "调到", "跳到", "回到",
           "打开", "播放", "进入", "来个", "来点", "我看", "我听", "看看", "看", "听", "播", "放",
           "去", "来", "要")
+# 说了这些词，后面就是一个台的名字（找不到时回答「没有找到「X」」）。
+_NAMING_VERBS = ("切换到", "切换成", "切换", "切到", "换到", "换成", "转到", "调到", "打开", "播放",
+                 "我看", "看看", "看", "播", "来个", "来点")
+# 这些字说明后面不是名字（「看什么好」「看不了」）。
+_NOT_A_NAME = re.compile(r"(什么|哪|啥|怎么|吗|不|没|了)")
 _TAIL = ("这个频道", "这个台", "那个台", "的节目", "节目", "频道", "电视台", "台")
 
 
@@ -345,11 +357,6 @@ _NUMBER = _rx(r"^(?:第(\d+)(?:个)?(?:台|频道|号台)|(\d+)(?:号台|号频�
 _EPISODE = _rx(r"^(.*?)(?:的)?第(\d+)(?:集|话|期)$")
 _EPISODE_SHORT = _rx(r"^(.+?)(?:的)?(\d+)(?:集)$")
 _LATEST = _rx(r"^(.*?)(?:的)?(?:最新|最后)(?:的)?(?:1|一)?(?:集|期)$")
-_GROUPS = {"央视": "央视", "中央台": "央视", "卫视": "卫视", "卫视台": "卫视", "地方台": "卫视",
-           "港澳台": "港澳台", "香港台": "港澳台", "台湾台": "港澳台", "国际": "国际", "国外": "国际",
-           "外国台": "国际", "国际台": "国际", "英文台": "国际", "音乐": "音乐", "听歌": "音乐",
-           "歌": "音乐", "动画": "动画影视", "动画片": "动画影视", "动画影视": "动画影视", "电影": "动画影视",
-           "影视": "动画影视", "up主": "UP 主", "up": "UP 主", "其他": "其他"}
 
 
 def _volume_value(n: int) -> int:
@@ -488,8 +495,7 @@ def _series_episode(text: str, catalog: Catalog) -> Decision | None:
         kind, picked = _pick(rank_channels([named, _strip_tail(named)], index))
         if kind == "none":
             # 「X3集」也可能是频道名的一部分，交给后面的频道匹配；「X第3集」就是在找剧。
-            return None if found is not None and full is None else Decision(
-                "none", reply="没有找到这部剧")
+            return None if found is not None and full is None else _not_found(named)
         chosen = [series[c.number - 1] for c in picked]
     if latest:
         # 中转连不上时不知道有几集，「最新一集」做不了。
@@ -507,6 +513,11 @@ def _series_episode(text: str, catalog: Catalog) -> Decision | None:
     if not rows:
         return Decision("episode", reply="没有这一集")
     return Decision("choices", reply=f"找到 {len(rows)} 部，选一个", choices=rows)
+
+
+def _not_found(named: str) -> Decision:
+    """说了一个名字，但目录里没有：仍是 none（设备放低音），回答里说出没找到的是什么。"""
+    return Decision("none", reply=f"没有找到「{_label(named)}」" if named else REPLY_UNKNOWN)
 
 
 def _relay_playing(catalog: Catalog) -> bool:
@@ -554,6 +565,248 @@ def _playback(text: str, catalog: Catalog) -> Decision | None:
     return Decision("next", reply="下一集" if series else "下一个", relay=("next", {}))
 
 
+# ---- 问一类台：「我有哪些 YouTube 频道」「B站的 UP 主有哪些」「有什么可以看的」 ----
+#
+# 整句话切成下面这些词（每处取最长的词），切得完、并且有问的词（哪些、什么、列出……）才算在问；
+# 有一个字切不出来（「有没有湖南卫视」的「湖南」）就不是，交给后面的频道匹配。只说类别本身
+# （「卫视」「YouTube 频道」「B站 UP 主」）也算，在频道匹配前、编号之后认（_bare_category）。
+
+_SITE_WORDS = {"youtube": "youtube", "油管": "youtube", "优兔": "youtube", "u管": "youtube",
+               "you管": "youtube", "u2b": "youtube", "b站": "bilibili", "哔哩哔哩": "bilibili",
+               "哔哩": "bilibili", "bilibili": "bilibili", "bili": "bilibili", "小破站": "bilibili"}
+_KIND_WORDS = {"up主": "up", "up": "up", "博主": "up", "创作者": "up", "作者": "up",
+               "剧集": "series", "剧": "series", "电视剧": "series", "连续剧": "series",
+               "番剧": "series", "合集": "series", "播放列表": "series", "系列": "series"}
+_GROUP_WORDS = {"央视": "央视", "中央台": "央视", "中央电视台": "央视", "cctv": "央视",
+                "卫视": "卫视", "卫视台": "卫视", "地方台": "卫视", "省台": "卫视",
+                "港澳台": "港澳台", "港台": "港澳台", "港澳": "港澳台", "香港台": "港澳台",
+                "台湾台": "港澳台", "国际": "国际", "国际台": "国际", "国外": "国际", "外国": "国际",
+                "外国台": "国际", "英文台": "国际", "海外": "国际", "境外": "国际",
+                "音乐": "音乐", "歌": "音乐", "听歌": "音乐", "歌曲": "音乐", "mv": "音乐",
+                "动画": "动画影视", "动画片": "动画影视", "动画影视": "动画影视", "动漫": "动画影视",
+                "卡通": "动画影视", "影视": "动画影视", "电影": "动画影视", "其他": "其他", "其它": "其他"}
+# 只是「台」的意思的词。
+_NOUN_WORDS = ("频道", "台", "电视台", "节目", "内容", "东西", "视频", "账号", "号", "电视", "直播",
+               "可以看的", "能看的", "好看的", "可看的", "看的", "可以播的", "能播的", "可以听的", "能听的")
+# 问的词。
+_ASK_WORDS = ("有没有", "都有", "有啥", "还有", "一共有", "哪些", "哪几个", "哪一些", "哪个", "哪一个",
+              "哪位", "哪几位", "哪", "谁", "什么", "啥", "几个", "多少", "列出来", "列出", "列", "列表",
+              "清单", "目录", "显示", "告诉我", "所有", "全部", "说说", "讲讲", "介绍")
+# 没说类别也是在问所有台的词（「列出所有」）；另外带「有」的也是（「都有什么」）。
+_ASK_ALL = ("所有", "全部", "列出", "列出来", "列表", "清单", "目录")
+# 不影响意思的字词。
+_PLAIN_WORDS = ("我", "我们", "你", "你们", "咱", "咱们", "家", "这里", "这儿", "现在", "目前", "都",
+                "一共", "总共", "有", "没有", "些", "的", "了", "过", "订阅", "关注", "收藏", "添加",
+                "加了", "存了", "里", "里面", "上", "中", "在", "还", "是", "个", "们", "吗", "呢",
+                "啊", "呀", "和", "给我", "看看", "瞧瞧", "能", "可以", "那", "这", "分别", "请问",
+                "帮我", "出来", "看", "听", "哦", "嗯", "呗", "问", "知道", "想知道")
+# 只说类别时（「我的 YouTube 频道」）除了类别和「台」只能有这几个字。
+_BARE_PLAIN = ("我", "我们", "的", "上", "里")
+# 拼在类别前面：「YouTube 剧集」「B站剧集」。
+_SITE_LABEL = {"youtube": "YouTube ", "bilibili": "B站"}
+_KIND_LABEL = {"up": "UP 主", "series": "剧集"}
+_SITE_CODE = {"youtube": "yt", "bilibili": "bl"}
+_KIND_CODE = {"up": "up", "series": "sr"}
+
+
+def _vocabulary() -> dict[str, tuple[str, str]]:
+    # 与说的话一样规范化（「一共」在识别结果里是「1共」）。
+    words: dict[str, tuple[str, str]] = {}
+    for word in _PLAIN_WORDS:
+        words[match.normalize(word)] = ("plain", word)
+    for word in _ASK_WORDS:
+        words[match.normalize(word)] = ("ask", word)
+    for word in _NOUN_WORDS:
+        words[match.normalize(word)] = ("noun", "")
+    for table, kind in ((_SITE_WORDS, "site"), (_KIND_WORDS, "kind"), (_GROUP_WORDS, "group")):
+        for word, value in table.items():
+            words[match.normalize(word)] = (kind, value)
+    return words
+
+
+_VOCABULARY = _vocabulary()
+_LONGEST = max(len(word) for word in _VOCABULARY)
+
+
+@dataclass(frozen=True)
+class Category:
+    """要列出的台：三个条件都满足的；全空表示「所有台」，先列分组。"""
+
+    site: str = ""      # youtube / bilibili
+    kind: str = ""      # up / series
+    group: str = ""     # 设备列表里的分组名
+
+    @property
+    def everything(self) -> bool:
+        return not (self.site or self.kind or self.group)
+
+    def holds(self, channel: Channel) -> bool:
+        kind = "up" if _CREATOR_ID.match(channel.id) else "series" if _SERIES_ID.match(channel.id) else ""
+        return ((not self.site or channel.site == self.site) and (not self.kind or kind == self.kind)
+                and (not self.group or channel.group == self.group))
+
+    def noun(self) -> str:
+        """「YouTube 频道」「B站 UP 主」「YouTube 剧集」「卫视」。"""
+        noun = self.group
+        if self.kind:
+            noun = f"{noun} {_KIND_LABEL[self.kind]}" if noun else _KIND_LABEL[self.kind]
+        noun, site = noun or "频道", _SITE_LABEL.get(self.site, "")
+        # 「B站 UP 主」：中文后面接外文时空一格。
+        return site + (" " if site and not site.endswith(" ") and noun[0].isascii() else "") + noun
+
+
+def _words(text: str) -> list[tuple[str, str]] | None:
+    """按词表切开；有切不出来的字返回 None。"""
+    out, at = [], 0
+    while at < len(text):
+        for size in range(min(_LONGEST, len(text) - at), 0, -1):
+            found = _VOCABULARY.get(text[at:at + size])
+            if found is not None:
+                out.append(found)
+                at += size
+                break
+        else:
+            return None
+    return out
+
+
+def _category_of(words: list[tuple[str, str]]) -> Category | None:
+    """词里的类别；同一种类别说了两个不同的（「央视电影」）就不是在问一类台。"""
+    found: dict[str, set[str]] = {"site": set(), "kind": set(), "group": set()}
+    for kind, value in words:
+        if kind in found:
+            found[kind].add(value)
+    if any(len(values) > 1 for values in found.values()):
+        return None
+    return Category(*(next(iter(found[k]), "") for k in ("site", "kind", "group")))
+
+
+def _asked_category(text: str) -> Category | None:
+    """问一类台的话：「我有哪些youtube频道告诉我」「央视有哪些台」「有什么可以看的」。"""
+    words = _words(text)
+    if not words:
+        return None
+    asks = [value for kind, value in words if kind == "ask"]
+    if not asks:
+        return None
+    category = _category_of(words)
+    if category is None:
+        return None
+    if category.everything and not any(kind == "noun" for kind, _ in words) and "有" not in text \
+            and not any(value in _ASK_ALL for value in asks):
+        # 只有「什么」「哪个」：不知道在问什么。
+        return None
+    return category
+
+
+def _bare_category(text: str) -> Category | None:
+    """只说了类别：「卫视」「YouTube 频道」「B站的UP主」「港台频道」。"""
+    words = _words(text)
+    if not words or any(kind not in ("site", "kind", "group", "noun") and value not in _BARE_PLAIN
+                        for kind, value in words):
+        return None
+    category = _category_of(words)
+    return None if category is None or category.everything else category
+
+
+def list_ref(category: Category, offset: int) -> str | None:
+    """「下一页」和分组行的 ref：ls:站.种类.分组序号:从第几个（设备限 31 个字符）。"""
+    group = ""
+    if category.group:
+        if category.group not in GROUP_ORDER:
+            return None
+        group = str(GROUP_ORDER.index(category.group))
+    return f"ls:{_SITE_CODE.get(category.site, '')}.{_KIND_CODE.get(category.kind, '')}.{group}:{offset}"
+
+
+_LIST_REF = re.compile(r"^ls:(yt|bl|)\.(up|sr|)\.(\d{0,2}):(\d{1,3})$")
+
+
+def parse_list_ref(ref: str) -> tuple[Category, int] | None:
+    found = _LIST_REF.match(ref or "")
+    if not found:
+        return None
+    site = {code: site for site, code in _SITE_CODE.items()}.get(found.group(1), "")
+    kind = {code: kind for kind, code in _KIND_CODE.items()}.get(found.group(2), "")
+    group = ""
+    if found.group(3):
+        index = int(found.group(3))
+        if index >= len(GROUP_ORDER):
+            return None
+        group = GROUP_ORDER[index]
+    return Category(site, kind, group), int(found.group(4))
+
+
+def _page(rows: list[dict], category: Category, offset: int) -> tuple[list[dict], int, int]:
+    """这一页的行（放不下时最后一行是「下一页」）、这一页从第几个开始、列出了几个。"""
+    if offset >= len(rows):
+        offset = 0          # 列表在两次之间变短了：从头列
+    rest = rows[offset:]
+    ref = list_ref(category, offset + PAGE_SIZE)
+    if len(rest) <= CHOICES_MAX or ref is None:
+        page = rest[:CHOICES_MAX]
+        return page, offset, len(page)
+    page = rest[:PAGE_SIZE] + [{"label": f"下一页 · 还有 {len(rest) - PAGE_SIZE} 个", "lead": "", "ref": ref}]
+    return page, offset, PAGE_SIZE
+
+
+def _group_order(catalog: Catalog) -> list[tuple[str, int]]:
+    """有台的分组和台数，按设备列表的分组顺序。"""
+    counts: dict[str, int] = {}
+    for channel in catalog.channels:
+        if channel.group:
+            counts[channel.group] = counts.get(channel.group, 0) + 1
+    known = [g for g in GROUP_ORDER if g in counts]
+    return [(g, counts[g]) for g in known + [g for g in counts if g not in GROUP_ORDER]]
+
+
+def list_decision(category: Category, catalog: Catalog, offset: int = 0, kind: str = "list") -> Decision:
+    """列出一类台（每行换到那个台），或者（什么类别都没说）列出分组（每行打开那一组）。"""
+    if category.everything:
+        groups = [(g, n) for g, n in _group_order(catalog) if list_ref(Category(group=g), 0)]
+        if not groups:
+            return Decision("none", reply="频道表是空的")
+        rows = [{"label": f"{g} · {n} 个台", "lead": "", "ref": list_ref(Category(group=g), 0)}
+                for g, n in groups]
+        page, start, shown = _page(rows, category, offset)
+        reply = (f"一共 {sum(n for _, n in groups)} 个台，分 {len(groups)} 组" if start == 0
+                 else f"第 {start + 1}-{start + shown} 组，共 {len(groups)} 组")
+        return Decision(kind, reply=reply, choices=page)
+    noun = category.noun()
+    if category.site:
+        relay_channels = [c for c in catalog.channels if _CREATOR_ID.match(c.id) or _SERIES_ID.match(c.id)]
+        if relay_channels and not any(c.site for c in relay_channels):
+            # 中转没回应（或是旧版本，不报网站）：分不出哪些是 YouTube 的。
+            return Decision("none", reply="视频中转没回应，分不出是哪个网站的")
+    members = [c for c in catalog.channels if category.holds(c)]
+    if not members:
+        return Decision("none", reply=f"{category.group}里还没有台" if category.group and not
+                        (category.site or category.kind) else f"还没有 {noun}")
+    rows = [{"label": _label(c.name), "lead": f"{c.number:02d}", "do": {"channel": c.id}} for c in members]
+    page, start, shown = _page(rows, category, offset)
+    if start:
+        reply = f"{noun} 第 {start + 1}-{start + shown} 个，共 {len(members)} 个"
+    elif category.group and not (category.site or category.kind):
+        reply = f"{category.group}有 {len(members)} 个台"
+    else:
+        reply = f"{noun}有 {len(members)} 个"
+    return Decision(kind, reply=reply, choices=page)
+
+
+def _named_exactly(said: str, catalog: Catalog) -> bool:
+    """说的话和某个台的名字或别名一字不差（只有这时分数超过 1，见 _channel_score）。"""
+    ranked = rank_channels([said], catalog.channels)
+    return bool(ranked) and ranked[0][0] > 1.0
+
+
+def list_page(ref: str, catalog: Catalog) -> Decision | None:
+    """设备选了「下一页」或一个分组（pick 的 ref）；ref 不认识时返回 None。"""
+    parsed = parse_list_ref(ref)
+    if parsed is None:
+        return None
+    return list_decision(parsed[0], catalog, parsed[1])
+
+
 def decide(transcript: str, catalog: Catalog) -> Decision:
     """识别出来的一句话 → 决定。"""
     raw = match.normalize(transcript)
@@ -588,6 +841,9 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
     if _NEXT_CH.match(text) or _PREV_CH.match(text) or (_NEXT_EP.match(text) and not _relay_playing(catalog)):
         target = _step_channel(catalog, -1 if _PREV_CH.match(text) else 1)
         return Decision("none", reply=REPLY_UNKNOWN) if target is None else _channel_decision(target, catalog)
+    asked = _asked_category(text)
+    if asked is not None:
+        return list_decision(asked, catalog)
     decision = _series_episode(text, catalog)
     if decision is not None:
         return decision
@@ -599,16 +855,19 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
         if channel is None:
             return Decision("channel", reply=f"没有第 {n} 台，一共 {len(catalog.channels)} 个台")
         return _channel_decision(channel, catalog)
-    group = _GROUPS.get(bare) or _GROUPS.get(_strip_verbs(text))
-    if group:
-        members = [c for c in catalog.channels if c.group == group]
-        if members:
-            return _choices(members, f"{group}有 {len(members)} 个台" if len(members) > CHOICES_MAX
-                            else f"{group}的台，选一个")
+    for said in dict.fromkeys((bare, _strip_verbs(text))):
+        category = _bare_category(said)
+        # 恰好是某个台的名字或说法（「电视剧」是 CCTV-8）时还是换台。
+        if category is not None and not _named_exactly(said, catalog):
+            return list_decision(category, catalog, kind="choices")
     queries = list(dict.fromkeys(q for q in (text, _strip_verbs(text), bare) if q))
     kind, picked = _pick(rank_channels(queries, catalog.channels))
     if kind == "one":
         return _channel_decision(picked[0], catalog)
     if kind == "some":
         return _choices(picked, f"找到 {len(picked)} 个，选一个")
+    if text.startswith(_NAMING_VERBS) and 2 <= len(bare) <= 10 and bare not in _VERBS \
+            and not _NOT_A_NAME.search(bare) and _words(bare) is None:
+        # 「我要看葫芦娃」：显然是在点一个台，只是没有这个台（「看电视」「看看」不算）。
+        return _not_found(bare)
     return Decision("none", reply=REPLY_UNKNOWN)

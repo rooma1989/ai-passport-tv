@@ -291,6 +291,17 @@ class VoiceService:
 
     def _pick(self, generation: int, uid: int, ref: str, context: dict,
               relay: RelayClient | None) -> None:
+        if ref.startswith("ls:"):
+            # 「下一页」或分组概览里的一组：按现在的目录重新列（设备只认这次的结果）。
+            catalog, _ = self._catalog(context, relay)
+            decision = intent.list_page(ref, catalog)
+            if decision is None:
+                self._push(generation, uid, self._final(uid, "", "这个选项已经过期了", "none"))
+                return
+            result = self._execute(uid, "", decision, catalog, relay)
+            self.logger(f"voice id={uid} pick intent={decision.kind}")
+            self._push(generation, uid, result)
+            return
         found = _REF.match(ref)
         if not found:
             self._push(generation, uid, self._final(uid, "", "这个选项已经过期了", "none"))
@@ -308,7 +319,7 @@ class VoiceService:
         self._push(generation, uid, result)
 
     def _catalog(self, context: dict, relay: RelayClient | None) -> tuple[intent.Catalog, str]:
-        """频道表来自 CONFIG（设备看到的序号和分组）；剧集、全名、正在播第几集来自中转。"""
+        """频道表来自 CONFIG（设备看到的序号和分组）；剧集、全名、网站、正在播第几集来自中转。"""
         config = context.get("config") or {}
         groups = config.get("groups") or []
         listed = config.get("channel_list") or []
@@ -319,8 +330,12 @@ class VoiceService:
                 relay_data = relay.catalog()
             except RelayError as error:
                 note = f" relay_catalog={error}"
-        full_names = {row.get("id"): row.get("name") for key in ("series", "creators")
-                      for row in relay_data.get(key) or [] if isinstance(row, dict)}
+        relay_rows = [row for key in ("series", "creators") for row in relay_data.get(key) or []
+                      if isinstance(row, dict)]
+        full_names = {row.get("id"): row.get("name") for row in relay_rows}
+        # 中转的台来自哪个网站（「有哪些 YouTube 频道」）；旧版中转不报，就是空的。
+        sites = {row.get("id"): row.get("site") for row in relay_rows
+                 if row.get("site") in ("bilibili", "youtube")}
         channels = []
         for n, row in enumerate(listed, 1):
             if not isinstance(row, dict) or not isinstance(row.get("id"), str):
@@ -329,7 +344,8 @@ class VoiceService:
             group = groups[g] if isinstance(g, int) and 0 <= g < len(groups) else ""
             full = full_names.get(row["id"])
             channels.append(intent.Channel(row["id"], str(row.get("name") or row["id"]), n, group,
-                                           full if isinstance(full, str) else ""))
+                                           full if isinstance(full, str) else "",
+                                           sites.get(row["id"], "")))
         listed_ids = {c.id for c in channels}
         series = [intent.Series(row["id"], str(row.get("name") or row["id"]),
                                 row.get("total") if isinstance(row.get("total"), int) else 0)

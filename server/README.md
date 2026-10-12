@@ -250,9 +250,12 @@ A result:
   (1). A clear single match carries `do` and runs at once.
 - `choices` (at most 6) replaces `do` when several things fit:
   `{"label","lead","do"}`, or `{"label","lead","ref"}` when choosing needs the
-  relay (an episode of one of two series); the device then sends `pick` with
-  that `ref`. Wi-Fi setup always comes as two choices (enter setup / cancel),
-  because it ends playback.
+  server (`ep:<series>:<n>`, an episode of one of two series, through the relay;
+  `ls:<site>.<kind>.<group>:<offset>`, the next page of a list or one group of
+  the overview); the device then sends `pick` with that `ref` and the server
+  answers with a new result for the same `id`. Only the refs of the latest
+  result are accepted. Wi-Fi setup always comes as two choices (enter setup /
+  cancel), because it ends playback.
 - `intent`, `label` and `lead` are additions to the design's format: the kind of
   decision (`none` is "not understood", for the low earcon), and the row the
   panel shows for a single match (name, and the number the device lists it under).
@@ -275,6 +278,35 @@ only on/off; the status page; Wi-Fi setup with confirmation; cancel; help.
 Auto-execute at score >= 0.85 and a lead of 0.15 (an exact alias always
 qualifies), or a single candidate >= 0.65; otherwise up to 6 candidates >= 0.5;
 otherwise "not understood". `tests/test_voice_intent.py` holds the phrasings.
+
+**Listing a category** comes before the series and channel matching, so a
+question is never fuzzy-matched on its words. The sentence is cut into known
+words (longest first): a site (YouTube, "you guan", "you tu", "B zhan", bilibili,
+"bi li bi li"), a kind ("UP zhu" / "bo zhu"; "ju" / "ju ji" / "dian shi ju"), a
+group ("yang shi", "wei shi", "gang tai", "guo ji", "yin yue", "dong hua",
+"dian ying", "qi ta" ...), a plain noun ("pin dao", "tai", "jie mu", "ke yi kan
+de") and question or filler words ("na xie", "shen me", "you mei you", "lie chu",
+"xian shi", "gao su wo", "ding yue le" ...). If every character is covered and
+there is a question word, it is a list question: "wo you na xie YouTube pin dao
+gao su wo", "B zhan de UP zhu you na xie", "yang shi you na xie tai". A word that
+is not known ("you mei you Hunan wei shi") makes it a channel request again, as
+do two different groups ("yang shi dian ying" is CCTV-6). Saying only the
+category ("wei shi", "YouTube pin dao", "B zhan UP zhu") also lists it, unless it
+is exactly a channel's name or alias ("dian shi ju" stays CCTV-8). The answer
+is `intent` `list` (`choices` for a bare category) with a reply that counts
+them and the channels as choices (`do`); more than six are paged five at a time
+with a last "next page, N more" row (an `ls:` ref). A site and nothing else
+lists every channel from that site (creators and series). With no category
+("dou you shen me tai", "you shen me ke yi kan de") the groups are listed, each
+row opening that group's list. An empty category is `none` with a clear reply
+("no YouTube series yet"); a site asked for while the relay did not report
+sites says the relay did not answer. The relay catalogue
+(`GET /api/voice/catalog`) carries `site` (`bilibili` / `youtube`) for every
+creator and series.
+
+A named series that does not exist ("Hu lu wa di 3 ji"), or a play verb
+followed by a name that matches nothing ("wo yao kan Hu lu wa"), replies "could
+not find" with that name, still with `intent` `none` for the low earcon.
 
 Relay actions always carry `device`, so they act on the device that spoke, not
 on the one the phone is driving (`Relay.target()`). Which device that is depends
