@@ -149,6 +149,49 @@ and a host test compares the two.
   acted) unless `intent` is `none`. "None of these, open the channel list" is
   added after the candidates only when they are channels.
 
+### Episode information ("info": 1)
+
+Firmware that draws which episode plays and loads adds `"info":1` to HELLO. Only
+such a device gets anything below; older firmware sees exactly what it did.
+
+- CONFIG may carry `"playing":{"title":"...","episode":n,"total":N}` for a relay
+  channel (a series, a creator, the cast): what this session opens. `episode`
+  and `total` are present only for a series (1-based; `total` only when known).
+  The title is UTF-8, at most 60 bytes, cut on a character by the server; the
+  device keeps 63 bytes and cuts on a character itself. The opening screen shows
+  the title where the list position was and "Opening, episode n/N" under the
+  bar; the channel banner shows "Episode n/N · title" in place of
+  "group · n/total" (on screen in Chinese, as everywhere). Absent (a live
+  channel, an older server) means nothing is known.
+- `AV_SWITCH {"loading":{"title","episode","total"}}`: the source is about to
+  change inside the session (next, previous episode, an episode picked on the
+  phone or by voice, an episode that ended). The device draws a band across
+  y=84..155 over the picture -- the "next" mark, "Loading episode n/N", the title --
+  and, once the picture has stopped for 1.5 s, the channel's waiting screen with
+  "Loading" instead of "Opening". A "next" box (`{"next":1}`) is not drawn while
+  it is up.
+- `AV_SWITCH {"loading":0}`: the new source is ready and its picture comes next.
+  The loading becomes what plays, the channel banner names it, the band is no
+  longer drawn over pictures (the new source starts with a whole frame) and the
+  waiting screen keeps it until the next picture is drawn.
+- Never stuck: the band goes 30 s after the last `loading` without a `0`, 3 s
+  after the `0` without a picture (audio-only mode has none), and at the start
+  of every session. Both messages are SWITCH packets: parsed at depth 2, no
+  timeline, the session's next seq.
+
+The relay knows the episode. Its stream port answers `GET /info/<channel>`
+(`/info/<device>/<channel>` with several users) with
+`{"channel","title","episode","total"}` for the video the stream at
+`/ch/<channel>` plays, or would open now (looked up without contacting the site
+or changing state); 404 for anything else. The media server derives the address
+from the channel's stream URL, asks at session start (0.5 s at most, before
+CONFIG) and again in the background whenever it reopens the source. For the
+immediate response, the relay writes a `loading` event (channel, `value` = the
+episode or 0, `total`, `text` = the title) before next, previous or an episode
+pick cuts the stream; the media server sends it within a second, drops the
+`next` hint queued with it, and sends `{"loading":0}` when the reopened source
+has prebuffered.
+
 ## Media conversion and compatibility
 
 Both `prepare` and `import-video` generate actual baseline 160x120 YUV420 JPEGs;

@@ -147,6 +147,10 @@ END 无载荷。客户端可以发送匹配会话的 END 或关闭连接停止�
 非法版本、flags、类型、长度、会话或 JSON 都直接断开，不搜索下一个 magic 恢复。
 ERROR 类型保留且支持拆包；服务器错误时关闭连接，不冒险在半包发送后插入 ERROR。
 
+### 剧集信息
+
+只对 HELLO 带 `"info": 1` 的固件、只对中转的台：直播路径在 CONFIG 里加 `playing`（`{title, episode, total}`），片源马上要换时发 `SWITCH {"loading": {...}}`，重开的片源预缓冲好时发 `SWITCH {"loading": 0}`（`server/episode_info.py`、`AVServer.info_*`、`reconnect.hold`）。剧集来自中转：它播放流端口上的 `GET /info/<台>`（把播放流地址里的 `/ch/` 换成 `/info/`），CONFIG 之前至多问 0.5 秒，每次重开片源时在后台线程里再问；以及中转在「下一个」「上一集」或选集掐断流之前写的 `loading` 事件。中转不回答就没有 `playing` 和 `loading`，播放不受影响。设备侧见 [`docs/local-tv-prototype.zh_CN.md`](../docs/local-tv-prototype.zh_CN.md) 的「剧集信息」。
+
 ## 语音控制
 
 在设备上按住 OK 说话，松开：设备在电视连接上把这句话传上来，媒体服务交给同一台主机上的

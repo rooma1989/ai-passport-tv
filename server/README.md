@@ -188,6 +188,21 @@ terminate the connection without searching for another magic. ERROR is reserved
 and framing-supported; this server closes on errors rather than risking an ERROR
 appended after a partially sent packet.
 
+### Episode information
+
+To firmware whose HELLO carries `"info": 1`, and for relay channels only, the
+live path adds `playing` (`{title, episode, total}`) to CONFIG and sends
+`SWITCH {"loading": {...}}` when the source is about to change and
+`SWITCH {"loading": 0}` when the reopened source has prebuffered
+(`server/episode_info.py`, `AVServer.info_*`, `reconnect.hold`). The episode
+comes from the relay: `GET /info/<channel>` on its stream port (the stream URL
+with `/ch/` replaced by `/info/`), asked for at most 0.5 s before CONFIG and in
+a background thread whenever the source is reopened, and its `loading` events,
+written before next, previous or an episode pick cuts the stream. A relay that
+does not answer means no `playing` and no `loading`; playback is unaffected.
+Device side: "Episode information" in
+[`docs/local-tv-prototype.md`](../docs/local-tv-prototype.md).
+
 ## Voice control
 
 Hold OK on the device, speak, let go: the device streams the utterance on its TV

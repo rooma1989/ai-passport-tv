@@ -143,8 +143,15 @@ episodes: [{n, title, duration, state: watched|current|left, position?}]}`
 0); `POST /api/series/<sr id>/play {"episode": n}` and `POST /api/previous` answer
 `{ok, at, episode, title}` plus `cut: true` when the device was already on the
 channel, or a `note` instead of switching (device offline, firmware without
-remote switching, or that episode already playing). No firmware change: the
-device draws no hint box for an episode change.
+remote switching, or that episode already playing). Firmware whose HELLO says
+`"info": 1` shows what loads: within about a second of next, previous or an
+episode pick (phone, remote or voice) a band over the picture reads "Loading
+episode n/N" (in Chinese) with the episode's title, then the channel's waiting screen says the
+same until the new episode's picture arrives, and the channel banner names it;
+an episode that ends and the next that opens are shown the same way. The opening
+screen and the banner name the episode at every channel start too. Older
+firmware is unchanged. See "Episode information" in
+[`docs/local-tv-prototype.md`](../local-tv-prototype.md).
 
 Bilibili answers 412 to cloud addresses for its pages and signed APIs, so the
 relay uses the unsigned web API rather than yt-dlp.
@@ -204,7 +211,10 @@ The relay's page is a remote for the device, at `https://<site>/tv/`. Design:
   `AV_SWITCH {"pet": i}` only to firmware whose HELLO carries `pet`, and the
   firmware reports its pet in HELLO and STATUS. Seek and next also write
   `seek`/`next` events, sent as `{"seek": s}`/`{"next": 1}` to firmware whose
-  HELLO says `"hint": 1`, which draws a box until the picture is back.
+  HELLO says `"hint": 1`, which draws a box until the picture is back. Next,
+  previous and an episode pick also write a `loading` event, sent as
+  `{"loading": {...}}` to firmware whose HELLO says `"info": 1`, which draws
+  the episode loading instead of the "next" box.
 - **Upkeep.** The YouTube node checks a test video every 6 hours and the page
   warns when its cookies need replacing; `packaging/yt-relay/yt-dlp-update.timer`
   installs a new yt-dlp weekly only after it resolves the test video.

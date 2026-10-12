@@ -109,7 +109,7 @@ Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核
 「第 n / N 集 · 标题」。接口：`GET /api/series/<sr 编号>/episodes` 返回 `{ok, id, name, total, next, playing,
 episodes: [{n, title, duration, state: watched|current|left, position?}]}`（`next` 是这个台下次打开时播的集，`playing` 是设备上正在播的集，
 没有为 0）；`POST /api/series/<sr 编号>/play {"episode": n}` 和 `POST /api/previous` 回答 `{ok, at, episode, title}`，设备本来就在这个台上时
-带 `cut: true`；不换台时（设备不在线、固件不支持遥控、或这一集已经在播）改带 `note` 说明。不改固件：换集时设备上没有提示框。
+带 `cut: true`；不换台时（设备不在线、固件不支持遥控、或这一集已经在播）改带 `note` 说明。HELLO 带 `"info": 1` 的固件会显示正在加载什么：点下一个、上一集或选集（手机、遥控或语音）后约一秒内，画面上出现一条横条「正在加载 第 n/N 集」和这一集的标题，之后频道等待画面也这样写，直到新一集的画面出来，台标横幅再报出它；一集播完、接着打开下一集时也一样。每次打开频道，打开画面和台标横幅也会写出是哪一集。旧固件不变。详见 [`docs/local-tv-prototype.zh_CN.md`](../local-tv-prototype.zh_CN.md) 的「剧集信息」。
 
 B 站对云服务器地址的网页和带签名的接口返回 412，所以中转直接调用不带签名的网页 API，不用 yt-dlp。
 
@@ -143,7 +143,7 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
   [`docs/superpowers/specs/2026-10-10-playback-and-device-controls-design.zh_CN.md`](../superpowers/specs/2026-10-10-playback-and-device-controls-design.zh_CN.md)。
 - **宠物**：「遥控」标签里的「宠物」一行打开「我的宠物」：从 11 只里选一只点「换上」，设备保存下来并让它开心 2 秒。
   `POST /api/pet` 写 `pet` 事件；媒体服务只给 HELLO 里带 `pet` 的固件发 `AV_SWITCH {"pet": i}`，固件在 HELLO 和 STATUS 里报当前宠物。
-  快进和下一个也会写 `seek`/`next` 事件，以 `{"seek": 秒}`/`{"next": 1}` 发给 HELLO 带 `"hint": 1` 的固件，设备画一个提示框，画面恢复后消失。
+  快进和下一个也会写 `seek`/`next` 事件，以 `{"seek": 秒}`/`{"next": 1}` 发给 HELLO 带 `"hint": 1` 的固件，设备画一个提示框，画面恢复后消失。下一个、上一集和选集还会写 `loading` 事件，以 `{"loading": {...}}` 发给 HELLO 带 `"info": 1` 的固件，设备画正在加载哪一集，代替「下一个」提示框。
 - **自动保养**：YouTube 节点每 6 小时检查一次测试视频，cookies 需要更换时网页会提示；`packaging/yt-relay/yt-dlp-update.timer` 每周更新
   yt-dlp，新版能解析测试视频才替换。
 
