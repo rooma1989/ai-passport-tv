@@ -6,6 +6,7 @@ the rules must reach. See server/voice/intent.py and
 docs/superpowers/specs/2026-10-12-voice-control-design.md section 3.
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -642,6 +643,15 @@ class ListTests(unittest.TestCase):
             for choice in decide(text, cat).choices or []:
                 self.assertLessEqual(len(choice["label"].encode("utf-8")), 47, choice)
 
+    def test_lists_mark_the_site_unless_it_was_asked_for(self):
+        d = decide("UP主有哪些", TODAY)
+        labels = [c["label"] for c in d.choices]
+        self.assertEqual(labels[:4], ["小Lin说(B站)", "老高与小茉(B站)", "Dulaa Music(油管)", "王志安(油管)"])
+        self.assertEqual([c["label"] for c in decide("有哪些YouTube频道", TODAY).choices], ["Dulaa Music", "王志安"])
+        self.assertIn("CCTV1", [c["label"] for c in decide("央视有哪些", TODAY).choices], "live channels unmarked")
+        long = Channel("sr09", "超级长的名字的一部动画片", 9, "动画影视", site="youtube")
+        self.assertEqual(intent._marked_label(long), "超级长的名字的(油管)")
+
     def test_stale_and_bad_refs(self):
         # The list got shorter between the pages: start again.
         d = intent.list_page("ls:..2:40", TODAY)
@@ -651,50 +661,51 @@ class ListTests(unittest.TestCase):
 
 
 # ---- search ----
-# (utterance, site, kind, query): kind "" means the question "video or UP 主?" comes first.
+# (utterance, site, kind, query): kind "" means the question "video or UP 主?" comes first; site ""
+# means no site was named (search_sites: Bilibili for videos, both sites for creators).
 SEARCH_CASES = [
     # unclear what to search for: ask
-    ("搜索猫和老鼠", "bilibili", "", "猫和老鼠"),
-    ("搜索李子柒", "bilibili", "", "李子柒"),
-    ("搜一下老番茄", "bilibili", "", "老番茄"),
-    ("帮我搜罗翔", "bilibili", "", "罗翔"),
-    ("搜一搜熊出没", "bilibili", "", "熊出没"),
+    ("搜索猫和老鼠", "", "", "猫和老鼠"),
+    ("搜索李子柒", "", "", "李子柒"),
+    ("搜一下老番茄", "", "", "老番茄"),
+    ("帮我搜罗翔", "", "", "罗翔"),
+    ("搜一搜熊出没", "", "", "熊出没"),
     ("B站搜猫和老鼠", "bilibili", "", "猫和老鼠"),
     ("在B站上搜一下罗翔说刑法", "bilibili", "", "罗翔说刑法"),
     ("搜索哔哩哔哩的老番茄", "bilibili", "", "老番茄"),
     ("油管搜lofi", "youtube", "", "lofi"),
     ("优兔搜一下周杰伦", "youtube", "", "周杰伦"),
     ("YouTube上搜索 Lofi Girl。", "youtube", "", "lofi girl"),
-    ("搜uptown funk", "bilibili", "", "uptown funk"),
-    ("小智小智，搜索一下熊出没", "bilibili", "", "熊出没"),
+    ("搜uptown funk", "", "", "uptown funk"),
+    ("小智小智，搜索一下熊出没", "", "", "熊出没"),
     # videos
-    ("搜视频猫和老鼠", "bilibili", "video", "猫和老鼠"),
-    ("搜索视频猫和老鼠", "bilibili", "video", "猫和老鼠"),
-    ("搜索猫和老鼠视频", "bilibili", "video", "猫和老鼠"),
-    ("搜索猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
-    ("搜一下猫和老鼠相关视频", "bilibili", "video", "猫和老鼠"),
-    ("找猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
-    ("找一下李子柒的视频", "bilibili", "video", "李子柒"),
-    ("我想看猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
-    ("看看小猪佩奇的视频吧", "bilibili", "video", "小猪佩奇"),
-    ("放一个猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
-    ("放一个lofi视频", "bilibili", "video", "lofi"),
-    ("来点猫和老鼠的视频", "bilibili", "video", "猫和老鼠"),
-    ("我想看搞笑视频的视频", "bilibili", "video", "搞笑视频"),
+    ("搜视频猫和老鼠", "", "video", "猫和老鼠"),
+    ("搜索视频猫和老鼠", "", "video", "猫和老鼠"),
+    ("搜索猫和老鼠视频", "", "video", "猫和老鼠"),
+    ("搜索猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("搜一下猫和老鼠相关视频", "", "video", "猫和老鼠"),
+    ("找猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("找一下李子柒的视频", "", "video", "李子柒"),
+    ("我想看猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("看看小猪佩奇的视频吧", "", "video", "小猪佩奇"),
+    ("放一个猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("放一个lofi视频", "", "video", "lofi"),
+    ("来点猫和老鼠的视频", "", "video", "猫和老鼠"),
+    ("我想看搞笑视频的视频", "", "video", "搞笑视频"),
     ("B站搜索老番茄的视频", "bilibili", "video", "老番茄"),
     ("在YouTube上找lofi的视频", "youtube", "video", "lofi"),
     ("麻烦帮我在油管上搜一下lofi的视频", "youtube", "video", "lofi"),
     ("我想看YouTube上周杰伦的视频", "youtube", "video", "周杰伦"),
-    ("搜一下Taylor Swift的视频", "bilibili", "video", "taylor swift"),
+    ("搜一下Taylor Swift的视频", "", "video", "taylor swift"),
     ("油管搜视频 lo-fi hip hop", "youtube", "video", "lofi hip hop"),
     # creators (UP 主 / channels)
-    ("搜UP主老番茄", "bilibili", "up", "老番茄"),
-    ("搜索UP主罗翔说刑法", "bilibili", "up", "罗翔说刑法"),
-    ("搜博主李子柒", "bilibili", "up", "李子柒"),
-    ("找罗翔这个UP主", "bilibili", "up", "罗翔"),
-    ("搜索罗翔up", "bilibili", "up", "罗翔"),
-    ("搜频道lofi girl", "bilibili", "up", "lofi girl"),
-    ("搜一下 Lofi Girl 的频道", "bilibili", "up", "lofi girl"),
+    ("搜UP主老番茄", "", "up", "老番茄"),
+    ("搜索UP主罗翔说刑法", "", "up", "罗翔说刑法"),
+    ("搜博主李子柒", "", "up", "李子柒"),
+    ("找罗翔这个UP主", "", "up", "罗翔"),
+    ("搜索罗翔up", "", "up", "罗翔"),
+    ("搜频道lofi girl", "", "up", "lofi girl"),
+    ("搜一下 Lofi Girl 的频道", "", "up", "lofi girl"),
     ("搜油管频道lofi girl", "youtube", "up", "lofi girl"),
     ("YouTube上找lofi girl频道", "youtube", "up", "lofi girl"),
     ("在油管搜一下李子柒这个博主", "youtube", "up", "李子柒"),
@@ -792,13 +803,86 @@ class SearchIntentTests(unittest.TestCase):
                                      {"label": "播放最新视频", "lead": "", "ref": "sl:12:4"}])
 
     def test_refs(self):
-        for op, arg in (("q", "v"), ("v", 19), ("u", 0), ("p", 15), ("f", 19), ("l", 19)):
+        for op, arg in (("q", "v"), ("v", 19), ("u", 0), ("p", 15), ("f", 19), ("l", 19), ("r", "yt"), ("r", "bl")):
             ref = intent.search_ref(op, 9999, arg)
             self.assertLessEqual(len(ref), 31)
             self.assertTrue(all(" " <= ch < "\x7f" and ch not in '"\\' for ch in ref), ref)
             self.assertEqual(intent.parse_search_ref(ref), (op, 9999, str(arg)))
         for bad in ("", "sv:", "sv:1", "sx:1:1", "sv:12345:1", "sv:1:1;", "ls:..2:5", "ep:sr01:3", "sv:1:-1"):
             self.assertIsNone(intent.parse_search_ref(bad), bad)
+
+    def test_which_sites_are_searched(self):
+        self.assertEqual(intent.search_sites("", "up"), ("bilibili", "youtube"))
+        self.assertEqual(intent.search_sites("", "video"), ("bilibili",))
+        self.assertEqual(intent.search_sites("youtube", "up"), ("youtube",))
+        self.assertEqual(intent.search_sites("bilibili", "up"), ("bilibili",))
+        self.assertEqual(intent.search_sites("youtube", "video"), ("youtube",))
+        self.assertEqual((intent.site_of_ref("yt"), intent.site_of_ref("bl"), intent.site_of_ref("x")),
+                         ("youtube", "bilibili", ""))
+
+    def test_pixel_widths_match_the_firmware_font(self):
+        """The row width is measured with the device's own glyph advances (main/ui_font_data.h)."""
+        header = (Path(__file__).resolve().parents[1] / "main" / "ui_font_data.h").read_text(encoding="utf-8")
+        table = re.search(r"ui_font_ascii_adv\[UI_FONT_ASCII_COUNT\] = \{(.*?)\};", header, re.S).group(1)
+        advances = [int(x, 16) for x in re.findall(r"0x[0-9A-Fa-f]+", table)]
+        self.assertEqual(len(advances), 95)
+        self.assertEqual([intent.pixels(chr(32 + n)) for n in range(95)], advances)
+        self.assertEqual(intent.pixels("站·"), 16 + 5)
+        # The example row is 172 of the 180 pixels.
+        self.assertEqual(intent.pixels("B站 · 老番茄 · 2084万粉"), 172)
+        self.assertLessEqual(intent.pixels("B站 · 老番茄 · 2084万粉"), intent.ROW_PIXELS)
+
+    def test_rows_are_labelled_with_their_site(self):
+        self.assertEqual(intent.row_label("老番茄", ("2084万粉",), "bilibili"), "B站 · 老番茄 · 2084万粉")
+        self.assertEqual(intent.row_label("Lofi Girl", ("",), "youtube"), "油管 · Lofi Girl")
+        # The mark stays; the extras give way first, then the device ends the name with "…".
+        self.assertEqual(intent.row_label("Linus Tech Tips", ("1600万粉",), "youtube"), "油管 · Linus Tech Tips")
+        long = intent.row_label("很长的名字" * 6, ("1万粉",), "youtube")
+        self.assertTrue(long.startswith("油管 · 很长的名字"), long)
+        self.assertLessEqual(len(long.encode("utf-8")), intent.LABEL_BYTES)
+        self.assertEqual(intent.row_label("老番茄", (), ""), "老番茄")
+
+    def test_two_site_pages(self):
+        bili = [{"id": str(n), "name": f"B{n}", "fans": 10000 * (n + 1)} for n in range(8)]
+        yt = [{"id": f"UC{n:022d}", "name": f"Y{n}", "fans": 0} for n in range(3)]
+        merged = intent.merge_results({"bilibili": bili, "youtube": yt})
+        self.assertEqual([(m["site"], m["name"]) for m in merged[:7]],
+                         [("bilibili", "B0"), ("youtube", "Y0"), ("bilibili", "B1"), ("youtube", "Y1"),
+                          ("bilibili", "B2"), ("youtube", "Y2"), ("bilibili", "B3")])
+        self.assertNotIn("site", bili[0], "the site's own list is left as it was")
+        d = intent.search_page("", "up", "番茄", merged, 0, 4, found={"bilibili": 8, "youtube": 3})
+        self.assertEqual(d.reply, "找到 11 个UP 主：B站 8 个，油管 3 个")
+        self.assertEqual([c["label"] for c in d.choices[:2]], ["B站 · B0 · 1万粉", "油管 · Y0"])
+        # YouTube late: four rows, "next page" and the row that searches YouTube again.
+        only = intent.merge_results({"bilibili": bili})
+        d = intent.search_page("", "up", "番茄", only, 0, 4, late={"youtube": "slow"}, found={"bilibili": 8})
+        self.assertEqual(d.reply, "找到 8 个UP 主：B站 8 个，油管还在搜")
+        self.assertEqual([c["lead"] for c in d.choices], ["01", "02", "03", "04", "", ""])
+        self.assertEqual(d.choices[-1], {"label": "油管还在搜 · 再搜一次", "lead": "", "ref": "sr:4:yt"})
+        self.assertEqual(d.choices[-2]["ref"], "sp:4:4")
+        d = intent.search_page("", "up", "番茄", only, 4, 4, late={"youtube": "busy"}, found={"bilibili": 8})
+        self.assertEqual(d.reply, "第 5-8 个，共 8 个")
+        self.assertEqual([c["lead"] for c in d.choices], ["05", "06", "07", "08", ""])
+        self.assertEqual(d.choices[-1]["label"], "油管正忙 · 再搜一次")
+        self.assertEqual((intent.search_window(8, 0, 1), intent.search_window(8, 4, 1), intent.search_window(5, 0, 1),
+                          intent.search_window(12, 0), intent.search_window(6, 0)), (4, 4, 5, 5, 6))
+        d = intent.search_page("", "up", "番茄", [], 0, 4, late={"youtube": "slow"}, found={"bilibili": 0})
+        self.assertEqual((d.kind, d.reply), ("search", "B站没搜到，油管还在搜，稍后再说一次"))
+        d = intent.search_page("", "up", "番茄", [], 0, 4, found={"bilibili": 0, "youtube": 0})
+        self.assertEqual((d.kind, d.reply), ("none", "B站和油管都没搜到「番茄」"))
+        # A creator menu carries the site too.
+        d = intent.creator_menu(merged[1], 1, 4)
+        self.assertEqual((d.label, d.reply), ("油管 · Y0", "「Y0」：订阅还是看最新？"))
+
+    def test_retry_words(self):
+        for text, site in (("再搜一次", ""), ("再试一次", ""), ("重试", ""), ("再搜", ""), ("油管", "youtube"),
+                           ("YouTube", "youtube"), ("再搜一下油管", "youtube"), ("油管再搜一次", "youtube"),
+                           ("B站", "bilibili")):
+            with self.subTest(text=text):
+                self.assertEqual(intent.wants_retry(text), site)
+        for text in ("下一页", "第二个", "湖南卫视", "订阅", "", "搜UP主老番茄"):
+            with self.subTest(text=text):
+                self.assertIsNone(intent.wants_retry(text))
 
     def test_spoken_answers(self):
         for text, expected in (("视频", ("video", "")), ("搜视频", ("video", "")), ("要视频", ("video", "")),

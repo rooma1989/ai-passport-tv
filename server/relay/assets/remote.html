@@ -368,7 +368,8 @@ function el(tag, cls, text) {
 
 function pad(n) { return String(n).padStart(2, "0"); }
 
-function siteTag(site) { return site === "youtube" ? "YT" : "B站"; }
+// 与设备频道列表里的网站标记一样（server/channel_groups.py 的 SITE_MARKS）。
+function siteTag(site) { return site === "youtube" ? "油管" : "B站"; }
 
 function dateLabel(at) {
   const day = new Date(at * 1000);
@@ -542,6 +543,7 @@ function renderChannels() {
   if (!current) return;
   const sites = {};
   for (const cr of data.creators) sites[cr.id] = cr.site;
+  for (const sr of data.series || []) sites[sr.id] = sr.site;
   const movable = !["我的投屏", "UP 主"].includes(group);
   for (const c of current.channels) {
     const li = el("li");

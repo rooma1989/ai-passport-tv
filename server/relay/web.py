@@ -906,10 +906,12 @@ class Relay:
         return {k: v for k, v in (state.group_overrides if state is not None else {}).items()
                 if v in channel_groups.GROUPS}
 
-    def _rows_of(self, state: State) -> list[tuple[str, str]]:
+    def _rows_of(self, state: State, marked: bool = True) -> list[tuple[str, str]]:
+        """marked：名字和设备列表里一样带网站标记（算 CONFIG 字节用）；手机网页另有网站标签，不带。"""
+        label = table.label if marked else table.plain_label
         with state.lock:
             rows = [(table.CAST_ID, table.CAST_LABEL)]
-            rows += [(c.id, table.label(c)) for c in state.creators]
+            rows += [(c.id, label(c)) for c in state.creators]
         if self.main_channels is not None:
             rows += channel_groups.read_table(self.main_channels)
         return rows
@@ -923,7 +925,7 @@ class Relay:
         state = self._state_of(dev)
         overrides = self._overrides(state)
         grouped: dict[str, list[dict]] = {g: [] for g in channel_groups.GROUPS}
-        for cid, name in self._rows_of(state):
+        for cid, name in self._rows_of(state, marked=False):
             group = channel_groups.group_of(cid, name, overrides)
             grouped[group].append({"id": cid, "name": name, "n": len(grouped[group]) + 1})
         return [{"name": g, "channels": grouped[g]} for g in channel_groups.GROUPS if grouped[g]]
@@ -1158,7 +1160,7 @@ class Relay:
                 reason = f"{_SITE_NAMES[site].strip()}说这个放不了（可能已删除、私享或需要会员）"
             return {"ok": False, "error": reason}
         name = name or title or source
-        if not self.room(table.label_text(name), caller)["fits"]:
+        if not self.room(table.label_for(name, site), caller)["fits"]:
             return {"ok": False, "error": "小电视的频道列表满了，先删掉几个台再加"}
         try:
             creator = state.add(site, source, name, episodes, self.clock(), kind="series")

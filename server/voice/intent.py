@@ -22,7 +22,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
 
-from ..channel_groups import GROUPS as GROUP_ORDER
+from ..channel_groups import GROUPS as GROUP_ORDER, SITE_MARKS
 from . import match
 
 # 一次最多给几个候选：设备的面板放 6 行。
@@ -170,6 +170,18 @@ def _label(text: str) -> str:
         kept.append(char)
         used += width
     return "".join(kept).strip()
+
+
+def _marked_label(channel: "Channel") -> str:
+    """名字后面接网站标记，和设备频道列表一样（server/relay/table.py 的 label_for）；截名字不截标记。"""
+    word = SITE_MARKS.get(channel.site, "")
+    if not word:
+        return _label(channel.name)
+    suffix = f"({word})"
+    name = _label(channel.name)
+    while name and sum(1 if ord(ch) < 128 else 2 for ch in name + suffix) > LABEL_COLUMNS:
+        name = name[:-1].rstrip()
+    return name + suffix
 
 
 # ---- 别名 ----
@@ -930,7 +942,9 @@ def list_decision(category: Category, catalog: Catalog, offset: int = 0, kind: s
     if not members:
         return Decision("none", reply=f"{category.group}里还没有台" if category.group and not
                         (category.site or category.kind) else f"还没有 {noun}")
-    rows = [{"label": _label(c.name), "lead": f"{c.number:02d}", "do": {"channel": c.id}} for c in members]
+    # 没按网站问时，中转的台和设备列表里一样标上网站（「王志安(油管)」）。
+    rows = [{"label": _label(c.name) if category.site else _marked_label(c), "lead": f"{c.number:02d}",
+             "do": {"channel": c.id}} for c in members]
     page, start, shown = _page(rows, category, offset)
     if start:
         reply = f"{noun} 第 {start + 1}-{start + shown} 个，共 {len(members)} 个"
@@ -958,21 +972,32 @@ def list_page(ref: str, catalog: Catalog) -> Decision | None:
 # ---- 搜索：「搜视频猫和老鼠」「油管搜频道lofi」「我想看猫和老鼠的视频」「找罗翔这个UP主」 ----
 #
 # 只在开头有明确的搜索动词（搜、搜索……；「找」还要说出视频或 UP 主），或者以「…的视频」结尾时才算，
-# 免得抢了「我想看湖南卫视」「看体育」这些换台的话。网站默认 B 站，说了油管 / YouTube / 优兔是
-# YouTube。是搜视频还是搜 UP 主没说清（「搜索李子柒」）时不猜，追问（search_question）。
+# 免得抢了「我想看湖南卫视」「看体育」这些换台的话。说了油管 / YouTube / 优兔只搜 YouTube，说了
+# B站 / 哔哩哔哩只搜 B 站；没说网站时（search_request 的 site 为空，search_sites 定）视频搜 B 站，
+# UP 主两个网站一起搜，每行标上网站（「B站 · 老番茄 · 2084万粉」「油管 · Lofi Girl」）。
+# 是搜视频还是搜 UP 主没说清（「搜索李子柒」）时不猜，追问（search_question）。
 # 结果、追问、选中 UP 主后的两个动作都是带 ref 的候选，ref 是「s<操作>:<第几次搜索>:<参数>」：
 #   sq:G:v / sq:G:u   追问的回答：搜视频 / 搜 UP 主
 #   sv:G:i / su:G:i   第 i 个视频 / UP 主（从 0 数）
 #   sp:G:o            下一页，从第 o 个开始
 #   sf:G:i / sl:G:i   第 i 个 UP 主：订阅为频道 / 播放最新视频
+#   sr:G:yt / sr:G:bl 两个网站一起搜时没赶上的那个（YouTube 第一次搜常常要十几秒）：再搜一次它
 
 SEARCH_QUERY_MAX = 30
-# 面板一行大约这么多格（汉字 2 格）：标题后面放得下时再加时长、粉丝数。
-ROW_COLUMNS = 22
+# 面板上一行字的宽度（像素）：main/ui_overlay.c 的 voice_row 从 x=42 画到 222。标题后面放得下时
+# 再加时长、粉丝数。
+ROW_PIXELS = 180
+# 设备字库里 ASCII 32..126 每个字的宽度（main/ui_font_data.h 的 ui_font_ascii_adv，一位十六进制
+# 一个字；tests/test_voice_intent.py 核对两边一致）。汉字 16；中间点「·」是 5（main/ui_text.c）。
+_ASCII_ADVANCE = "637a9aa3549959488888988888459997aa989989888999999998a89aa995859a58988988886889889887889a998837a"
+_WIDE_ADVANCE = 16
+_DOT_ADVANCE = 5
 # 设备存一行文字的字节数（含结尾的 0 是 48）。
 LABEL_BYTES = 47
 REPLY_ASK = "要搜视频，还是搜 UP 主？"
 _SITE_SHORT = {"bilibili": "B站", "youtube": "YouTube"}
+SEARCH_SITES = ("bilibili", "youtube")
+_SITE_REF = {"bilibili": "bl", "youtube": "yt"}
 
 
 def _alternation(words) -> str:
@@ -1025,7 +1050,8 @@ def search_text(transcript: str) -> str:
 def search_request(text: str) -> dict | None:
     """search_text() 过的一句话 → {"site", "kind", "query"}；不是在搜索时为 None。
 
-    kind 是 video / up，没说清时为空（要追问）；query 可能为空（「搜索」「搜视频」）。"""
+    site 是说出的网站，没说为空（search_sites 决定搜哪些）；kind 是 video / up，没说清时为空
+    （要追问）；query 可能为空（「搜索」「搜视频」）。"""
     rest, site = _take_site(text, "")
     verb = _SEARCH_VERB.match(rest)
     if verb:
@@ -1044,7 +1070,7 @@ def search_request(text: str) -> dict | None:
         # 「找」本身太泛（「帮我找湖南卫视」是换台）：要说出视频或 UP 主才是搜索。
         if weak and (not kind or _NOT_A_NAME.search(rest)):
             return None
-        return {"site": site or "bilibili", "kind": kind, "query": _query(rest)}
+        return {"site": site, "kind": kind, "query": _query(rest)}
     lead = _VIDEO_LEAD.match(rest)
     counted = bool(lead) and lead.group(1) in _COUNTED_LEADS
     if lead:
@@ -1057,7 +1083,14 @@ def search_request(text: str) -> dict | None:
     if not query or (words is not None and all(kind in ("plain", "noun", "ask", "site") for kind, _ in words)):
         # 「看B站的视频」「看点好看的视频」：没有要搜的词。
         return None
-    return {"site": site or "bilibili", "kind": "video", "query": query}
+    return {"site": site, "kind": "video", "query": query}
+
+
+def search_sites(site: str, kind: str) -> tuple[str, ...]:
+    """要搜哪些网站：说了网站就只搜它；没说时视频搜 B 站，UP 主两个网站一起搜。"""
+    if site in SEARCH_SITES:
+        return (site,)
+    return SEARCH_SITES if kind == "up" else ("bilibili",)
 
 
 _SEARCH_EXAMPLE = {"video": ("视频", "搜视频猫和老鼠"), "up": (" UP 主", "搜UP主老番茄"),
@@ -1076,7 +1109,7 @@ def _search(transcript: str) -> Decision | None:
 
 # ---- 搜索的回答：追问、结果页、选中的 UP 主（session 记着搜到了什么，这里只管拼） ----
 
-_SEARCH_REF = re.compile(r"^s([qvupfl]):(\d{1,4}):([0-9a-z]{1,3})$")
+_SEARCH_REF = re.compile(r"^s([qvupflr]):(\d{1,4}):([0-9a-z]{1,3})$")
 
 
 def search_ref(op: str, generation: int, arg) -> str:
@@ -1088,8 +1121,16 @@ def parse_search_ref(ref: str) -> tuple[str, int, str] | None:
     return (found.group(1), int(found.group(2)), found.group(3)) if found else None
 
 
-def _columns(text: str) -> int:
-    return sum(1 if ord(ch) < 128 else 2 for ch in text)
+def pixels(text: str) -> int:
+    """这串字在设备上画出来有多宽（像素）。"""
+    width = 0
+    for ch in text:
+        code = ord(ch)
+        if 32 <= code < 127:
+            width += int(_ASCII_ADVANCE[code - 32], 16)
+        else:
+            width += _DOT_ADVANCE if ch == "·" else _WIDE_ADVANCE
+    return width
 
 
 def _plain(text: str) -> str:
@@ -1111,11 +1152,20 @@ def _fit(text: str, size: int = LABEL_BYTES) -> str:
     return raw[:size].decode("utf-8", "ignore").rstrip()
 
 
-def row_label(main: str, extras: tuple[str, ...] = ()) -> str:
-    """候选行的文字：画得出来的字，放得下时再接上 extras（「 · 12:34」），按设备的字节数截短。"""
+def site_mark(site: str) -> str:
+    """搜索结果行前面的网站：「B站」「油管」（和设备频道列表里的标记同一套字）。"""
+    return SITE_MARKS.get(site, "")
+
+
+def row_label(main: str, extras: tuple[str, ...] = (), site: str = "") -> str:
+    """候选行的文字：画得出来的字，放得下时再接上 extras（「 · 12:34」），按设备的字节数截短。
+    site：行首先写上网站（「B站 · 老番茄」）；它总在，放不下的是后面的 extras。"""
     label = _plain(main)
+    mark = site_mark(site)
+    if mark:
+        label = f"{mark} · {label}" if label else mark
     for extra in extras:
-        if extra and _columns(label) + 3 + _columns(extra) <= ROW_COLUMNS:
+        if extra and pixels(f"{label} · {extra}") <= ROW_PIXELS:
             label = f"{label} · {extra}"
     return _fit(label)
 
@@ -1134,42 +1184,97 @@ def _fans(count: int) -> str:
     return f"{count}粉" if count > 0 else ""
 
 
-def _result_label(kind: str, item: dict) -> str:
+def _result_label(kind: str, item: dict, marked: bool) -> str:
+    """marked：行首写上网站（UP 主总写；视频只在两个网站的结果混在一起时写）。"""
+    site = str(item.get("site") or "") if marked else ""
     if kind == "video":
         duration = item.get("duration") if isinstance(item.get("duration"), int) else 0
         return row_label(str(item.get("title") or ""),
-                          (_clock(duration) if duration > 0 else "", _plain(str(item.get("uploader") or ""))))
+                         (_clock(duration) if duration > 0 else "", _plain(str(item.get("uploader") or ""))),
+                         site)
     fans, videos = item.get("fans"), item.get("videos")
     extra = _fans(fans) if isinstance(fans, int) and fans > 0 else \
         f"{videos}个视频" if isinstance(videos, int) and videos > 0 else ""
-    return row_label(str(item.get("name") or ""), (extra,))
+    return row_label(str(item.get("name") or ""), (extra,), site)
 
 
 def search_noun(site: str, kind: str) -> str:
-    """「B站视频」「YouTube 视频」「B站 UP 主」「YouTube 频道」。"""
+    """「B站视频」「YouTube 视频」「B站 UP 主」「YouTube 频道」；两个网站一起（site 为空）时
+    「视频」「UP 主」。"""
     if kind == "video":
-        return f"{_SITE_LABEL[site]}视频"
+        return f"{_SITE_LABEL[site]}视频" if site else "视频"
+    if not site:
+        return "UP 主"
     return "YouTube 频道" if site == "youtube" else "B站 UP 主"
 
 
+def search_window(total: int, offset: int, extra: int = 0) -> int:
+    """这一页列几个结果：剩下的连同 extra 行（「油管还在搜」）放得下就全列，否则留一行给「下一页」。"""
+    rest, room = max(0, total - offset), CHOICES_MAX - extra
+    return rest if rest <= room else max(1, room - 1)
+
+
+def merge_results(by_site: dict[str, list[dict]]) -> list[dict]:
+    """两个网站的结果轮流排（B 站第一个、YouTube 第一个、B 站第二个……），每个都记上网站：
+    第一页上两边最像的都在。"""
+    columns = [[dict(item, site=site) for item in by_site.get(site) or []] for site in SEARCH_SITES]
+    merged = []
+    for n in range(max((len(c) for c in columns), default=0)):
+        merged += [c[n] for c in columns if n < len(c)]
+    return merged
+
+
+def _late_row(site: str, reason: str, generation: int) -> dict:
+    words = "正忙" if reason == "busy" else "还在搜"
+    return {"label": f"{site_mark(site)}{words} · 再搜一次", "lead": "",
+            "ref": search_ref("r", generation, _SITE_REF[site])}
+
+
+def site_of_ref(arg: str) -> str:
+    """sr:G:yt 的 yt → youtube；不认识为空。"""
+    return next((site for site, code in _SITE_REF.items() if code == arg), "")
+
+
 def search_page(site: str, kind: str, query: str, results: list[dict], offset: int,
-                generation: int) -> Decision:
-    """一页搜索结果：每行一个视频或 UP 主（ref 选中），放不下时最后一行是「下一页」。"""
+                generation: int, late: dict[str, str] | None = None, found: dict[str, int] | None = None) -> Decision:
+    """一页搜索结果：每行一个视频或 UP 主（ref 选中），放不下时最后一行是「下一页」。
+
+    site：搜的网站，两个一起搜时为空（结果里每个都带 "site"）。late：两个一起搜时没赶上的网站和原因
+    （slow / busy），各占最后一行「油管还在搜 · 再搜一次」。found：两个一起搜时每个网站搜到几个。"""
+    late = late or {}
     total = len(results)
-    if not total:
-        return Decision("none", reply=f"{_SITE_SHORT[site]}没搜到「{_label(query)}」")
+    mixed = not site
+    if not total and not late:
+        searched = [s for s in SEARCH_SITES if s in (found or {})] if mixed else []
+        if len(searched) > 1:
+            where = "和".join(site_mark(s) for s in searched) + "都"      # 「B站和油管都没搜到」
+        else:
+            where = site_mark(searched[0]) if searched else _SITE_SHORT.get(site, "")
+        return Decision("none", reply=f"{where}没搜到「{_label(query)}」")
     if offset >= total:
         offset = 0
-    rest = results[offset:]
-    shown = rest if len(rest) <= CHOICES_MAX else rest[:PAGE_SIZE]
+    shown = results[offset:offset + search_window(total, offset, len(late))]
     op = "v" if kind == "video" else "u"
-    rows = [{"label": _result_label(kind, item) or "（没有标题）", "lead": f"{n + 1:02d}",
+    marked = kind == "up" or mixed
+    rows = [{"label": _result_label(kind, item, marked) or "（没有标题）", "lead": f"{n + 1:02d}",
              "ref": search_ref(op, generation, n)} for n, item in enumerate(shown, offset)]
-    if len(rest) > len(shown):
-        rows.append({"label": f"下一页 · 还有 {len(rest) - len(shown)} 个", "lead": "",
+    left = total - offset - len(shown)
+    if left > 0:
+        rows.append({"label": f"下一页 · 还有 {left} 个", "lead": "",
                      "ref": search_ref("p", generation, offset + len(shown))})
-    reply = (f"找到 {total} 个{search_noun(site, kind)}" if offset == 0
-             else f"第 {offset + 1}-{offset + len(shown)} 个，共 {total} 个")
+    rows += [_late_row(s, late[s], generation) for s in SEARCH_SITES if s in late]
+    if offset:
+        reply = f"第 {offset + 1}-{offset + len(shown)} 个，共 {total} 个"
+    elif not mixed:
+        reply = f"找到 {total} 个{search_noun(site, kind)}"
+    else:
+        found = found or {}
+        parts = [f"{site_mark(s)} {found[s]} 个" if found[s] else f"{site_mark(s)}没搜到"
+                 for s in SEARCH_SITES if s in found]
+        parts += [f"{site_mark(s)}{'正忙' if late[s] == 'busy' else '还在搜'}" for s in SEARCH_SITES if s in late]
+        reply = (f"找到 {total} 个{search_noun(site, kind)}：" if total else "") + "，".join(parts)
+        if late and not total:
+            reply += "，稍后再说一次"
     return Decision("search", reply=reply, choices=rows)
 
 
@@ -1183,7 +1288,8 @@ def search_question(generation: int) -> Decision:
 def creator_menu(item: dict, index: int, generation: int) -> Decision:
     """选中了一个 UP 主（频道）：订阅成台，还是播他最新的视频。"""
     name = _label(_plain(str(item.get("name") or ""))) or "这个 UP 主"
-    return Decision("creator", reply=f"「{name}」：订阅还是看最新？", label=name, choices=[
+    label = row_label(name, (), str(item.get("site") or ""))
+    return Decision("creator", reply=f"「{name}」：订阅还是看最新？", label=label, choices=[
         {"label": "订阅为频道", "lead": "", "ref": search_ref("f", generation, index)},
         {"label": "播放最新视频", "lead": "", "ref": search_ref("l", generation, index)}])
 
@@ -1196,6 +1302,10 @@ _ORDINAL = re.compile(r"^(?:播放?|放|看|选|要|打开|订阅|就|我要)?�
 _NEXT_PAGE = re.compile(r"^(?:下1页|下一页|下页|翻页|翻1页|翻一页|更多|还有|还有吗|后面的|再来几个|"
                         r"换1批|换一批|下1批|下一批)$")
 _WANTS_LATEST = re.compile(r"(最新|新视频|播放|播1下|放1下|看看他|看他)")
+# 有网站没赶上时：「再搜一次」「重试」「油管」「再搜一下油管」（「再」「一下」整理时已经去掉）。
+_RETRY_SITES = _alternation(_SITE_WORDS)
+_RETRY = re.compile(rf"^(?:(?:{_RETRY_SITES})(?:的)?)?再?(?:搜索?|试试?|找找?|查)?(?:[1一](?:次|遍|回|下))?"
+                    rf"(?:{_RETRY_SITES})?$|^(?:重试|重新搜索?|重新试试?|重搜)$")
 _WANTS_FOLLOW = re.compile(r"(订阅|关注|添加|加为频道|加到频道|加成频道|收藏)")
 
 
@@ -1225,6 +1335,16 @@ def pick_number(transcript: str) -> int | None:
 
 def wants_next_page(transcript: str) -> bool:
     return bool(_NEXT_PAGE.match(_said(transcript)))
+
+
+def wants_retry(transcript: str) -> str | None:
+    """面板上有「油管还在搜」时：再搜一次没赶上的网站。返回说出的网站（没说为空），不是为 None。"""
+    text = _said(transcript)
+    found = _RETRY.match(text)
+    if not found or not text:
+        return None
+    named = _SITE_HEAD.match(text) or re.search(rf"({_RETRY_SITES})$", text)
+    return _SITE_BY_WORD.get(named.group(1), "") if named else ""
 
 
 def creator_answer(transcript: str) -> str | None:
