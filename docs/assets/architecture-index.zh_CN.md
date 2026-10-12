@@ -50,7 +50,8 @@
 | [`main/av_provision.cpp`/`.h`](../../main/av_provision.h) | Wi-Fi station/AP 生命周期（C++，封装 `esp-wifi-connect`）。 |
 | [`main/av_provision_policy.c`/`.h`](../../main/av_provision_policy.h) | 纯启动模式判定（`AV_BOOT_PLAY` vs `AV_BOOT_SETUP`），无 ESP-IDF 依赖。 |
 | [`main/av_settings.c`/`.h`](../../main/av_settings.h) | 亮度/音量的分档表（固定档位而非连续值）。 |
-| [`main/av_store.c`/`.h`](../../main/av_store.h) | 音量/亮度/服务器地址的 NVS 持久化。 |
+| [`main/av_store.c`/`.h`](../../main/av_store.h) | 音量/亮度/服务器地址的 NVS 持久化，以及设备密钥。 |
+| [`main/av_identity.c`/`.h`](../../main/av_identity.h) | HELLO 里给多用户服务器的设备身份（`device_id`、`model`、`device_secret`、`fw`）；格式化部分有主机测试。 |
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
 | [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机——纯逻辑，无 LVGL。 |
 | [`main/ui_text.c`/`.h`](../../main/ui_text.h) | 直接画到屏幕条带上的位图文字（非 LVGL）；CJK 字形来自 `ui_font_cjk.bin`，由 `tools/make_font.py` 重新生成。 |
@@ -75,6 +76,7 @@
 | [`server/usb_link.py`](../../server/usb_link.py) | 在 USB 串口传输上包一层 socket 形状的适配器（仅用于测量build）。 |
 | [`server/live_sender.py`](../../server/live_sender.py) | opt-in 的 v2 发送器（`TV_LIVE_ENGINE=v2`）；动它之前先看 [`docs/development/live-sender-v2.md`](../development/live-sender-v2.zh_CN.md) 的范围与边界。 |
 | [`server/relay/`](../../server/relay/web.py) | UP 主和剧集频道的视频中转：B 站接口、看过/进度状态、生成的频道表、MPEG-TS 流和带密钥的网页。独立服务（`python3 -m server.relay`）。 |
+| [`server/tenancy/`](../../server/tenancy/accounts.py) | 多用户阶段 1：SQLite 里的账号、会话、邀请、设备和每个用户的状态（`accounts.py`、`db.py`）；电视服务认设备（`gate.py`、`unbound.py`）；迁移（`migrate.py`）和管理命令（`admin.py`）。中转一侧：`server/relay/tenants.py`。运维手册：[`docs/development/tenancy-phase1-runbook.zh_CN.md`](../development/tenancy-phase1-runbook.zh_CN.md)。 |
 | [`server/channel_groups.py`](../../server/channel_groups.py) | 频道分组：按台名归类、手机上的调整、CONFIG 里的分组表。 |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | 正在播放（给手机看），以及把中转的事件变成 SWITCH 包或 HELLO 时的新台。 |
 | [`server/fault.py`](../../server/fault.py) | 面向受控设备实验（B02-R）的故障注入工具；不在正式发布的服务端路径里。 |
@@ -120,6 +122,7 @@
 | 频道列表，增删/排序频道 | `channels.txt`、`tools/channel_config.py`、`server/live.py`（`CHANNELS`、`reload_channels_if_changed`）、`main/av_channel_policy.c` |
 | UP 主频道、视频网站、手机网页 | `server/relay/`、`packaging/systemd/tv-relay.service`、`packaging/nginx/tv-relay.conf` |
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
+| 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
 | 线协议/包格式改动 | `main/av_protocol.h`、`server/protocol.py`、`server/frames.py`，见上文第 5 节 |
 | 画质、帧率、条带/几何参数 | `main/av_protocol.h`（`AV_VIDEO_*`、`AV_FPS`）、`server/frames.py`、`server/rate.py`、`main/av_player.c` 的 `video_task`/`push_stripe` |
 | 音画同步、drift、卡顿、会话重置 | `server/timeline.py`、`server/pts.py`、`main/av_player.c` 的 `audio_task`/`video_task`、`docs/development/state-20260916.md` |

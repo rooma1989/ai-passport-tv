@@ -4,7 +4,12 @@
 
 # Local audio/video prototype server
 
-> **No longer maintained here.** The media server has moved to its own repository, [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server). This `server/` directory is a frozen snapshot as of commit `208357b`; make server changes in the new repository only.
+> **This fork's `server/` is canonical** (decision of 2026-10-12, Q7 in
+> [`2026-10-12-multi-tenant-design.md`](../docs/superpowers/specs/2026-10-12-multi-tenant-design.md)):
+> the cloud host runs this code, and server changes land here. Upstream's media
+> server moved to [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server)
+> at commit `208357b`; this directory has diverged from it since (relay, multi-device,
+> multi-user). Multi-user operation: [`docs/development/tenancy-phase1-runbook.md`](../docs/development/tenancy-phase1-runbook.md).
 
 
 This is an opt-in, single-device **LAN player for live channels, video files and

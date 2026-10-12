@@ -4,7 +4,11 @@
 
 # 本地音画原型服务器
 
-> **本仓库不再维护 `server/`。**服务端已迁到独立仓库 [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server)。这个目录是提交 `208357b` 时的冻结快照，服务端的改动只在新仓库里做。
+> **这个分支的 `server/` 是正本**（2026-10-12 的决定，见
+> [`2026-10-12-multi-tenant-design.zh_CN.md`](../docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md) 的 Q7）：
+> 云主机跑的就是这份代码，服务端的改动都提交在这里。上游的媒体服务在提交 `208357b` 时迁到了
+> [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server)，此后这个目录已经和它分开发展
+> （视频中转、多设备、多用户）。多用户的运维：[`docs/development/tenancy-phase1-runbook.zh_CN.md`](../docs/development/tenancy-phase1-runbook.zh_CN.md)。
 
 
 本模块是手动启用、单设备的**局域网直播频道、视频文件与合成素材播放器**，不是公网代理或生产级鉴权服务。
