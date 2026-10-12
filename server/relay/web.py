@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .. import channel_groups, now_playing
-from . import events, stream, table, youtube as youtube_links
+from . import events, stream, table, voice, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, State, Video
 
@@ -548,7 +548,12 @@ class Relay:
     # ---- 设备 ----
 
     def target(self) -> dict:
-        """手机现在遥控的那台：选定的；自动时是在线设备里最近开始会话（换台）的那台。"""
+        """手机现在遥控的那台：选定的；自动时是在线设备里最近开始会话（换台）的那台。
+
+        请求里带了 device（电视服务的语音命令）时，这次请求作用在那台上（voice.acting_for）。"""
+        forced = voice.forced_target()
+        if forced is not None:
+            return forced
         if self._target is not None:
             chosen = next((d for d in self.devices if d["id"] == self._target), None)
             if chosen is not None:
@@ -989,6 +994,8 @@ def _manage_handler(relay: Relay):
                 self._json(relay.summary())
             elif _EPISODES.match(path):
                 self._json(relay.episodes(_EPISODES.match(path).group(1)))
+            elif path == "/api/voice/catalog":
+                self._json(voice.catalog(relay, self._query().get("device")))
             else:
                 self._not_found()
 
@@ -1001,6 +1008,18 @@ def _manage_handler(relay: Relay):
             if body is None:
                 self._json({"ok": False, "error": "请求格式不对"}, 400)
                 return
+            # 带 device 的请求（电视服务的语音命令）作用在那台设备上，而不是手机遥控的那台。
+            # /api/target 的 device 是另一个意思（手机选遥控哪台），不在此列。
+            device = None
+            if path != "/api/target" and "device" in body:
+                device = voice.find_device(relay, body.get("device"))
+                if device is None:
+                    self._json({"ok": False, "error": "没有这台设备"}, 404)
+                    return
+            with voice.acting_for(device):
+                self._post(path, body)
+
+        def _post(self, path: str, body: dict) -> None:
             if path == "/api/code":
                 self._json(relay.new_code())
                 return
