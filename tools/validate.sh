@@ -106,6 +106,12 @@ run_static_checks() {
         tests/test_av_channel_policy.c main/av_channel_policy.c \
         -o "${test_dir}/test_av_channel_policy"
     "${test_dir}/test_av_channel_policy"
+    # The identity in HELLO: the shapes the multi-tenant server accepts, and a
+    # secret encoding checked against a known vector.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_av_identity.c main/av_identity.c \
+        -o "${test_dir}/test_av_identity"
+    "${test_dir}/test_av_identity"
     python3 tests/test_verify_firmware.py
     python3 tests/test_tv_server.py
     python3 tests/test_video_import.py
