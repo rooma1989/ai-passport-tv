@@ -356,6 +356,56 @@ class SessionTests(unittest.TestCase):
                 "TV_RELAY_MANAGE_URL": "http://203.0.113.9:8100"})
             self.assertIsNone(voice.relay, "the key is only sent to this host")
 
+    def test_from_env_per_device(self):
+        # Multi-user media server (TV_DB): the relay device is the one each session admits;
+        # TV_RELAY_DEVICE is ignored, and an unbound device gets no relay at all.
+        with tempfile.TemporaryDirectory() as folder:
+            key = Path(folder) / "relay-key"
+            key.write_text("k" * 20 + "\n")
+            environ = {"TV_ASR_SOCKET": "x", "TV_RELAY_KEY_FILE": str(key), "TV_RELAY_DEVICE": "Passport"}
+            voice = VoiceService.from_env(self.log.append, environ=environ, per_device=True)
+            self.assertIsNone(voice.relay, "no device before the first HELLO")
+            self.assertIn("TV_RELAY_DEVICE ignored", "\n".join(self.log))
+            self.assertIn("relay per device", self.log[-1])
+            voice.bind_device("legacy-passport")
+            self.assertEqual(voice.relay.device, "legacy-passport")
+            voice.bind_device("0123456789ab")
+            self.assertEqual(voice.relay.device, "0123456789ab")
+            voice.bind_device(None)
+            self.assertIsNone(voice.relay)
+            self.assertNotIn("k" * 20, "\n".join(self.log))
+            voice = VoiceService.from_env(self.log.append, environ=dict(
+                environ, TV_RELAY_MANAGE_URL="http://203.0.113.9:8100"), per_device=True)
+            voice.bind_device("legacy-passport")
+            self.assertIsNone(voice.relay, "the key is only sent to this host")
+        # Single-user: bind_device() changes nothing.
+        self.voice.bind_device("legacy-passport")
+        self.assertIs(self.voice.relay, self.relay)
+
+    def test_a_running_utterance_keeps_its_device(self):
+        # The worker uses the relay client of the session it started in, even if the next
+        # device is admitted while it runs.
+        first, second = FakeRelay(), FakeRelay()
+        gate = threading.Event()
+
+        class SlowAsr(FakeAsr):
+            def transcribe(inner, pcm, rate=16000):
+                gate.wait(5)
+                return "暂停"
+
+        voice = VoiceService(SlowAsr(), first, self.log.append, threaded=True)
+        voice._relay_for = {"A": first, "B": second}.get
+        ctx = context("up01")
+        voice.take(ctl("begin", 1, rate=16000, codec="adpcm"), ctx)
+        for n, block in enumerate(tone_blocks(5)[0]):
+            voice.take(audio(block, n), ctx)
+        voice.take(ctl("end", 1), ctx)
+        voice.bind_device("B")
+        gate.set()
+        voice.wait_idle()
+        self.assertEqual(first.calls, [("pause",)])
+        self.assertEqual(second.calls, [])
+
 
 class _AsrHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"

@@ -1,4 +1,5 @@
 #include "av_store.h"
+#include "av_identity.h"
 #include "av_server_addr.h"
 #include "av_settings.h"
 
@@ -223,6 +224,54 @@ bool av_store_save_audio_only(bool on)
     nvs_close(handle);
     if (e != ESP_OK) {
         ESP_LOGW(TAG, "Saving audio-only failed: %s", esp_err_to_name(e));
+        return false;
+    }
+    return true;
+}
+
+// The device secret, its own key like the pet. Stored as the text that travels
+// in HELLO, so what is read back can be checked with the same rule the server
+// applies.
+#define AV_STORE_KEY_SECRET "dsecret"
+
+bool av_store_load_device_secret(char *out, size_t size)
+{
+    if (!out || size < AV_DEVICE_SECRET_LEN + 1) {
+        return false;
+    }
+    out[0] = '\0';
+    nvs_handle_t handle;
+    if (!open_readonly(&handle)) {
+        return false;
+    }
+    size_t length = size;
+    esp_err_t e = nvs_get_str(handle, AV_STORE_KEY_SECRET, out, &length);
+    nvs_close(handle);
+    if (e != ESP_OK || !av_identity_secret_valid(out)) {
+        out[0] = '\0';
+        return false;
+    }
+    return true;
+}
+
+bool av_store_save_device_secret(const char *secret)
+{
+    if (!av_identity_secret_valid(secret)) {
+        return false;
+    }
+    nvs_handle_t handle;
+    esp_err_t e = nvs_open(AV_STORE_NAMESPACE, NVS_READWRITE, &handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot open settings store: %s", esp_err_to_name(e));
+        return false;
+    }
+    e = nvs_set_str(handle, AV_STORE_KEY_SECRET, secret);
+    if (e == ESP_OK) {
+        e = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Saving the device secret failed: %s", esp_err_to_name(e));
         return false;
     }
     return true;

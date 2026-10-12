@@ -13,6 +13,7 @@
 #include "av_provision_policy.h"
 #include "av_settings.h"
 #include "av_store.h"
+#include "av_identity.h"
 #include "av_channel_policy.h"
 #include "av_voice.h"
 #include "av_voice_policy.h"
@@ -35,6 +36,9 @@
 #include "bench_blobs.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_mac.h"
+#include "esp_random.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 // esp_cpu_get_cycle_count(), used only by the hardware benchmark to turn its
@@ -1442,9 +1446,41 @@ static void send_status(int fd, uint32_t session) {
     }
 }
 
+// Who this device is, for the multi-tenant server (av_identity.h). Filled
+// before the first session starts (and retried from HELLO if that failed),
+// which is after Wi-Fi has started -- the RF subsystem then feeds the hardware
+// RNG that esp_fill_random() reads -- and kept for the rest of the boot:
+// 13 + 44 + 33 static bytes, no heap.
+static char s_device_id[AV_DEVICE_ID_LEN+1];
+static char s_device_secret[AV_DEVICE_SECRET_LEN+1];
+static char s_device_fw[33];
+
+static bool device_identity(void) {
+    if (s_device_secret[0]) return true;
+    uint8_t mac[6];
+    if (esp_efuse_mac_get_default(mac)!=ESP_OK) return false;
+    av_identity_format_id(mac,s_device_id);
+    av_identity_clean_fw(esp_app_get_description()->version,s_device_fw,sizeof(s_device_fw)-1);
+    if (!av_store_load_device_secret(s_device_secret,sizeof(s_device_secret))) {
+        uint8_t raw[AV_DEVICE_SECRET_BYTES];
+        esp_fill_random(raw,sizeof(raw));
+        av_identity_encode_secret(raw,s_device_secret);
+        memset(raw,0,sizeof(raw));
+        // Not saved means a new secret on every boot, which the server refuses
+        // after the first: say so, but still send this one -- a device seen
+        // for the first time is pinned to whatever it sends.
+        if (!av_store_save_device_secret(s_device_secret))
+            ESP_LOGW(TAG,"device secret not saved; the server will refuse the next boot");
+        else
+            ESP_LOGI(TAG,"device %s: new device secret stored",s_device_id);
+    }
+    return true;
+}
+
 static bool hello(int fd) {
     cJSON *j=cJSON_CreateObject();
     if (!j) return false;
+    bool identified=device_identity();
     // The requested channel travels in the handshake, so switching channels is
     // simply a new connection. The server falls back to its default if the id
     // is unknown, which keeps an older device working against a newer server.
@@ -1476,6 +1512,12 @@ static bool hello(int fd) {
         // tell a device that restarted (and why) from one that lost Wi-Fi.
         cJSON_AddNumberToObject(j,"uptime_s",(double)(esp_timer_get_time()/1000000)) &&
         cJSON_AddNumberToObject(j,"reset_reason",(int)esp_reset_reason()) &&
+        // Identity for the multi-tenant server: an older server ignores these.
+        (!identified ||
+         (cJSON_AddStringToObject(j,"device_id",s_device_id) &&
+          cJSON_AddStringToObject(j,"model",AV_DEVICE_MODEL) &&
+          cJSON_AddStringToObject(j,"device_secret",s_device_secret) &&
+          cJSON_AddStringToObject(j,"fw",s_device_fw))) &&
         (AV_PAIRING_TOKEN[0]=='\0' ||
          cJSON_AddStringToObject(j,"token",AV_PAIRING_TOKEN)!=NULL);
 #if CONFIG_AV_VOICE
@@ -1507,7 +1549,7 @@ static bool hello(int fd) {
     uint8_t wire[AV_HEADER_BYTES];
     av_header_t h={.type=AV_HELLO,.length=n}; av_header_encode(wire,&h);
     ok=n<=AV_CONTROL_MAX && io_all(fd,wire,sizeof(wire),true,1000) && io_all(fd,body,n,true,1000);
-    // Best effort: do not leave token JSON in a reusable heap block.
+    // Best effort: do not leave token or secret JSON in a reusable heap block.
     memset(body,0,n); cJSON_free(body);
     return ok;
 }
@@ -5266,6 +5308,11 @@ void av_player_main(void) {
         // goes back to waiting. Audio stays above both at 7 because the sound is
         // the timeline everything else is paced against.
         shot_maybe_request();
+        // Once per boot: load (or, the very first time, generate and store) the
+        // identity HELLO carries. Here on the main task, which already writes
+        // NVS for the volume and the pet, rather than inside HELLO on the
+        // receiver; Wi-Fi is up by now, so the hardware RNG has its entropy.
+        device_identity();
         if(xTaskCreate(video_task,"av_video",4096,NULL,AV_VIDEO_TASK_PRIO,NULL)!=pdPASS) { fail("video task allocation"); xEventGroupSetBits(s.events,VIDEO_DONE); }
         // One chunk of PCM now lives on this stack beside the queued ADPCM block,
         // 324 bytes more than the PCM-only layout needed, so the stack grows a

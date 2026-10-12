@@ -739,7 +739,7 @@ class PlaybackControlTests(unittest.TestCase):
         thread.start()
         self.threads.append(thread)
         for _ in range(100):
-            if cid in self.relay._active:
+            if ("", cid) in self.relay._active:
                 return thread
             import time as _time
             _time.sleep(0.01)
@@ -884,7 +884,7 @@ class PlaybackControlTests(unittest.TestCase):
         answer = self.relay.previous()
         self.assertTrue(answer["cut"])
         self.assertEqual(events.read_event(self.events).action, "resume")
-        self.assertIsNone(self.relay._paused)
+        self.assertFalse(self.relay._paused)
         self.serve("sr01")
         self.assertEqual(self.started[-1], ("https://media.example/ep1/1.mp4", 0.0))
 
@@ -947,7 +947,7 @@ class PageFieldTests(unittest.TestCase):
                   "video", "position", "duration", "paused", "started", "moving",
                   "device", "volume", "brightness", "steps", "pet", "audio_only",
                   "series", "room", "fits", "episode", "devices", "auto", "target",
-                  "episodes", "next", "playing", "cut", "note"}
+                  "episodes", "next", "playing", "cut", "note", "me", "link"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

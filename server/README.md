@@ -4,7 +4,12 @@
 
 # Local audio/video prototype server
 
-> **No longer maintained here.** The media server has moved to its own repository, [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server). This `server/` directory is a frozen snapshot as of commit `208357b`; make server changes in the new repository only.
+> **This fork's `server/` is canonical** (decision of 2026-10-12, Q7 in
+> [`2026-10-12-multi-tenant-design.md`](../docs/superpowers/specs/2026-10-12-multi-tenant-design.md)):
+> the cloud host runs this code, and server changes land here. Upstream's media
+> server moved to [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server)
+> at commit `208357b`; this directory has diverged from it since (relay, multi-device,
+> multi-user). Multi-user operation: [`docs/development/tenancy-phase1-runbook.md`](../docs/development/tenancy-phase1-runbook.md).
 
 
 This is an opt-in, single-device **LAN player for live channels, video files and
@@ -256,8 +261,25 @@ Auto-execute at score >= 0.85 and a lead of 0.15 (an exact alias always
 qualifies), or a single candidate >= 0.65; otherwise up to 6 candidates >= 0.5;
 otherwise "not understood". `tests/test_voice_intent.py` holds the phrasings.
 
-Relay actions always carry `device` = `TV_RELAY_DEVICE`, so they act on the
-device that spoke, not on the one the phone is driving (`Relay.target()`).
+Relay actions always carry `device`, so they act on the device that spoke, not
+on the one the phone is driving (`Relay.target()`). Which device that is depends
+on the relay's mode:
+
+| Relay mode | `device` the media server sends | Where it comes from |
+| --- | --- | --- |
+| Single-user (no `--db`; media server without `TV_DB`) | the relay's device id (`d0` = `--device-name`, `d1`... = each `--extra-device` in order) or its name (e.g. `Passport`) | `TV_RELAY_DEVICE`, fixed per unit |
+| Multi-user (`--db`; media server with `TV_DB`) | the device id the media server admitted for this session: `legacy-xingzhi` / `legacy-passport` for old firmware or a not-yet-adopted new one, the 12-hex MAC once adopted or bound | the HELLO handshake (`_admit()` then `VoiceService.bind_device()`); `TV_RELAY_DEVICE` is ignored, with one log line saying so |
+
+In multi-user mode the relay key is the admin, who controls only the admin's
+own devices, yet a media unit may serve anyone's device. So a request with the
+key (`X-Key`) that names a device on a single-device endpoint (`switch`, `seek`,
+`next`, `previous`, `pause`, `resume`, `device`, `audio`, `pet`,
+`series/<id>/play`, `series/<id>/episodes`, `voice/catalog`) is served as that
+device's **guest**: that one device, its owner's series and progress, no account
+data. Names are not accepted there (users choose them, so they are not unique),
+and an unknown or unbound id answers 404. Phones (cookie sessions) keep their
+own rules. An unbound device gets neither `voice` in CONFIG nor a relay client.
+An utterance finishes with the relay client of the session it started in.
 
 ### Enabling it (operator)
 
@@ -274,15 +296,19 @@ device that spoke, not on the one the phone is driving (`Relay.target()`).
    | --- | --- |
    | `TV_ASR_SOCKET` | `/run/muse-asr/asr.sock`; unset means voice is off and CONFIG does not offer it |
    | `TV_RELAY_KEY_FILE` | the relay's key file (same as `tv-relay.service`'s `--key-file`) |
-   | `TV_RELAY_DEVICE` | this server's device in the relay: `d0` / the `--device-name`, or the name in `--extra-device` (e.g. `Passport`) |
+   | `TV_RELAY_DEVICE` | single-user relay only: this unit's device in the relay, `d0` / the `--device-name`, or the name or id of its `--extra-device` (e.g. `Passport` or `d1`). Ignored when `TV_DB` is set; keep it in the base unit anyway, so removing the multi-user drop-in brings it back |
    | `TV_RELAY_MANAGE_URL` | optional, default `http://127.0.0.1:8100`; only loopback is accepted, so the key never leaves the host |
 
-   Without the two relay variables, channels, volume, brightness, pages and
-   setup still work; series episodes, pause, seek and next/previous reply that
-   the TV is not connected to the relay.
+   Without the relay variables (`TV_RELAY_KEY_FILE`, and in single-user mode
+   `TV_RELAY_DEVICE`), channels, volume, brightness, pages and setup still
+   work; series episodes, pause, seek and next/previous reply that the TV is
+   not connected to the relay. The unit's user must be in the `tvserver` group
+   (the socket) and able to read the key file.
 3. The relay needs this version (it accepts `device` on its POST endpoints and
    serves `GET /api/voice/catalog`). Restart order: muse-asr, tv-relay, then the
-   media servers.
+   media servers. Multi-user mode adds nothing for voice: the drop-ins in
+   `packaging/systemd/tenancy/` leave these variables alone
+   ([runbook](../docs/development/tenancy-phase1-runbook.md#voice-control-in-both-modes)).
 
 Measure the recogniser on the host before promising latency: muse-asr logs
 `local ok: ... asr N ms` per request, and the media server logs

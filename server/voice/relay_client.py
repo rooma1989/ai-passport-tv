@@ -3,8 +3,10 @@
 
     TV_RELAY_MANAGE_URL  中转管理端口，默认 http://127.0.0.1:8100，只接受本机地址
     TV_RELAY_KEY_FILE    中转的密钥文件（与 tv-relay.service 的 --key-file 同一个）
-    TV_RELAY_DEVICE      本媒体服务对应的设备：中转里的名字（--device-name / --extra-device
-                         的名字，例如 Passport）或 id（d0、d1）
+    TV_RELAY_DEVICE      单用户中转（没有 --db）时本媒体服务对应的设备：中转里的名字
+                         （--device-name / --extra-device 的名字，例如 Passport）或 id（d0、d1）。
+                         多用户（电视服务设置了 TV_DB）时不用它：设备是每次会话认出来的那台
+                         （legacy-passport、12 位 MAC……），见 VoiceService.bind_device()。
 """
 
 from __future__ import annotations
@@ -51,6 +53,17 @@ class RelayClient:
             return None
         key = Path(key_file).read_text(encoding="utf-8").strip()
         return cls(environ.get(MANAGE_URL_ENV, DEFAULT_URL), key, device)
+
+    @classmethod
+    def factory_from_env(cls, environ=os.environ):
+        """多用户：只要密钥（设备每次会话才知道）。返回 设备 id → RelayClient；没有密钥返回 None。"""
+        key_file = environ.get(KEY_FILE_ENV)
+        if not key_file:
+            return None
+        key = Path(key_file).read_text(encoding="utf-8").strip()
+        base = environ.get(MANAGE_URL_ENV, DEFAULT_URL)
+        cls(base, key, "-")     # 现在就检查地址和密钥，配置错了在启动时就知道
+        return lambda device: cls(base, key, device)
 
     def _call(self, method: str, path: str, body: dict | None = None) -> dict:
         data = None if body is None else json.dumps(body).encode()

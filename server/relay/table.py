@@ -32,10 +32,11 @@ def label_text(name: str) -> str:
     return "".join(kept).strip()
 
 
-def render(creators) -> str:
+def render(creators, base: str = STREAM_BASE) -> str:
+    """base：播放流地址的前缀；多用户时带上设备 id（STREAM_BASE + "<设备 id>/"）。"""
     lines = ["# 由视频中转生成，不要手改。每行： id | 显示名 | 地址",
-             f"{CAST_ID} | {CAST_LABEL} | {STREAM_BASE}{CAST_ID}"]
-    lines += [f"{c.id} | {label(c)} | {STREAM_BASE}{c.id}" for c in creators]
+             f"{CAST_ID} | {CAST_LABEL} | {base}{CAST_ID}"]
+    lines += [f"{c.id} | {label(c)} | {base}{c.id}" for c in creators]
     return "\n".join(lines) + "\n"
 
 

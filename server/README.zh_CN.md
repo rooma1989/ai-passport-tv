@@ -4,7 +4,11 @@
 
 # 本地音画原型服务器
 
-> **本仓库不再维护 `server/`。**服务端已迁到独立仓库 [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server)。这个目录是提交 `208357b` 时的冻结快照，服务端的改动只在新仓库里做。
+> **这个分支的 `server/` 是正本**（2026-10-12 的决定，见
+> [`2026-10-12-multi-tenant-design.zh_CN.md`](../docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md) 的 Q7）：
+> 云主机跑的就是这份代码，服务端的改动都提交在这里。上游的媒体服务在提交 `208357b` 时迁到了
+> [ai-passport-tv-server](https://github.com/cjpjxjx/ai-passport-tv-server)，此后这个目录已经和它分开发展
+> （视频中转、多设备、多用户）。多用户的运维：[`docs/development/tenancy-phase1-runbook.zh_CN.md`](../docs/development/tenancy-phase1-runbook.zh_CN.md)。
 
 
 本模块是手动启用、单设备的**局域网直播频道、视频文件与合成素材播放器**，不是公网代理或生产级鉴权服务。
@@ -197,7 +201,19 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
 取消；帮助。分数 ≥ 0.85 且领先 0.15 时直接执行（一字不差的别名总算），或只有一个 ≥ 0.65 的候选时执行；
 否则给出最多 6 个 ≥ 0.5 的候选；再否则「没听懂」。各种说法见 `tests/test_voice_intent.py`。
 
-调中转时总带 `device` = `TV_RELAY_DEVICE`，作用在说话的那台设备上，而不是手机正在遥控的那台（`Relay.target()`）。
+调中转时总带 `device`，作用在说话的那台设备上，而不是手机正在遥控的那台（`Relay.target()`）。是哪一台，看中转的模式：
+
+| 中转模式 | 媒体服务发的 `device` | 从哪来 |
+| --- | --- | --- |
+| 单用户（没有 `--db`；媒体服务不设 `TV_DB`） | 中转里的设备 id（`d0` = `--device-name`，`d1`… = 依次每个 `--extra-device`）或名字（如 `Passport`） | `TV_RELAY_DEVICE`，每个 unit 固定 |
+| 多用户（`--db`；媒体服务设了 `TV_DB`） | 媒体服务这次会话认出的设备 id：旧固件或还没接收（adopt）的新固件是 `legacy-xingzhi` / `legacy-passport`，接收或绑定后是 12 位 MAC | HELLO 握手（`_admit()` 后 `VoiceService.bind_device()`）；不看 `TV_RELAY_DEVICE`，日志里说一句 |
+
+多用户时中转密钥就是管理员，只能遥控管理员自己的设备，而一个媒体单元可能服务任何人的设备。所以带密钥
+（`X-Key`）、在单设备接口上（`switch`、`seek`、`next`、`previous`、`pause`、`resume`、`device`、`audio`、
+`pet`、`series/<id>/play`、`series/<id>/episodes`、`voice/catalog`）点名设备的请求，按那台设备的**访客**
+处理：只能动那一台，剧集和进度按设备主人的来，碰不到账号数据。这里不认名字（名字是用户起的，不唯一），
+不认识或未绑定的 id 回 404。手机（cookie 会话）的规则不变。未绑定的设备 CONFIG 里没有 `voice`，也没有中转
+客户端。一句话用它开始时那次会话的中转客户端做完。
 
 ### 怎么打开（运维）
 
@@ -212,13 +228,15 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
    | --- | --- |
    | `TV_ASR_SOCKET` | `/run/muse-asr/asr.sock`；不设就不开语音，CONFIG 不提供 |
    | `TV_RELAY_KEY_FILE` | 中转的密钥文件（与 `tv-relay.service` 的 `--key-file` 相同） |
-   | `TV_RELAY_DEVICE` | 本服务在中转里对应的设备：`d0` / `--device-name` 的名字，或 `--extra-device` 里的名字（如 `Passport`） |
+   | `TV_RELAY_DEVICE` | 只用于单用户中转：本服务在中转里对应的设备，`d0` / `--device-name` 的名字，或它那个 `--extra-device` 的名字或 id（如 `Passport` 或 `d1`）。设了 `TV_DB` 时不看；但仍留在基础 unit 里，删掉多用户 drop-in 就又用上 |
    | `TV_RELAY_MANAGE_URL` | 可选，默认 `http://127.0.0.1:8100`；只接受本机地址，密钥不会离开这台主机 |
 
-   不设这两个中转变量时，换台、音量、亮度、页面和配网照常；选集、暂停、跳转、上一集 / 下一集
-   会回答「这台电视没有连到视频中转」。
+   不设中转变量（`TV_RELAY_KEY_FILE`，单用户时还有 `TV_RELAY_DEVICE`）时，换台、音量、亮度、页面和配网
+   照常；选集、暂停、跳转、上一集 / 下一集会回答「这台电视没有连到视频中转」。unit 的用户要在 `tvserver`
+   组里（套接字），并能读密钥文件。
 3. 中转要用这一版（POST 接口认 `device`，并提供 `GET /api/voice/catalog`）。重启顺序：muse-asr、
-   tv-relay，再是媒体服务。
+   tv-relay，再是媒体服务。多用户模式对语音不加任何设置：`packaging/systemd/tenancy/` 的 drop-in 不碰这些变量
+   （[运维手册](../docs/development/tenancy-phase1-runbook.zh_CN.md#两种模式下的语音控制)）。
 
 承诺延迟之前先在主机上量识别：muse-asr 每个请求记一行 `local ok: … asr N ms`，媒体服务每条命令记一行
 `voice id=… intent=… audio_s=… asr_ms=… total_ms=…`。

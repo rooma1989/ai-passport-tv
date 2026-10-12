@@ -27,7 +27,7 @@ from ..protocol import (AUDIO_BYTES, VOICE_MAX_BLOCKS, VOICE_MAX_S, VOICE_RESULT
                         Packet, ProtocolError, json_object)
 from . import intent
 from .asr import SAMPLE_RATE, AsrClient, AsrError
-from .relay_client import RelayClient, RelayError
+from .relay_client import DEVICE_ENV, RelayClient, RelayError
 
 ASR_SOCKET_ENV = "TV_ASR_SOCKET"
 LOG_TEXT_ENV = "TV_VOICE_LOG_TEXT"
@@ -97,23 +97,47 @@ class VoiceService:
         self._unmute: int | None = None
         self._workers: list[threading.Thread] = []
         self.ignored = 0
+        # 多用户（TV_DB）：设备不是固定的，认出设备后 bind_device() 按它的 id 造中转客户端。
+        self._relay_for: Callable[[str], RelayClient] | None = None
 
     @classmethod
-    def from_env(cls, logger: Callable[[str], None], environ=os.environ) -> "VoiceService":
+    def from_env(cls, logger: Callable[[str], None], environ=os.environ,
+                 per_device: bool = False) -> "VoiceService":
+        """per_device：多用户（电视服务设置了 TV_DB）。这时一个媒体单元先后服务不同的设备，
+        中转里的设备就是这次会话认出来的那台（bind_device），不看 TV_RELAY_DEVICE。"""
         path = environ.get(ASR_SOCKET_ENV)
         asr = AsrClient(path) if path else None
-        relay = None
+        relay, relay_for = None, None
         try:
-            relay = RelayClient.from_env(environ)
+            if per_device:
+                relay_for = RelayClient.factory_from_env(environ)
+                if environ.get(DEVICE_ENV):
+                    logger(f"voice: {DEVICE_ENV} ignored with a device database; "
+                           "the relay device is the one each session admits")
+            else:
+                relay = RelayClient.from_env(environ)
         except (OSError, ValueError) as error:
             # 只记类名：路径和密钥都不进日志。
             logger(f"voice: relay disabled ({type(error).__name__})")
         service = cls(asr, relay, logger, log_text=environ.get(LOG_TEXT_ENV) == "1",
                       wav_dir=environ.get(WAV_DIR_ENV) or None)
+        service._relay_for = relay_for
         if asr is not None:
-            logger(f"voice: on, relay {'on' if relay else 'off'}, "
+            mode = "per device" if relay_for else "on" if relay else "off"
+            logger(f"voice: on, relay {mode}, "
                    f"transcripts {'logged' if service.log_text else 'not logged'}")
         return service
+
+    def bind_device(self, device_id: str | None) -> None:
+        """多用户：这次会话服务的设备（tv_server 认出设备后调用；未绑定的设备给 None）。
+
+        语音命令的中转动作只作用在这台上。单用户（TV_RELAY_DEVICE 固定）时什么都不做。
+        正在跑的工作线程用的是它开始时的那个客户端（_start），不会被换到下一台设备上。"""
+        if self._relay_for is None:
+            return
+        relay = self._relay_for(device_id) if device_id else None
+        with self._lock:
+            self.relay = relay
 
     @property
     def enabled(self) -> bool:
@@ -195,14 +219,14 @@ class VoiceService:
             elif not utterance.ok_format:
                 self._push(self._generation, uid, self._error(uid, REPLY_FORMAT))
             else:
-                self._start(self._recognise, uid, utterance, context())
+                self._start(self._recognise, uid, utterance, context(), self.relay)
         elif op == "pick":
             ref = message.get("ref")
             offered = self._refs.get(ref) if isinstance(ref, str) else None
             if offered is None:
                 self._push(self._generation, uid, self._final(uid, "", "这个选项已经过期了", "none"))
                 return
-            self._start(self._pick, uid, ref, context())
+            self._start(self._pick, uid, ref, context(), self.relay)
         else:
             self.ignored += 1
 
@@ -243,7 +267,8 @@ class VoiceService:
             result["heard"] = _clip(heard, HEARD_MAX)
         return result
 
-    def _recognise(self, generation: int, uid: int, utterance: _Utterance, context: dict) -> None:
+    def _recognise(self, generation: int, uid: int, utterance: _Utterance, context: dict,
+                   relay: RelayClient | None) -> None:
         started = time.monotonic()
         pcm = b"".join(adpcm.decode_block(block) for block in utterance.blocks)
         seconds = len(pcm) / 2 / SAMPLE_RATE
@@ -255,21 +280,22 @@ class VoiceService:
             self._push(generation, uid, self._error(uid, REPLY_ASR_DOWN))
             return
         asr_ms = (time.monotonic() - started) * 1000
-        catalog, relay_note = self._catalog(context)
+        catalog, relay_note = self._catalog(context, relay)
         decision = intent.decide(text, catalog)
-        result = self._execute(uid, text, decision, catalog)
+        result = self._execute(uid, text, decision, catalog, relay)
         heard = f" heard={text!r}" if self.log_text else ""
         self.logger(f"voice id={uid} intent={decision.kind} audio_s={seconds:.1f} "
                     f"dropped={utterance.dropped} chars={len(text)} asr_ms={asr_ms:.0f} "
                     f"total_ms={(time.monotonic() - started) * 1000:.0f}{relay_note}{heard}")
         self._push(generation, uid, result)
 
-    def _pick(self, generation: int, uid: int, ref: str, context: dict) -> None:
+    def _pick(self, generation: int, uid: int, ref: str, context: dict,
+              relay: RelayClient | None) -> None:
         found = _REF.match(ref)
         if not found:
             self._push(generation, uid, self._final(uid, "", "这个选项已经过期了", "none"))
             return
-        catalog, _ = self._catalog(context)
+        catalog, _ = self._catalog(context, relay)
         offered = self._refs.get(ref, {})
         series = intent.Series(found.group(1), offered.get("name", found.group(1)))
         decision = intent.Decision("episode", reply=f"从第 {int(found.group(2))} 集开始播",
@@ -277,20 +303,20 @@ class VoiceService:
                                    relay=("episode", {"series": series.id, "episode": int(found.group(2))}))
         if catalog.current != series.id:
             decision.then_channel = series.id
-        result = self._execute(uid, "", decision, catalog)
+        result = self._execute(uid, "", decision, catalog, relay)
         self.logger(f"voice id={uid} pick intent=episode")
         self._push(generation, uid, result)
 
-    def _catalog(self, context: dict) -> tuple[intent.Catalog, str]:
+    def _catalog(self, context: dict, relay: RelayClient | None) -> tuple[intent.Catalog, str]:
         """频道表来自 CONFIG（设备看到的序号和分组）；剧集、全名、正在播第几集来自中转。"""
         config = context.get("config") or {}
         groups = config.get("groups") or []
         listed = config.get("channel_list") or []
         device = context.get("device") or {}
         relay_data, note = {}, ""
-        if self.relay is not None:
+        if relay is not None:
             try:
-                relay_data = self.relay.catalog()
+                relay_data = relay.catalog()
             except RelayError as error:
                 note = f" relay_catalog={error}"
         full_names = {row.get("id"): row.get("name") for key in ("series", "creators")
@@ -325,19 +351,20 @@ class VoiceService:
             audio_only=number("audio_only"), unmute_volume=self._unmute)
         return catalog, note
 
-    def _execute(self, uid: int, heard: str, decision: intent.Decision, catalog: intent.Catalog) -> dict:
+    def _execute(self, uid: int, heard: str, decision: intent.Decision, catalog: intent.Catalog,
+                 relay: RelayClient | None) -> dict:
         reply, do = decision.reply, decision.do
         if decision.relay is not None:
             action, params = decision.relay
-            if self.relay is None:
+            if relay is None:
                 return self._final(uid, heard, REPLY_NO_RELAY, decision.kind)
             try:
                 if action == "episode":
-                    answer = self.relay.play_episode(params["series"], params["episode"])
+                    answer = relay.play_episode(params["series"], params["episode"])
                 elif action == "seek":
-                    answer = self.relay.seek(params.get("delta"), params.get("position"))
+                    answer = relay.seek(params.get("delta"), params.get("position"))
                 else:
-                    answer = getattr(self.relay, action)()
+                    answer = getattr(relay, action)()
             except RelayError as error:
                 self.logger(f"voice id={uid} relay {action} error={error}")
                 return self._final(uid, heard, REPLY_RELAY_DOWN, decision.kind)
