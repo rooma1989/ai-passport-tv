@@ -77,6 +77,7 @@
 | [`server/relay/`](../../server/relay/web.py) | UP 主和剧集频道的视频中转：B 站接口、看过/进度状态、生成的频道表、MPEG-TS 流和带密钥的网页。独立服务（`python3 -m server.relay`）。 |
 | [`server/channel_groups.py`](../../server/channel_groups.py) | 频道分组：按台名归类、手机上的调整、CONFIG 里的分组表。 |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | 正在播放（给手机看），以及把中转的事件变成 SWITCH 包或 HELLO 时的新台。 |
+| [`server/listen.py`](../../server/listen.py) | 用手机听（原型，尚未接入）：设备晚 H 秒照着放的时间表、HLS 音频段窗口、从队列取声音、收听令牌。设计见 [`2026-10-12-phone-audio-design.zh_CN.md`](../superpowers/specs/2026-10-12-phone-audio-design.zh_CN.md)；本机试验在 `tools/listen_proto/`。 |
 | [`server/fault.py`](../../server/fault.py) | 面向受控设备实验（B02-R）的故障注入工具；不在正式发布的服务端路径里。 |
 
 ## 4. 做需求时真正会用到的工具
