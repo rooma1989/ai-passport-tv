@@ -43,6 +43,10 @@
 
 `main/Kconfig.projbuild` 新增 `CONFIG_AV_DEFAULT_SERVER`（host[:port]），给公开版固件用；私有版的 `AV_SERVER_IPV4`/`AV_SERVER_PORT` 也算。有其中之一，配网页从 `/advanced/config` 拿到 `"server_builtin": true`：服务器栏收进「高级」、不再必填，说明改成「已经内置」。存下来的地址仍然优先。网站名和地址不进提交的文件：它们只在编译目录自己的 sdkconfig 或不进 git 的私有头文件里。
 
+**端口。** 没写端口的地址（两个页面上都可以只填 "example.com"）指这份固件对应的服务器：私有头文件的 `AV_SERVER_PORT`，公开版则是 `CONFIG_AV_DEFAULT_SERVER_PORT`（AI Passport 8097，星智 8098）。以前的固件给这种地址用 8096（本机 `server/tv_server.py` 的端口），只填域名的设备就去连一个没人听的端口，一直超时。写了端口的照原样用，只有一条迁移：公网域名（有点、不是 IPv4 数字地址、不是 `.local`）上的 `name:8096`——旧固件和旧页面提示会产生它——也换成本固件的端口；局域网地址保留 8096 给本机服务器。`av_server_addr_use_build_port()`（`tests/test_av_server_addr.c` 测）在每次读地址时套用，也就是每个会话，已经存下的地址不用重新配网。日志：第一次和每次变化时打印 `Server address: host:port (stored|built in[, port from this build])`；连不上打印 `RX connect to host:port failed errno=N`；域名解析失败打印 `Cannot resolve host: getaddrinfo=N`。
+
+**页面上的默认值。** 设备热点配网页：没有存地址时，服务器栏预先填上设备现在要连的地址（`/advanced/config` 的 `"server_default"`），原样提交时发 `""`，内置地址仍是内置的。声波配网页（`wifi.html`）把「高级」里的服务器栏填成打开它的网站（`location.hostname`，本机地址除外）并随声音发送；清空就不发，空的服务器地址不会抹掉设备自己的设置。
+
 ## 3. 远程管理（B）的全程
 
 ```

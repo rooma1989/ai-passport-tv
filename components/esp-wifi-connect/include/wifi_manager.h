@@ -67,6 +67,11 @@ struct WifiManagerConfig {
     // The firmware has a streaming server compiled in, so the portal hides the
     // server-address field behind an "Advanced" toggle and does not require it.
     bool server_builtin = false;
+
+    // The address the firmware dials when nothing new is stored ("host:port",
+    // the build's port filled in), shown in the portal's server field as its
+    // default. Empty when there is none. Set with SetConfigApServerDefault().
+    std::string server_default;
 };
 
 /**
@@ -107,6 +112,9 @@ public:
                                 const std::string& server);
     // Whether the config AP's last scan saw a saved network.
     bool ConfigApSeesSavedNetwork();
+    // The portal's default server address (WifiManagerConfig::server_default)
+    // for the next StartConfigAp().
+    void SetConfigApServerDefault(const std::string& address);
     std::string GetApSsid() const;
     std::string GetApWebUrl() const;
 

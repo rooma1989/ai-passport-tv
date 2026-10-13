@@ -65,6 +65,7 @@ bool av_server_addr_parse(const char *text, av_server_addr_t *out)
     }
 
     uint16_t port = AV_SERVER_PORT_DEFAULT;
+    bool port_given = false;
     size_t host_length = length;
     if (colon) {
         host_length = (size_t)(colon - host_begin);
@@ -89,6 +90,7 @@ bool av_server_addr_parse(const char *text, av_server_addr_t *out)
             return false;
         }
         port = (uint16_t)value;
+        port_given = true;
     }
 
     if (host_length == 0 || host_length >= AV_SERVER_ADDR_MAX) {
@@ -99,6 +101,7 @@ bool av_server_addr_parse(const char *text, av_server_addr_t *out)
     memcpy(parsed.host, host_begin, host_length);
     parsed.host[host_length] = '\0';
     parsed.port = port;
+    parsed.port_given = port_given;
 
     // Written only now, so a rejected value leaves the caller's copy alone.
     *out = parsed;
@@ -114,4 +117,45 @@ bool av_server_addr_usable(const av_server_addr_t *addr)
     // at face value: whether it resolves is the network stack's business, and
     // refusing a name here would defeat the point of accepting one.
     return strcmp(addr->host, "0.0.0.0") != 0;
+}
+
+// A name a public DNS server answers for: has a dot, is not an IPv4 literal
+// (digits and dots only) and is not a multicast-DNS ".local" name.
+static bool public_name(const char *host)
+{
+    bool dot = false, letter = false;
+    for (const char *p = host; *p; p++) {
+        if (*p == '.') dot = true;
+        else if (*p < '0' || *p > '9') letter = true;
+    }
+    if (!dot || !letter) return false;
+    const size_t n = strlen(host);
+    static const char local[] = ".local";
+    const size_t k = sizeof(local) - 1u;
+    size_t end = n;
+    if (end && host[end - 1] == '.') end--;   // "printer.local." is the same name
+    if (end >= k) {
+        bool same = true;
+        for (size_t i = 0; i < k; i++) {
+            char c = host[end - k + i];
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c != local[i]) { same = false; break; }
+        }
+        if (same) return false;
+    }
+    return true;
+}
+
+bool av_server_addr_use_build_port(av_server_addr_t *addr, uint16_t build_port)
+{
+    if (!addr || build_port == 0 || addr->port == build_port) {
+        return false;
+    }
+    const bool legacy = addr->port_given && addr->port == AV_SERVER_PORT_DEFAULT &&
+                        public_name(addr->host);
+    if (addr->port_given && !legacy) {
+        return false;
+    }
+    addr->port = build_port;
+    return true;
 }

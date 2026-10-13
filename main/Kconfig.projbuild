@@ -194,6 +194,23 @@ config AV_DEFAULT_SERVER
         committed defaults file: host names and addresses stay out of the
         repository. Empty means no default, as before.
 
+config AV_DEFAULT_SERVER_PORT
+    int "Port of the streaming server this build is made for"
+    depends on AV_RAW_PROTOTYPE
+    range 1 65535
+    default 8098 if AV_BOARD_XINGZHI_CUBE_154
+    default 8097
+    help
+        Dialled when a server address names no port -- "example.com" typed on
+        the setup page or sent from the phone means example.com on this port.
+        The relay listens on 8097 for the AI Passport and 8098 for the Xingzhi
+        board. An address with an explicit port keeps it, except "name:8096"
+        on a public DNS name, which earlier firmware stored and which moves to
+        this port (see main/av_server_addr.h). A private build's
+        av_private_config.h sets AV_SERVER_PORT itself and this is not used.
+        For the local media server (server/tv_server.py, port 8096) type the
+        port: "192.168.1.20:8096".
+
 config AV_PUBLIC_SITE
     string "Public site of the phone remote (https://host), for the setup screen"
     depends on AV_RAW_PROTOTYPE

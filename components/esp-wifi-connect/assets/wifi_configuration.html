@@ -585,7 +585,7 @@
                       costs nothing there.
                     -->
                     <input type="text" id="ota_url" name="ota_url" required
-                           placeholder="192.168.1.20:8096 或 my-pc.local:8096">
+                           placeholder="例如 example.com，或 192.168.1.20:8096">
                     <!--
                       The placeholder offers both forms because the choice
                       matters later, not now. A number typed here stops being
@@ -594,6 +594,14 @@
                       sign of why. A computer's own name keeps working, so it
                       is worth mentioning at the moment the field is filled in
                       -- nobody comes back to this page to reconsider.
+                    -->
+                    <!--
+                      No port: the device uses the port of the server it was
+                      built for (8097 AI Passport, 8098 Xingzhi). The local
+                      media server listens on 8096, so a LAN address names it.
+                      When nothing is stored the field starts with what the
+                      device dials now ("server_default" in /advanced/config);
+                      sent unchanged it goes as "", which keeps the device's own.
                     -->
                 </p>
                 <!--
@@ -1710,7 +1718,7 @@
                 // the same form. The server stores it either way if it is
                 // present, so a blank field simply leaves the previous value
                 // alone rather than clearing it.
-                ota_url: document.getElementById('ota_url').value
+                ota_url: serverField()
             };
 
             try {
@@ -1818,6 +1826,15 @@
             }, 3000);
         }
 
+        // What the device dials when nothing new is stored, shown in the
+        // server field; sent back unchanged it goes as "" so the device keeps
+        // its own (a built-in address stays built in).
+        let serverDefault = '';
+        function serverField() {
+            const value = document.getElementById('ota_url').value;
+            return serverDefault && value.trim() === serverDefault ? '' : value;
+        }
+
         /**
          * Load advanced configuration from server
          */
@@ -1844,8 +1861,14 @@
                     note.setAttribute('data-lang', 'server_builtin_note');
                     note.textContent = translate('server_builtin_note');
                 }
+                if (data.server_default) {
+                    document.getElementById('ota_url').placeholder = data.server_default;
+                }
                 if (data.ota_url) {
                     document.getElementById('ota_url').value = data.ota_url;
+                } else if (data.server_default) {
+                    serverDefault = data.server_default;
+                    document.getElementById('ota_url').value = data.server_default;
                 }
                 if (data.max_tx_power) {
                     document.getElementById('max_tx_power').value = data.max_tx_power;

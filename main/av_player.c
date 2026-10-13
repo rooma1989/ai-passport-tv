@@ -1038,12 +1038,28 @@ static bool builtin_server_address(av_server_addr_t *out) {
     }
     return false;
 }
-static bool server_address(av_server_addr_t *out) {
-    if (av_store_server_addr_load(out)) return true;
+// Where the address came from, for the log line.
+typedef enum { SERVER_NONE=0, SERVER_STORED, SERVER_BUILTIN } server_source_t;
+// The address to dial and where it came from. The port is the effective one:
+// an address that names no port -- a domain typed on the phone -- gets the
+// port of the server this build is made for (AV_SERVER_PORT: 8097 on the AI
+// Passport, 8098 on the Xingzhi board), not the parser's 8096, and so does a
+// "name:8096" stored by earlier firmware (av_server_addr_use_build_port). Read
+// afresh each session, so this applies to an address already stored without
+// running setup again. `build_port` says the port came from the build.
+static server_source_t server_address_from(av_server_addr_t *out, bool *build_port) {
+    server_source_t source=SERVER_NONE;
+    if (av_store_server_addr_load(out)) source=SERVER_STORED;
     // A published build without a Kconfig default has none of these, which is
     // the point: the store is then the only source, and an unset address is an
     // ordinary state that the setup page exists to fix rather than an error.
-    return builtin_server_address(out);
+    else if (builtin_server_address(out)) source=SERVER_BUILTIN;
+    const bool changed=source!=SERVER_NONE && av_server_addr_use_build_port(out,(uint16_t)AV_SERVER_PORT);
+    if (build_port) *build_port=source!=SERVER_NONE && (changed || !out->port_given);
+    return source;
+}
+static bool server_address(av_server_addr_t *out) {
+    return server_address_from(out,NULL)!=SERVER_NONE;
 }
 // Where the phone remote lives, for the setup screen's sound page: what the
 // server last said (CONFIG remote_url, kept in NVS), else this build's Kconfig
@@ -1060,23 +1076,34 @@ static bool setup_site(char *site, size_t size) {
 // line every few seconds on a device that is retrying, which buries everything
 // else in the log; saying it when it changes keeps the useful fact without the
 // repetition.
-static void report_server_address(const av_server_addr_t *addr, bool configured)
+//
+// The line names the effective host:port, where it came from and whether the
+// port is this build's: "Server address: example.com:8097 (stored, port from
+// this build)". No secrets: the address only.
+static void report_server_address(void)
 {
-    static char last[AV_SERVER_ADDR_MAX + 8];
-    char now[AV_SERVER_ADDR_MAX + 8];
-    if (configured) {
-        snprintf(now,sizeof(now),"%s:%u",addr->host,(unsigned)addr->port);
+    static char last[AV_SERVER_ADDR_MAX + 48];
+    char now[AV_SERVER_ADDR_MAX + 48];
+    av_server_addr_t addr;
+    bool build_port=false;
+    const server_source_t source=server_address_from(&addr,&build_port);
+    if (source!=SERVER_NONE) {
+        snprintf(now,sizeof(now),"%s:%u (%s%s)",addr.host,(unsigned)addr.port,
+                 source==SERVER_STORED ? "stored" : "built in",
+                 build_port ? ", port from this build" : "");
     } else {
         snprintf(now,sizeof(now),"(not set)");
     }
     if (strcmp(last,now)==0) return;
     snprintf(last,sizeof(last),"%s",now);
-    if (configured) {
+    if (source!=SERVER_NONE) {
         ESP_LOGI(TAG,"Server address: %s",now);
     } else {
         ESP_LOGW(TAG,"No server address stored; it is entered on the setup page");
     }
 }
+// The host:port the last dial went to, for the line that says it failed.
+static char s_dialled[AV_SERVER_ADDR_MAX + 8];
 
 static int connect_server(void) {
     // A measurement build may ask for the cable; every other build is the
@@ -1102,10 +1129,13 @@ static int connect_server(void) {
     }
 #endif
     av_server_addr_t target;
+    report_server_address();
     if (!server_address(&target)) {
+        s_dialled[0]='\0';
         ESP_LOGW(TAG,"No server address; enter one on the setup page");
         return -1;
     }
+    snprintf(s_dialled,sizeof(s_dialled),"%s:%u",target.host,(unsigned)target.port);
     // Resolved rather than converted: an address typed into the page may be a
     // name, and a name is what survives the server moving to a different lease.
     // A literal costs nothing extra -- lwIP recognises one and skips the lookup.
@@ -1116,7 +1146,9 @@ static int connect_server(void) {
     snprintf(service,sizeof(service),"%u",(unsigned)target.port);
     int gai=getaddrinfo(target.host,service,&hints,&found);
     if (gai!=0 || !found) {
-        ESP_LOGW(TAG,"Cannot resolve %s: %d",target.host,gai);
+        // A name that does not resolve (no DNS on this network, a typo) ends
+        // here, said as such rather than as a connect timeout.
+        ESP_LOGW(TAG,"Cannot resolve %s: getaddrinfo=%d",target.host,gai);
         if (found) freeaddrinfo(found);
         return -1;
     }
@@ -1816,7 +1848,7 @@ static void receive_task(void *arg) {
         // where anything called in between is free to overwrite it and the
         // number reported would be some later failure's.
         int connect_errno=errno;
-        ESP_LOGW(TAG,"RX connect failed errno=%d",connect_errno);
+        ESP_LOGW(TAG,"RX connect to %s failed errno=%d",s_dialled[0] ? s_dialled : "(no address)",connect_errno);
         // Conclusive: the dial is over and the server did not answer.
         atomic_store(&s.link,(int)LINK_DOWN);
         goto done;
@@ -5093,6 +5125,14 @@ static bool run_setup_mode(bool automatic)
         return false;
     }
 
+    // The hotspot page's server field shows what the device dials now -- the
+    // stored or built-in address with this build's port -- as its default.
+    {
+        av_server_addr_t now;
+        char text[AV_SERVER_ADDR_MAX+8]="";
+        if (server_address(&now)) snprintf(text,sizeof(text),"%s:%u",now.host,(unsigned)now.port);
+        av_provision_set_server_default(text);
+    }
     if(!av_provision_start_ap()) {
         ESP_LOGE(TAG,"Setup access point failed to start");
         free(buffer);
@@ -6114,7 +6154,7 @@ void av_player_main(void) {
         // stored on the setup page is picked up on the next pass without a
         // restart.
         server_configured=server_address(&target);
-        report_server_address(&target,server_configured);
+        report_server_address();
         const bool by_mode=atomic_exchange(&s.mode_reconnect,false);
         if (atomic_load(&s.switch_pending) || by_mode) {
             // A channel switch, or audio-only turned on or off, was requested. The session that just ended was

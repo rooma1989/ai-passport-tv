@@ -49,6 +49,7 @@ void (*s_on_disconnected)(void) = nullptr;
 void (*s_on_connected)(void) = nullptr;
 
 bool s_server_builtin = false;
+char s_server_default[96];
 
 char s_ap_name[64];
 char s_ap_url[64];
@@ -276,6 +277,7 @@ bool av_provision_start_ap(void)
     }
     // Keep the deliberate-stop notification away from the player: it means "the
     // session may end", and this transition is the session already having ended.
+    WifiManager::GetInstance().SetConfigApServerDefault(s_server_default);
     s_switching_mode.store(true);
     WifiManager::GetInstance().StartConfigAp();
     s_switching_mode.store(false);
@@ -360,6 +362,11 @@ bool av_provision_has_network(void)
 void av_provision_set_server_builtin(bool builtin)
 {
     s_server_builtin = builtin;
+}
+
+void av_provision_set_server_default(const char *address)
+{
+    copy_out(s_server_default, sizeof(s_server_default), address ? address : "");
 }
 
 unsigned av_provision_saved(char names[][33], unsigned max)

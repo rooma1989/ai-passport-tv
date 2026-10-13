@@ -98,6 +98,11 @@ bool av_provision_has_network(void);
 // av_provision_init().
 void av_provision_set_server_builtin(bool builtin);
 
+// The address the device dials now ("host:port", the build's port filled in),
+// shown as the setup page's server field default; "" for none. Takes effect
+// at the next av_provision_start_ap().
+void av_provision_set_server_default(const char *address);
+
 // ---- Saved networks, managed from the phone remote (av_wifimgr.c) ----
 //
 // The list is the component's (SsidManager): up to AV_WIFI_SAVED_MAX networks

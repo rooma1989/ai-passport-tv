@@ -86,6 +86,30 @@ its note says the address is built in. A stored address still wins over both.
 Host names stay out of committed files: these live in the build's own sdkconfig
 or the git-ignored private header.
 
+**Port.** An address with no port ("example.com", as typed on either page)
+means the server this build is made for: the private header's
+`AV_SERVER_PORT`, or in a public build `CONFIG_AV_DEFAULT_SERVER_PORT` (8097 on
+the AI Passport, 8098 on the Xingzhi board). Earlier firmware dialled 8096 (the
+local `server/tv_server.py` port) for such an address, so a device given a bare
+domain timed out against a relay listening elsewhere. An explicit port is kept,
+with one migration: `name:8096` on a public DNS name (a dot, not an IPv4
+literal, not `.local`) — what that firmware and its page placeholder produced —
+also takes the build's port; LAN addresses keep 8096 for the local server.
+`av_server_addr_use_build_port()` (tested in `tests/test_av_server_addr.c`)
+applies it whenever the address is read, at every session, so a stored value
+needs no new setup. The log says `Server address: host:port (stored|built in[,
+port from this build])` once and on every change, a failed dial says
+`RX connect to host:port failed errno=N`, and a name that does not resolve
+`Cannot resolve host: getaddrinfo=N`.
+
+**Defaults on the pages.** The hotspot page's server field starts with what the
+device dials now (`"server_default"` in `/advanced/config`) when nothing is
+stored, and sends `""` when it is left unchanged, so a built-in address stays
+built in. The sound page (`wifi.html`) fills its "Advanced" server field with
+the hostname that served it (`location.hostname`, not localhost) and sends it;
+clearing the field sends nothing, and an empty server never erases the
+device's own.
+
 ## 3. Remote management (B), end to end
 
 ```

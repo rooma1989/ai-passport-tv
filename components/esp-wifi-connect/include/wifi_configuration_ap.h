@@ -40,6 +40,9 @@ public:
     // This build already knows its streaming server, so the page keeps the
     // address field behind a small "Advanced" toggle and does not require it.
     void SetServerBuiltin(bool builtin) { server_builtin_ = builtin; }
+    // The address the device dials when the field is left as it is, shown as
+    // the field's default ("server_default" in /advanced/config).
+    void SetServerDefault(const std::string &address) { server_default_ = address; }
     // Store the address this project keeps in the URL field. Persisted here
     // rather than by the caller so both endpoints that accept it -- the Wi-Fi
     // form and the Advanced form -- go through one place.
@@ -92,6 +95,7 @@ private:
     bool show_ota_config_ = false;
     bool show_sleep_config_ = false;
     bool server_builtin_ = false;
+    std::string server_default_;
     // One connection test at a time: the web form and sound provisioning both
     // drive the station interface.
     std::mutex connect_mutex_;

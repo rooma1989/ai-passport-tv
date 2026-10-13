@@ -255,6 +255,7 @@ void WifiManager::StartConfigAp() {
     config_ap_->SetShowOtaConfig(config_.show_ota_config);
     config_ap_->SetShowSleepConfig(config_.show_sleep_config);
     config_ap_->SetServerBuiltin(config_.server_builtin);
+    config_ap_->SetServerDefault(config_.server_default);
 
     // Web handler calls this when user submits config
     config_ap_->OnExitRequested([this]() {
@@ -302,6 +303,11 @@ bool WifiManager::ConfigApConnectAndSave(const std::string& ssid, const std::str
     // Not under the lock: the attempt takes seconds, and StopConfigAp() or a
     // status query from another task must not wait for it.
     return ap->ConnectAndSave(ssid, password, server);
+}
+
+void WifiManager::SetConfigApServerDefault(const std::string& address) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_.server_default = address;
 }
 
 bool WifiManager::ConfigApSeesSavedNetwork() {

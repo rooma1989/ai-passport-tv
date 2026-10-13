@@ -145,8 +145,66 @@ static void test_usability(void)
     check(!av_server_addr_usable(&a), "the placeholder is not usable");
 }
 
+static void test_a_portless_address_takes_the_build_port(void)
+{
+    // The report that made this rule: "iewww.com" typed on the phone, and the
+    // device dialled iewww.com:8096 while its relay listens on 8097.
+    av_server_addr_t a;
+    check(av_server_addr_parse("iewww.example", &a) && !a.port_given, "no port in the text");
+    check(av_server_addr_use_build_port(&a, 8097) && a.port == 8097, "the Passport build's port");
+    check(av_server_addr_parse("iewww.example", &a) && av_server_addr_use_build_port(&a, 8098) &&
+          a.port == 8098, "the Xingzhi build's port");
+    check(av_server_addr_parse("192.168.1.20", &a) && av_server_addr_use_build_port(&a, 8097) &&
+          a.port == 8097, "a portless IPv4 literal too");
+    check(av_server_addr_parse("https://iewww.example/tv/wifi", &a) &&
+          av_server_addr_use_build_port(&a, 8097) && a.port == 8097, "a pasted portless URL");
+    // A build made for 8096 (no Kconfig port): nothing to change.
+    check(av_server_addr_parse("iewww.example", &a) && !av_server_addr_use_build_port(&a, 8096) &&
+          a.port == 8096, "a build port of 8096 leaves it");
+    check(!av_server_addr_use_build_port(&a, 0), "no build port leaves it");
+    check(!av_server_addr_use_build_port(NULL, 8097), "a null address is ignored");
+}
+
+static void test_an_explicit_port_is_kept(void)
+{
+    av_server_addr_t a;
+    check(av_server_addr_parse("iewww.example:9000", &a) && a.port_given, "a port in the text");
+    check(!av_server_addr_use_build_port(&a, 8097) && a.port == 9000, "kept as typed");
+    check(av_server_addr_parse("iewww.example:8098", &a) && !av_server_addr_use_build_port(&a, 8097) &&
+          a.port == 8098, "another relay's port is kept");
+    check(av_server_addr_parse("192.168.1.20:8097", &a) && !av_server_addr_use_build_port(&a, 8097),
+          "the build's own port needs no change");
+}
+
+static void test_a_stored_8096_on_a_public_name_migrates(void)
+{
+    // Earlier firmware dialled 8096 for a portless value and its hotspot page
+    // suggested ":8096"; the public relays never listen there.
+    av_server_addr_t a;
+    check(av_server_addr_parse("iewww.example:8096", &a), "an old stored value");
+    check(av_server_addr_use_build_port(&a, 8097) && a.port == 8097, "moves to the build's port");
+    check(strcmp(a.host, "iewww.example") == 0, "the host is unchanged");
+    check(av_server_addr_parse("TV.Example.COM.:8096", &a) && av_server_addr_use_build_port(&a, 8098) &&
+          a.port == 8098, "any case, a trailing dot");
+    // The local media server (server/tv_server.py) listens on 8096 and runs on
+    // a LAN address or a .local name: those keep the port they were given.
+    check(av_server_addr_parse("192.168.1.20:8096", &a) && !av_server_addr_use_build_port(&a, 8097) &&
+          a.port == 8096, "an IPv4 literal keeps 8096");
+    check(av_server_addr_parse("my-pc.local:8096", &a) && !av_server_addr_use_build_port(&a, 8097) &&
+          a.port == 8096, "a .local name keeps 8096");
+    check(av_server_addr_parse("My-PC.LOCAL.:8096", &a) && !av_server_addr_use_build_port(&a, 8097) &&
+          a.port == 8096, "a .local name in any case keeps 8096");
+    check(av_server_addr_parse("nas:8096", &a) && !av_server_addr_use_build_port(&a, 8097) &&
+          a.port == 8096, "a single-label LAN name keeps 8096");
+    check(av_server_addr_parse("localhost.example:8096", &a) && av_server_addr_use_build_port(&a, 8097),
+          "a name merely containing 'local' is still public");
+}
+
 int main(void)
 {
+    test_a_portless_address_takes_the_build_port();
+    test_an_explicit_port_is_kept();
+    test_a_stored_8096_on_a_public_name_migrates();
     test_plain_address_gets_the_default_port();
     test_explicit_port_is_used();
     test_a_hostname_is_accepted();

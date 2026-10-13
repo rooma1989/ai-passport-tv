@@ -17,14 +17,20 @@
 // for an IPv4 literal with a port, and for a hostname.
 #define AV_SERVER_ADDR_MAX 64u
 
-// The port used when the stored address does not name one. Matches the server's
-// own default so the common case needs no port typed at all.
+// The port the parser fills in when the text names none: the local media
+// server's own default (server/tv_server.py). The firmware does not dial it
+// as it is -- av_server_addr_use_build_port() replaces it with the port of the
+// server this build is made for (8097 for the AI Passport's relay, 8098 for
+// the Xingzhi board's), because a typed domain means that server.
 #define AV_SERVER_PORT_DEFAULT 8096u
 
 typedef struct {
     // The host exactly as it was stored: an IPv4 literal or a name to resolve.
     char host[AV_SERVER_ADDR_MAX];
     uint16_t port;
+    // Whether the text named the port ("host:port"). False when `port` is
+    // AV_SERVER_PORT_DEFAULT filled in by the parser.
+    bool port_given;
 } av_server_addr_t;
 
 // Parse "host", "host:port" or "host/anything".
@@ -43,3 +49,17 @@ bool av_server_addr_parse(const char *text, av_server_addr_t *out);
 // whitespace, or a placeholder such as "0.0.0.0" is not usable, and the caller
 // shows the setup page instead of trying to connect.
 bool av_server_addr_usable(const av_server_addr_t *addr);
+
+// The port to dial, given the port of the server this build is made for
+// (AV_SERVER_PORT, see av_config.h). Returns true when it changed `addr`.
+//
+// - No port in the text: the build's port. "example.com" on an AI Passport is
+//   example.com:8097, on the Xingzhi board example.com:8098.
+// - An explicit port is kept as typed, with one exception for addresses
+//   stored by earlier firmware, which dialled 8096 for a portless value and
+//   whose hotspot page suggested ":8096": a public DNS name (a dot, not an
+//   IPv4 literal, not ".local") with port 8096 gets the build's port when that
+//   differs. 8096 is the local media server's port (server/tv_server.py), which
+//   runs on a LAN address or a .local name -- those keep 8096 -- while the
+//   public relays listen on 8097 and 8098, never 8096.
+bool av_server_addr_use_build_port(av_server_addr_t *addr, uint16_t build_port);

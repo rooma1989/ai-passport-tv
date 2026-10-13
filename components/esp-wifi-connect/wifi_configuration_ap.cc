@@ -595,6 +595,9 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddBoolToObject(json, "show_ota_config", this_->show_ota_config_);
             cJSON_AddBoolToObject(json, "show_sleep_config", this_->show_sleep_config_);
             cJSON_AddBoolToObject(json, "server_builtin", this_->server_builtin_);
+            if (!this_->server_default_.empty()) {
+                cJSON_AddStringToObject(json, "server_default", this_->server_default_.c_str());
+            }
 
             // 发送JSON响应
             char *json_str = cJSON_PrintUnformatted(json);

@@ -70,6 +70,7 @@
       <input id="server" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
              placeholder="留空就用电视自己的设置">
       <div class="bad" id="server-bad" hidden></div>
+      <div class="dim">默认是打开这个页面的网站，不用写端口：电视会用自己的端口。清空就用电视原来的设置。</div>
     </details>
 
     <button id="send" type="submit">发送</button>
@@ -215,15 +216,25 @@ function load(key) { try { return localStorage.getItem(key) || ""; } catch (e) {
 function save(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* 无痕模式 */ } }
 function forget(key) { try { localStorage.removeItem(key); } catch (e) { /* 无痕模式 */ } }
 
+// 服务器地址默认是打开这个页面的网站（不写端口：电视按自己那一型补上，见
+// main/av_server_addr.h）。本机地址不算：电视连不到手机自己。
+function siteHost() {
+  const host = (location.hostname || "").toLowerCase();
+  if (!host || host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host)) return "";
+  return host;
+}
+const SITE = siteHost();
+
 $("ssid").value = load(STORE.ssid);
 $("pass").value = load(STORE.pass);
-$("server").value = load(STORE.server);
-if ($("server").value) $("more").open = true;
+$("server").value = load(STORE.server) || SITE;
+if ($("server").value && $("server").value !== SITE) $("more").open = true;
 
 $("show").addEventListener("change", () => { $("pass").type = $("show").checked ? "text" : "password"; });
 $("forget").addEventListener("click", () => {
   Object.values(STORE).forEach(forget);
-  $("ssid").value = $("pass").value = $("server").value = "";
+  $("ssid").value = $("pass").value = "";
+  $("server").value = SITE;
   $("forget").textContent = "已清除";
   setTimeout(() => { $("forget").textContent = "清除这台手机上记住的 Wi-Fi"; }, 2000);
 });
