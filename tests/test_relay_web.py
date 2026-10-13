@@ -769,14 +769,22 @@ class PlaybackControlTests(unittest.TestCase):
             def send_header(self, *a): pass
             def end_headers(self): pass
             def send_error(self, code): self.error = code
+        # Wait for THIS stream: its process started and registered as the channel's
+        # active stream. A stream cut just before (next, previous, seek) can still be
+        # registered while its thread unwinds, and under load it outlives this call's
+        # start, so "the channel has an active stream" alone returned too early.
+        started = len(self.procs)
         thread = self._threading.Thread(target=self.relay.play, args=(cid, Handler()), daemon=True)
         thread.start()
         self.threads.append(thread)
-        for _ in range(100):
-            if ("", cid) in self.relay._active:
+        import time as _time
+        deadline = _time.monotonic() + 5
+        while _time.monotonic() < deadline:
+            with self.relay._active_lock:
+                entry = self.relay._active.get(("", cid))
+            if len(self.procs) > started and entry is not None and entry["proc"] is self.procs[-1]:
                 return thread
-            import time as _time
-            _time.sleep(0.01)
+            _time.sleep(0.005)
         self.fail("stream did not start")
 
     def test_progress_is_reported(self):

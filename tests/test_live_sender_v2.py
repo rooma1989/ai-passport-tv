@@ -4,6 +4,7 @@ The reader is a host transport fixture, not ESP32 firmware or acoustic proof.
 """
 import json
 import random
+import select
 import socket
 import threading
 import time
@@ -14,6 +15,10 @@ from unittest.mock import patch
 from server import frames, live, tv_server
 from server.live_sender import AudioSchedule, EndReader, PendingWrite, repack
 from server.protocol import HEADER, Kind, Packet, VIDEO_CONTINUES, json_bytes, send_packet
+
+
+# The slow reader's link rate, bytes per second.
+LINK_BYTES_PER_S = 96000
 
 
 def unpack(parts):
@@ -140,17 +145,36 @@ class TcpIntegration(unittest.TestCase):
             client.setblocking(False)
             send_packet(client, Packet(Kind.HELLO, 0, 0, 0, json_bytes({'version': 1})))
             buffer, packets, audio_times, complete_frames = bytearray(), [], [], []
+            audio_wall = []
             started, first_audio = time.monotonic(), None
             current_parts, current_pts = [], None
+            # The reader emulates a link of LINK_BYTES_PER_S (PCM and headers
+            # included) and times each packet on that link's clock: link_free is
+            # when the link has carried every byte read so far. While bytes are
+            # waiting it advances by len/rate per block whatever this thread's own
+            # scheduling did; when the socket runs dry (the sender is not sending)
+            # it restarts from the wall clock, so sender stalls still count. The
+            # gap bound is a property of the sender's interleaving at that rate.
+            # Timing packets by the wall clock after time.sleep(len/rate) instead
+            # added every late wake-up of this thread to the gap, and under CPU
+            # load (a parallel busy loop) one run measured 682 ms against the
+            # sender's own 227 ms.
+            link_free, reader_late = None, 0.0
             try:
                 while time.monotonic() - started < 8:
                     try: block = client.recv(256)
                     except BlockingIOError:
-                        time.sleep(.001); continue
+                        link_free = None    # the link went idle: nothing queued behind it
+                        select.select([client], [], [], .05); continue
                     if not block: break
                     buffer.extend(block)
-                    # Deliberate transport ceiling, including PCM and headers.
-                    time.sleep(len(block) / 96000)
+                    now = time.monotonic()
+                    if link_free is not None:
+                        # How far this reader fell behind the link (CPU load); diagnostic only.
+                        reader_late = max(reader_late, now - link_free)
+                    link_free = (now if link_free is None else link_free) + len(block) / LINK_BYTES_PER_S
+                    if link_free > now:
+                        time.sleep(link_free - now)
                     while len(buffer) >= HEADER.size:
                         magic, version, kind, flags, session, seq, pts, size = HEADER.unpack(buffer[:HEADER.size])
                         if len(buffer) < HEADER.size + size: break
@@ -162,7 +186,8 @@ class TcpIntegration(unittest.TestCase):
                         packets.append((kind, flags, pts))
                         if kind == Kind.PCM:
                             self.assertEqual(pts, len(audio_times)*40)
-                            audio_times.append(time.monotonic())
+                            audio_times.append(link_free)
+                            audio_wall.append(time.monotonic())
                             if first_audio is None: first_audio = time.monotonic()
                         elif kind == Kind.JPEG:
                             self.assertLessEqual(size, 6144)
@@ -186,12 +211,16 @@ class TcpIntegration(unittest.TestCase):
             self.assertGreaterEqual(len(complete_frames), 1, logs)
             self.assertGreaterEqual(len(audio_times), 85, logs)
             max_gap = max(b-a for a,b in zip(audio_times, audio_times[1:]))
-            self.assertLess(max_gap, .4, logs)
+            wall_gap = max(b-a for a,b in zip(audio_wall, audio_wall[1:]))
+            self.assertLess(max_gap, .4, (f'wall-clock gap {wall_gap*1000:.0f} ms, reader up to '
+                                          f'{reader_late*1000:.0f} ms behind the link', logs))
             self.assertEqual(complete_frames, sorted(set(complete_frames)))
             self.assertGreater(server.video_sent, server.frames_sent)
             print('LIVE2_HOST_TCP', json.dumps(dict(audio_packets=len(audio_times),
                 complete_frames=len(complete_frames), video_packets=server.video_sent,
-                max_audio_gap_ms=round(max_gap*1000, 2), device_test=False)))
+                max_audio_gap_ms=round(max_gap*1000, 2), wall_audio_gap_ms=round(wall_gap*1000, 2),
+                reader_late_max_ms=round(reader_late*1000, 2),
+                device_test=False)))
 
 
 if __name__ == '__main__': unittest.main()
