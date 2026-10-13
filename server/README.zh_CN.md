@@ -13,7 +13,7 @@
 
 本模块是手动启用、单设备的**局域网直播频道、视频文件与合成素材播放器**，不是公网代理或生产级鉴权服务。
 运行服务器只需 Python 3.11+ 标准库；ffmpeg 用于预生成素材，以及 `live` 子命令的实时转码，因此运行直播的主机需要安装它。频道地址是 `server/live.py` 中的固定白名单，来自社区聚合播放列表，可用性与版权状态未经核实，仅用于家庭局域网测试。设备在握手中按名称指定频道，服务器对无法识别的名称回退 `DEFAULT_CHANNEL`。
-`numpy` 是**可选**的 pip 依赖：装了它，直播画面放不进字节目标时用感知式取舍（`server/perceptual.py`）；没装，或设置 `TV_PERCEPTUAL=0`，就像之前一样走颜色阶梯。不需要设备访问或全局配置改动。以下命令从仓库根目录运行。
+`numpy` 是**可选**的 pip 依赖，但给设备供流的主机都应装上：装了它，直播画面放不进字节目标时用感知式取舍（`server/perceptual.py`）；没装，或设置 `TV_DEGRADE=ladder`，就走颜色阶梯，颜色会逐帧跳动，看得出来（设备上见过蓝黄闪烁）。没装 numpy 又没显式设 `TV_DEGRADE` 时，`live` 启动时记一行以 `WARNING: numpy is not installed` 开头的警告。阿里云 Linux 3 的 `python3.11` 不带 pip：先 `dnf install python3.11-pip`，再 `python3.11 -m pip install "numpy<3"`（用 root 装，服务用户才能导入）。不需要设备访问或全局配置改动。以下命令从仓库根目录运行。
 
 ## 导入视频文件
 
@@ -310,15 +310,19 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
 1. muse-asr（`muse-gadget-sdk` 仓库的 `esp32/tools/muse_asr`）设置
    `MUSE_ASR_SOCKET=/run/muse-asr/asr.sock`、`MUSE_ASR_SOCKET_GROUP=tvserver`、
    `RuntimeDirectory=muse-asr`、`RuntimeDirectoryMode=0755` 和 `SupplementaryGroups=tvserver`
-   （它的服务模板里已经写好）。套接字权限 0660，属主 muse-asr，组 tvserver：这个权限就是唯一的凭据，
+   （drop-in [`packaging/systemd/muse-asr.service.d/tv-voice.conf`](../packaging/systemd/muse-asr.service.d/tv-voice.conf)
+   加上这些）。内存紧的主机还要启用 [`muse-asr-warm.timer`](../packaging/systemd/muse-asr-warm.timer)：
+   媒体服务最多等识别 6 秒，模型闲置一阵后，第一句话的识别比这还慢。套接字权限 0660，属主 muse-asr，组 tvserver：这个权限就是唯一的凭据，
    不共享密钥。检查：`sudo -u tvserver curl --unix-socket /run/muse-asr/asr.sock http://x/health`。
-2. 每个媒体服务的 unit：
+2. 每个媒体服务的 unit，写在它的 `voice.conf` drop-in 里
+   （[`tv-xingzhi`](../packaging/systemd/tv-xingzhi.service.d/voice.conf)、
+   [`tv-passport`](../packaging/systemd/tv-passport.service.d/voice.conf)；删掉这个 drop-in 就关了语音）：
 
    | 变量 | 值 |
    | --- | --- |
    | `TV_ASR_SOCKET` | `/run/muse-asr/asr.sock`；不设就不开语音，CONFIG 不提供 |
    | `TV_RELAY_KEY_FILE` | 中转的密钥文件（与 `tv-relay.service` 的 `--key-file` 相同） |
-   | `TV_RELAY_DEVICE` | 只用于单用户中转：本服务在中转里对应的设备，`d0` / `--device-name` 的名字，或它那个 `--extra-device` 的名字或 id（如 `Passport` 或 `d1`）。设了 `TV_DB` 时不看；但仍留在基础 unit 里，删掉多用户 drop-in 就又用上 |
+   | `TV_RELAY_DEVICE` | 只用于单用户中转：本服务在中转里对应的设备，`d0` / `--device-name` 的名字，或它那个 `--extra-device` 的名字或 id（如 `Passport` 或 `d1`）。设了 `TV_DB` 时不看；但仍留在 `voice.conf` 里，删掉多用户 drop-in 就又用上 |
    | `TV_RELAY_MANAGE_URL` | 可选，默认 `http://127.0.0.1:8100`；只接受本机地址，密钥不会离开这台主机 |
 
    不设中转变量（`TV_RELAY_KEY_FILE`，单用户时还有 `TV_RELAY_DEVICE`）时，换台、音量、亮度、页面和配网
@@ -329,6 +333,7 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
    B 站搜索照常。重启顺序：muse-asr、
    tv-relay，再是媒体服务。多用户模式对语音不加任何设置：`packaging/systemd/tenancy/` 的 drop-in 不碰这些变量
    （[运维手册](../docs/development/tenancy-phase1-runbook.zh_CN.md#两种模式下的语音控制)）。
+   主机上全部的 unit 和 drop-in、安装顺序：[`docs/development/host-setup.zh_CN.md`](../docs/development/host-setup.zh_CN.md)。
 
 承诺延迟之前先在主机上量识别：muse-asr 每个请求记一行 `local ok: … asr N ms`，媒体服务每条命令记一行
 `voice id=… intent=… audio_s=… asr_ms=… total_ms=…`。

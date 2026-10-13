@@ -149,6 +149,7 @@ first, since it is what a flashed device cannot renegotiate):
 | --- | --- |
 | Channel list, adding/removing/reordering channels | `channels.txt`, `tools/channel_config.py`, `server/live.py` (`CHANNELS`, `reload_channels_if_changed`), `main/av_channel_policy.c` |
 | Creator channels, video sites, the phone page | `server/relay/`, `packaging/systemd/tv-relay.service`, `packaging/nginx/tv-relay.conf` |
+| Production host: systemd units and drop-ins, install order, backups | [`docs/development/host-setup.md`](../development/host-setup.md), `packaging/systemd/` |
 | Phone remote, sign-in, groups, the device's channel list levels | `server/relay/web.py` + `assets/remote.html`, `server/channel_groups.py`, `main/ui_menu.c` |
 | Users, invites, device binding, guests, who may control which device | `server/tenancy/`, `server/relay/tenants.py`, `assets/join.html`, `docs/superpowers/specs/2026-10-12-multi-tenant-design.md` |
 | PC console, scan-to-sign-in, sessions list | `server/relay/console.py`, `assets/console.html`, `assets/login.html`, `server/tenancy/tickets.py` (+ `tests/test_relay_console.py`) |

@@ -219,16 +219,19 @@ cut-over above then changes nothing for voice.
 
 1. muse-asr with its Unix socket: `MUSE_ASR_SOCKET=/run/muse-asr/asr.sock`,
    `MUSE_ASR_SOCKET_GROUP=tvserver`, `RuntimeDirectory=muse-asr`,
-   `RuntimeDirectoryMode=0755`, `SupplementaryGroups=tvserver`. Check:
+   `RuntimeDirectoryMode=0755`, `SupplementaryGroups=tvserver` (the drop-in
+   [`packaging/systemd/muse-asr.service.d/tv-voice.conf`](../../packaging/systemd/muse-asr.service.d/tv-voice.conf)),
+   and on a memory-tight host the warm-up timer
+   [`muse-asr-warm.timer`](../../packaging/systemd/muse-asr-warm.timer). Check:
    `sudo -u tvserver curl --unix-socket /run/muse-asr/asr.sock http://x/health`.
 2. tv-relay: the new code only, no new flag. Its `--device-name` device is `d0`,
    each `--extra-device` is `d1`, `d2`... in order (and also answers to its name).
-3. The media units (base units, not drop-ins):
+3. The media units: one `voice.conf` drop-in each, next to (not inside) `tenancy.conf`:
 
-   | Unit | Add |
+   | Unit | Drop-in |
    | --- | --- |
-   | `tv-xingzhi` (template in `packaging/systemd/`) | `TV_ASR_SOCKET=/run/muse-asr/asr.sock`, `TV_RELAY_KEY_FILE=/etc/ai-passport-tv/relay-key`, `TV_RELAY_DEVICE=d0`; `After=` gains `muse-asr.service` |
-   | `tv-passport` (hand-made on the host) | the same socket and key file, `TV_RELAY_DEVICE=Passport` (the name in tv-relay's `--extra-device`, or `d1`); `After=muse-asr.service tv-relay.service`; its user must be in the `tvserver` group and able to read the key file |
+   | `tv-xingzhi` | [`tv-xingzhi.service.d/voice.conf`](../../packaging/systemd/tv-xingzhi.service.d/voice.conf): `TV_ASR_SOCKET=/run/muse-asr/asr.sock`, `TV_RELAY_KEY_FILE=/etc/ai-passport-tv/relay-key`, `TV_RELAY_DEVICE=d0`; `After=muse-asr.service tv-relay.service` |
+   | `tv-passport` | [`tv-passport.service.d/voice.conf`](../../packaging/systemd/tv-passport.service.d/voice.conf): the same socket and key file, `TV_RELAY_DEVICE=Passport` (the name in tv-relay's `--extra-device`, or `d1`); its user must be in the `tvserver` group and able to read the key file |
 
    `#Environment=TV_VOICE_LOG_TEXT=1` stays commented out except while tuning.
 4. `systemctl daemon-reload`, restart muse-asr, tv-relay, then both media units.
@@ -245,8 +248,8 @@ call, the device it admitted for that session: `legacy-xingzhi` /
 once adopted (`admin adopt`) or bound. The relay serves a keyed request that
 names a device on a single-device endpoint as that device's guest, so it reaches
 any user's bound device and nothing else; an unbound device gets no voice at all.
-Leave `TV_RELAY_DEVICE` in the base units: a rollback (deleting the drop-ins)
-brings single-user mode, and with it that mapping, back as it was.
+Leave `TV_RELAY_DEVICE` in `voice.conf`: a rollback (deleting the `tenancy.conf`
+drop-ins) brings single-user mode, and with it that mapping, back as it was.
 
 Check after the cut-over: on each device, speak a channel ("CCTV 5") and, on a
 series channel, "pause". The media log shows `device=legacy-...` then

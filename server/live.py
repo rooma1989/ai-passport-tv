@@ -321,6 +321,20 @@ if DEGRADE not in DEGRADE_MODES:
     raise SystemExit(f"TV_DEGRADE={DEGRADE!r} 无效，可选值：{' / '.join(DEGRADE_MODES)}")
 if DEGRADE in perceptual.MODES and not perceptual.AVAILABLE:
     raise SystemExit(f"TV_DEGRADE={DEGRADE} 需要 numpy，请先安装（pip install numpy）")
+
+
+def degrade_warning() -> str | None:
+    """缺 numpy 而又没显式选 TV_DEGRADE 时，启动日志里的一行警告；否则 None。
+
+    这时放不下的帧走颜色阶梯，相邻帧落在不同档位，颜色逐帧跳动（设备上见过蓝黄闪烁），
+    而服务照常运行，不提示就很难查到原因。显式设 TV_DEGRADE=ladder 表示有意如此，不再警告。
+    """
+    if perceptual.AVAILABLE or os.environ.get("TV_DEGRADE", "").strip():
+        return None
+    return ("WARNING: numpy is not installed: frames over their byte target fall back to the "
+            "colour ladder, which shifts colours from frame to frame. Install numpy "
+            "(server/README.md), or set TV_DEGRADE=ladder to choose the ladder deliberately.")
+
 _VIDEO_CHAIN = f"{frames.FIT},{PRE_FILTER}" if PRE_FILTER else frames.FIT
 # 帧放入字节目标后剩余字节的用法：delta 只发变化超过 TV_DELTA_MAX_DIFF 的条带，
 # fill 另按变化量从大到小补发被跳过的条带。

@@ -59,7 +59,9 @@ Don't flash this build's bootloader, partition table or `ota_data_initial.bin`.
 ## Server
 
 The geometry is fixed per server process and one device is served at a time,
-so the Passport has its own instance next to the Xingzhi one: `tv-passport`, a
+so the Passport has its own instance next to the Xingzhi one: `tv-passport`
+([`packaging/systemd/tv-passport.service`](../../packaging/systemd/tv-passport.service)
+and its drop-ins; [`host-setup.md`](../development/host-setup.md)), a
 copy of `tv-xingzhi` with `TV_GEOMETRY=320x180`, `TV_FPS=12`, port 8097, its own
 `TV_DATA_DIR`, now-playing file and relay events file
 (`TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv-passport/relay-events.json`).

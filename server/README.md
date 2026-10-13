@@ -16,10 +16,16 @@ This is an opt-in, single-device **LAN player for live channels, video files and
 synthetic media**. It is not an Internet proxy or a production authentication
 service. Python 3.11+ and its standard library serve the media; ffmpeg is needed
 to prepare files and to transcode the `live` subcommand, so that host needs it
-installed. `numpy` is an **optional** pip dependency: with it, a live frame that does not fit its
-byte target gives detail up perceptually (`server/perceptual.py`); without it, or with
-`TV_PERCEPTUAL=0`, the server steps through the colour ladder as before. No device access
-or global configuration changes are required. Start commands below from the repository root.
+installed. `numpy` is an **optional** pip dependency, but install it on any host that serves
+devices: with it, a live frame that does not fit its byte target gives detail up perceptually
+(`server/perceptual.py`); without it, or with `TV_DEGRADE=ladder`, the server steps through
+the colour ladder, which visibly shifts colours from frame to frame (blue/yellow flicker was
+seen on a device). Without numpy and without an explicit `TV_DEGRADE`, `live` logs one line
+at start-up beginning `WARNING: numpy is not installed`. On Alibaba Cloud Linux 3 the
+`python3.11` package has no pip: `dnf install python3.11-pip`, then
+`python3.11 -m pip install "numpy<3"` (as root, so the service user can import it).
+No device access or global configuration changes are required. Start commands below from
+the repository root.
 
 Channel addresses live in a fixed allowlist in `server/live.py`. They come from a
 community IPTV playlist, so their availability and rights status are not verified;
@@ -480,17 +486,25 @@ An utterance finishes with the relay client of the session it started in.
 1. muse-asr (repository `muse-gadget-sdk`, `esp32/tools/muse_asr`) with
    `MUSE_ASR_SOCKET=/run/muse-asr/asr.sock`, `MUSE_ASR_SOCKET_GROUP=tvserver`,
    `RuntimeDirectory=muse-asr`, `RuntimeDirectoryMode=0755` and
-   `SupplementaryGroups=tvserver` (its service template has them). The socket
+   `SupplementaryGroups=tvserver` (the drop-in
+   [`packaging/systemd/muse-asr.service.d/tv-voice.conf`](../packaging/systemd/muse-asr.service.d/tv-voice.conf)
+   adds them). On a memory-tight host also enable
+   [`muse-asr-warm.timer`](../packaging/systemd/muse-asr-warm.timer): the media
+   server waits at most 6 s for recognition, and a model left idle answered the
+   first utterance slower than that. The socket
    is mode 0660, owner muse-asr, group tvserver: that permission is the only
    credential, no key is shared. Check with
    `sudo -u tvserver curl --unix-socket /run/muse-asr/asr.sock http://x/health`.
-2. Each media server unit:
+2. Each media server unit, in its `voice.conf` drop-in
+   ([`tv-xingzhi`](../packaging/systemd/tv-xingzhi.service.d/voice.conf),
+   [`tv-passport`](../packaging/systemd/tv-passport.service.d/voice.conf);
+   deleting the drop-in turns voice off):
 
    | Variable | Value |
    | --- | --- |
    | `TV_ASR_SOCKET` | `/run/muse-asr/asr.sock`; unset means voice is off and CONFIG does not offer it |
    | `TV_RELAY_KEY_FILE` | the relay's key file (same as `tv-relay.service`'s `--key-file`) |
-   | `TV_RELAY_DEVICE` | single-user relay only: this unit's device in the relay, `d0` / the `--device-name`, or the name or id of its `--extra-device` (e.g. `Passport` or `d1`). Ignored when `TV_DB` is set; keep it in the base unit anyway, so removing the multi-user drop-in brings it back |
+   | `TV_RELAY_DEVICE` | single-user relay only: this unit's device in the relay, `d0` / the `--device-name`, or the name or id of its `--extra-device` (e.g. `Passport` or `d1`). Ignored when `TV_DB` is set; keep it in `voice.conf` anyway, so removing the multi-user drop-in brings it back |
    | `TV_RELAY_MANAGE_URL` | optional, default `http://127.0.0.1:8100`; only loopback is accepted, so the key never leaves the host |
 
    Without the relay variables (`TV_RELAY_KEY_FILE`, and in single-user mode
@@ -506,6 +520,8 @@ An utterance finishes with the relay client of the session it started in.
    media servers. Multi-user mode adds nothing for voice: the drop-ins in
    `packaging/systemd/tenancy/` leave these variables alone
    ([runbook](../docs/development/tenancy-phase1-runbook.md#voice-control-in-both-modes)).
+   Every unit and drop-in on the host, and the install order:
+   [`docs/development/host-setup.md`](../docs/development/host-setup.md).
 
 Measure the recogniser on the host before promising latency: muse-asr logs
 `local ok: ... asr N ms` per request, and the media server logs

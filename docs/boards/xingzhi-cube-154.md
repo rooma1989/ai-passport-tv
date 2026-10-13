@@ -70,6 +70,9 @@ of outbound bandwidth: 15 fps, full-rate audio, ffmpeg at about 12% of one core.
 1. **Python 3.9+.** The code uses only the standard library. On Alibaba Cloud
    Linux 3 / RHEL 8, `dnf install python3.11` installs beside the system Python.
    The released `tv-server-linux-x86_64` needs glibc 2.39 and does not run there.
+   Add numpy, or frames over their byte target flicker in colour
+   ([`server/README.md`](../../server/README.md)): that `python3.11` has no pip,
+   so `dnf install python3.11-pip`, then `python3.11 -m pip install "numpy<3"`.
 2. **ffmpeg.** Use a dynamically linked build such as BtbN's
    `ffmpeg-n8.1-latest-linux64-gpl` (glibc 2.28+). The fully static build that
    `tools/ffmpeg_fetch.py` downloads crashed resolving host names on that host.
@@ -78,7 +81,9 @@ of outbound bandwidth: 15 fps, full-rate audio, ffmpeg at about 12% of one core.
 4. Install [`packaging/systemd/tv-xingzhi.service`](../../packaging/systemd/tv-xingzhi.service).
    `TV_ALLOW_PUBLIC=1` lets devices connect from public addresses; the server
    refuses to start with it unless a token is configured. `TV_FPS` and
-   `TV_RATE_START` keep the stream inside a small uplink.
+   `TV_RATE_START` keep the stream inside a small uplink. Its drop-ins (voice
+   control) and every other unit on the production host, with the install order
+   and the backup list: [`docs/development/host-setup.md`](../development/host-setup.md).
 5. Open the port in **both** the cloud provider's security group and the host
    firewall (`firewall-cmd --permanent --add-port=8098/tcp`).
 6. Build the device firmware with the same token: create the git-ignored

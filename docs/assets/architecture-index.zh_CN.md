@@ -134,6 +134,7 @@
 | --- | --- |
 | 频道列表，增删/排序频道 | `channels.txt`、`tools/channel_config.py`、`server/live.py`（`CHANNELS`、`reload_channels_if_changed`）、`main/av_channel_policy.c` |
 | UP 主频道、视频网站、手机网页 | `server/relay/`、`packaging/systemd/tv-relay.service`、`packaging/nginx/tv-relay.conf` |
+| 生产主机：systemd unit 和 drop-in、安装顺序、备份 | [`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md)、`packaging/systemd/` |
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
 | 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
 | 电脑版、扫码登录、登录列表 | `server/relay/console.py`、`assets/console.html`、`assets/login.html`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`） |

@@ -50,7 +50,8 @@ python -m esptool --chip esp32c3 -p PORT write-flash 0x400000 build-muse-dual/tv
 ## 服务器
 
 画面尺寸是每个服务器进程固定的，而且一次只服务一台设备，所以 Passport 在星智那台旁边有自己的实例：
-`tv-passport`，照抄 `tv-xingzhi`，改成 `TV_GEOMETRY=320x180`、`TV_FPS=12`、端口 8097，
+`tv-passport`（[`packaging/systemd/tv-passport.service`](../../packaging/systemd/tv-passport.service)
+及其 drop-in；[`host-setup.zh_CN.md`](../development/host-setup.zh_CN.md)），照抄 `tv-xingzhi`，改成 `TV_GEOMETRY=320x180`、`TV_FPS=12`、端口 8097，
 用自己的 `TV_DATA_DIR`、正在播放文件和中转事件文件（`TV_RELAY_EVENTS_FILE=/var/lib/ai-passport-tv-passport/relay-events.json`）。
 中转用 `--extra-device Passport:/var/lib/ai-passport-tv-passport/now-playing.json:/var/lib/ai-passport-tv-passport/relay-events.json`
 认识它；手机遥控自动跟着最近换过台的那台设备，也可以在页面顶上点名遥控哪一台。云服务器的防火墙也要放行这个端口。

@@ -1,0 +1,51 @@
+# Template: install as /etc/systemd/system/tv-passport.service.
+# Media server for the FoloToy AI Passport beside Muse: a copy of tv-xingzhi.service
+# with its own geometry, frame rate, port and data directory. Reasons:
+# docs/boards/passport-muse-dual.md ("Server"). Every unit and drop-in, and the
+# install order: docs/development/host-setup.md.
+# Drop-ins in tv-passport.service.d/: relay-events.conf (cast events, required
+# with the single-user relay), voice.conf (voice control, optional).
+[Unit]
+Description=AI Passport TV media server for the FoloToy AI Passport beside Muse (320x180, port 8097)
+After=network-online.target tv-relay.service
+Wants=network-online.target
+
+[Service]
+User=tvserver
+Group=tvserver
+WorkingDirectory=/opt/ai-passport-tv
+Environment=PYTHONUNBUFFERED=1
+Environment=TV_GEOMETRY=320x180
+# 3 Mbps server shared with websites: 12 fps (the C3's decode and panel budget at
+# 320x180), 200 kB/s of picture.
+Environment=TV_FPS=12
+Environment=TV_RATE_START=200000
+# Its own data directory: the Xingzhi's unit owns /var/lib/ai-passport-tv.
+Environment=TV_DATA_DIR=/var/lib/ai-passport-tv-passport
+Environment=TV_ALLOW_PUBLIC=1
+# Some sources take 15-30 s to open from a mainland host; the device waits 45 s.
+Environment=TV_DECODER_CONNECT_TIMEOUT_S=30
+# The channel table and the relay's creator channels are shared with the Xingzhi.
+Environment=TV_CHANNELS_FILE=/var/lib/ai-passport-tv/channels.txt
+Environment=TV_RELAY_CHANNELS_FILE=/var/lib/ai-passport-tv/relay-channels.txt
+# Cast events: TV_RELAY_EVENTS_FILE is set in tv-passport.service.d/relay-events.conf,
+# the file tv-relay's --extra-device Passport:... writes.
+# Phone remote: group overrides and the QR address are shared; what is playing is this device's.
+Environment=TV_CHANNEL_GROUPS_FILE=/var/lib/ai-passport-tv/channel-groups.json
+Environment=TV_NOW_PLAYING_FILE=/var/lib/ai-passport-tv-passport/now-playing.json
+Environment=TV_REMOTE_URL_FILE=/var/lib/ai-passport-tv/remote-url.txt
+ExecStart=/usr/bin/python3.11 -m server.tv_server live --channel ch000 --port 8097 --ffmpeg /opt/ai-passport-tv/ffmpeg-btbn-8.1 --token-file /etc/ai-passport-tv/token
+Restart=always
+RestartSec=3
+# Keep the websites on this host responsive.
+Nice=10
+CPUQuota=100%
+MemoryMax=600M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ai-passport-tv-passport /tmp
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

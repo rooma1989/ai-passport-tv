@@ -51,3 +51,8 @@
 - [file-issues.zh_CN.md](release/file-issues.zh_CN.md)：提交 issue 说明（把建议作为上游 GitHub issue 提交）。
 
 - [直播发送引擎 v2 候选版：操作、边界与验证](live-sender-v2.zh_CN.md)
+
+## 运维
+
+- [host-setup.zh_CN.md](host-setup.zh_CN.md)：生产主机的 systemd unit 和 drop-in、各自的作用、安装顺序、依赖（numpy）和备份清单。
+- [tenancy-phase1-runbook.zh_CN.md](tenancy-phase1-runbook.zh_CN.md)：多用户第一阶段：部署、迁移、回滚。

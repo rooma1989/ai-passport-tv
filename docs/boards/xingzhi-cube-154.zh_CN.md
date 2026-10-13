@@ -64,14 +64,17 @@ Alibaba Cloud Linux 3 主机：15 帧、声音满速率，ffmpeg 约占一个核
 
 1. **Python 3.9 以上。** 代码只用标准库。在 Alibaba Cloud Linux 3 / RHEL 8 上
    `dnf install python3.11` 会与系统自带的 Python 并存。发布的 `tv-server-linux-x86_64`
-   需要 glibc 2.39，在这类主机上跑不起来。
+   需要 glibc 2.39，在这类主机上跑不起来。再装上 numpy，否则放不进字节目标的帧颜色会闪
+   （[`server/README.zh_CN.md`](../../server/README.zh_CN.md)）：这个 `python3.11` 不带 pip，
+   先 `dnf install python3.11-pip`，再 `python3.11 -m pip install "numpy<3"`。
 2. **ffmpeg。** 用动态链接的版本，比如 BtbN 的 `ffmpeg-n8.1-latest-linux64-gpl`（glibc 2.28+）。
    `tools/ffmpeg_fetch.py` 下载的全静态版在该主机上解析域名时会崩溃。
 3. 把 `server/`、`tools/` 和你的 `channels.txt` 复制到主机，建一个 `tvserver` 系统用户，
    以及一个只有它能读的配对令牌文件。
 4. 安装 [`packaging/systemd/tv-xingzhi.service`](../../packaging/systemd/tv-xingzhi.service)。
    `TV_ALLOW_PUBLIC=1` 允许公网地址的设备连接；没有配置令牌时服务会拒绝启动。
-   `TV_FPS` 和 `TV_RATE_START` 让码流控制在较小的上行带宽内。
+   `TV_FPS` 和 `TV_RATE_START` 让码流控制在较小的上行带宽内。它的 drop-in（语音控制）、生产主机上的
+   其他 unit、安装顺序和备份清单：[`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md)。
 5. 在云厂商的**安全组**和主机**防火墙**两处都放行端口（`firewall-cmd --permanent --add-port=8098/tcp`）。
 6. 用同一个令牌编译设备固件：新建被 git 忽略的 `main/av_private_config.h`（`AV_PAIRING_TOKEN`，
    可选默认的 `AV_SERVER_IPV4`/`AV_SERVER_PORT`），不加 `AV_PUBLIC_BUILD` 编译。然后在设置页填

@@ -1490,6 +1490,10 @@ def main(argv: list[str] | None = None) -> int:
         # 信号处理器须设置接入循环实际读取的标志。
         for signum in (signal.SIGINT, signal.SIGTERM):
             signal.signal(signum, lambda *_: server.stop.set())
+        # 缺 numpy 时画面照常但颜色逐帧跳动，启动时说一次。
+        degrade_warning = live.degrade_warning()
+        if degrade_warning:
+            print(degrade_warning, flush=True)
         # 每个设备连接启动独立转码进程；ffmpeg 退出只结束该会话，接入循环无需重启。
         print_where_to_connect(args.bind, args.port, token)
         server.serve()

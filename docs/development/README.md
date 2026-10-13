@@ -42,3 +42,8 @@ This directory contains AI Passport engineering rules and reusable workflows, gr
 - [file-issues.md](release/file-issues.md): filing a suggestion as an upstream GitHub issue.
 
 - [Live sender v2 candidate: operation, limits and validation](live-sender-v2.md)
+
+## Operations
+
+- [host-setup.md](host-setup.md): the production host's systemd units and drop-ins, what each is for, install order, dependencies (numpy) and the backup set.
+- [tenancy-phase1-runbook.md](tenancy-phase1-runbook.md): multi-user phase 1: deploy, migrate, roll back.

@@ -17,7 +17,8 @@ ExecStart=/usr/bin/python3 /opt/yt-relay/ytnode.py --port 47443 --cert /etc/yt-r
 Restart=always
 RestartSec=5
 # One core shared with the proxy: keep it responsive. yt-dlp with deno peaks
-# near 330 MB alone, so 400M with two ffmpeg streams on top was OOM-killed.
+# near 330 MB alone, so 400M with two ffmpeg streams on top was OOM-killed
+# (a host still on an older 400M copy of this unit: yt-relay.service.d/memory.conf).
 Nice=10
 CPUQuota=70%
 MemoryMax=600M

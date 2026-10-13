@@ -201,16 +201,18 @@ systemctl start tv-relay tv-xingzhi tv-passport
 **A. 语音，单用户（切换之前）。**
 
 1. muse-asr 开 Unix 套接字：`MUSE_ASR_SOCKET=/run/muse-asr/asr.sock`、`MUSE_ASR_SOCKET_GROUP=tvserver`、
-   `RuntimeDirectory=muse-asr`、`RuntimeDirectoryMode=0755`、`SupplementaryGroups=tvserver`。检查：
+   `RuntimeDirectory=muse-asr`、`RuntimeDirectoryMode=0755`、`SupplementaryGroups=tvserver`（drop-in
+   [`packaging/systemd/muse-asr.service.d/tv-voice.conf`](../../packaging/systemd/muse-asr.service.d/tv-voice.conf)），
+   内存紧的主机再加预热定时器 [`muse-asr-warm.timer`](../../packaging/systemd/muse-asr-warm.timer)。检查：
    `sudo -u tvserver curl --unix-socket /run/muse-asr/asr.sock http://x/health`。
 2. tv-relay：只换新代码，不加参数。`--device-name` 那台是 `d0`，每个 `--extra-device` 依次是 `d1`、`d2`…
    （也认它的名字）。
-3. 媒体单元（基础 unit，不是 drop-in）：
+3. 媒体单元：各加一个 `voice.conf` drop-in，和 `tenancy.conf` 并列（不写进它）：
 
-   | 单元 | 加上 |
+   | 单元 | drop-in |
    | --- | --- |
-   | `tv-xingzhi`（模板在 `packaging/systemd/`） | `TV_ASR_SOCKET=/run/muse-asr/asr.sock`、`TV_RELAY_KEY_FILE=/etc/ai-passport-tv/relay-key`、`TV_RELAY_DEVICE=d0`；`After=` 加上 `muse-asr.service` |
-   | `tv-passport`（主机上手写的） | 同样的套接字和密钥文件，`TV_RELAY_DEVICE=Passport`（tv-relay 的 `--extra-device` 里的名字，或 `d1`）；`After=muse-asr.service tv-relay.service`；它的用户要在 `tvserver` 组里、能读密钥文件 |
+   | `tv-xingzhi` | [`tv-xingzhi.service.d/voice.conf`](../../packaging/systemd/tv-xingzhi.service.d/voice.conf)：`TV_ASR_SOCKET=/run/muse-asr/asr.sock`、`TV_RELAY_KEY_FILE=/etc/ai-passport-tv/relay-key`、`TV_RELAY_DEVICE=d0`；`After=muse-asr.service tv-relay.service` |
+   | `tv-passport` | [`tv-passport.service.d/voice.conf`](../../packaging/systemd/tv-passport.service.d/voice.conf)：同样的套接字和密钥文件，`TV_RELAY_DEVICE=Passport`（tv-relay 的 `--extra-device` 里的名字，或 `d1`）；它的用户要在 `tvserver` 组里、能读密钥文件 |
 
    `#Environment=TV_VOICE_LOG_TEXT=1` 平时保持注释，只在调阈值时打开。
 4. `systemctl daemon-reload`，依次重启 muse-asr、tv-relay、两个媒体单元。每个媒体单元记一行
@@ -221,7 +223,7 @@ systemctl start tv-relay tv-xingzhi tv-passport
 database …`，然后 `voice: on, relay per device`），每次调中转都点名这次会话认出的设备：旧固件或还没接收的新固件
 是 `legacy-xingzhi` / `legacy-passport`，接收（`admin adopt`）或绑定后是 12 位 MAC。中转把带密钥、在单设备接口上
 点名设备的请求当作那台设备的访客，所以能动任何用户已绑定的那台，别的都动不了；未绑定的设备没有语音。
-`TV_RELAY_DEVICE` 留在基础 unit 里：回滚（删 drop-in）时单用户模式连同这个对应关系原样回来。
+`TV_RELAY_DEVICE` 留在 `voice.conf` 里：回滚（删 `tenancy.conf` 这几个 drop-in）时单用户模式连同这个对应关系原样回来。
 
 切换后检查：每台设备上说一个台（「CCTV 5」），在剧集台上说「暂停」。媒体日志先有 `device=legacy-…`，再有
 `voice id=… intent=…`；不应出现 `relay_catalog=relay status 404`。

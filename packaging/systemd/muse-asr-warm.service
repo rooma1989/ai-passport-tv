@@ -1,0 +1,17 @@
+# Template: install as /etc/systemd/system/muse-asr-warm.service, with
+# muse-asr-warm.timer next to it (enable the timer, not this unit).
+# The media server waits at most 6 s for recognition (server/voice/asr.py). On the
+# memory-tight production host a SenseVoice model left idle went cold, and the
+# first utterance after a quiet spell took longer than that; recognising a short
+# clip every 2 minutes keeps it in memory. Each run costs one short recognition.
+# /usr/local/share/muse-asr-warm.pcm: any short clip in the format the TV sends
+# (16 kHz mono PCM16 little-endian, raw, about 1 s), readable by tvserver.
+[Unit]
+Description=Keep the muse-asr model warm (TV voice control waits at most 6 s for recognition)
+After=muse-asr.service
+[Service]
+Type=oneshot
+# tvserver can open the socket (group tvserver). The empty "Expect:" header turns
+# off curl's Expect: 100-continue round trip.
+User=tvserver
+ExecStart=/usr/bin/curl -s -o /dev/null -m 20 -H "Expect:" -H "Content-Type: application/octet-stream" --unix-socket /run/muse-asr/asr.sock --data-binary @/usr/local/share/muse-asr-warm.pcm http://localhost/asr
