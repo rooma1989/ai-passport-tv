@@ -71,6 +71,7 @@ def _read_body(handler) -> dict | None:
     try:
         length = int(handler.headers.get("Content-Length") or 0)
     except ValueError:
+        handler.close_connection = True
         return None
     if length <= 0:
         return {}
@@ -482,6 +483,14 @@ def _delete_user(relay, user: dict, body: dict, caller, ip: str) -> dict:
     """先导出（存一份在服务器上，也交给页面下载），再删。要输入用户的名字确认。"""
     if body.get("confirm") != user["name"]:
         return {"ok": False, "error": "请输入这个用户的名字确认删除"}
+    # 删不了的先挡住（delete_user 里还会再查一遍）：免得白导出一份、白掐断他正在看的流。
+    if user["id"] == caller.user:
+        return {"ok": False, "error": "不能删除自己"}
+    if _last_admin(relay, user["id"]):
+        return {"ok": False, "error": "这是最后一个管理员，不能删除"}
+    if relay.accounts._one("SELECT 1 AS x FROM device d JOIN device_member m ON m.device_id=d.id WHERE m.user_id=? "
+                           "AND m.role='owner' AND d.legacy_port IS NOT NULL AND d.status!='retired'", (user["id"],)):
+        return {"ok": False, "error": "这个用户有旧固件的设备（不能解绑）：先给设备刷新固件、接收到真 id，再删除"}
     ops = _ops(relay)
     data = ops.export(user["id"])
     folder = Path(relay.accounts.path).parent / EXPORT_DIR

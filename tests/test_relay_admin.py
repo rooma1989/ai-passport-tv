@@ -204,6 +204,7 @@ class AdminApiTests(unittest.TestCase):
         self.assertFalse(self.call("admin", "POST", f"/api/admin/users/{self.admin}/delete",
                                    {"confirm": "管理员"})[1]["ok"])
         self.assertEqual(self.accounts.user(self.admin)["status"], "active")
+        self.assertFalse((self.root / "exports").exists())     # refused before anything was exported
 
     def test_login_link_is_the_cli_path_and_signs_a_phone_in(self):
         status, answer = self.call("admin", "POST", f"/api/admin/users/{self.alice}/login-link")
@@ -262,6 +263,14 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(self.events_of(ALICE_DEVICE)[-1], "reconnect")
         self.assertEqual(self.audits("user.delete")[0]["detail"], "Alice")
         self.assertEqual(self.call("bob", "GET", "/api/state")[0], 200)
+
+    def test_owner_of_a_legacy_device_cannot_be_deleted(self):
+        self.accounts.add_legacy_device("legacy-xingzhi", 8098, "xingzhi-cube-154", "小智", self.bob)
+        answer = self.call("admin", "POST", f"/api/admin/users/{self.bob}/delete", {"confirm": "Bob"})[1]
+        self.assertFalse(answer["ok"])
+        self.assertIn("旧固件", answer["error"])
+        self.assertIsNotNone(self.accounts.user(self.bob))
+        self.assertEqual(self.accounts.device(BOB_DEVICE)["status"], "active")
 
     def test_users_list_flags_self_registered_until_reviewed(self):
         device = self.accounts.register_device("ccccccccccc3", "ai-passport", SECRET)
