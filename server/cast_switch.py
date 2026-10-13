@@ -83,6 +83,9 @@ class SwitchWatcher:
             if action == "switch":
                 # 手机遥控换台；要换回当前这个台就等于不换。
                 decision = ("switch", event.channel) if event.channel != current else None
+            elif action == "reconnect":
+                # 总后台要设备重连（封禁、解绑之后，或者手动）：和投屏台上来了新投屏一样结束会话。
+                decision = ("restart", None)
             elif action == "cast":
                 if current == CAST_ID:
                     decision = ("restart", None)

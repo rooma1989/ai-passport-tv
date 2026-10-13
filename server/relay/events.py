@@ -7,6 +7,7 @@ loading（设备正在播的中转台马上换片源：下一个、上一集、�
 标题 text），电视服务转给会画「正在加载」的固件。
 wifi（主人在手机或电脑上改了设备保存的 Wi-Fi：text 是加密好的信封 JSON，只有那台设备解得开；value 是写入
 时刻（Unix 秒），电视服务只发 30 秒内的，见 server/tenancy/wifi.py）。
+reconnect（总后台的「让它重连」、封禁、解绑：电视服务结束这次会话，设备马上重新连上来，重新认一次）。
 
 文件保存最近 KEEP 条，seq 只增不减；电视服务按顺序处理比上次看到的 seq 更新的每一条，启动时已有的只记录
 不执行。只存一条时，拖滑条连续写出的音量事件会把紧挨着的换台覆盖掉，所以改成列表。旧的单条格式仍能读。
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 ACTIONS = ("cast", "return", "switch", "pause", "resume", "volume", "brightness", "seek", "next", "pet", "audio",
-           "loading", "wifi")
+           "loading", "wifi", "reconnect")
 KEEP = 20
 TEXT_MAX = 64
 # wifi 的 text 是信封：版本、nonce、密文（明文最多 320 字节，见 server/wifi_crypto.py）。

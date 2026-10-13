@@ -694,7 +694,19 @@ class AVServer:
 
     def _write_now_playing(self, connected: bool) -> None:
         now_playing.write(self.now_playing_path, self.channel_name, connected, self.device_switches,
-                          since=getattr(self, "_session_since", 0.0), device=self.device_status)
+                          since=getattr(self, "_session_since", 0.0), device=self.device_status,
+                          metrics=self._session_metrics() if connected else None)
+
+    def _session_metrics(self) -> dict:
+        """总后台看的流量：最近发出的字节（折算成 10 秒）、每秒画面数、字节率目标（now_playing.Meter）。"""
+        meter = getattr(self, "_meter", None)
+        if meter is None:
+            meter = self._meter = now_playing.Meter()
+        metrics = meter.sample(time.monotonic(), getattr(self, "wire_bytes", 0), getattr(self, "frames_sent", 0))
+        rate = getattr(getattr(self, "_last_controller", None), "rate", None)
+        if isinstance(rate, int) and not isinstance(rate, bool):
+            metrics["target_rate"] = rate
+        return metrics
 
     def _wait_until(self, connection: socket.socket, target: float, session: int) -> bool:
         self.phase = "schedule_wait"
@@ -1271,6 +1283,7 @@ class AVServer:
                             self.video_sent += 1
                         # 每帧只计一次（在包循环之外）：控制器用窗口字节数除以该值得到每帧成本。
                         window_frames += 1
+                        self.frames_sent = getattr(self, "frames_sent", 0) + 1
                         if getattr(self, "session_state", None) == SessionState.RECOVERING:
                             rec_start = getattr(self, "_recovery_start", window_started)
                             # 至少 1.5 秒且 10 帧后才退出 RECOVERING，等待链路波动平息。

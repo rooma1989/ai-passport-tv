@@ -8,6 +8,7 @@
 - 新固件同时带了令牌、但还没绑定：照旧当作这个端口的旧设备服务，免得刷完固件就看不了；
   管理员之后用 `python3 -m server.tenancy.admin adopt` 把旧记录的状态搬到真 id 上。
 - 未绑定的设备不转码：只发绑定码的静止画面和静音（unbound.py）。
+- 被封禁的设备、主人被封禁的设备：拒绝（和密钥不对一样关掉连接）。
 
 阶段 1 仍是每个型号一个电视服务、一次一台设备（静态单元）；设备认出来以后，这次会话用
 devices/<id>/ 下它自己的那套文件（apply()）。
@@ -134,6 +135,8 @@ class Gate:
                 self.accounts.touch_device(did, fw=fw, model=model, ip=peer)
                 row = self.accounts.device(did)
             if row["status"] == "active":
+                if self._owner_banned(did):
+                    self._fail(f"device {did}: owner is banned", keys)
                 self.wifi_hello(did, hello, repaired)
                 return Admission(did, True, self.files(did))
             if token_ok:
@@ -160,6 +163,12 @@ class Gate:
             device_wifi.hello(self.accounts, device_id, hello, repin=repin, logger=self.logger)
         except Exception as error:      # noqa: BLE001 —— 记不下来不该挡住播放
             self.logger(f"device {device_id} wifi state not stored: {type(error).__name__}")
+
+    def _owner_banned(self, device_id: str) -> bool:
+        """主人被管理员封禁了：他的设备也不服务（总后台的「封禁用户」，阶段 3）。"""
+        row = self.accounts._one("SELECT u.status FROM device_member m JOIN user u ON u.id=m.user_id "
+                                 "WHERE m.device_id=? AND m.role='owner'", (device_id,))
+        return row is not None and row["status"] == "banned"
 
     def _legacy(self, port: int) -> str | None:
         row = self.accounts.legacy_device(port)
