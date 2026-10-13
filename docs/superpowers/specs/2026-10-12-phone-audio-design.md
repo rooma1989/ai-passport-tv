@@ -4,10 +4,12 @@
 
 # Listening on the phone — design
 
-Status: design, plus a server-side prototype (`server/listen.py`,
-`tools/listen_proto/`) that runs on a computer against a synthetic programme.
-Nothing is wired into the media server, the relay or the firmware yet, and nothing
-has been tried on an iPhone. Date: 2026-10-12.
+Status: phase 0 passed on the user's iPhone (2026-10-12: locked, Bluetooth
+headphones, the beep stayed with the flash). **Phase 1 is implemented**
+(2026-10-13, see "Phase 1 as built" at the end): media server, relay
+`/api/listen`, the remote's "listen on the phone" row, nginx and systemd templates, and
+`mute` + `pos` in the firmware of both boards. Not yet tried on the devices.
+Sections 1–8 are the design as written on 2026-10-12.
 
 ## Goal
 
@@ -442,6 +444,48 @@ Risks:
 6. `server/README.md` says the media server moved to the separate
    `ai-passport-tv-server` repository, yet deployment and recent commits use this
    repository's `server/`. Which one should get this work?
+
+## Phase 1 as built (2026-10-13)
+
+What differs from section 6, and why:
+
+- **Capability flag `"listen": 1`** in HELLO instead of `"mute": 1`: it covers
+  `SWITCH {"mute"}`, CONFIG `"mute"` and STATUS `"pos"` together, and does not
+  read like a state ("the device is muted").
+- **Devices by id, not d0/d1.** The relay runs multi-user: the address is
+  `/tv/listen/<route>/<device id>/live.m3u8?t=<token>`, where `<route>`
+  (`xingzhi`, `passport`) names the media server (`TV_LISTEN_ROUTE`) and is
+  written into `now-playing.json` by that server, so the relay needs no table
+  of models or ports. nginx: `packaging/nginx/tv-listen.conf`. Single-user:
+  `TV_LISTEN_DEVICE` (d0, d1). `/api/listen` authorises through `_pick`, like
+  the other device actions (owner, members, that device's guests).
+- **No new secret file.** The token secret is derived from the relay key
+  (`listen.derive_secret`): the relay already reads it (`--key-file`), the media
+  servers get it as `TV_LISTEN_KEY_FILE`. `--listen-key-file` exists for a
+  separate key.
+- **The clock** is the relay's `GET /tv/api/listen/time` (same host, same
+  clock), so no extra nginx location and it works whichever media server is up.
+- **Several phones**: each page sends a random `c=` with the playlist and the
+  `bye`; the stream stops when no phone has fetched for 20 s, so one phone's
+  "stop" does not cut the others.
+- **Filler notice**: while the device is held back, an ASCII
+  "SOUND ON PHONE" frame once a second (the 5x7 overlay font has no Chinese).
+  Only after the session has sent a picture, so a channel switch keeps the
+  device's own waiting screen.
+- **Decision 3 without the pause marker.** The lock-screen pause calls the
+  remote's `/api/pause` on relay channels (the device pauses at once, the
+  stored position includes H) and resume calls `/api/resume` and restarts
+  listening; on live channels it stops listening. The marker (the device
+  carrying on for H before the pause band) stays in phase 2: without it, the
+  phone hears up to H seconds again after resuming.
+- **Progress**: the media server writes `lag` = H while the session's device
+  has been held back; the relay adds it to `PLAYBACK_LAG_S`.
+- **Queues**: `TV_PCM_QUEUE_CHUNKS=600`, `TV_VIDEO_QUEUE_S=24` in the
+  `listen.conf` drop-ins.
+
+Phase 2 still open: the pause marker, PCM tap instead of the ADPCM decode, a
+headphone mark on the device, H from field data. Gzip for playlists is in the
+nginx template.
 
 ## Sources
 

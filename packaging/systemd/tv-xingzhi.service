@@ -1,7 +1,8 @@
 # Template: install as /etc/systemd/system/tv-xingzhi.service.
 # Steps and the reasons for each setting: docs/boards/xingzhi-cube-154.md ("Cloud server").
 # Every unit and drop-in, and the install order: docs/development/host-setup.md.
-# Drop-in in tv-xingzhi.service.d/: voice.conf (voice control, optional).
+# Drop-ins in tv-xingzhi.service.d/: voice.conf (voice control, optional),
+# listen.conf (listening on the phone, optional).
 [Unit]
 Description=AI Passport TV media server for the Xingzhi Cube 1.54 (240x180, port 8098)
 After=network-online.target tv-relay.service

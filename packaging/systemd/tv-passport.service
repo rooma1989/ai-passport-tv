@@ -4,7 +4,8 @@
 # docs/boards/passport-muse-dual.md ("Server"). Every unit and drop-in, and the
 # install order: docs/development/host-setup.md.
 # Drop-ins in tv-passport.service.d/: relay-events.conf (cast events, required
-# with the single-user relay), voice.conf (voice control, optional).
+# with the single-user relay), voice.conf (voice control, optional), listen.conf
+# (listening on the phone, optional).
 [Unit]
 Description=AI Passport TV media server for the FoloToy AI Passport beside Muse (320x180, port 8097)
 After=network-online.target tv-relay.service
