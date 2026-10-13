@@ -13,7 +13,7 @@
 
 本模块是手动启用、单设备的**局域网直播频道、视频文件与合成素材播放器**，不是公网代理或生产级鉴权服务。
 运行服务器只需 Python 3.11+ 标准库；ffmpeg 用于预生成素材，以及 `live` 子命令的实时转码，因此运行直播的主机需要安装它。频道地址是 `server/live.py` 中的固定白名单，来自社区聚合播放列表，可用性与版权状态未经核实，仅用于家庭局域网测试。设备在握手中按名称指定频道，服务器对无法识别的名称回退 `DEFAULT_CHANNEL`。
-`numpy` 是**可选**的 pip 依赖：装了它，直播画面放不进字节目标时用感知式取舍（`server/perceptual.py`）；没装，或设置 `TV_PERCEPTUAL=0`，就像之前一样走颜色阶梯。不需要设备访问或全局配置改动。以下命令从仓库根目录运行。
+`numpy` 是**可选**的 pip 依赖，只有想对比旧的 `TV_DEGRADE` 模式 `perceptual`、`perceptual_2d`、`mosaic` 时才需要（见[帧放不下时](#帧放不下时tv_degrade)）。不需要设备访问或全局配置改动。以下命令从仓库根目录运行。
 
 ## 导入视频文件
 
@@ -62,6 +62,21 @@ python3 -m server.tv_server live --channel ch000 \
 
 频道表只在启动时读取一次。`run.sh` 与 `run.bat` 会监视 `channels.txt`，
 文件变化时自动重启服务器；直接运行上面的命令则要自己重启才能生效。
+
+### 帧放不下时（`TV_DEGRADE`）
+
+每帧直播画面都要放进一个字节目标（`TV_RATE_START` / 帧率，例如 200000 / 12 ≈ 16.7 KB），且只发与设备已显示画面相比有变化的 12 行条带（`server/degrade.py`）。放得下的帧原样发出 ffmpeg 生成的画面；放不下时按 `TV_DEGRADE` 处理：
+
+| `TV_DEGRADE` | 帧超出目标时的做法 | numpy |
+|---|---|---|
+| `steady`（默认） | 先发变化最大的条带，变化最小的几条留着上一帧的内容，最多 2 帧。只有变化条带连续 3 帧超出目标 25% 以上才换粗一档，一次一档，1 秒后试着回到细一档；各档按平均色合并行（最后一档再合并列），画面变软，但不偏色、不拖影 | 不需要 |
+| `ladder` | 整帧换更粗的色阶，每帧重新选（以前没有 numpy 时的默认） | 不需要 |
+| `perceptual` | 颜色接近时沿用已显示的像素或左邻像素（以前有 numpy 时的默认） | 需要 |
+| `perceptual_2d`、`mosaic` | `perceptual` 的变体 | 需要 |
+
+`steady` 的参数只供调试：`TV_STEADY_DEFER`（0.25：靠推迟条带吸收的超出比例）、`TV_STEADY_CLIMB`（连续超出 3 帧才换粗档）、`TV_STEADY_MAX_WAIT`（有变化的条带最多等 2 帧）、`TV_STEADY_DWELL`（12 帧后才试细一档）、`TV_STEADY_DOWN`（1.1：细一档的变化条带要放得进 1.1 倍目标）和 `TV_STEADY_LEVELS`（`rowsh,rows,rows+cols,rows4+cols`）。`TV_ENCODE=fill`（默认）还会把剩下的字节用在变化不足门限的条带上，在 `steady` 下也用来把粗档画的条带补回当前档；`TV_ENCODE=delta` 不补。
+
+`tools/degrade_lab.py` 可以离线对比各模式：从本地视频截片段（`capture`）或生成片段（`synth`），输出表格（相对目标的字节、偏色、偏色闪动、拖影、陈旧条带、PSNR/SSIM、编码耗时）和对比图；默认值所依据的测量见 [`2026-10-13-picture-degrade-design.zh_CN.md`](../docs/superpowers/specs/2026-10-13-picture-degrade-design.zh_CN.md)。
 
 ## 一次预生成、复制、再运行
 

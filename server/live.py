@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import adpcm, channel_groups, frames, perceptual, pts
+from . import adpcm, channel_groups, degrade, frames, perceptual, pts
 from .timeline import (BASIS_COMMON_DECODE, ContentTimeline,
                        SessionClock, SourceState, VERDICT_IN_HOLE,
                        VERDICT_PLACED)
@@ -312,22 +312,29 @@ def chunk_pcm(stream, on_audio, stop) -> None:
 
 # 追加在 frames.FIT 之后、format=rgb8 之前的 ffmpeg 视频滤镜，默认为空。
 PRE_FILTER = os.environ.get("TV_PRE_FILTER", "").strip()
-# 帧超出字节目标时的降质方式：perceptual.MODES 中的模式（需 numpy），或 "ladder"（逐档降色，见 frames.encode_within）。
+# 帧超出字节目标时的做法，见 server/degrade.py：默认 steady（先推迟变化最小的条带，持续超出才降档，
+# 档位带滞回，无需 numpy）；ladder（逐档降色）与 perceptual.MODES 中的模式（需 numpy）保留以便对比。
 # 放得下的帧原样发送。
-DEGRADE_MODES = (*perceptual.MODES, "ladder")
-_DEFAULT_DEGRADE = "perceptual" if perceptual.AVAILABLE else "ladder"
-DEGRADE = os.environ.get("TV_DEGRADE", "").strip() or _DEFAULT_DEGRADE
+DEGRADE_MODES = degrade.MODES
+DEGRADE = os.environ.get("TV_DEGRADE", "").strip() or degrade.DEFAULT
 if DEGRADE not in DEGRADE_MODES:
     raise SystemExit(f"TV_DEGRADE={DEGRADE!r} 无效，可选值：{' / '.join(DEGRADE_MODES)}")
-if DEGRADE in perceptual.MODES and not perceptual.AVAILABLE:
+if DEGRADE in degrade.NUMPY_MODES and not perceptual.AVAILABLE:
     raise SystemExit(f"TV_DEGRADE={DEGRADE} 需要 numpy，请先安装（pip install numpy）")
 _VIDEO_CHAIN = f"{frames.FIT},{PRE_FILTER}" if PRE_FILTER else frames.FIT
 # 帧放入字节目标后剩余字节的用法：delta 只发变化超过 TV_DELTA_MAX_DIFF 的条带，
-# fill 另按变化量从大到小补发被跳过的条带。
+# fill 另按变化量从大到小补发被跳过的条带（steady 还先补回较粗档画出的条带）。
 ENCODE_MODES = ("delta", "fill")
 ENCODE = os.environ.get("TV_ENCODE", "").strip() or "fill"
 if ENCODE not in ENCODE_MODES:
     raise SystemExit(f"TV_ENCODE={ENCODE!r} 无效，可选值：{' / '.join(ENCODE_MODES)}")
+
+
+def new_encoder() -> degrade.PictureEncoder:
+    """一个频道的画面编码器，按 TV_DEGRADE / TV_ENCODE 配置。"""
+    return degrade.PictureEncoder(DEGRADE, fill=ENCODE == "fill")
+
+
 def source_graph(fps: int) -> str:
     """单个滤镜图，两路输出画面与音频。
 
@@ -445,11 +452,9 @@ class LiveChannel:
         self.stop = threading.Event()
         self.audio = collections.deque(maxlen=PCM_QUEUE_CHUNKS)
         self.video = collections.deque(maxlen=VIDEO_QUEUE_FRAMES)
-        # 已发给设备的画面与强制刷新条带的轮转计数（见 frames.choose_stripes）；
+        # 已发给设备的画面、强制刷新条带的轮转与降质档位（见 server/degrade.py）；
         # 每个频道独立，新频道从空白面板开始。未启用增量时不用。
-        self._shown: bytes | None = None
-        self._delta_tick = 0
-        self._snap_level = 0
+        self._encoder = new_encoder()
         # 内容时间轴：对齐依据解码器 pts 而非到达时间（见 server/timeline.py）。
         self.timeline = ContentTimeline()
         # 内容时间映射到本会话的线上时钟；每个频道一份，设备要求每个会话的音频从零开始。
@@ -843,18 +848,7 @@ class LiveChannel:
         if raw is None:
             return packets
         started = time.monotonic()
-        if DEGRADE in perceptual.MODES:
-            chosen, drawn, rung = perceptual.encode_within(
-                raw, self._shown, self._delta_tick, self._budget.target(), self._snap_level,
-                mode=DEGRADE)
-            self._snap_level = rung
-        else:
-            chosen, drawn, rung = frames.encode_within(raw, self._shown, self._delta_tick,
-                                                       self._budget.target())
-        if ENCODE == "fill":
-            chosen = frames.fill_stripes(drawn, self._shown, chosen, self._budget.target())
-        self._delta_tick += 1
-        self._shown = frames.apply_stripes(drawn, self._shown, chosen)
+        chosen, rung = self._encoder.encode(raw, self._budget.target())
         out = frames.pack_stripes(chosen)
         wire = sum(len(part) + HEADER.size for part in out)
         self.coarse_frames += rung > 0
@@ -885,12 +879,12 @@ class LiveChannel:
     def shown(self) -> bytes | None:
         """设备当前显示的画面，首帧前为 None。"""
         with self.lock:
-            return self._shown
+            return self._encoder.shown
 
     @shown.setter
     def shown(self, picture: bytes | None) -> None:
         with self.lock:
-            self._shown = picture
+            self._encoder.shown = picture
 
     def has_data(self) -> bool:
         with self.lock:

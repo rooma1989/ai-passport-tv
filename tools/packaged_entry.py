@@ -183,7 +183,7 @@ def _run_certs() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("TV_ENCODE", "fill")
-    os.environ.setdefault("TV_DEGRADE", "perceptual")
+    os.environ.setdefault("TV_DEGRADE", "steady")
     os.environ.setdefault("TV_FRAME_BYTES", "20000")
     os.environ.setdefault("TV_SEND_BUFFER", "16384")
 

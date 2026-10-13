@@ -180,8 +180,7 @@ class AFrameOnItsWayOut(unittest.TestCase):
         channel.video_epoch = 0.0
         channel.dropped_video = 0
         channel._video_advanced = False
-        channel._shown, channel._delta_tick = None, 0
-        channel._snap_level = 0
+        channel._encoder = L.new_encoder()
         self.now = 1000.0
         channel._budget = frames.ByteBudget(rate, FPS)
         channel.encoded_video_bytes, channel.encode_seconds, channel.coarse_frames = 0, 0.0, 0
@@ -210,7 +209,8 @@ class AFrameOnItsWayOut(unittest.TestCase):
         return item
 
     def test_the_first_frame_is_whole(self):
-        channel = self.channel()
+        # Noise does not fit a real target at any level; give it room, this is about the delta.
+        channel = self.channel(rate=10 ** 8)
         raw = noise_frame(3)
         out = channel._delta_encode(self.queued(raw))
         self.assertEqual(sum(1 for s in _unpack(out) if s is not None), frames.STRIPES)
@@ -218,19 +218,20 @@ class AFrameOnItsWayOut(unittest.TestCase):
         self.assertEqual(channel.encoded_video_bytes, wire)
 
     def test_a_repeat_costs_only_the_refresh_stripe(self):
-        channel = self.channel()
+        channel = self.channel(rate=10 ** 8)
         raw = noise_frame(4)
         channel._delta_encode(self.queued(raw))
         out = channel._delta_encode(self.queued(raw))
         self.assertEqual(sum(1 for s in _unpack(out) if s is not None), 1)
 
     def test_a_frame_too_big_for_the_target_is_coarsened_and_counted(self):
-        channel = self.channel(rate=100_000)
-        out = channel._delta_encode(self.queued(picture_frame()))
+        # Noise is about 58 kB whole and under 10 kB at the coarsest level of every mode.
+        channel = self.channel(rate=12_000 * FPS)
+        out = channel._delta_encode(self.queued(noise_frame(5)))
         self.assertGreater(channel.coarse_frames, 0)
         self.assertEqual(sum(1 for s in _unpack(out) if s is not None), frames.STRIPES,
                          "every stripe is from this frame, none left out")
-        self.assertNotEqual(channel._shown, picture_frame(), "shown is what was drawn")
+        self.assertNotEqual(channel.shown, noise_frame(5), "shown is what was drawn")
 
     def test_a_frame_without_a_raw_copy_passes_through_untouched(self):
         channel = self.channel()
@@ -241,10 +242,6 @@ class AFrameOnItsWayOut(unittest.TestCase):
         channel = self.channel(rate=250_000)
         channel.set_video_rate(120_000)
         self.assertEqual(channel._budget.rate, 120_000)
-
-
-def picture_frame():
-    return bytes((x * 3 + y * 5) % 256 for y in range(frames.HEIGHT) for x in range(frames.WIDTH))
 
 
 def _unpack(payloads):
