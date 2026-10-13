@@ -54,10 +54,12 @@ class Meter:
 
 def write(path: Path | None, channel: str, connected: bool, switch: bool,
           now: float | None = None, since: float = 0.0, device: dict | None = None,
-          metrics: dict | None = None) -> None:
+          metrics: dict | None = None, listen: dict | None = None) -> None:
     """since：这次会话开始的时间。手机据此分辨小智是不是已经切到它要的台（新会话）。
     device：设备报告的 {"volume", "brightness", "steps"}；旧固件不报，为 None。
-    metrics：总后台看的 {"bytes_10s", "fps", "target_rate"}，没有时不写。"""
+    metrics：总后台看的 {"bytes_10s", "fps", "target_rate"}，没有时不写。
+    listen：电视服务开了「用手机听」时的 {"route", "lead", "ok", "on", "lag"}（server/listen.py 的
+    ListenService.status）；没开为 None。"""
     if path is None:
         return
     path = Path(path)
@@ -67,6 +69,8 @@ def write(path: Path | None, channel: str, connected: bool, switch: bool,
         value = (metrics or {}).get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             record[key] = value
+    if listen is not None:
+        record["listen"] = listen
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(json.dumps(record), encoding="utf-8")
@@ -117,4 +121,17 @@ def read(path: Path | None, now: float | None = None) -> dict:
             if isinstance(device.get(key), int):
                 kept[key] = device[key]
     return {"channel": str(data.get("channel") or ""), "online": online,
-            "switch": bool(data.get("switch")) and online, "since": since, "device": kept}
+            "switch": bool(data.get("switch")) and online, "since": since, "device": kept,
+            "listen": _listen(data.get("listen")) if online else None}
+
+
+def _listen(record) -> dict | None:
+    """「用手机听」的那一项，只留认得的、类型对的；不对就当作没开。"""
+    if not isinstance(record, dict) or not isinstance(record.get("route"), str):
+        return None
+    try:
+        lead, lag = float(record.get("lead") or 0), float(record.get("lag") or 0)
+    except (TypeError, ValueError):
+        return None
+    return {"route": record["route"], "lead": lead, "ok": record.get("ok") is True,
+            "on": record.get("on") is True, "lag": lag}

@@ -249,6 +249,48 @@ it moves the anchor on by the silence. A video without a length sends
 v2 sender does not send these. Device side: "Playback progress" in
 [`docs/local-tv-prototype.md`](../docs/local-tv-prototype.md).
 
+### Listening on the phone
+
+The phone remote can play the device's sound (Bluetooth headphones, a speaker
+paired with the phone) while the device shows the picture with its speaker
+muted. Design and measurements:
+[`2026-10-12-phone-audio-design.md`](../docs/superpowers/specs/2026-10-12-phone-audio-design.md).
+
+- **Enabling it.** `TV_LISTEN_PORT` (loopback HTTP port, 8198 Xingzhi / 8199
+  Passport), `TV_LISTEN_ROUTE` (`xingzhi` / `passport`, the nginx prefix
+  `/tv/listen/<route>/`), and the relay's key file in `TV_LISTEN_KEY_FILE` (or
+  `TV_RELAY_KEY_FILE`): the token secret is derived from it
+  (`listen.derive_secret`), as the relay derives it from `--key-file`.
+  Optional: `TV_LISTEN_LEAD_S` (H, default 5), `TV_LISTEN_DEVICE` (single-user
+  relay: this unit's device id, `d0`/`d1`). Drop-ins:
+  `packaging/systemd/tv-*.service.d/listen.conf`; nginx:
+  `packaging/nginx/tv-listen.conf`. Unset, nothing changes and the remote hides
+  the control.
+- **Who.** Only firmware whose HELLO carries `"listen": 1`
+  (`SWITCH {"mute": 1|0}`, CONFIG `"mute": 1`, STATUS `"pos"` every 2 s while
+  muted) and only with the legacy sender. The relay's `POST /api/listen`
+  authorises like the other device actions (owner, members, that device's
+  guests) and answers `/tv/listen/<route>/<device>/live.m3u8?t=<token>`; the
+  token is an HMAC over the device id (12 h). The media server serves only the
+  device of its current session.
+- **How.** `server/listen.py`'s `ListenService`: the first playlist request
+  starts a `ListenStream` (one `ffmpeg … -c:a aac` per device); a thread every
+  20 ms appends one ledger entry per 40 ms, taking the next chunk from the
+  channel queue without dequeuing it (`ChannelTap`, 1 s cushion on relay
+  channels, 3 s on live ones) or silence; segments carry
+  `EXT-X-PROGRAM-DATE-TIME` = when the device plays them. `_pace_live` asks
+  `for_device(origin + audio_pts + δ)` for each block: a filler (silence, the
+  stamp base moves on), a skip (older queued blocks are dropped) or the block.
+  The phone page aligns itself to the relay's clock (`GET /api/listen/time`).
+- **When it stops.** `POST …/bye?c=<client>` from the page, or 20 s without a
+  playlist request from any phone: the stream and its ffmpeg end, the device
+  gets `{"mute": 0}` and keeps its extra lag until its next session.
+  `now-playing.json` carries `listen` (`route`, `lead`, `ok`, `on`, `lag`); the
+  relay adds `lag` to `PLAYBACK_LAG_S` for the progress estimate.
+- **Logs.** `listen: on …` at start-up, `listen: start device=…`,
+  `session=… listen mute=1|0`, `listen: stop (nobody listening) … content=…
+  silence=… device_fillers=… device_skipped=…`.
+
 ## Voice control
 
 Hold OK on the device, speak, let go: the device streams the utterance on its TV

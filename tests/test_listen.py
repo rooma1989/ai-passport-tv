@@ -6,6 +6,7 @@ import os
 import shutil
 import struct
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -280,6 +281,167 @@ class HttpTests(unittest.TestCase):
         self.assertFalse(self.stream.idle())
         self.assertEqual(self.get(f"/listen/d0/bye?t={token}", "POST")[0], 200)
         self.assertTrue(self.stream.idle())
+
+
+class ServiceTests(unittest.TestCase):
+    """ListenService: one device at a time, a stream only while someone listens, keys per channel."""
+
+    def make(self, channel=None, relay=True):
+        clock = FakeClock()
+        self.channel = channel
+        logs = []
+        service = listen.ListenService(b"k" * 32, "xingzhi", lambda: "ffmpeg", lambda: self.channel,
+                                       is_relay=lambda c: relay, lead_s=5.0, logger=logs.append, clock=clock,
+                                       wall=lambda: 2_000_000.0, encoder_factory=FakeEncoder, prefill_s=0.0)
+        return service, clock, logs
+
+    def test_only_the_bound_capable_device_gets_a_stream(self):
+        service, _, _ = self.make()
+        self.assertIsNone(service.streams("aaaaaaaaaaa1", True))          # nothing bound yet
+        service.bind("aaaaaaaaaaa1", capable=False)                         # old firmware
+        self.assertIsNone(service.streams("aaaaaaaaaaa1", True))
+        service.bind("aaaaaaaaaaa1", capable=True)
+        self.assertIsNone(service.streams("bbbbbbbbbbb2", True))           # another device
+        self.assertIsNone(service.streams("aaaaaaaaaaa1", False))          # a segment does not start one
+        self.assertFalse(service.active)
+        stream = service.streams("aaaaaaaaaaa1", True)
+        self.assertIsNotNone(stream)
+        self.assertTrue(service.active)
+        self.assertIs(service.streams("aaaaaaaaaaa1", True), stream)       # one per device, shared
+        service.bind("bbbbbbbbbbb2", capable=True)                          # the media server moved on
+        self.assertFalse(service.active)
+        self.assertTrue(stream.encoder.closed)
+
+    def test_bad_device_ids_are_never_bound(self):
+        service, _, _ = self.make()
+        service.bind("../etc", capable=True)
+        self.assertEqual(service.device, "")
+        self.assertFalse(service.capable)
+
+    def test_idle_shutdown_closes_the_encoder(self):
+        service, clock, logs = self.make()
+        service.bind("d0", capable=True)
+        stream = service.streams("d0", True)
+        stream.touch("phone1")
+        clock.now += listen.IDLE_S - 1
+        service.pump_once()
+        self.assertTrue(service.active)
+        clock.now += 2
+        service.pump_once()
+        self.assertFalse(service.active)
+        self.assertTrue(stream.encoder.closed)
+        self.assertTrue(any("nobody listening" in line for line in logs))
+
+    def test_one_phone_stopping_leaves_the_others_listening(self):
+        service, clock, _ = self.make()
+        service.bind("d0", capable=True)
+        stream = service.streams("d0", True)
+        stream.bye("")                       # the opening request's anonymous entry
+        stream.touch("phone1")
+        stream.touch("phone2")
+        stream.bye("phone1")
+        service.pump_once()
+        self.assertTrue(service.active)
+        self.assertEqual(stream.listeners, 1)
+        stream.bye("phone2")
+        service.pump_once()
+        self.assertFalse(service.active)
+
+    def test_keys_carry_the_channel_generation(self):
+        first = FakeChannel(40)
+        service, clock, _ = self.make(first)
+        service.bind("d0", capable=True)
+        stream = service.streams("d0", True)
+        service.pump_once()
+        gen = service.gen_of(first)
+        self.assertIsNotNone(gen)
+        keys = [e.key for e in stream.ledger.entries]
+        self.assertEqual(keys[0], (gen, 0))
+        # The channel is replaced (channel switch, source restart): a new generation, old keys stay old.
+        self.channel = FakeChannel(40)
+        clock.now += 0.04
+        service.pump_once()
+        self.assertIsNone(service.gen_of(first))
+        self.assertEqual(service.gen_of(self.channel), gen + 1)
+
+    def test_for_device_answers_filler_silence_or_chunk(self):
+        channel = FakeChannel(40)
+        service, clock, _ = self.make(channel)
+        self.assertIsNone(service.for_device(clock.now))                   # nobody listening
+        service.bind("d0", capable=True)
+        service.streams("d0", True)
+        service.pump_once()
+        first = service.stream.ledger.entries[0]
+        target = service.stream.ledger.target(first)
+        self.assertEqual(service.for_device(target - 1.0), ("filler", None))   # device early
+        kind, key = service.for_device(target)
+        self.assertEqual(kind, "chunk")
+        self.assertEqual(key, (service.gen_of(channel), 0))
+        # A live source's cushion is three seconds: with one second queued the tap gives silence.
+        service2, clock2, _ = self.make(FakeChannel(25), relay=False)
+        service2.bind("d0", capable=True)
+        service2.streams("d0", True)
+        service2.pump_once()
+        entry = service2.stream.ledger.entries[0]
+        self.assertEqual(service2.for_device(service2.stream.ledger.target(entry)), ("silence", None))
+
+    def test_delta_is_the_median_of_position_reports(self):
+        service, _, _ = self.make()
+        service.bind("d0", capable=True)
+        self.assertEqual(service.delta(), 0.0)
+        for n in range(10):
+            service.note_sent(n * 40, 100.0 + n * 0.04)
+        service.note_pos(80, 100.08 + 0.030)           # 30 ms late
+        service.note_pos(100, 100.10 + 0.050)          # 20 ms into chunk 80+... 50 ms late
+        service.note_pos(200, 100.20 + 0.040)
+        service.note_pos(4000, 999.0)                   # not a stamp it sent: ignored
+        service.note_pos(120, 100.12 + 9.0)             # absurd: ignored
+        self.assertAlmostEqual(service.delta(), 0.040)
+        service.bind("d0", capable=True)                # a new session forgets the old clock
+        self.assertEqual(service.delta(), 0.0)
+
+    def test_status_for_now_playing(self):
+        service, _, _ = self.make()
+        service.bind("d0", capable=True)
+        self.assertEqual(service.status(True, False),
+                         {"route": "xingzhi", "lead": 5.0, "ok": True, "on": False, "lag": 0.0})
+        service.streams("d0", True)
+        self.assertEqual(service.status(True, True)["on"], True)
+        self.assertEqual(service.status(True, True)["lag"], 5.0)
+
+    def test_from_env(self):
+        logs = []
+        self.assertIsNone(listen.ListenService.from_env(lambda: "ff", lambda: None, environ={}, logger=logs.append))
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "relay-key"
+            key.write_text("relay-key-for-tests-only\n", encoding="utf-8")
+            env = {"TV_LISTEN_PORT": "8198", "TV_LISTEN_ROUTE": "xingzhi", "TV_RELAY_KEY_FILE": str(key),
+                   "TV_LISTEN_DEVICE": "d1"}
+            service = listen.ListenService.from_env(lambda: "ff", lambda: None, environ=env, logger=logs.append)
+            self.assertEqual((service.port, service.route, service.single_device, service.lead_s),
+                             (8198, "xingzhi", "d1", listen.DEFAULT_LEAD_S))
+            # The relay derives the same secret from its --key-file.
+            self.assertEqual(service.secret, listen.derive_secret("relay-key-for-tests-only"))
+            for broken in ({"TV_LISTEN_ROUTE": "../x"}, {"TV_RELAY_KEY_FILE": str(Path(tmp) / "missing")},
+                           {"TV_LISTEN_PORT": "99999"}):
+                self.assertIsNone(listen.ListenService.from_env(lambda: "ff", lambda: None,
+                                                                environ=dict(env, **broken), logger=logs.append))
+        self.assertTrue(all("relay-key-for-tests-only" not in line for line in logs))
+
+    def test_serves_http_for_the_bound_device_only(self):
+        service, _, _ = self.make()
+        service.bind("aaaaaaaaaaa1", capable=True)
+        port = service.start(0)
+        self.addCleanup(service.shutdown)
+        token = listen.issue_token(service.secret, "aaaaaaaaaaa1")
+        url = f"http://127.0.0.1:{port}/listen/aaaaaaaaaaa1/live.m3u8?t={token}&c=abc123"
+        with urllib.request.urlopen(url) as response:
+            self.assertEqual(response.status, 200)
+        self.assertTrue(service.active)
+        self.assertIn("abc123", service.stream.clients)
+        other = listen.issue_token(service.secret, "bbbbbbbbbbb2")
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/listen/bbbbbbbbbbb2/live.m3u8?t={other}")
 
 
 FFMPEG = os.environ.get("TV_LISTEN_FFMPEG") or shutil.which("ffmpeg")

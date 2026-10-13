@@ -11,6 +11,8 @@ from . import frames
 NOTICE_TEXT = "RECONNECTING..."
 # 手机上暂停时的提示。
 PAUSE_TEXT = "PAUSED"
+# 用手机听：设备退后 H 秒对齐手机的那几秒里，画面停着，每秒发一次这个。
+LISTEN_TEXT = "SOUND ON PHONE"
 
 BLACK = 0
 WHITE = 255

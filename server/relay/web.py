@@ -21,7 +21,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .. import channel_groups, now_playing
+from .. import channel_groups, listen as listen_audio, now_playing
 from ..tenancy import files as tenancy_files
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
@@ -109,7 +109,7 @@ class Relay:
                  device_name: str = "小智", extra_devices=(),
                  log=print, clock=time.time, monotonic=time.monotonic,
                  starter=stream.start, pumper=stream.pump,
-                 accounts=None, devices_dir: Path | None = None):
+                 accounts=None, devices_dir: Path | None = None, listen_secret: bytes | None = None):
         self.state = state
         # 多用户：账号库（server/tenancy/accounts.py）和每台设备的文件目录。
         self.accounts = accounts
@@ -140,6 +140,8 @@ class Relay:
         self._targets: dict[tuple, str | None] = {}
         self.ffmpeg = ffmpeg
         self.key = key
+        # 「用手机听」的令牌密钥（server/listen.py）：默认由中转密钥派生，电视服务从同一个文件派生出同一个。
+        self.listen_secret = listen_secret if listen_secret is not None else listen_audio.derive_secret(key)
         self.log = log
         self.clock = clock
         self.monotonic = monotonic
@@ -580,16 +582,21 @@ class Relay:
         with self._active_lock:
             return cid, self._active.get((dev["slot"], cid))
 
-    def _position(self, entry: dict) -> float:
-        """小智此刻大约播到的位置。中转推出去的内容要先经电视服务缓冲，约 PLAYBACK_LAG_S 后才在
+    def _lag(self, dev: dict) -> float:
+        """推出去的内容多久后到小智屏幕上：PLAYBACK_LAG_S，有人用手机听时设备再晚 H 秒（电视服务写的 lag）。"""
+        listen = self._playing(dev).get("listen")
+        return PLAYBACK_LAG_S + (listen["lag"] if listen else 0.0)
+
+    def _position(self, entry: dict, lag: float = PLAYBACK_LAG_S) -> float:
+        """小智此刻大约播到的位置。中转推出去的内容要先经电视服务缓冲，约 lag 秒后才在
         屏幕上出现，所以从推流时长里扣掉它；跳转、暂停也按这个位置算，和画面对得上。"""
-        return entry["offset"] + max(0.0, self.monotonic() - entry["began"] - PLAYBACK_LAG_S)
+        return entry["offset"] + max(0.0, self.monotonic() - entry["began"] - lag)
 
     def _current(self, dev: dict):
         """(台, 视频, 当前位置, 正在推的流)。刚跳转、新流还没起来时，用跳转目标顶上。"""
         cid, entry = self._playing_entry(dev)
         if entry is not None:
-            return cid, entry["video"], self._position(entry), entry
+            return cid, entry["video"], self._position(entry, self._lag(dev)), entry
         bridge = self._bridge.get((dev["slot"], cid))
         if bridge is not None and self.clock() - bridge["at"] < SEEK_BRIDGE_S:
             return cid, bridge["video"], bridge["target"], None
@@ -674,8 +681,9 @@ class Relay:
             return {"position": round(bridge["target"], 1), "duration": bridge["video"].duration,
                     "paused": False, "started": 0.0, "moving": False}
         # moving：内容已经到了小智屏幕上、进度在走；新流刚起来的缓冲期里它是假，网页别自己往前推。
-        moving = self.monotonic() - entry["began"] >= PLAYBACK_LAG_S
-        return {"position": round(self._position(entry), 1), "duration": entry["video"].duration,
+        lag = self._lag(dev)
+        moving = self.monotonic() - entry["began"] >= lag
+        return {"position": round(self._position(entry, lag), 1), "duration": entry["video"].duration,
                 "paused": False, "started": entry["at"], "moving": moving}
 
     def seek(self, delta: float | None = None, position: float | None = None,
@@ -989,7 +997,8 @@ class Relay:
                 "n": found[1]["n"] if found else 0, "title": title, "since": playing["since"],
                 "episode": episode, "total": total,
                 "video": self.video_progress(dev, cid) if playing["online"] else None,
-                "device": _phone_device(playing["device"]) if playing["online"] else None}
+                "device": _phone_device(playing["device"]) if playing["online"] else None,
+                "listen": _phone_listen(playing.get("listen"))}
 
     def _online_status(self, dev: dict):
         """(在线时设备报告的状态, 错误)：不在线或固件太旧时给出错误回答。"""
@@ -1044,6 +1053,24 @@ class Relay:
             return {"ok": False, "error": "请求格式不对"}
         self._event(dev, "audio", value=1 if on else 0)
         return {"ok": True}
+
+    def listen(self, caller: Caller = LEGACY, device: str | None = None) -> dict:
+        """手机开始「用手机听」：给这台设备的手机流地址（带令牌）。权限和别的遥控一样：
+        单用户时登录的手机；多用户时这台设备的主人、成员和它的访客（_pick，别人的设备 404）。"""
+        dev = self._pick(caller, device)
+        playing = self._playing(dev)
+        if not dev["id"] or not playing["online"]:
+            return {"ok": False, "error": f"{dev['name']}没在线"}
+        info = playing.get("listen")
+        if info is None:
+            return {"ok": False, "error": "服务器还没开「用手机听」"}
+        if not info["ok"]:
+            return {"ok": False, "error": "小电视的固件太旧，需要更新才能用手机听"}
+        token = listen_audio.issue_token(self.listen_secret, dev["id"], now=self.clock())
+        path = f"/tv/listen/{info['route']}/{dev['id']}/"
+        self.log(f"{dev['id']} 用手机听：发了一个地址")
+        return {"ok": True, "device": dev["id"], "name": dev["name"], "url": f"{path}live.m3u8?t={token}",
+                "bye": f"{path}bye?t={token}", "lead": info["lead"]}
 
     def youtube_state(self) -> str:
         """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
@@ -1398,6 +1425,13 @@ def _phone_device(device: dict | None) -> dict | None:
     return phone
 
 
+def _phone_listen(listen: dict | None) -> dict | None:
+    """「用手机听」给手机的部分：能不能听（ok）、有没有人在听（on）、H。电视服务没开就是 None。"""
+    if listen is None:
+        return None
+    return {"ok": listen["ok"], "on": listen["on"], "lead": listen["lead"]}
+
+
 def _site_of(text: str) -> str:
     return "youtube" if youtube_links.is_youtube(text) else "bilibili"
 
@@ -1653,6 +1687,9 @@ def _manage_handler(relay: Relay):
                     if notice:
                         summary["notice"] = notice
                 self._json(summary)
+            elif path == "/api/listen/time":
+                # 用手机听的对时（NTP 式，网页取往返最短的一次）：和电视服务同一台机器、同一个时钟。
+                self._json({"t": relay.clock() * 1000})
             elif _EPISODES.match(path):
                 self._json(relay.episodes(_EPISODES.match(path).group(1), caller, device))
             elif path == "/api/voice/catalog":
@@ -1813,6 +1850,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/audio":
                 self._json(relay.set_audio(body.get("on"), caller, device))
+                return
+            if path == "/api/listen":
+                self._json(relay.listen(caller, device))
                 return
             if path == "/api/pet":
                 self._json(relay.set_pet(body.get("pet"), caller, device))

@@ -41,14 +41,19 @@ directories in `packaging/systemd/` are named like the host's.
 | `tv-relay.service.d/tenancy.conf` | [`tenancy/tv-relay.conf`](../../packaging/systemd/tenancy/tv-relay.conf) | Multi-user relay: replaces `ExecStart` with the `--db` command line. Deleting it is the rollback. | After the multi-user cut-over ([runbook](tenancy-phase1-runbook.md)) |
 | `tv-xingzhi.service.d/voice.conf` | [`tv-xingzhi.service.d/voice.conf`](../../packaging/systemd/tv-xingzhi.service.d/voice.conf) | Voice control: `TV_ASR_SOCKET`, `TV_RELAY_KEY_FILE`, `TV_RELAY_DEVICE=d0`, `After=muse-asr.service`. `TV_VOICE_LOG_TEXT=1` is in it commented out: on only while tuning. | For voice |
 | `tv-xingzhi.service.d/tenancy.conf` | [`tenancy/tv-media.conf`](../../packaging/systemd/tenancy/tv-media.conf) | Multi-user media server: `TV_DB`, `TV_DEVICES_DIR`. | After the cut-over |
+| `tv-xingzhi.service.d/listen.conf` | [`tv-xingzhi.service.d/listen.conf`](../../packaging/systemd/tv-xingzhi.service.d/listen.conf) | Listening on the phone: `TV_LISTEN_PORT=8198` (loopback), `TV_LISTEN_ROUTE=xingzhi`, `TV_LISTEN_KEY_FILE` (the relay key; the token secret is derived from it), `TV_LISTEN_DEVICE=d0` (single-user only), deeper channel queues (`TV_PCM_QUEUE_CHUNKS=600`, `TV_VIDEO_QUEUE_S=24`). With `tv-listen.conf` in nginx. | For listening on the phone |
 | `tv-passport.service.d/relay-events.conf` | [`tv-passport.service.d/relay-events.conf`](../../packaging/systemd/tv-passport.service.d/relay-events.conf) | `TV_RELAY_EVENTS_FILE` in the Passport's data directory: casts and remote switches reach the Passport. | With the single-user relay |
 | `tv-passport.service.d/voice.conf` | [`tv-passport.service.d/voice.conf`](../../packaging/systemd/tv-passport.service.d/voice.conf) | As the Xingzhi's, with `TV_RELAY_DEVICE=Passport`. | For voice |
 | `tv-passport.service.d/tenancy.conf` | [`tenancy/tv-media.conf`](../../packaging/systemd/tenancy/tv-media.conf) | As the Xingzhi's; also gives this unit write access to `/var/lib/ai-passport-tv` (the database's WAL files). | After the cut-over |
+| `tv-passport.service.d/listen.conf` | [`tv-passport.service.d/listen.conf`](../../packaging/systemd/tv-passport.service.d/listen.conf) | As the Xingzhi's, with `TV_LISTEN_PORT=8199`, `TV_LISTEN_ROUTE=passport`, `TV_LISTEN_DEVICE=d1`. | For listening on the phone |
 | `muse-asr.service.d/tv-voice.conf` | [`muse-asr.service.d/tv-voice.conf`](../../packaging/systemd/muse-asr.service.d/tv-voice.conf) | The local socket `/run/muse-asr/asr.sock` (0660, group `tvserver`) the media servers send audio to. The group is the only credential. | For voice |
 | `yt-relay.service.d/memory.conf` (overseas) | [`yt-relay.service.d/memory.conf`](../../packaging/systemd/yt-relay.service.d/memory.conf) | `MemoryMax=600M`: yt-dlp with deno peaks near 330 MB, and two ffmpeg streams on top overran 400M. | Only with a base unit older than the template, which already has 600M |
 
 Deleting `voice.conf` (and `systemctl daemon-reload`) turns voice off for that
-unit; deleting the `tenancy.conf` files is the multi-user rollback. The two
+unit, and deleting `listen.conf` (daemon-reload, restart) turns listening on the
+phone off (the remote then hides its row); deleting the `tenancy.conf` files is
+the multi-user rollback. The relay needs nothing for listening: it derives the
+same token secret from its `--key-file`. The two
 Passport event drop-ins are not optional while the single-user relay serves the
 Passport: the base `tv-relay.service` names it in `--extra-device`.
 
@@ -97,10 +102,15 @@ certificate it names).
    `muse-asr-warm` files and `systemctl enable --now muse-asr-warm.timer`.
 3. **tv-relay** with `passport-events.conf`. Replace `<site>` in its
    `--public-url`.
-4. **tv-xingzhi** and **tv-passport** with their drop-ins (`voice.conf`, and the
-   Passport's `relay-events.conf`). Open 8097 and 8098 in the cloud security
-   group and the host firewall.
-5. **nginx**: [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf).
+4. **tv-xingzhi** and **tv-passport** with their drop-ins (`voice.conf`,
+   `listen.conf`, and the Passport's `relay-events.conf`). Open 8097 and 8098 in
+   the cloud security group and the host firewall. The listening ports 8198 and
+   8199 are loopback only: do not open them.
+5. **nginx**: [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf)
+   and [`packaging/nginx/tv-listen.conf`](../../packaging/nginx/tv-listen.conf)
+   (listening on the phone), both in the extension directory of every host name
+   that serves the remote (`/www/server/panel/vhost/nginx/extension/<site>/` on
+   the BT panel), then `nginx -t` and reload.
 6. **Multi-user**: the `tenancy.conf` drop-ins, only as part of the
    [runbook](tenancy-phase1-runbook.md)'s cut-over (after the migration).
 7. **Overseas node**: `yt-relay.service` (and `memory.conf` only for an older base unit).
@@ -123,7 +133,8 @@ systemctl restart muse-asr tv-relay tv-xingzhi tv-passport   # this order
 
 Check: `systemctl cat <unit>` shows the base unit and each drop-in; each media
 server logs `voice: on, relay on, transcripts not logged` (multi-user:
-`relay per device`) and no `WARNING: TV_DEGRADE=ladder`; `systemctl list-timers muse-asr-warm.timer`
+`relay per device`), `listen: on, 127.0.0.1:8198 route /tv/listen/xingzhi/, lead 5 s`
+(8199 and `passport` for the Passport) and no `WARNING: TV_DEGRADE=ladder`; `systemctl list-timers muse-asr-warm.timer`
 shows the next run.
 
 ## Product website
@@ -139,8 +150,9 @@ served at the root of its own host name, `<site>` in this section.
 - The page links to the relay's pages with root-relative paths, so the website's
   host name has to serve them as the main site does: `/tv/` (phone remote,
   `/tv/console`, `/tv/wifi`), `/TV/R/`, `/TV/B/`, `/TV/L/`, `/TV/W`, and `/TV/`
-  (the help page). Include
-  [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) in that
+  (the help page), and `/tv/listen/` (listening on the phone). Include
+  [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) and
+  [`packaging/nginx/tv-listen.conf`](../../packaging/nginx/tv-listen.conf) in that
   server block. [`packaging/nginx/tv-site.conf`](../../packaging/nginx/tv-site.conf)
   is a template of the whole server block with `<site>` and `<root>` placeholders.
 - Sign-in cookies are per host name (`Path=/tv/`, no `Domain`). The QR codes,

@@ -60,6 +60,21 @@
                    color: var(--faint); font: 12px var(--serif); padding: 0; }
   .listen button.on { background: var(--red); border-color: var(--red); color: var(--ink-deep); }
   .listen button:disabled { opacity: .35; }
+  .listen[hidden] { display: none; }
+  /* 用手机听：按钮字多一些；开着时下面一行说对齐得怎样，「蓝牙延迟」点开是预设和微调。 */
+  .listen button.wide { width: 76px; }
+  .earmore { margin: 4px 0 0 44px; font: 13px/1.5 var(--serif); color: var(--dim); }
+  .earmore[hidden], .earset[hidden] { display: none; }
+  .earsync { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .earsync b { font-weight: 400; color: var(--amber); }
+  .earsync button { flex: none; background: none; border: 0; padding: 0; color: var(--dim); font: 13px var(--serif); }
+  .earset { margin-top: 8px; }
+  .earpre { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+  .earpre button { border: 1px solid var(--rule); background: var(--ink-deep); color: var(--paper);
+                   font: 12px var(--serif); padding: 4px 8px; }
+  .earpre button.on { border-color: var(--red); color: var(--red); }
+  .earset .dial span:first-child { width: 34px; }
+  .earset p { margin: 0; font-size: 12px; color: var(--faint); }
   .player { margin: -2px 14px 12px; }
   .player[hidden] { display: none; }
   input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0; padding: 0; border: 0; }
@@ -325,6 +340,20 @@
         <label class="dial"><span>音量</span><input type="range" id="vol" min="0" max="100" step="10" value="0"><b id="volv">--</b></label>
         <label class="dial"><span>亮度</span><input type="range" id="bri" min="0" max="4" step="1" value="0"><b id="briv">--</b></label>
         <div class="listen"><span>只听</span><em id="listenNote">只放声音，屏幕只显示宠物</em><button id="listen">关</button></div>
+        <!-- 用手机听（server/listen.py）：声音从手机或蓝牙耳机出来，电视静音、画面晚几秒对上。 -->
+        <div class="listen" id="earRow" hidden><span>耳机</span><em id="earNote">用手机或蓝牙耳机听，电视静音</em><button class="wide" id="ear">用手机听</button></div>
+        <div class="earmore" id="earMore" hidden>
+          <div class="earsync"><span id="earSync">正在对齐…</span><button id="earSet">蓝牙延迟 ›</button></div>
+          <div class="earset" id="earSettings" hidden>
+            <div class="earpre" id="earPresets">
+              <button data-bt="auto">自动</button><button data-bt="0">手机喇叭</button><button data-bt="150">AirPods Pro</button>
+              <button data-bt="200">AirPods</button><button data-bt="250">其他蓝牙</button>
+            </div>
+            <label class="dial"><span>微调</span><input type="range" id="earOffset" min="-300" max="300" step="10" value="0"><b id="earOffsetV">0</b></label>
+            <p>声音比画面早就往右拖，晚就往左拖。每台小电视分别记住。</p>
+          </div>
+        </div>
+        <audio id="earAudio" preload="none" playsinline></audio>
       </div>
       <button class="petline" id="petline"><span>宠物</span><b id="petname">--</b><i>›</i></button>
       <div class="player" id="player" hidden>
@@ -1033,6 +1062,227 @@ function renderListen() {
     : on ? "只放声音，省流量也省电" : "只放声音，屏幕只显示宠物";
 }
 
+// ---------- 用手机听 ----------
+// 声音从手机（或连着的蓝牙耳机）出来，小电视静音、画面晚 H 秒（约 5 秒）对上。手机放的是电视服务给的
+// HLS 音频流，锁屏也接着放；每段带「电视什么时候放它」（PROGRAM-DATE-TIME），页面在前台时
+// 读出手机正在放的那一刻，减去蓝牙延迟，和对过时的服务器时间比，差多了就跳一下。
+// 设计见 docs/superpowers/specs/2026-10-12-phone-audio-design.md（§1、§3）。
+const ear = {
+  on: false,            // 这部手机正在听
+  device: "", name: "", url: "", bye: "", client: "",
+  clockOffset: 0, rtt: NaN, // 服务器时间 - 本机时间（毫秒），对时那次的往返
+  lastSeek: 0, seeks: 0, checkAfterSeek: false, stalls: 0,
+  // 跳转要先缓冲，落点总晚一截（macOS AVPlayer 约 0.35 秒）：从跳后的残差学到这个代价，下次多跳这么多。
+  seekCost: 0,
+  error: NaN, via: "",  // 上次量的差（毫秒，正数是手机早了）和取时刻的办法
+  autoBt: NaN,          // 自动测到的蓝牙延迟（毫秒）；测不出为 NaN
+  pausedProgramme: 0,   // 锁屏上按暂停、暂停了节目（中转的台）的时刻
+  settings: false,      // 蓝牙延迟那一块展开着
+  starting: false,
+};
+const earAudio = $("earAudio");
+
+function earStore(key, value) { try { localStorage.setItem(key, String(value)); } catch (error) {} }
+function earLoad(key, fallback) {
+  try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (error) { return fallback; }
+}
+ear.seekCost = Number(earLoad("ear.seekCost", 0)) || 0;
+const earKey = (what) => "ear." + what + "." + (ear.device || "?");
+// 蓝牙延迟：每台小电视分别记（不同的电视常配不同的耳机）；"auto" 用自动测的。
+function earBtSetting() { return earLoad(earKey("bt"), "auto"); }
+function earBt() {
+  const setting = earBtSetting();
+  if (setting !== "auto") return Number(setting) || 0;
+  return isNaN(ear.autoBt) ? 0 : ear.autoBt;
+}
+function earOffset() { return Number(earLoad(earKey("off"), 0)) || 0; }
+
+async function earSyncClock() {
+  // NTP 式：取往返最短的那一次。
+  let best = null;
+  for (let i = 0; i < 8; i++) {
+    const t0 = performance.now();
+    const body = await call("GET", "api/listen/time");
+    const t1 = performance.now();
+    const sample = { rtt: t1 - t0, offset: body.t - (performance.timeOrigin + (t0 + t1) / 2) };
+    if (!best || sample.rtt < best.rtt) best = sample;
+  }
+  ear.clockOffset = best.offset; ear.rtt = best.rtt;
+}
+const earServerNow = () => performance.timeOrigin + performance.now() + ear.clockOffset;
+
+function earMetadataPdt() {
+  // 备用：段头 ID3 TXXX "pdt" 在 Safari 里是 metadata 轨道上的 cue。
+  for (const track of earAudio.textTracks || []) {
+    if (track.kind !== "metadata") continue;
+    if (track.mode === "disabled") track.mode = "hidden";
+    let best = null;
+    for (const cue of track.cues || []) {
+      const tag = cue.value || {};
+      if (tag.key === "TXXX" && tag.info === "pdt" && cue.startTime <= earAudio.currentTime) {
+        if (!best || cue.startTime > best.startTime) best = cue;
+      }
+    }
+    if (best) return Number(best.value.data) + (earAudio.currentTime - best.startTime) * 1000;
+  }
+  return NaN;
+}
+
+function earPlayingPdt() {
+  if (earAudio.getStartDate) {
+    const start = earAudio.getStartDate().getTime();
+    if (!isNaN(start)) return { pdt: start + earAudio.currentTime * 1000, via: "date" };
+  }
+  return { pdt: earMetadataPdt(), via: "id3" };
+}
+
+function earMeasure() {
+  const { pdt, via } = earPlayingPdt();
+  ear.via = isNaN(pdt) ? "" : via;
+  // 正数：手机放的是电视稍后才放的内容，手机早了。微调往右拖是让手机更晚。
+  ear.error = isNaN(pdt) ? NaN : pdt - earBt() - earServerNow() - earOffset();
+  return ear.error;
+}
+
+function earCorrect(force) {
+  if (!ear.on || earAudio.paused || earAudio.seeking) return;
+  const error = earMeasure();
+  if (isNaN(error)) return;
+  const now = performance.now();
+  if (ear.checkAfterSeek && now - ear.lastSeek > 1500) {
+    ear.checkAfterSeek = false;
+    ear.seekCost = Math.max(-1, Math.min(1, ear.seekCost - error / 1000));
+    earStore("ear.seekCost", ear.seekCost);
+  }
+  if (Math.abs(error) > 60 && (force || now - ear.lastSeek > 4000)) {
+    let target = earAudio.currentTime - error / 1000 + ear.seekCost;
+    const s = earAudio.seekable;
+    // 离流的末端至少留 1.5 秒，否则一直卡；真贴到末端了说明 H 对这部手机太短。
+    if (s.length && target > s.end(s.length - 1) - 1.5) target = s.end(s.length - 1) - 1.5;
+    earAudio.currentTime = target;
+    ear.lastSeek = now; ear.seeks++; ear.checkAfterSeek = true;
+  }
+}
+
+// iOS 18.4+：AudioContext.outputLatency 含系统报的蓝牙路由延迟，要在发声时读。须在点按里调用。
+function earMeasureBt() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return Promise.resolve(NaN);
+  let ctx;
+  try {
+    ctx = new Ctx();
+    const src = ctx.createBufferSource();
+    src.buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    src.connect(ctx.destination); src.start();
+  } catch (error) { return Promise.resolve(NaN); }
+  return new Promise((resolve) => setTimeout(async () => {
+    const total = (ctx.outputLatency || 0) + (ctx.baseLatency || 0);
+    try { await ctx.close(); } catch (error) {}
+    resolve(total > 0 ? Math.round(total * 1000) : NaN);
+  }, 600));
+}
+
+function earMeta() {
+  if (!("mediaSession" in navigator) || !ear.on || !data) return;
+  const now = data.now;
+  // 锁屏上：标题是正在播的（剧集带第几集），下面一行是台名和哪台小电视。
+  const title = (now.online && (nowTitle(now) || now.name)) || ear.name || "小智电视";
+  const artist = [now.online ? now.name : "", ear.name].filter(Boolean).join(" · ");
+  const key = title + "|" + artist;
+  if (ear.metaKey === key) return;
+  ear.metaKey = key;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "小智电视",
+      artwork: [{ src: "icon-512.png", sizes: "512x512", type: "image/png" }] });
+  } catch (error) {}
+}
+
+async function earStart() {
+  if (ear.starting) return;
+  ear.starting = true;
+  // 在点按里同步做的事：播放类会话（不受静音键影响），量蓝牙延迟。
+  if (navigator.audioSession) { try { navigator.audioSession.type = "playback"; } catch (error) {} }
+  const measuring = earMeasureBt();
+  try {
+    const answer = await call("POST", "api/listen", {});
+    if (!answer.ok) { toast(answer.error, true); return; }
+    ear.device = answer.device; ear.name = answer.name; ear.bye = answer.bye;
+    ear.client = Math.random().toString(36).slice(2, 12);
+    ear.url = answer.url + "&c=" + ear.client;
+    ear.on = true; ear.pausedProgramme = 0; ear.metaKey = ""; ear.error = NaN;
+    earAudio.src = ear.url;
+    await earAudio.play();
+    earMeta();
+    renderEar();
+    earSyncClock().catch(() => {});
+    measuring.then((ms) => { ear.autoBt = ms; renderEar(); });
+    setTimeout(() => earCorrect(true), 1500);
+  } catch (error) {
+    earStop(true);
+    toast("手机放不出声音：" + error.message, true);
+  } finally {
+    ear.starting = false;
+    renderEar();
+  }
+}
+
+// 不听了：电视几秒内放回自己的声音（几部手机同时听时，最后一部停了才放回）。
+function earStop(quiet) {
+  const was = ear.on;
+  ear.on = false;
+  ear.pausedProgramme = 0;
+  earAudio.pause();
+  if (was && ear.bye) fetch(ear.bye + "&c=" + ear.client, { method: "POST" }).catch(() => {});
+  earAudio.removeAttribute("src");
+  try { earAudio.load(); } catch (error) {}
+  if ("mediaSession" in navigator) { try { navigator.mediaSession.metadata = null; } catch (error) {} }
+  if (was && !quiet) toast("已停止，电视马上放回自己的声音");
+  renderEar();
+}
+
+function renderEar() {
+  if (!data) return;
+  const info = data.now.online ? data.now.listen : null;
+  const row = $("earRow");
+  // 服务器没开「用手机听」就整行不显示；开过的话设备离线、固件旧时照样显示，说明为什么用不了。
+  if (info) lastEarOffered = true;
+  row.hidden = !ear.on && !info && !(lastEarOffered && !data.now.online);
+  const button = $("ear");
+  button.className = "wide" + (ear.on ? " on" : "");
+  button.textContent = ear.on ? "停止" : "用手机听";
+  button.disabled = ear.starting || (!ear.on && !(info && info.ok));
+  $("earNote").textContent = ear.on ? "声音在手机上，电视静音"
+    : !data.now.online ? devName() + "没在线"
+    : !info ? "服务器还没开这个功能"
+    : !info.ok ? "固件太旧，用不了"
+    : info.on ? "另一部手机在听，也能一起听"
+    : "用手机或蓝牙耳机听，电视静音";
+  $("earMore").hidden = !ear.on;
+  if (!ear.on) return;
+  const setting = earBtSetting();
+  for (const b of document.querySelectorAll("#earPresets button")) b.classList.toggle("on", b.dataset.bt === setting);
+  const bt = earBt();
+  const btText = setting === "auto" ? (isNaN(ear.autoBt) ? "蓝牙延迟测不出，选一个" : "蓝牙 " + bt + " ms（自动）")
+    : "蓝牙 " + bt + " ms";
+  const ms = Math.round(-ear.error);
+  let sync;
+  if (earAudio.paused) sync = ear.pausedProgramme ? "已暂停（节目也暂停了）" : "已暂停";
+  else if (!ear.via && !isNaN(ear.rtt) && earAudio.currentTime > 3) sync = "这个浏览器对不齐画面，用 iPhone 的 Safari 更准";
+  else if (isNaN(ms)) sync = "正在对齐…";
+  else if (Math.abs(ms) <= 60) sync = "<b>已对齐</b>";
+  else sync = "差 " + Math.abs(ms) + " ms，正在对齐";
+  $("earSync").innerHTML = sync + " · " + btText;
+  $("earSettings").hidden = !ear.settings;
+  $("earSet").textContent = ear.settings ? "收起" : "蓝牙延迟 ›";
+  if (document.activeElement !== $("earOffset")) $("earOffset").value = String(earOffset());
+  $("earOffsetV").textContent = earOffset() + "";
+  // 换了遥控的设备：这部手机听的还是原来那台，停掉免得听错。
+  const target = (data.devices || []).find((d) => d.target);
+  if (target && ear.device && target.id !== ear.device) { earStop(true); toast("换了一台小电视，已停止用手机听"); }
+  earMeta();
+}
+let lastEarOffered = false;
+
 // ---------- 我的 ----------
 // 多用户：账号、自己的设备（Wi-Fi、访客码、改名、解绑）、绑定新设备、登录其他设备、管理员发邀请。
 // 单用户时没有 data.me，只剩「更多」。设备的型号和正在播什么取自电脑版同一个接口（/api/console/devices），
@@ -1421,6 +1671,7 @@ function render() {
   renderMine();
   renderPets();
   renderListen();
+  renderEar();
   renderNotice();
   renderDevices();
   renderScreen();
@@ -1491,6 +1742,83 @@ $("listen").onclick = async () => {
     schedule(1000);
   } catch (error) { toast(error.message, true); }
 };
+
+$("ear").onclick = () => { if (ear.on) earStop(); else earStart(); };
+$("earSet").onclick = () => { ear.settings = !ear.settings; renderEar(); };
+for (const b of document.querySelectorAll("#earPresets button")) {
+  b.onclick = async () => {
+    earStore(earKey("bt"), b.dataset.bt);
+    if (b.dataset.bt === "auto") {
+      ear.autoBt = await earMeasureBt();
+      if (isNaN(ear.autoBt)) toast("这部手机报不出蓝牙延迟（要 iOS 18.4 以上），请选一个", true);
+    }
+    renderEar();
+    earCorrect(true);
+  };
+}
+$("earOffset").addEventListener("input", () => { $("earOffsetV").textContent = $("earOffset").value; });
+$("earOffset").addEventListener("change", () => { earStore(earKey("off"), $("earOffset").value); earCorrect(true); renderEar(); });
+earAudio.addEventListener("waiting", () => { ear.stalls++; });
+earAudio.addEventListener("error", () => {
+  // 流没了：电视服务换了一台设备、重启了，或者太久没人取（锁屏暂停超过 20 秒）。
+  if (ear.on && !ear.pausedProgramme) { earStop(true); toast("手机上的声音断了，再点「用手机听」试试", true); }
+});
+if ("mediaSession" in navigator) {
+  // 锁屏上的暂停：中转的台（B 站、YouTube、投屏、剧集）像遥控的「暂停」一样把节目暂停；
+  // 直播台不能暂停，只是不在手机上听了，电视放回自己的声音。
+  const ms = navigator.mediaSession;
+  try {
+    ms.setActionHandler("pause", async () => {
+      if (!ear.on) return;
+      earAudio.pause();
+      const v = data && data.now.online ? data.now.video : null;
+      if (v && !v.paused) {
+        try {
+          const answer = await call("POST", "api/pause", {});
+          if (answer.ok) ear.pausedProgramme = Date.now();
+        } catch (error) {}
+      } else {
+        earStop(true);
+        ear.resumeLive = true;
+      }
+      renderEar();
+    });
+    ms.setActionHandler("play", async () => {
+      if (ear.pausedProgramme) {
+        // 节目从暂停的地方重新开始推；手机重新接上流，对齐从头来。
+        ear.pausedProgramme = 0;
+        try { await call("POST", "api/resume", {}); } catch (error) {}
+        earAudio.pause();
+        ear.on = false;
+        await earStart();
+      } else if (!ear.on && ear.resumeLive) {
+        ear.resumeLive = false;
+        await earStart();
+      } else if (ear.on) {
+        try { await earAudio.play(); } catch (error) {}
+        setTimeout(() => earCorrect(true), 1500);
+      }
+      renderEar();
+    });
+    for (const action of ["seekbackward", "seekforward", "seekto", "previoustrack", "nexttrack"]) {
+      try { ms.setActionHandler(action, null); } catch (error) {}
+    }
+  } catch (error) {}
+}
+setInterval(() => {
+  if (!ear.on) return;
+  if (!document.hidden) { earCorrect(false); renderEar(); }
+}, 1000);
+setInterval(() => { if (ear.on && !document.hidden) earSyncClock().catch(() => {}); }, 60000);
+// 关掉页面（不是锁屏）：告诉电视服务这部手机不听了，免得电视要等 20 秒才放回声音。
+window.addEventListener("pagehide", (event) => {
+  if (ear.on && !event.persisted && ear.bye && navigator.sendBeacon) navigator.sendBeacon(ear.bye + "&c=" + ear.client);
+});
+document.addEventListener("visibilitychange", async () => {
+  if (document.hidden || !ear.on) return;
+  try { await earSyncClock(); } catch (error) {}
+  earCorrect(true);
+});
 
 $("petline").onclick = () => { petPick = null; if (data) renderPets(); showPage("pets"); };
 $("petback").onclick = () => showPage("remote");

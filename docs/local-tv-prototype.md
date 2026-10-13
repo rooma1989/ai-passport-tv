@@ -236,6 +236,32 @@ silence instead of asking (`server/progress.py`). A Bilibili stream starts at
 the keyframe before the offset, so the bar can be a few seconds ahead. The v2
 sender (`TV_LIVE_ENGINE=v2`) sends no progress.
 
+### Listening on the phone ("listen": 1)
+
+Firmware that can hand its sound to the phone remote adds `"listen":1` to
+HELLO. Only such a device gets the messages below, and only from a media server
+with `TV_LISTEN_PORT` set; older firmware sees exactly what it did (the server
+then offers no listening for it). Design:
+[`2026-10-12-phone-audio-design.md`](superpowers/specs/2026-10-12-phone-audio-design.md).
+
+- `AV_SWITCH {"mute":1}`: a phone started listening. The audio task holds the
+  codec muted (`bsp_audio_set_mute(true)`) and zeroes each chunk; the stored
+  volume and NVS are untouched, and the remote's volume slider keeps showing
+  it. `{"mute":0}`: nobody listens any more; the codec opens again.
+- CONFIG `"mute":1`: the session starts while someone listens, so it starts
+  muted without a moment of sound. A CONFIG without it unmutes; so does a
+  reboot (RAM only), so a lost `{"mute":0}` cannot leave a device silent.
+- While muted, `AV_STATUS` goes up every 2 s (instead of 30 s) with
+  `"pos":P`: `estimated_pts()`, the wire PTS (ms) the device is playing. The
+  server compares it with when its sender expected that block to play and
+  keeps the median of the last five as the device's offset (δ).
+- Nothing else changes on the device. While listening, the sender plays the
+  phone's schedule H (5 s) later: it sends silent blocks with continuous PTS
+  when the device is early (the picture holds; every second the server sends
+  one "SOUND ON PHONE" frame so the device does not paint its waiting screen),
+  and drops queued blocks when it is late. The status page shows no extra mark
+  (phase 2).
+
 ## Media conversion and compatibility
 
 Both `prepare` and `import-video` generate actual baseline 160x120 YUV420 JPEGs;

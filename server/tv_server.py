@@ -39,7 +39,8 @@ from .media import (AUDIO_CHUNK_MS, AUDIO_LEAD_MS, DURATION_MS, FPS,
 from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packet,
                        ProtocolError, json_bytes, json_object, receive_packet,
                        send_packet, _write_slice)
-from . import episode_info, now_playing, progress, reconnect
+from . import episode_info, now_playing, overlay, progress, reconnect
+from .listen import ListenService
 from .cast_switch import SwitchWatcher
 from .voice.session import VoiceService
 from .tenancy import gate as tenancy_gate, unbound as tenancy_unbound
@@ -248,6 +249,23 @@ class _MediaChannel:
         return ""
 
 
+def _skip_audio_to(channel, content) -> bool:
+    """用手机听、设备落后了：丢掉频道声音队列里比 content 旧的块。队首正是 content 时返回 True。
+
+    丢掉的块没经过 pop_audio，会话时钟在下一块看到内容上的空洞，照常开新的一段，线上时间戳仍连续；
+    比新队首旧的画面由 pop_video 丢掉。"""
+    with channel.lock:
+        audio, contents = channel.audio, channel.audio_content
+        while contents and contents[0] < content:
+            if isinstance(contents, list):
+                del audio[0], contents[0]
+            else:
+                audio.popleft()
+                contents.popleft()
+            channel.skipped_audio = getattr(channel, "skipped_audio", 0) + 1
+        return bool(contents) and contents[0] == content
+
+
 class AVServer:
     """单线程负责接入与收发，多余连接直接关闭；阻塞操作均带时限，每 50 ms 轮询停止标志。"""
 
@@ -357,6 +375,16 @@ class AVServer:
         # 语音：设备按住 OK 说的话（server/voice/）；不设 TV_ASR_SOCKET 时关闭，CONFIG 不给 voice。
         # 多用户时中转里的设备是每次会话认出来的那台（_admit → voice.bind_device），不是 TV_RELAY_DEVICE。
         self.voice = VoiceService.from_env(self.logger, per_device=self.tenancy is not None)
+        # 用手机听（server/listen.py）：设了 TV_LISTEN_PORT 才有，serve() 开始时开本机 HTTP。
+        # device_listen：这次会话的固件会（HELLO "listen": 1）；_mute_sent：已经让它静音了；
+        # _listened：这次会话里设备因为有人听而退后过 H 秒（中转据此推算进度）。
+        self.listen = ListenService.from_env(lambda: self.ffmpeg, lambda: self.live_channel,
+                                             lambda channel: episode_info.info_url(
+                                                 getattr(channel, "url", "")) is not None,
+                                             logger=self.logger)
+        self.device_listen = False
+        self._mute_sent = False
+        self._listened = False
 
     def set_session_state(self, state: SessionState, session: int, reason: str = "", **kwargs: Any) -> None:
         """记录会话状态迁移及当时的发送计数。"""
@@ -384,6 +412,8 @@ class AVServer:
         )
 
     def serve(self) -> None:
+        if self.listen is not None and self.listen._server is None:
+            self.listen.start()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
             self.listener = listener
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -676,13 +706,23 @@ class AVServer:
                 self.logger(f"device wifi ack={answer.get('ack')} ok={answer.get('ok')} err={answer.get('err')}")
             return
         rssi = report.get("rssi")
-        if isinstance(rssi, int) and not isinstance(rssi, bool) and rssi:
+        # 用手机听时设备每 2 秒报一次，信号照旧约 30 秒记一行。
+        if isinstance(rssi, int) and not isinstance(rssi, bool) and rssi and \
+                time.monotonic() - getattr(self, "_rssi_logged", -1e9) >= 25:
+            self._rssi_logged = time.monotonic()
             self.logger(f"device rssi={rssi}")
+        # 用手机听时设备每 2 秒报一次正在播的线上时间戳，用来推算它实际比发送端的算法晚多少（δ）。
+        pos = report.get("pos")
+        if self.device_listen and isinstance(pos, int) and not isinstance(pos, bool) and pos >= 0:
+            self.listen.note_pos(pos, time.monotonic())
         if self.device_status is not None:
+            before = dict(self.device_status)
             for key in ("volume", "brightness", "pet"):
                 if isinstance(report.get(key), int):
                     self.device_status[key] = report[key]
-            self._write_now_playing(True)
+            # 只带位置的例行报告（每 2 秒）不必每次重写「正在播放」。
+            if pos is None or self.device_status != before:
+                self._write_now_playing(True)
 
     def keep_now_playing(self) -> None:
         """会话还在就每 REFRESH_S 秒刷新一次「正在播放」。推流、起播等待、断流重连、暂停
@@ -693,9 +733,13 @@ class AVServer:
             self._write_now_playing(True)
 
     def _write_now_playing(self, connected: bool) -> None:
+        listen = getattr(self, "listen", None)
         now_playing.write(self.now_playing_path, self.channel_name, connected, self.device_switches,
                           since=getattr(self, "_session_since", 0.0), device=self.device_status,
-                          metrics=self._session_metrics() if connected else None)
+                          metrics=self._session_metrics() if connected else None,
+                          listen=listen.status(getattr(self, "device_listen", False),
+                                               getattr(self, "_listened", False))
+                          if listen is not None else None)
 
     def _session_metrics(self) -> dict:
         """总后台看的流量：最近发出的字节（折算成 10 秒）、每秒画面数、字节率目标（now_playing.Meter）。"""
@@ -707,6 +751,29 @@ class AVServer:
         if isinstance(rate, int) and not isinstance(rate, bool):
             metrics["target_rate"] = rate
         return metrics
+
+    def _listen_config(self) -> dict:
+        """CONFIG 里的 "mute": 1：会话开始时已经有人在用手机听，设备一开始就静音，不会先响一下。"""
+        self._mute_sent = self.device_listen and self.listen.active
+        self._listened = self._mute_sent
+        return {"mute": 1} if self._mute_sent else {}
+
+    def listen_flush(self, connection: socket.socket, session: int, seq: int) -> int:
+        """有人开始或不再用手机听：让会的固件静音或放声（SWITCH {"mute": 1|0}）。返回下一个序号。
+
+        静音只在设备内存里（音量照旧），重启或下一次没带 mute 的 CONFIG 就放声，崩溃也不会让它一直哑着。"""
+        if not self.device_listen:
+            return seq
+        want = self.listen.active
+        if want == self._mute_sent:
+            return seq
+        self.phase = "listen_send"
+        send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes({"mute": int(want)})))
+        self._mute_sent = want
+        self._listened = self._listened or want
+        self.logger(f"session={session} listen mute={int(want)}")
+        self._write_now_playing(True)
+        return seq + 1
 
     def _wait_until(self, connection: socket.socket, target: float, session: int) -> bool:
         self.phase = "schedule_wait"
@@ -823,6 +890,7 @@ class AVServer:
                                                            **({"playing": playing} if playing else {}),
                                                            **self._wifi_config(),
                                                            **self._recover_config(),
+                                                           **self._listen_config(),
                                                            **self.voice.config()))))
             self.phase = "live_palette"
             # 首帧前必须有调色板，缺失则设备无色可用，画面全黑。
@@ -980,6 +1048,36 @@ class AVServer:
             busy_us += took * 1e6
             gap_start = at
 
+        # 用手机听：最近一次发的是不是静音（填充或时间表里的静音），和上次发画面的时刻。
+        # 设备一开始要退后 H 秒，画面停着，每秒发一次提示画面，免得设备当成断流画等待画面。
+        listen_silent = False
+        last_picture_at = time.monotonic()
+
+        def take_audio():
+            """下一块要发的声音 (块, 线上时间戳)，没有为 None。
+
+            有人用手机听时照手机流的时间表来（server/listen.py）：设备早了发填充静音（不出队，
+            stamp_base 加一块，下一块的时间戳照样连续），晚了丢掉旧块，时间表里是静音或那一块已经
+            不在了（换了频道、队列满被挤掉）也发静音。设备扬声器静音，这些都听不见。"""
+            nonlocal stamp_base, listen_silent
+            decision = None
+            if self.device_listen:
+                # 发送端的算法认为这一块在 origin + audio_pts 播；δ 是设备报的位置算出来的实际偏差。
+                decision = self.listen.for_device(origin + audio_pts / 1000 + self.listen.delta())
+            if decision is not None:
+                kind, key = decision
+                if kind == "chunk" and key[0] == self.listen.gen_of(channel) and _skip_audio_to(channel, key[1]):
+                    decision = None
+            if decision is None:
+                taken = channel.pop_audio()
+                if taken is None:
+                    return None
+                listen_silent = False
+                return taken[0], taken[1] + stamp_base
+            listen_silent = True
+            stamp_base += AUDIO_CHUNK_MS
+            return reconnect.SILENCE, last_audio_wire + AUDIO_CHUNK_MS
+
         def hold_on_notice(empty_since: float, paused: bool = False, title: str = "") -> bool:
             """停留在重连提示画面，直到源重新有数据。
 
@@ -1038,6 +1136,8 @@ class AVServer:
                 continue
             now = time.monotonic()
             self._loops = getattr(self, "_loops", 0) + 1
+            # 有人用手机听：声音照时间表发，频道队列空着也可能要发（填充、静音）。
+            listening = self.device_listen and self.listen.active
             # 画面时间戳随帧由 pop_video() 给出（内容时间轴，见 server/timeline.py），不在本循环推算。
             # 设备按音频时钟呈现画面，时间戳超前的帧会占用接收缓冲直至音频欠载。
             audio_at = origin + (audio_pts - AUDIO_LEAD_MS) / 1000
@@ -1080,6 +1180,7 @@ class AVServer:
             self.keep_now_playing()
             seq = self.voice_flush(connection, session, seq)
             seq = self.recover_flush(connection, session, seq)
+            seq = self.listen_flush(connection, session, seq)
             decision = self.switch_watcher.poll(self.channel_name, now)
             # 先于下面的控制：取走「正在加载」时连同「下一个」提示一起取走。
             seq = self.info_flush(connection, session, seq)
@@ -1140,7 +1241,7 @@ class AVServer:
             # AUDIO_MAX_LOOKAHEAD_MS 并保持；关闭则音频恰按实时放出，画面包占线期间设备队列
             # 得不到补充而欠载。
             audio_fill = os.environ.get("TV_AUDIO_FILL", "1") != "0"
-            audio_due = (channel.audio_pending()
+            audio_due = ((listening or channel.audio_pending())
                          and audio_lookahead_ms <= AUDIO_MAX_LOOKAHEAD_MS
                          and (audio_fill or now >= audio_at))
             # 音频到期不阻塞画面：两者不用 if/elif，同一轮内先音频、后画面；
@@ -1170,19 +1271,20 @@ class AVServer:
                 # 同时受时钟和 AUDIO_MAX_LOOKAHEAD_MS 约束。
                 for _ in range(32):
                     if not ((audio_fill or audio_at <= now)
-                            and channel.audio_pending()
+                            and (listening or channel.audio_pending())
                             and audio_pts - AUDIO_LEAD_MS - (now - origin) * 1000
                                 <= AUDIO_MAX_LOOKAHEAD_MS
                             and select.select([], [connection], [], 0)[1]):
                         break
-                    taken = channel.pop_audio()
+                    taken = take_audio()
                     if taken is None:
                         break
                     block, stamp = taken
-                    stamp += stamp_base
                     last_audio_wire = stamp
                     self.phase = "live_pcm_send"
                     send_packet(connection, Packet(Kind.PCM, session, seq, stamp, block))
+                    if self.device_listen:
+                        self.listen.note_sent(stamp, origin + audio_pts / 1000)
                     self.wire_bytes += len(block) + 24
                     # stamp 是线上时间戳（来自声音自身的内容时间轴）；audio_pts 是发送端按已发块数
                     # 推算的下一块到期时刻。两者不合并。
@@ -1233,15 +1335,14 @@ class AVServer:
                                 lookahead = ((audio_pts - AUDIO_LEAD_MS)
                                              - (now_in_frame - origin) * 1000)
                                 if not ((audio_fill or now_in_frame >= audio_at)
-                                        and channel.audio_pending()
+                                        and (listening or channel.audio_pending())
                                         and lookahead <= AUDIO_MAX_LOOKAHEAD_MS
                                         and select.select([], [connection], [], 0)[1]):
                                     break
-                                taken = channel.pop_audio()
+                                taken = take_audio()
                                 if taken is None:
                                     break
                                 block, stamp = taken
-                                stamp += stamp_base
                                 last_audio_wire = stamp
                                 self.phase = "live_pcm_send"
                                 _audio_t0 = time.monotonic()
@@ -1249,6 +1350,8 @@ class AVServer:
                                                                stamp, block),
                                             deadline=frame_deadline)
                                 note_send(time.monotonic() - _audio_t0)
+                                if self.device_listen:
+                                    self.listen.note_sent(stamp, origin + audio_pts / 1000)
                                 audio_pts += AUDIO_CHUNK_MS
                                 seq += 1
                                 self.audio_sent += 1
@@ -1284,6 +1387,7 @@ class AVServer:
                         # 每帧只计一次（在包循环之外）：控制器用窗口字节数除以该值得到每帧成本。
                         window_frames += 1
                         self.frames_sent = getattr(self, "frames_sent", 0) + 1
+                        last_picture_at = time.monotonic()
                         if getattr(self, "session_state", None) == SessionState.RECOVERING:
                             rec_start = getattr(self, "_recovery_start", window_started)
                             # 至少 1.5 秒且 10 帧后才退出 RECOVERING，等待链路波动平息。
@@ -1306,6 +1410,17 @@ class AVServer:
                         self.dropped_video += 1
                         window_dropped += 1
 
+            if (listening and listen_silent and not self.device_audio_only and self.video_sent
+                    and hasattr(channel, "shown") and time.monotonic() - last_picture_at >= reconnect.PAUSE_FRAME_S
+                    and select.select([], [connection], [], 0)[1]):
+                # 设备在退后对齐手机（填充静音）：画面停着，每秒一张提示画面，设备不会自己换成等待画面。
+                # 这次会话还没发过画面（换台后）时不发：设备正挂着它自己的「正在打开」。
+                wire = reconnect.WireState(seq, audio_pts, last_audio_wire, last_video_wire)
+                self.phase = "listen_notice"
+                channel.shown = reconnect._send_notice(self, connection, session, wire, channel.shown,
+                                                       overlay.LISTEN_TEXT)
+                seq, last_video_wire = wire.seq, wire.video_stamp
+                last_picture_at = time.monotonic()
             if not sent_something:
                 # 暂无到期内容：短暂休眠而非阻塞到下个时刻，以便及时发现 END 或断开。
                 if not channel.has_data():
@@ -1435,6 +1550,14 @@ class AVServer:
             self.device_audio_only = greeting.get("audio_only") == 1
             self.device_wifimgr = self.tenancy is not None and greeting.get("wifimgr") == 1
             self.device_recover = self.tenancy is not None and greeting.get("recover") == 1
+            # 会「用手机听」的固件（"listen": 1）：SWITCH、CONFIG 带 mute，静音时 STATUS 每 2 秒带 pos。
+            # 新发送端（TV_LIVE_ENGINE=v2）不照时间表发，不提供。
+            self.device_listen = (self.listen is not None and greeting.get("listen") == 1
+                                  and os.environ.get("TV_LIVE_ENGINE", "legacy") == "legacy")
+            self._mute_sent = self._listened = False
+            if self.listen is not None:
+                self.listen.bind(self.device_id if self.tenancy is not None else self.listen.single_device,
+                                 self.device_listen)
             self.voice.reset()
             self.device_status = None
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):

@@ -35,13 +35,15 @@
 | `tv-relay.service.d/tenancy.conf` | [`tenancy/tv-relay.conf`](../../packaging/systemd/tenancy/tv-relay.conf) | 多用户中转：把 `ExecStart` 换成带 `--db` 的命令行。删掉它就是回滚。 | 多用户切换之后（[运维手册](tenancy-phase1-runbook.zh_CN.md)） |
 | `tv-xingzhi.service.d/voice.conf` | [`tv-xingzhi.service.d/voice.conf`](../../packaging/systemd/tv-xingzhi.service.d/voice.conf) | 语音控制：`TV_ASR_SOCKET`、`TV_RELAY_KEY_FILE`、`TV_RELAY_DEVICE=d0`、`After=muse-asr.service`。里面的 `TV_VOICE_LOG_TEXT=1` 是注释掉的：只在调阈值时打开。 | 要语音时 |
 | `tv-xingzhi.service.d/tenancy.conf` | [`tenancy/tv-media.conf`](../../packaging/systemd/tenancy/tv-media.conf) | 多用户媒体服务：`TV_DB`、`TV_DEVICES_DIR`。 | 切换之后 |
+| `tv-xingzhi.service.d/listen.conf` | [`tv-xingzhi.service.d/listen.conf`](../../packaging/systemd/tv-xingzhi.service.d/listen.conf) | 用手机听：`TV_LISTEN_PORT=8198`（只听本机）、`TV_LISTEN_ROUTE=xingzhi`、`TV_LISTEN_KEY_FILE`（中转的密钥，令牌密钥由它派生）、`TV_LISTEN_DEVICE=d0`（只有单用户时用）、更深的频道队列（`TV_PCM_QUEUE_CHUNKS=600`、`TV_VIDEO_QUEUE_S=24`）。nginx 里要配 `tv-listen.conf`。 | 要用手机听时 |
 | `tv-passport.service.d/relay-events.conf` | [`tv-passport.service.d/relay-events.conf`](../../packaging/systemd/tv-passport.service.d/relay-events.conf) | Passport 数据目录里的 `TV_RELAY_EVENTS_FILE`：投屏和遥控切台才到得了 Passport。 | 单用户中转 |
 | `tv-passport.service.d/voice.conf` | [`tv-passport.service.d/voice.conf`](../../packaging/systemd/tv-passport.service.d/voice.conf) | 和星智的一样，`TV_RELAY_DEVICE=Passport`。 | 要语音时 |
 | `tv-passport.service.d/tenancy.conf` | [`tenancy/tv-media.conf`](../../packaging/systemd/tenancy/tv-media.conf) | 和星智的一样；另外让这个 unit 能写 `/var/lib/ai-passport-tv`（数据库的 WAL 文件）。 | 切换之后 |
+| `tv-passport.service.d/listen.conf` | [`tv-passport.service.d/listen.conf`](../../packaging/systemd/tv-passport.service.d/listen.conf) | 和星智的一样，`TV_LISTEN_PORT=8199`、`TV_LISTEN_ROUTE=passport`、`TV_LISTEN_DEVICE=d1`。 | 要用手机听时 |
 | `muse-asr.service.d/tv-voice.conf` | [`muse-asr.service.d/tv-voice.conf`](../../packaging/systemd/muse-asr.service.d/tv-voice.conf) | 媒体服务送音频用的本机套接字 `/run/muse-asr/asr.sock`（0660，组 `tvserver`）。这个组就是唯一的凭据。 | 要语音时 |
 | `yt-relay.service.d/memory.conf`（海外） | [`yt-relay.service.d/memory.conf`](../../packaging/systemd/yt-relay.service.d/memory.conf) | `MemoryMax=600M`：yt-dlp 加 deno 峰值约 330 MB，再加两路 ffmpeg 就超过了 400M。 | 只在基础 unit 比模板旧时要；模板已经是 600M |
 
-删掉 `voice.conf`（再 `systemctl daemon-reload`）就关掉这个 unit 的语音；删掉几个 `tenancy.conf` 就是多用户的回滚。
+删掉 `voice.conf`（再 `systemctl daemon-reload`）就关掉这个 unit 的语音；删掉 `listen.conf`（daemon-reload 后重启）就关掉用手机听（遥控页随之不显示那一行）；删掉几个 `tenancy.conf` 就是多用户的回滚。中转不用为用手机听做任何设置：它从自己的 `--key-file` 派生出同一个令牌密钥。
 单用户中转服务 Passport 时，Passport 的两个事件 drop-in 不能省：基础的 `tv-relay.service` 在 `--extra-device` 里写着它。
 
 ## 依赖
@@ -80,9 +82,11 @@
    把一段裸音频（16 kHz 单声道 PCM16 小端，约 1 秒）放到 `/usr/local/share/muse-asr-warm.pcm`，
    `tvserver` 能读，装上两个 `muse-asr-warm` 文件，`systemctl enable --now muse-asr-warm.timer`。
 3. **tv-relay** 加 `passport-events.conf`。把 `--public-url` 里的 `<site>` 换掉。
-4. **tv-xingzhi** 和 **tv-passport** 加各自的 drop-in（`voice.conf`，Passport 还有 `relay-events.conf`）。
-   在云安全组和主机防火墙放行 8097 和 8098。
-5. **nginx**：[`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf)。
+4. **tv-xingzhi** 和 **tv-passport** 加各自的 drop-in（`voice.conf`、`listen.conf`，Passport 还有 `relay-events.conf`）。
+   在云安全组和主机防火墙放行 8097 和 8098。用手机听的端口 8198、8199 只听本机，不要放行。
+5. **nginx**：[`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) 和
+   [`packaging/nginx/tv-listen.conf`](../../packaging/nginx/tv-listen.conf)（用手机听），都放进每个提供遥控页的域名的
+   扩展目录（宝塔上是 `/www/server/panel/vhost/nginx/extension/<site>/`），然后 `nginx -t`、重载。
 6. **多用户**：`tenancy.conf` 这几个 drop-in，只作为[运维手册](tenancy-phase1-runbook.zh_CN.md)切换的一步（迁移之后）装。
 7. **海外节点**：`yt-relay.service`（`memory.conf` 只在基础 unit 较旧时要）。
 8. **产品网站**（可选）：见[下文](#产品网站)。
@@ -103,7 +107,8 @@ systemctl restart muse-asr tv-relay tv-xingzhi tv-passport   # 按这个顺序
 ```
 
 检查：`systemctl cat <unit>` 列出基础 unit 和每个 drop-in；每个媒体服务记一行
-`voice: on, relay on, transcripts not logged`（多用户时是 `relay per device`），并且没有
+`voice: on, relay on, transcripts not logged`（多用户时是 `relay per device`），一行
+`listen: on, 127.0.0.1:8198 route /tv/listen/xingzhi/, lead 5 s`（Passport 是 8199 和 `passport`），并且没有
 `WARNING: TV_DEGRADE=ladder`；`systemctl list-timers muse-asr-warm.timer` 显示下一次运行。
 
 ## 产品网站
@@ -116,8 +121,9 @@ systemctl restart muse-asr tv-relay tv-xingzhi tv-passport   # 按这个顺序
   `TV/index.html`，这样 `/TV/` 在这里也能打开，和主站一样。
 - 页面用以 `/` 开头的相对路径链接中转的页面，所以这个域名也要像主站一样提供：`/tv/`
   （手机遥控、`/tv/console`、`/tv/wifi`）、`/TV/R/`、`/TV/B/`、`/TV/L/`、`/TV/W`，以及 `/TV/`
-  （使用说明）。在这个 server 块里 include
-  [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf)。
+  （使用说明），以及 `/tv/listen/`（用手机听）。在这个 server 块里 include
+  [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) 和
+  [`packaging/nginx/tv-listen.conf`](../../packaging/nginx/tv-listen.conf)。
   [`packaging/nginx/tv-site.conf`](../../packaging/nginx/tv-site.conf) 是整个 server 块的模板，
   用 `<site>`、`<root>` 占位。
 - 登录 cookie 按域名分开（`Path=/tv/`，不带 `Domain`）。二维码、邀请链接和电脑版的登录码用的是

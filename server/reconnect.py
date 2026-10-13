@@ -29,7 +29,9 @@ PAUSE_FRAME_S = 1.0
 ATTEMPT_TIMEOUT_S = 20.0
 RETRY_DELAY_S = 2.0
 
-_SILENCE = bytes(AUDIO_BYTES)
+# 一块静音（ADPCM 全零即静音）；用手机听时发送端的填充块也用它。
+SILENCE = bytes(AUDIO_BYTES)
+_SILENCE = SILENCE
 
 
 @dataclass
@@ -142,6 +144,10 @@ def _flush_voice(server, connection, session: int, wire: WireState) -> None:
         wire.seq = flush(connection, session, wire.seq)
     # 设备上「恢复登录」的回答也一样：等画面、暂停时照样发。
     flush = getattr(server, "recover_flush", None)
+    if flush is not None:
+        wire.seq = flush(connection, session, wire.seq)
+    # 用手机听开始或结束：等画面、暂停时也让设备静音或放声。
+    flush = getattr(server, "listen_flush", None)
     if flush is not None:
         wire.seq = flush(connection, session, wire.seq)
 

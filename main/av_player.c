@@ -555,6 +555,14 @@ typedef struct {
     // chunks, written by the audio task only; sound_pos counts chunks.
     uint8_t sound_hist[16];
     atomic_uint sound_pos;
+    // The phone remote plays this device's sound ("listening on the phone",
+    // HELLO "listen": 1): SWITCH {"mute": 1|0}, or CONFIG "mute": 1 for a
+    // session that starts while someone listens. RAM only and per session --
+    // the stored volume is untouched, and a reboot or a CONFIG without it
+    // brings the sound back -- so a lost "unmute" cannot leave the device
+    // silent for good. Written by the receive task, read by the audio task
+    // (codec mute) and the receive task (STATUS "pos" every 2 s).
+    atomic_bool listen_mute;
     // Paused from the phone: the panel keeps the last frame and a band across
     // the middle says so (paint_pause_band). pause_gen moves on every change so
     // the band is drawn once per change, not per pass.
@@ -1301,6 +1309,16 @@ static void take_switch(char *buf, size_t n) {
         cJSON_Delete(j);
         return;
     }
+    // The phone started or stopped playing this device's sound (HELLO "listen").
+    const cJSON *mute=cJSON_GetObjectItemCaseSensitive(j,"mute");
+    if (cJSON_IsNumber(mute)) {
+        atomic_store(&s.listen_mute,mute->valuedouble!=0);
+        // The first position report goes out with the next packet.
+        atomic_store(&s.status_dirty,true);
+        ESP_LOGI(TAG,"Sound %s the phone",mute->valuedouble!=0 ? "handed to" : "back from");
+        cJSON_Delete(j);
+        return;
+    }
     const cJSON *paused=cJSON_GetObjectItemCaseSensitive(j,"paused");
     if (cJSON_IsNumber(paused) || cJSON_IsBool(paused)) {
         const bool on=cJSON_IsTrue(paused) || (cJSON_IsNumber(paused) && paused->valuedouble!=0);
@@ -1677,6 +1695,12 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
     }
 #endif
     if (ok) {
+        // Someone already listens on the phone: start this session muted, so
+        // the speaker does not play a moment of sound first. Absent, it plays.
+        const cJSON *mute=cJSON_GetObjectItemCaseSensitive(j,"mute");
+        atomic_store(&s.listen_mute,cJSON_IsNumber(mute) && mute->valuedouble==1);
+    }
+    if (ok) {
         // Account recovery: a multi-user server that can mint an owner login
         // code says "recover": 1 to a bound device; an unbound one gets
         // "bound": 0 and its bind address in remote_url (av_recover.h).
@@ -1709,10 +1733,19 @@ static void send_status(int fd, uint32_t session) {
     char body[96];
     // The signal rides along: sent every 30 s as well as on a change, it lets
     // the server's log show how the link was when playback suffered.
-    int n=snprintf(body,sizeof(body),"{\"volume\":%u,\"brightness\":%u,\"pet\":%u,\"rssi\":%d}",
+    int n=snprintf(body,sizeof(body),"{\"volume\":%u,\"brightness\":%u,\"pet\":%u,\"rssi\":%d",
                    (unsigned)s.volume,(unsigned)s.menu.brightness,(unsigned)atomic_load(&s.pet),
                    wifi_rssi());
     if (n<=0 || n>=(int)sizeof(body)) return;
+    // While the phone plays the sound: where this device is on the session's
+    // sound clock (ms on the wire timeline), so the server can keep it on the
+    // phone's schedule to a few tens of milliseconds.
+    const int64_t pos=estimated_pts();
+    int m=atomic_load(&s.listen_mute) && pos>0
+        ? snprintf(body+n,sizeof(body)-(size_t)n,",\"pos\":%" PRIu32 "}",(uint32_t)pos)
+        : snprintf(body+n,sizeof(body)-(size_t)n,"}");
+    if (m<=0 || m>=(int)sizeof(body)-n) return;
+    n+=m;
     uint8_t wire[AV_HEADER_BYTES];
     av_header_t h={.type=AV_STATUS,.session=session,.length=(uint32_t)n};
     av_header_encode(wire,&h);
@@ -1809,6 +1842,8 @@ static bool hello(int fd) {
         cJSON_AddNumberToObject(j,"info",1) &&
         // And how far a relay video has played (SWITCH "progress").
         cJSON_AddNumberToObject(j,"progress",1) &&
+        // And "listening on the phone": SWITCH/CONFIG "mute", STATUS "pos".
+        cJSON_AddNumberToObject(j,"listen",1) &&
         // The pet in use; its presence also says SWITCH may carry "pet".
         cJSON_AddNumberToObject(j,"pet",(double)atomic_load(&s.pet)) &&
         // Audio-only mode; its presence also says SWITCH may carry "audio_only".
@@ -1953,8 +1988,10 @@ static void receive_task(void *arg) {
     while (!stopping()) {
         // Tell the server about a volume or backlight change, between packets:
         // this task owns the socket, so nothing else writes to it mid-packet.
-        // Every 30 s regardless, for the signal reading.
-        if (esp_timer_get_time()-last_status_us>=30000000) atomic_store(&s.status_dirty,true);
+        // Every 30 s regardless, for the signal reading; every 2 s while the
+        // phone plays the sound, for the play position.
+        const int64_t status_every_us=atomic_load(&s.listen_mute) ? 2000000 : 30000000;
+        if (esp_timer_get_time()-last_status_us>=status_every_us) atomic_store(&s.status_dirty,true);
         if (stream.configured && atomic_exchange(&s.status_dirty,false)) {
             last_status_us=esp_timer_get_time();
             s_rx_stage="status-send";
@@ -2280,6 +2317,8 @@ static void audio_task(void *arg) {
     // moment the first block is actually written keeps it on only while there is
     // something to put through it.
     bool unmuted=false;
+    // Whether the codec is held muted because the phone plays the sound.
+    bool phone_muted=false;
     int64_t last_feed=0;
     uint8_t volume=s.volume;
     // When the queue last ran dry, or zero while the sound is being served.
@@ -2358,9 +2397,13 @@ static void audio_task(void *arg) {
             if (beep.kind) beep_chunk(&beep,pcm);
         }
 #endif
-        if (!unmuted) {
+        // Opened at the first block -- or kept shut while the phone plays the
+        // sound, and opened again when it stops. Only this task touches the codec.
+        const bool phone=atomic_load(&s.listen_mute);
+        if (!unmuted || phone!=phone_muted) {
             unmuted=true;
-            bsp_audio_set_mute(false);
+            phone_muted=phone;
+            bsp_audio_set_mute(phone);
         }
         if (volume!=s.volume) { volume=s.volume; bsp_audio_set_volume(volume); }
         {
@@ -2381,6 +2424,9 @@ static void audio_task(void *arg) {
             s.sound_hist[pos%16u]=(uint8_t)level;
             atomic_store(&s.sound_pos,pos+1u);
         }
+        // Zeroed as well as muted: a codec whose mute is soft must not leak it.
+        // The listening screen above still moves with the sound the phone plays.
+        if (phone_muted) memset(pcm,0,sizeof(pcm));
         int64_t before=esp_timer_get_time();
         if (!last_feed) {
             taskENTER_CRITICAL(&clock_lock);

@@ -168,6 +168,16 @@ ERROR 类型保留且支持拆包；服务器错误时关闭连接，不冒险�
 
 只对 HELLO 带 `"progress": 1` 的固件、只对中转的台：直播路径发 `SWITCH {"progress": {"dur", "pos", "at"}}` 锚点（毫秒）——视频多长、本会话某个音频 PTS 时播到哪；设备按自己的声音时钟往前推。`server/progress.py` 管一个会话的锚点：片源开始供数据时（会话开始 `at` 为 0，或 `reconnect.hold` 换上新片源，`at` 为下一个音频 PTS）在后台线程里问中转 `/info/<台>` 的 `duration` 和 `offset`（流还没起来时隔 1 秒再问，最多 3 次）；保持（断流、暂停）开始时把锚点加上 `stop`（最后一块真声音之后的 PTS）重发；原片源自己缓过来时按停顿把锚点顺延。没有总长的视频在设备挂着进度条时发 `{"progress": 0}`。不每秒发，也不逐帧做事。v2 发送端不发。设备侧见 [`docs/local-tv-prototype.zh_CN.md`](../docs/local-tv-prototype.zh_CN.md) 的「播放进度」。
 
+### 用手机听
+
+手机遥控页可以放设备的声音（蓝牙耳机、和手机配对的音箱），设备照常放画面、扬声器静音。设计和实测见 [`2026-10-12-phone-audio-design.zh_CN.md`](../docs/superpowers/specs/2026-10-12-phone-audio-design.zh_CN.md)。
+
+- **怎么开。** `TV_LISTEN_PORT`（本机 HTTP 端口，Xingzhi 8198、Passport 8199）、`TV_LISTEN_ROUTE`（`xingzhi`、`passport`，即 nginx 前缀 `/tv/listen/<路线>/`），以及 `TV_LISTEN_KEY_FILE`（或 `TV_RELAY_KEY_FILE`）里中转的密钥文件：令牌密钥由它派生（`listen.derive_secret`），中转从 `--key-file` 派生出同一个。可选：`TV_LISTEN_LEAD_S`（H，默认 5），`TV_LISTEN_DEVICE`（单用户中转里这个单元的设备 id，`d0`、`d1`）。drop-in：`packaging/systemd/tv-*.service.d/listen.conf`；nginx：`packaging/nginx/tv-listen.conf`。不设就什么都不变，遥控页也不显示这一行。
+- **给谁。** 只给 HELLO 带 `"listen": 1` 的固件（`SWITCH {"mute": 1|0}`、CONFIG `"mute": 1`、静音时 STATUS 每 2 秒带 `"pos"`），只在旧发送端（legacy）。中转的 `POST /api/listen` 和别的遥控一样认人（主人、成员、这台设备的访客），回答 `/tv/listen/<路线>/<设备>/live.m3u8?t=<令牌>`；令牌是对设备 id 的 HMAC（12 小时）。电视服务只给它当前会话的那台设备出流。
+- **怎么做。** `server/listen.py` 的 `ListenService`：第一次取播放列表时开 `ListenStream`（每台设备一个 `ffmpeg … -c:a aac`）；一个线程每 20 ms 按每 40 ms 一条往时间表里追加，从频道队列里往前看着取下一块（`ChannelTap`，不出队；中转的台攒 1 秒、直播攒 3 秒）或者静音；每段的 `EXT-X-PROGRAM-DATE-TIME` 是设备播它的时刻。`_pace_live` 每块声音问 `for_device(origin + audio_pts + δ)`：填充（静音，时间戳基数顺延）、跳过（丢掉队列里更旧的块）或那一块。手机页对着中转的时钟（`GET /api/listen/time`）对齐自己。
+- **什么时候停。** 网页发 `POST …/bye?c=<编号>`，或所有手机 20 秒没取播放列表：流和它的 ffmpeg 结束，设备收到 `{"mute": 0}`，多出来的延迟留到下一次会话。`now-playing.json` 带 `listen`（`route`、`lead`、`ok`、`on`、`lag`）；中转推算进度时把 `lag` 加到 `PLAYBACK_LAG_S` 上。
+- **日志。** 启动时 `listen: on …`，`listen: start device=…`，`session=… listen mute=1|0`，`listen: stop (nobody listening) … content=… silence=… device_fillers=… device_skipped=…`。
+
 ## 语音控制
 
 在设备上按住 OK 说话，松开：设备在电视连接上把这句话传上来，媒体服务交给同一台主机上的

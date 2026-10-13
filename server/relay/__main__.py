@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+from .. import listen
 from . import voicecmds
 from .bilibili import Bilibili
 from .state import State
@@ -47,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="--now-playing / --events-out 那台设备在手机上显示的名字")
     parser.add_argument("--extra-device", action="append", default=[], metavar="名字:正在播放:事件",
                         help="再遥控一台设备（它的电视服务写的「正在播放」和读的事件文件），可重复")
+    parser.add_argument("--listen-key-file", type=Path,
+                        help="「用手机听」令牌的密钥文件；不给就由 --key-file 派生（电视服务读同一个文件，见 server/listen.py）")
     parser.add_argument("--stream-port", type=int, default=8099)
     parser.add_argument("--manage-port", type=int, default=8100)
     args = parser.parse_args(argv)
@@ -56,6 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     if len(key) < 16:
         print(f"{args.key_file}：密钥太短（至少 16 个字符）", file=sys.stderr)
         return 2
+    listen_secret = None
+    if args.listen_key_file is not None:
+        listen_secret = listen.derive_secret(args.listen_key_file.read_text(encoding="utf-8"))
+    args.listen_secret = listen_secret
     if args.db is None and (args.state is None or args.channels_out is None):
         print("要么给 --db（多用户），要么给 --state 和 --channels-out（单用户）", file=sys.stderr)
         return 2
@@ -78,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
                   main_channels=args.main_channels, groups_out=args.groups_out,
                   now_playing_in=args.now_playing, remote_url_out=args.remote_url_out,
                   public_url=args.public_url,
-                  device_name=args.device_name, extra_devices=extra,
+                  device_name=args.device_name, extra_devices=extra, listen_secret=listen_secret,
                   log=lambda message: print(message, flush=True))
     relay.write_table()
     state.ensure_code()
@@ -119,7 +126,7 @@ def _serve_tenants(args, key: str, youtube) -> int:
     devices_dir = args.devices_dir or args.db.parent / "devices"
     relay = Relay(None, Bilibili(), None, args.ffmpeg, key, youtube=youtube,
                   main_channels=args.main_channels, public_url=args.public_url,
-                  accounts=accounts, devices_dir=devices_dir,
+                  accounts=accounts, devices_dir=devices_dir, listen_secret=args.listen_secret,
                   log=lambda message: print(message, flush=True))
     relay.sync_devices(force=True)
     # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。

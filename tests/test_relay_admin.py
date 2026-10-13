@@ -508,7 +508,8 @@ class MetricsTests(unittest.TestCase):
             now_playing.write(path, "ch001", True, True, now=100.0, since=90.0,
                               metrics={"bytes_10s": 1500, "fps": 12.5, "target_rate": 110000, "junk": 1})
             self.assertEqual(now_playing.read(path, 105.0),
-                             {"channel": "ch001", "online": True, "switch": True, "since": 90.0, "device": None})
+                             {"channel": "ch001", "online": True, "switch": True, "since": 90.0, "device": None,
+                              "listen": None})
             self.assertEqual(now_playing.read_metrics(path, 105.0),
                              {"bytes_10s": 1500, "fps": 12.5, "target_rate": 110000})
             self.assertIsNone(now_playing.read_metrics(path, 200.0))

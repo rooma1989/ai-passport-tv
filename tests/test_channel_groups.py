@@ -108,10 +108,12 @@ class NowPlayingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "now-playing.json"
             self.assertEqual(now_playing.read(path, 100.0),
-                             {"channel": "", "online": False, "switch": False, "since": 0.0, "device": None})
+                             {"channel": "", "online": False, "switch": False, "since": 0.0, "device": None,
+                              "listen": None})
             now_playing.write(path, "ch012", True, True, now=100.0, since=95.0)
             self.assertEqual(now_playing.read(path, 120.0),
-                             {"channel": "ch012", "online": True, "switch": True, "since": 95.0, "device": None})
+                             {"channel": "ch012", "online": True, "switch": True, "since": 95.0, "device": None,
+                              "listen": None})
             self.assertFalse(now_playing.read(path, 131.0)["online"])
             now_playing.write(path, "ch012", False, True, now=140.0, since=95.0)
             # Between two sessions -- a channel change, a reconnect -- the device
