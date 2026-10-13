@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<!-- 这个页面不连网：Wi-Fi 密码只在手机上变成声音。connect-src 'none' 让浏览器替我们保证这一点。 -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#1c1915">
+<title>声波配网 · 小智电视</title>
+<style>
+  :root { --ink: #1c1915; --ink-deep: #0f0d0b; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
+          --dim: #8c8170; --red: #d2553f; --amber: #ffb547;
+          --serif: "Songti SC", "STSong", "Noto Serif SC", serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--ink); color: var(--paper); font: 15px/1.6 -apple-system, "PingFang SC", sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 28px 20px 40px; }
+  h1 { margin: 0 0 4px; font: 700 24px/1.3 var(--serif); letter-spacing: 3px; color: var(--paper-hi); }
+  .tag { font-size: 12px; color: var(--red); letter-spacing: 3px; }
+  .dim { color: var(--dim); font-size: 14px; }
+  ol { padding-left: 20px; margin: 12px 0 18px; color: var(--dim); font-size: 14px; }
+  label { display: block; margin: 14px 0 6px; font-size: 14px; color: var(--paper-hi); }
+  input[type=text], input[type=password] { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule);
+          color: var(--paper); font: 17px -apple-system, "PingFang SC", sans-serif; padding: 11px 12px; border-radius: 0; }
+  .row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 14px; color: var(--dim); }
+  .row input { width: 18px; height: 18px; margin: 0; }
+  .row label { display: inline; margin: 0; color: var(--dim); }
+  details { margin-top: 14px; color: var(--dim); font-size: 14px; }
+  summary { cursor: pointer; }
+  button { display: block; width: 100%; margin-top: 18px; background: var(--red); color: #fff4e6; border: 0;
+           padding: 14px; font: 19px var(--serif); letter-spacing: 6px; }
+  button.plain { background: none; color: var(--dim); border: 1px solid var(--rule); font: 14px -apple-system, "PingFang SC", sans-serif;
+                 letter-spacing: 1px; padding: 9px; margin-top: 12px; }
+  .hint { margin-top: 16px; padding: 12px; border: 1px solid var(--rule); background: var(--ink-deep);
+          font: 16px/1.6 var(--serif); color: var(--amber); text-align: center; }
+  .bar { height: 6px; background: var(--rule); margin-top: 10px; }
+  .bar div { height: 100%; width: 0; background: var(--amber); }
+  .bad { color: var(--red); font-size: 14px; margin-top: 6px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="tag">小智电视</div>
+  <h1>声波配网</h1>
+  <ol>
+    <li>让电视进入配网（设置）页面。</li>
+    <li>填好 Wi-Fi 名称和密码，只要填一次，这台手机会记住。</li>
+    <li>把手机音量调大，靠近电视，点「发送」。电视听到后会自己连上网。</li>
+  </ol>
+
+  <form id="form" autocomplete="off" novalidate>
+    <label for="ssid">Wi-Fi 名称</label>
+    <input id="ssid" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="例如 TP-LINK_5A3F">
+    <div class="bad" id="ssid-bad" hidden></div>
+    <div class="dim">电视只能连 2.4G 的 Wi-Fi，名字带「5G」的一般连不上。</div>
+
+    <label for="pass">Wi-Fi 密码</label>
+    <input id="pass" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="没有密码就留空">
+    <div class="bad" id="pass-bad" hidden></div>
+    <div class="row"><input id="show" type="checkbox"><label for="show">显示密码</label></div>
+    <div class="row"><input id="remember" type="checkbox" checked><label for="remember">在这台手机上记住</label></div>
+
+    <details id="more">
+      <summary>高级</summary>
+      <label for="server">服务器地址（一般留空）</label>
+      <input id="server" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+             placeholder="留空就用电视自己的设置">
+      <div class="bad" id="server-bad" hidden></div>
+    </details>
+
+    <button id="send" type="submit">发送</button>
+  </form>
+
+  <div id="playing" hidden>
+    <div class="hint">把音量调大，手机靠近电视</div>
+    <div class="dim" id="status" style="margin-top:10px"></div>
+    <div class="bar"><div id="bar"></div></div>
+  </div>
+  <div class="dim" id="after" hidden style="margin-top:14px">
+    电视上显示已连接就好了。没有反应：确认电视在配网页面，手机再靠近一点、音量再大一点，再发一次。
+    iPhone 侧面的静音开关打开时可能没有声音。
+  </div>
+
+  <button class="plain" id="forget" type="button">清除这台手机上记住的 Wi-Fi</button>
+  <p class="dim">Wi-Fi 密码只在这台手机上变成声音，不会上传到任何地方。</p>
+</main>
+<noscript><p style="padding:20px">这个页面需要打开 JavaScript。</p></noscript>
+<script>
+"use strict";
+
+// BEGIN SOUNDPROV ENCODER
+// 声波配网的编码器。设备端的解码器是 main/av_soundprov.c，主机测试里的 C 版镜像是
+// tests/soundprov_ref.c；空中格式改动时三处一起改（tests/test_soundprov_page.py 会核对）。
+// 格式见 docs/superpowers/specs/2026-10-13-sound-provisioning-design.md。
+const SoundProv = (() => {
+  const PRE_A = [3, 12, 0, 9, 15, 6];
+  const PRE_B = [10, 1, 13, 4, 7, 14];
+  const SYMBOL_S = 0.048;   // 一个符号 48 ms：两个音同时响，低频段 16 选 1（高 4 位）、高频段 16 选 1（低 4 位）
+  const LEAD_S = 0.15;      // 开始前的静音（手机扬声器刚打开时可能吞掉开头）
+  const GAP_S = 0.3;        // 每遍之后的静音
+  const RAMP_S = 0.003;     // 每个符号首尾的升余弦渐变，免得“咔哒”声和频谱溅出
+  const AMP = 0.45;         // 每个音的幅度；两个音相加不超过 0.9
+  const LIMITS = [32, 64, 63];  // SSID、密码、服务器地址的最大字节数
+
+  const EXP = new Uint8Array(512), LOG = new Uint8Array(256);
+  {
+    let x = 1;
+    for (let i = 0; i < 255; i++) {
+      EXP[i] = x; LOG[x] = i;
+      x <<= 1;
+      if (x & 0x100) x ^= 0x11d;
+    }
+    for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+  }
+  const mul = (a, b) => (a && b) ? EXP[LOG[a] + LOG[b]] : 0;
+
+  // Reed-Solomon 校验字节：data * x^npar mod prod(x + alpha^i), i < npar。
+  function rsParity(data, npar) {
+    const g = new Uint8Array(npar + 1);
+    g[0] = 1;
+    let len = 1;
+    for (let i = 0; i < npar; i++) {
+      const a = EXP[i];
+      g[len] = mul(a, g[len - 1]);
+      for (let j = len - 1; j >= 1; j--) g[j] ^= mul(a, g[j - 1]);
+      len++;
+    }
+    const par = new Uint8Array(npar);
+    for (const byte of data) {
+      const fb = byte ^ par[0];
+      par.copyWithin(0, 1);
+      par[npar - 1] = 0;
+      for (let j = 0; j < npar; j++) par[j] ^= mul(fb, g[j + 1]);
+    }
+    return par;
+  }
+
+  function crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    for (const byte of bytes) {
+      c ^= byte;
+      for (let b = 0; b < 8; b++) c = (c & 1) ? (c >>> 1) ^ 0xEDB88320 : c >>> 1;
+    }
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  const utf8 = (text) => new TextEncoder().encode(text);
+
+  // 一遍的符号：前导 6 个，长度头 5 个（RS 保护），然后是负载码字。
+  // 负载第 1 版：0x01, ssid 长度, ssid, 密码长度, 密码, 服务器长度, 服务器, CRC-32（小端）。
+  // 出错时抛出 Error，其 field 为 0/1/2（哪一栏太长或为空）。
+  function symbols(ssid, pass, server) {
+    const fields = [utf8(ssid), utf8(pass), utf8(server)];
+    fields.forEach((f, i) => {
+      if (f.length > LIMITS[i] || (i === 0 && f.length === 0)) {
+        const error = new Error(i === 0 && f.length === 0 ? "empty" : "too long");
+        error.field = i;
+        throw error;
+      }
+    });
+    const payload = [1];
+    for (const f of fields) payload.push(f.length, ...f);
+    const crc = crc32(payload);
+    payload.push(crc & 255, (crc >>> 8) & 255, (crc >>> 16) & 255, crc >>> 24);
+    const L = payload.length;
+    const npar = Math.max(8, 2 * Math.ceil(L / 4));
+    const stream = [L, ...rsParity([L], 4), ...payload, ...rsParity(payload, npar)];
+    const a = [...PRE_A], b = [...PRE_B], bytes = [];
+    stream.forEach((value, j) => {
+      const byte = value ^ (Math.imul(j + 1, 0x9E3779B1) >>> 24);
+      bytes.push(byte);
+      a.push(byte >> 4);
+      b.push(byte & 15);
+    });
+    return { a, b, bytes };
+  }
+
+  function repeatLength(nsym, sr) {
+    return Math.round(nsym * SYMBOL_S * sr) + Math.round(GAP_S * sr);
+  }
+
+  // 一遍的波形（含之后的静音），满幅 1.0。
+  function render(sym, sr) {
+    const nsym = sym.a.length;
+    const out = new Float32Array(repeatLength(nsym, sr));
+    const ramp = RAMP_S * sr;
+    for (let j = 0; j < nsym; j++) {
+      const n0 = Math.round(j * SYMBOL_S * sr), n1 = Math.round((j + 1) * SYMBOL_S * sr);
+      const wa = 2 * Math.PI * (1250 + 125 * sym.a[j]) / sr;
+      const wb = 2 * Math.PI * (3250 + 125 * sym.b[j]) / sr;
+      for (let n = n0; n < n1; n++) {
+        const t = n - n0, left = n1 - 1 - n;
+        let env = 1;
+        if (t < ramp) env = 0.5 - 0.5 * Math.cos(Math.PI * t / ramp);
+        else if (left < ramp) env = 0.5 - 0.5 * Math.cos(Math.PI * left / ramp);
+        out[n] = env * AMP * (Math.sin(wa * t) + Math.sin(wb * t));
+      }
+    }
+    return out;
+  }
+
+  return { symbols, render, repeatLength, utf8, LIMITS, SYMBOL_S, LEAD_S, GAP_S };
+})();
+// END SOUNDPROV ENCODER
+
+const $ = (id) => document.getElementById(id);
+const REPEATS = 6;            // 一次最多播 6 遍（约 15–20 秒），电视收到了就可以点「停止」
+const STORE = { ssid: "tvwifi.ssid", pass: "tvwifi.pass", server: "tvwifi.server" };
+
+function load(key) { try { return localStorage.getItem(key) || ""; } catch (e) { return ""; } }
+function save(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* 无痕模式 */ } }
+function forget(key) { try { localStorage.removeItem(key); } catch (e) { /* 无痕模式 */ } }
+
+$("ssid").value = load(STORE.ssid);
+$("pass").value = load(STORE.pass);
+$("server").value = load(STORE.server);
+if ($("server").value) $("more").open = true;
+
+$("show").addEventListener("change", () => { $("pass").type = $("show").checked ? "text" : "password"; });
+$("forget").addEventListener("click", () => {
+  Object.values(STORE).forEach(forget);
+  $("ssid").value = $("pass").value = $("server").value = "";
+  $("forget").textContent = "已清除";
+  setTimeout(() => { $("forget").textContent = "清除这台手机上记住的 Wi-Fi"; }, 2000);
+});
+
+const BAD = ["ssid-bad", "pass-bad", "server-bad"];
+const TOO_LONG = ["名称太长：最多 32 个字节（一个汉字算 3 个）。", "密码太长：最多 64 个字节。",
+                  "地址太长：最多 63 个字节。"];
+
+function check() {
+  BAD.forEach((id) => { $(id).hidden = true; });
+  try {
+    return SoundProv.symbols($("ssid").value, $("pass").value, $("server").value.trim());
+  } catch (error) {
+    if (error.field === undefined) throw error;
+    const node = $(BAD[error.field]);
+    node.textContent = error.message === "empty" ? "请填 Wi-Fi 名称。" : TOO_LONG[error.field];
+    node.hidden = false;
+    if (error.field === 2) $("more").open = true;
+    return null;
+  }
+}
+
+let ctx = null, source = null, timer = 0;
+
+function stop() {
+  if (source) { try { source.stop(); } catch (e) { /* 已经停了 */ } source = null; }
+  cancelAnimationFrame(timer);
+  $("send").textContent = "发送";
+  $("playing").hidden = true;
+  $("after").hidden = false;
+}
+
+function play(sym) {
+  // iOS 只允许在点击里打开声音；把会话设成“播放”，静音开关打开时也能出声（iOS 16.4 起）。
+  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) { /* 旧系统 */ }
+  const Context = window.AudioContext || window.webkitAudioContext;
+  if (!ctx) ctx = new Context();
+  if (ctx.state !== "running") ctx.resume();
+  const samples = SoundProv.render(sym, ctx.sampleRate);
+  const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+  buffer.getChannelData(0).set(samples);
+  const once = samples.length / ctx.sampleRate;
+  source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  source.connect(ctx.destination);
+  const start = ctx.currentTime + SoundProv.LEAD_S;
+  source.start(start);
+  source.stop(start + once * REPEATS);
+  const mine = source;
+  source.onended = () => { if (source === mine) stop(); };
+
+  $("send").textContent = "停止";
+  $("playing").hidden = false;
+  $("after").hidden = true;
+  const seconds = (sym.a.length * SoundProv.SYMBOL_S).toFixed(1);
+  const tick = () => {
+    const t = Math.max(0, ctx.currentTime - start);
+    const n = Math.min(REPEATS, Math.floor(t / once) + 1);
+    const part = Math.min(1, (t % once) / (once - SoundProv.GAP_S));
+    $("status").textContent = `正在发送：第 ${n} 遍，共 ${REPEATS} 遍（每遍 ${seconds} 秒）`;
+    $("bar").style.width = `${Math.round(part * 100)}%`;
+    timer = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+$("form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (source) { stop(); return; }
+  const sym = check();
+  if (!sym) return;
+  if ($("remember").checked) {
+    save(STORE.ssid, $("ssid").value);
+    save(STORE.pass, $("pass").value);
+    save(STORE.server, $("server").value.trim());
+  }
+  if ($("pass").value && $("pass").value.length < 8) {
+    $("pass-bad").textContent = "提示：Wi-Fi 密码一般至少 8 位，请再核对一下。";
+    $("pass-bad").hidden = false;
+  }
+  play(sym);
+});
+</script>
+</body>
+</html>

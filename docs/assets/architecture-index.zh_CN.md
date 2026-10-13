@@ -52,6 +52,7 @@
 | [`main/av_settings.c`/`.h`](../../main/av_settings.h) | 亮度/音量的分档表（固定档位而非连续值）。 |
 | [`main/av_store.c`/`.h`](../../main/av_store.h) | 音量/亮度/服务器地址的 NVS 持久化，以及设备密钥。 |
 | [`main/av_identity.c`/`.h`](../../main/av_identity.h) | HELLO 里给多用户服务器的设备身份（`device_id`、`model`、`device_secret`、`fw`）；格式化部分有主机测试。 |
+| [`main/av_soundprov.c`/`.h`](../../main/av_soundprov.h) | 声波配网解码器：输入 16 kHz 麦克风 PCM，输出 Wi-Fi 名称、密码、服务器地址；纯 C、只用整数，在模拟信道上有主机测试。手机端是 `server/relay/assets/wifi.html`（`/tv/wifi`、`/TV/W`）。 |
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
 | [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机，以及频道列表面板里的语音子状态——纯逻辑，无 LVGL。 |
 | [`main/av_voice_policy.c`/`.h`](../../main/av_voice_policy.h) | 按住说话：每种语音状态下每个按键做什么、按住与短按的区分、各种超时——纯逻辑，有主机测试。 |

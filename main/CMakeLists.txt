@@ -32,6 +32,7 @@ idf_component_register(
          "av_voice.c"
          "av_voice_policy.c"
          "av_identity.c"
+         "av_soundprov.c"
     INCLUDE_DIRS "."
     # The non-ASCII glyph table, written by tools/make_font.py. Embedded as a
     # blob rather than included as a header: the same data as C source is about

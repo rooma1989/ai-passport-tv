@@ -118,6 +118,16 @@ run_static_checks() {
         tests/test_av_identity.c main/av_identity.c \
         -o "${test_dir}/test_av_identity"
     "${test_dir}/test_av_identity"
+    # Sound-wave Wi-Fi setup: the decoder against a C mirror of the phone page's
+    # encoder, through a simulated speaker, room, clock drift and microphone.
+    # The decoder runs blind on the device -- nothing reports why a message was
+    # not heard -- so this is where it is seen to work. The page's own
+    # JavaScript is checked against the same symbols by test_soundprov_page.py.
+    # The test includes main/av_soundprov.c itself to reach its internals.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -O2 -Imain \
+        tests/test_av_soundprov.c tests/soundprov_ref.c -lm \
+        -o "${test_dir}/test_av_soundprov"
+    "${test_dir}/test_av_soundprov"
     python3 tests/test_verify_firmware.py
     python3 tests/test_tv_server.py
     python3 tests/test_video_import.py

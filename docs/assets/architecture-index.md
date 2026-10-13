@@ -66,6 +66,7 @@ Supporting modules, each already host-testable and already covered by
 | [`main/av_settings.c`/`.h`](../../main/av_settings.h) | Brightness/volume step tables (fixed levels, not continuous). |
 | [`main/av_store.c`/`.h`](../../main/av_store.h) | NVS persistence for volume/brightness/server address, and the device secret. |
 | [`main/av_identity.c`/`.h`](../../main/av_identity.h) | Device identity in HELLO (`device_id`, `model`, `device_secret`, `fw`) for the multi-user server; host-tested formatting. |
+| [`main/av_soundprov.c`/`.h`](../../main/av_soundprov.h) | Sound-wave Wi-Fi setup decoder: 16 kHz microphone PCM in, SSID/password/server out; pure C, integers only, host-tested against a simulated channel. The phone side is `server/relay/assets/wifi.html` (`/tv/wifi`, `/TV/W`). |
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | Parses the "host[:port]" text typed on the setup page. |
 | [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | Channel list / status / brightness overlay state machine, and the voice screens' sub-state of the list's panel -- pure logic, no LVGL. |
 | [`main/av_voice_policy.c`/`.h`](../../main/av_voice_policy.h) | Push-to-talk: what each key does in each voice state, the hold/click split, timeouts -- pure, host-tested. |

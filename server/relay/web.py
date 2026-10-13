@@ -1834,7 +1834,10 @@ ASSETS = {
                               (_ASSET_DIR / "manifest.webmanifest").read_bytes()),
     "/icon-180.png": ("image/png", (_ASSET_DIR / "icon-180.png").read_bytes()),
     "/icon-512.png": ("image/png", (_ASSET_DIR / "icon-512.png").read_bytes()),
+    # 声波配网：手机把 Wi-Fi 名称和密码播成声音给配网中的电视听。不用登录，页面不连网。
+    "/wifi": ("text/html; charset=utf-8", (_ASSET_DIR / "wifi.html").read_bytes()),
 }
+ASSETS["/TV/W"] = ASSETS["/wifi"]  # 二维码用的短地址；nginx 也把它转到 /wifi
 # 宠物图（设计稿导出的 3 倍图），手机遥控页的「我的宠物」用。
 ASSETS.update({f"/pets/{p.name}": ("image/png", p.read_bytes())
                for p in sorted((_ASSET_DIR / "pets").glob("*.png"))})
