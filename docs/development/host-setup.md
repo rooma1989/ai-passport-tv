@@ -104,6 +104,7 @@ certificate it names).
 6. **Multi-user**: the `tenancy.conf` drop-ins, only as part of the
    [runbook](tenancy-phase1-runbook.md)'s cut-over (after the migration).
 7. **Overseas node**: `yt-relay.service` (and `memory.conf` only for an older base unit).
+8. **Product website** (optional): [below](#product-website).
 
 From a copy of this repository on the host (run as root):
 
@@ -124,6 +125,33 @@ Check: `systemctl cat <unit>` shows the base unit and each drop-in; each media
 server logs `voice: on, relay on, transcripts not logged` (multi-user:
 `relay per device`) and no `WARNING: numpy is not installed`; `systemctl list-timers muse-asr-warm.timer`
 shows the next run.
+
+## Product website
+
+The product website is static: [`packaging/site/`](../../packaging/site/)
+(`index.html` and `assets/`, no build step, no third-party requests). It is
+served at the root of its own host name, `<site>` in this section.
+
+- Copy `packaging/site/index.html` and `packaging/site/assets/` into that host
+  name's web root, and the help page
+  [`packaging/help/index.html`](../../packaging/help/index.html) to
+  `TV/index.html` under the same root, so `/TV/` works there as on the main site.
+- The page links to the relay's pages with root-relative paths, so the website's
+  host name has to serve them as the main site does: `/tv/` (phone remote,
+  `/tv/console`, `/tv/wifi`), `/TV/R/`, `/TV/B/`, `/TV/L/`, `/TV/W`, and `/TV/`
+  (the help page). Include
+  [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf) in that
+  server block. [`packaging/nginx/tv-site.conf`](../../packaging/nginx/tv-site.conf)
+  is a template of the whole server block with `<site>` and `<root>` placeholders.
+- Sign-in cookies are per host name (`Path=/tv/`, no `Domain`). The QR codes,
+  invite links and the console's sign-in code use the relay's `--public-url`.
+  While that is still the main site, a phone signed in there is not signed in on
+  the website's host name; change `--public-url` to the website's host name to
+  make it the one address (keep the main site's locations so printed or saved
+  links keep working).
+- The screen pictures in `assets/screen-*.png` are cut from the firmware's own
+  drawing: run `python3 tools/render_ui/site_shots.py` (needs Pillow) after a UI
+  change.
 
 ## Where the host differs from the templates
 
