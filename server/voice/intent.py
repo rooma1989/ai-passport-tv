@@ -341,9 +341,11 @@ _SETUP = _rx(r"(配网|配置网络|设置网络|网络设置|重新联网|连�
 _STATUS = _rx(r"^(状态|状态页|看状态|打开状态页?|信号怎么样|信号|网络怎么样|网速|网络状态|电量|"
               r"电池|还有多少电|剩多少电|电还有多少|设备状态|状态信息)$")
 _AUDIO_ON = _rx(r"(只听声音|只要声音|只放声音|只听|关掉画面|关闭画面|不要画面|关画面|音频模式|听声音模式|"
-                r"息屏|关屏幕?|熄屏)")
+                r"息屏|关屏幕?|熄屏|关掉视频|关闭视频|关视频|不要视频|不看视频)")
+# 「退出只听」「关闭只听模式」里也有「只听」，所以这一条先于 _AUDIO_ON 检查。
 _AUDIO_OFF = _rx(r"(打开画面|显示画面|^要画面$|恢复画面|开画面|看画面|有画面|退出只听声音|退出音频模式|"
-                 r"不只听声音|亮屏|打开屏幕)")
+                 r"不只听声音|亮屏|打开屏幕|视频模式|画面模式|打开视频|开启视频|开视频|显示视频|恢复视频|"
+                 r"^要视频$|^看视频$|^有视频$|退出只听|关闭只听|关掉只听|不要只听)")
 _MUTE = _rx(r"^(静音|关掉声音|关闭声音|关声音|别出声|不要声音)$")
 _UNMUTE = _rx(r"^(取消静音|打开声音|恢复声音|开声音|有声音|解除静音)$")
 _VOLUME_VALUE = _rx(r"(?:音量|声音)(?:调整为|调整到|调整成|调整|调节到|调节为|调节|调到|调成|调为|开到|改成|改为|改到|放到|设为|设成|设置为|设置成|设置到|到|是|为|调|开)?(?:百分之)?(\d{1,3})(?:%|格|级|档)?$")
@@ -1185,7 +1187,7 @@ def _fans(count: int) -> str:
 
 
 def _result_label(kind: str, item: dict, marked: bool) -> str:
-    """marked：行首写上网站（UP 主总写；视频只在两个网站的结果混在一起时写）。"""
+    """marked：行首写上网站（「B站 · …」「油管 · …」）。"""
     site = str(item.get("site") or "") if marked else ""
     if kind == "video":
         duration = item.get("duration") if isinstance(item.get("duration"), int) else 0
@@ -1255,7 +1257,8 @@ def search_page(site: str, kind: str, query: str, results: list[dict], offset: i
         offset = 0
     shown = results[offset:offset + search_window(total, offset, len(late))]
     op = "v" if kind == "video" else "u"
-    marked = kind == "up" or mixed
+    # 每一行都写网站（用户要求）：视频即使只搜了一个网站，也一眼看出是 B站还是油管。
+    marked = True
     rows = [{"label": _result_label(kind, item, marked) or "（没有标题）", "lead": f"{n + 1:02d}",
              "ref": search_ref(op, generation, n)} for n, item in enumerate(shown, offset)]
     left = total - offset - len(shown)

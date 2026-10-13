@@ -572,7 +572,7 @@ class SearchSessionTests(unittest.TestCase):
         self.assertEqual((result["intent"], result["reply"]), ("search", "找到 8 个B站视频"))
         self.assertNotIn("do", result)
         # Videos are searched on one site (Bilibili unless YouTube is named): no site on the rows.
-        self.assertEqual(result["choices"][0], {"label": "猫和老鼠 0 · 1:00 · 猫咪", "lead": "01", "ref": "sv:1:0"})
+        self.assertEqual(result["choices"][0], {"label": "B站 · 猫和老鼠 0 · 1:00", "lead": "01", "ref": "sv:1:0"})
         self.assertEqual(result["choices"][5], {"label": "下一页 · 还有 3 个", "lead": "", "ref": "sp:1:5"})
         page = self.pick("sp:1:5")
         self.assertEqual(page["reply"], "第 6-8 个，共 8 个")
@@ -845,10 +845,12 @@ class TwoSiteSearchTests(unittest.TestCase):
             gate.set()
         self.assertEqual(result["reply"], "找到 8 个UP 主：B站 8 个，油管还在搜")
 
-    def test_videos_stay_on_bilibili_unlabelled(self):
+    def test_videos_stay_on_bilibili_but_are_labelled(self):
+        """Video search still asks one site, but every row names it, like UP 主 rows."""
         result = self.say("搜视频猫和老鼠")
         self.assertEqual(self.searches(), [("search", "bilibili", "video", "猫和老鼠")])
-        self.assertFalse(any(label.startswith(("B站", "油管")) for label in self.labels(result)))
+        rows = [label for label in self.labels(result) if not label.startswith("下一页")]
+        self.assertTrue(rows and all(label.startswith("B站 · ") for label in rows))
 
     def test_results_fit_the_device(self):
         self.relay.late["youtube"] = "slow"
