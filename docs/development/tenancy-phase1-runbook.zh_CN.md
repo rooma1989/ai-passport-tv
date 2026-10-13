@@ -270,10 +270,10 @@ database …`，然后 `voice: on, relay per device`），每次调中转都点�
 | 页面 | `Content-Security-Policy` 不允许任何外部来源，`frame-ancestors 'none'`，`X-Frame-Options: DENY`；二维码由中转自己画（`server/relay/qr.py`，移植自固件用的同一个库） |
 
 管理员的密钥链接仍是应急登录：在电脑上打开 `https://<site>/tv/?k=<密钥>`，再打开 `/tv/console`。
-电脑版的「邀请」页（只有管理员看得到）发的邀请链接和手机上的一样；完整的管理后台是阶段 3。
+电脑版的「邀请」页（只有管理员看得到）发的邀请链接和手机上的一样；完整的管理后台是 `/tv/admin`（阶段 3，见下）。
 
 电脑版里还没有：每个用户隐藏、排序直播台和提议新台；主人以外的设备成员（电脑版显示设备的访客码，
-就是现有的访客链接）；管理后台。
+就是现有的访客链接）。
 
 ### 遥控里扫码登录电脑，和让手机登录
 
@@ -342,8 +342,8 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
 sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db login-link <用户 id>
 ```
 
-打印 `HTTPS://<网站>/TV/P/<令牌>`（5 分钟、一次）；发给本人，在手机上打开、点按钮。电脑版里还没有这个按钮
-（阶段 3 之前没有用户管理页）。
+打印 `HTTPS://<网站>/TV/P/<令牌>`（5 分钟、一次）；发给本人，在手机上打开、点按钮。总后台的「用户」页上
+有同样的按钮（阶段 3，见下）。
 
 | | |
 | --- | --- |
@@ -354,10 +354,58 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
 | 审计 | `user.signup`、`device.bind`；`phone_link.device`、`login.phone.recover`；`phone_link.admin`、`login.phone.admin` |
 | 日志 | 从不写令牌：电视服务只记 `recover link issued for user N` 或拒绝的原因 |
 
+## 阶段 3：总后台
+
+`https://<网站>/tv/admin`，只给管理员：电脑版（名字下面）和手机遥控「我的」（「邀请家人」下面）各有一个入口。
+别的会话、访客、没登录的打开页面会被送回 `/tv/console`，每个 `/api/admin/*` 接口对他们都回 404；
+密钥（`X-Key` 或 `?k=` 登录）算管理员。POST 和电脑版一样过同源检查，每个改动都写进操作记录，
+记下管理员和他的 /24 网段。
+
+| 页面 | 做什么 |
+| --- | --- |
+| 概览 | 设备在线/离线、主人、在播的台和标题、这次会话多久；最近约 10 秒发出的字节、每秒画面数、字节率目标（来自电视服务的「正在播放」文件）；主机 CPU、内存、出站流量的现值和 24 小时曲线；电视服务、中转、ffmpeg、muse-asr、nginx 几个进程；YouTube 节点状态和在放几路（共 2 路） |
+| 用户 | 怎么来的（邀请、自己注册、最早的账号）；自己注册的标「待查看」，点「知道了」消失；改名；封禁/解封；删除（输入名字确认，先导出）；一次性登录链接和二维码（5 分钟、一次，和命令行 `login-link` 一样）；他的登录（含他设备上的访客），可以退出；邀请 |
+| 设备 | 所有设备：状态、主人、固件、最后连接和网段；重连、改名、重新配对、解绑、封禁/解封 |
+| 频道表 | 全局 `channels.txt` 的表格：改名、调分组、调顺序、删除、新加；「检查」和「保存」（见下） |
+| 操作记录 | 从新到旧，按用户、设备、操作筛，每次 50 条 |
+| 系统 | 注册方式和未绑定设备的规矩、限额、登录有效期（只读，写在代码里）、共享配对令牌开关、数据库和频道表文件的情况 |
+
+各个操作做了什么：
+
+- **封禁用户**：他的登录马上删掉；他是主人的设备收到 `reconnect` 事件（电视服务结束会话），只要主人还在封禁中，
+  下次 HELLO 就被拒绝（`gate.py`）。数据和绑定都保留；解封后恢复，他要重新登录（恢复登录、登录链接、邀请）。
+  不能封禁、删除自己和最后一个管理员。
+- **删除用户**：要输入他的名字。导出（用户、`user_state`、设备、登录（不含令牌）、邀请、和他有关的操作记录）
+  写到数据库旁边的 `exports/user-<id>-<时间>.json`（0640），页面也下载一份；然后他的设备解绑（新的绑定码，
+  访客退出），他的登录、链接、状态、成员关系删掉。他发出的邀请保留；他接受过的邀请改成过期。有旧固件设备的用户
+  不能删（先 adopt）。
+- **设备重连、封禁、解绑**：中转往设备的 `relay-events.json` 写一个 `reconnect` 事件；声明了 `switch` 的固件
+  一两秒内结束会话、重新连上（更旧的固件不认，忽略）。
+- **频道表**：id 永远不变（用户的分组、设备记住的上一个台都按 id 记）；新台取下一个没用过的 `chNNN`。保存时
+  查名字和地址、每个设备主人的频道列表放不放得下（他的 UP 主和剧集加上这张表，和加 UP 主时一样留 512 字节余量），
+  最后在子进程里跑电视服务自己的 `live.parse_channels()`（`python3 -m server.relay.channeltable --check`；用子进程
+  是为了中转不必一直背着 `server.live` 和 numpy）。页面打开之后文件被别处改过就拒绝。写之前把原文件复制成同一目录下的
+  `channels.txt.bak-<日期>-<时间>`（留最新 30 份）。电视服务每个新会话开始时重读这个文件，所以**不用重启**：
+  每台设备下次换台或重连时拿到新表。这里设的分组是这个台给所有人的默认分组（存在数据库 `meta.channel_groups`）；
+  用户在手机上自己调的盖在它上面。
+
+部署：复制 `server/`（中转和电视服务都改了）和 `packaging/help/`（使用说明加了一节），重启 `tv-relay`、`tv-xingzhi`、`tv-passport`。nginx 不用改
+（`/tv/admin` 在 `/tv/` 下面；页面把没改的台只发 id，每个请求都在 nginx 的 8 KB 请求体限制以内）。中转第一次
+启动时加上 `user.reviewed_at` 列。中转的用户要能写 `--main-channels` 所在目录（备份和整份替换）和数据库所在目录
+（`exports/`）；模板里两个都是 `/var/lib/ai-passport-tv`。不重启电视服务的话，流量指标是空的、`reconnect` 被忽略，
+其余照常。
+
+| | |
+| --- | --- |
+| 路径 | 页面 `/tv/admin`；`GET /api/admin/overview[?history=1]`、`users`、`users/<id>/sessions`、`users/<id>/export`、`devices`、`audit?user=&device=&action=&before=`、`system`、`channels`；`POST /api/admin/users/<id>/rename\|ban\|unban\|reviewed\|login-link\|delete\|sessions/revoke`、`invites`、`devices/<id>/unbind\|ban\|unban\|reconnect\|repair\|rename`、`channels` `{version, rows, dry}`、`system/legacy-token` |
+| 指标 | 「正在播放」多了 `bytes_10s`、`fps`（每秒发出的画面数；只有默认的发送器数，`TV_LIVE_ENGINE=v2` 时是 0）、`target_rate`；主机采样每 5 秒读 `/proc/stat`、`/proc/meminfo`、`/proc/net/dev`，内存里留 15 分钟的 5 秒点和 24 小时的分钟平均（重启就没了）；没有 `/proc`（macOS）时不运行 |
+| 审计 | `user.rename`、`user.reviewed`、`user.ban`/`unban`、`user.export`、`user.delete`、`admin.session.revoke`/`revoke_all`、`phone_link.admin`、`invite.create`、`device.reconnect`、`device.banned`/`active`/`unclaimed`、`device.unbind`、`device.repair`、`device.rename`、`channels.save`（台数变化和备份文件名）、`legacy_token.on`/`off` |
+
 ## 留给以后的阶段
 
 每个用户隐藏、排序直播台和提议新台（`user_state` 给 `hidden`/`order` 留了位置）；主人以外的设备成员
-（表已建好，没有界面）；管理网页和指标（阶段 3）；媒体网关、每台设备一个工作进程、型号配置和准入控制（阶段 4）。
+（表已建好，没有界面）；媒体网关、每台设备一个工作进程、型号配置和准入控制（阶段 4），那时总后台才有
+同时服务的上限和每个工作进程的数字。
 
 ## 未验证
 
@@ -374,3 +422,7 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
 - 电脑版是在桌面应用的 Chromium 窗格里按 1440 和 900 像素宽、对着本机中转、合成状态、假的视频网站
   和假设备检查的；二维码由这个浏览器的 `BarcodeDetector` 识别，没用手机相机或微信扫过。没在 Safari、
   Firefox、Edge 里试过，也没经过 nginx。
+- 总后台（阶段 3）在同一个窗格里按 1440 像素和手机宽度（375 像素）、对着本机中转、临时数据库、假设备和
+  合成的 `/proc` 检查过（macOS 上的主机曲线是编出来的）；没在云主机上跑过，所以真实的 `/proc` 数字、进程表、
+  带 numpy 时检查子进程要多久（本机不带 numpy 约 0.1 秒）、备份和 `exports/` 的文件权限都没验证。
+  `reconnect` 事件只有主机测试，没在设备上试过。

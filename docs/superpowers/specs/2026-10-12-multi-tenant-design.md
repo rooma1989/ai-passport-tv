@@ -100,9 +100,9 @@ one-time owner phone link shown as a QR code on the device (3 per device per
 hour, the owner's other sessions are told); (c) the admin's
 `login-link <user_id>` command is the break-glass. Implementation and
 operation: [`tenancy-phase1-runbook.md`](../../development/tenancy-phase1-runbook.md#getting-in-with-nobody-signed-in-account-recovery).
-Open: whether an admin page should list self-registered users for review
-(phase 3), and whether recovery should also be offered on unbound devices of a
-banned owner (today it is refused).
+Open: whether recovery should also be offered on unbound devices of a banned
+owner (today it is refused). Answered in phase 3: the admin backend lists
+self-registered users and flags them until reviewed.
 
 ## 3. Questions for you to decide
 
@@ -809,6 +809,18 @@ once the API contract is fixed.
 
 Ships: `/tv/admin` with overview, users, devices, live channels, audit log,
 system settings.
+
+**Status (2026-10-13): implemented** (branch `admin-backend`); operation in the
+[runbook's "Phase 3"](../../development/tenancy-phase1-runbook.md#phase-3-the-admin-backend).
+As designed, except: per-worker `/proc/<pid>/stat` waits for the gate (phase
+4; the overview lists the tv_server, relay and ffmpeg processes by name
+instead); "test-open a URL", user channel proposals, concurrency caps and a
+backup view are not built (System shows the policies read-only, with only the
+legacy-token switch); "accept a new secret" is the existing re-pair window;
+the open question above is answered: self-registered users are listed and
+flagged until the admin marks them reviewed. A ban also refuses the banned
+owner's devices at the gate, and "force reconnect" is a new `reconnect` relay
+event.
 
 - 3a. Metrics: now-playing extension in the media server, `/proc` sampler. (1 day)
 - 3b. Admin API and pages. (2 days)

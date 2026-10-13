@@ -305,11 +305,12 @@ How it works and its limits:
 
 The admin's key link stays the break-glass sign-in: open `https://<site>/tv/?k=<key>`
 on the computer, then `/tv/console`. The console's Invite page (admin only) makes
-the same invite links as the phone; a full admin backend is phase 3.
+the same invite links as the phone; the full admin backend is `/tv/admin`
+(phase 3, below).
 
 Not in the console yet: per-user hiding and ordering of live channels and
 channel proposals; device members other than the owner (the console shows the
-device's guest QR code, which is the existing guest link); the admin backend.
+device's guest QR code, which is the existing guest link).
 
 ### Scanning from the remote, and letting a phone sign in
 
@@ -407,8 +408,8 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
 ```
 
 prints `HTTPS://<SITE>/TV/P/<TOKEN>` (5 minutes, single use); send it to the
-person, who opens it on the phone and taps the button. Not offered in the PC
-console yet (no users page before phase 3).
+person, who opens it on the phone and taps the button. The admin backend's Users
+page has the same thing as a button (phase 3, below).
 
 | | |
 | --- | --- |
@@ -419,12 +420,81 @@ console yet (no users page before phase 3).
 | Audit | `user.signup`, `device.bind`; `phone_link.device`, `login.phone.recover`; `phone_link.admin`, `login.phone.admin` |
 | Logs | never the token: the media server logs `recover link issued for user N` or the refusal |
 
+## Phase 3: the admin backend
+
+`https://<site>/tv/admin`, for admins only: a link appears in the PC console
+(under your name) and in the phone remote's Me tab (under Invite family). Any
+other session, a guest or nobody is sent back to `/tv/console`, and every
+`/api/admin/*` call answers 404 to them; the key (`X-Key`, or the
+`?k=` sign-in) counts as the admin. POSTs pass the console's same-origin check,
+and every change is written to the audit log with the admin and their /24
+network.
+
+| Page | What it does |
+| --- | --- |
+| Overview | devices online/offline, owner, channel and title, session length; bytes sent in the last ~10 s, frames per second and the byte-rate target (from the media server's now-playing file); host CPU, memory and outbound traffic now and as 24-hour curves; the tv_server, relay, ffmpeg, muse-asr and nginx processes; YouTube node state and streams in use (of 2) |
+| Users | origin (invite, self-registered, the first accounts); self-registered users are flagged "to review" until you press "got it"; rename; ban/unban; delete (type the name; the user's data is exported first); one-time login link with QR code (5 minutes, single use, the CLI's `login-link`); their sessions (and their devices' guests) with sign-out; invites |
+| Devices | every device with status, owner, firmware, last connection and network; reconnect, rename, re-pair, unbind, ban/unban |
+| Channels | the global `channels.txt` as a table: rename, regroup, reorder, delete, add; "Check" and "Save" (below) |
+| Audit log | newest first, filtered by user, device or action, 50 at a time |
+| System | registration and unbound-device policy, limits, session lengths (read-only; they are in the code), the legacy pairing token switch, database and channel-file facts |
+
+What the actions do:
+
+- **Ban a user**: their sessions are deleted at once, the devices they own get
+  a `reconnect` event (the media server ends the session) and are refused at
+  their next HELLO while the owner is banned (`gate.py`). Data and bindings stay;
+  unban restores them, and the user signs in again (recovery, login link,
+  invite). You cannot ban or delete yourself or the last admin.
+- **Delete a user**: needs the user's name typed. The export (user row,
+  `user_state`, devices, sessions without tokens, invites, their audit entries)
+  is written to `exports/user-<id>-<time>.json` next to the database (0640) and
+  downloaded by the page; then their devices are unbound (new claim code,
+  guests signed out), and their sessions, links, state and memberships deleted.
+  Their invites stay; an invite they accepted is expired. A user who owns a
+  legacy device cannot be deleted (adopt it first).
+- **Reconnect / ban / unbind a device**: the relay writes a `reconnect` event to
+  the device's `relay-events.json`; firmware that announces `switch` ends the
+  session and reconnects within a second or two (older firmware ignores it).
+- **Channel table**: ids never change (users' group choices and the device's
+  last channel are keyed by id); a new channel gets the next free `chNNN`.
+  Save checks names and addresses, every device owner's channel list against
+  the CONFIG limits (their creators and series plus this table, with the same
+  512-byte spare as adding a creator), and finally runs the media server's own
+  `live.parse_channels()` in a child process (`python3 -m server.relay.channeltable --check`;
+  a child so the relay does not keep `server.live` and numpy in memory). It
+  refuses a table edited elsewhere since the page loaded. Before writing, the
+  old file is copied to `channels.txt.bak-<date>-<time>` in the same directory
+  (the newest 30 are kept). The media servers re-read the file at the start of
+  each session, so **no restart is needed**: each device gets the new list at
+  its next channel change or reconnect. A group set here is the channel's
+  default for everyone (stored in the database, `meta.channel_groups`); a
+  user's own choice on the phone stays on top of it.
+
+Deploy: copy `server/` (relay and media server both changed) and
+`packaging/help/` (the help page has a new section), and restart
+`tv-relay`, `tv-xingzhi` and `tv-passport`. No nginx change (`/tv/admin` is under
+`/tv/`; the page keeps each request under nginx's 8 kB body limit by sending
+unchanged channels as their id only). The relay adds the column
+`user.reviewed_at` on its first start. The relay user needs write access to the
+directory of `--main-channels` (for the backup and the atomic replace) and to
+the database's directory (for `exports/`); both are `/var/lib/ai-passport-tv`
+in the templates. Without the media-server restart, metrics stay empty and
+`reconnect` is ignored, everything else works.
+
+| | |
+| --- | --- |
+| Paths | page `/tv/admin`; `GET /api/admin/overview[?history=1]`, `users`, `users/<id>/sessions`, `users/<id>/export`, `devices`, `audit?user=&device=&action=&before=`, `system`, `channels`; `POST /api/admin/users/<id>/rename\|ban\|unban\|reviewed\|login-link\|delete\|sessions/revoke`, `invites`, `devices/<id>/unbind\|ban\|unban\|reconnect\|repair\|rename`, `channels` `{version, rows, dry}`, `system/legacy-token` |
+| Metrics | now-playing gains `bytes_10s`, `fps` (frames sent per second; the legacy sender only, `TV_LIVE_ENGINE=v2` reports 0) and `target_rate`; the host sampler reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev` every 5 s and keeps 15 minutes of 5-second points and 24 hours of minute averages in memory (lost on restart); without `/proc` (macOS) it does not run |
+| Audit | `user.rename`, `user.reviewed`, `user.ban`/`unban`, `user.export`, `user.delete`, `admin.session.revoke`/`revoke_all`, `phone_link.admin`, `invite.create`, `device.reconnect`, `device.banned`/`active`/`unclaimed`, `device.unbind`, `device.repair`, `device.rename`, `channels.save` (counts and the backup's name), `legacy_token.on`/`off` |
+
 ## Left for later phases
 
 Per-user hiding and ordering of live channels and proposals (`user_state` has
 room for `hidden`/`order`); device members other than the owner (table exists,
-no UI); admin web pages and metrics (phase 3); the media gate with per-device
-workers, model profiles and admission control (phase 4).
+no UI); the media gate with per-device workers, model profiles and admission
+control (phase 4), which is also when concurrency caps and per-worker process
+figures appear in the admin backend.
 
 ## Not verified
 
@@ -448,3 +518,10 @@ workers, model profiles and admission control (phase 4).
   fake device; the QR code was decoded by that browser's `BarcodeDetector`, not
   by a phone camera or WeChat. Not tried in Safari, Firefox or Edge, nor behind
   nginx.
+- The admin backend (phase 3) was checked in the same pane at 1440 px and at
+  phone width (375 px) against a local relay with a temporary database, fake
+  devices and a synthetic `/proc` (the host curves on macOS are made up); it has
+  not run on the cloud host, so the real `/proc` figures, the process table, the
+  channel-check child's time with numpy (about 0.1 s locally without numpy) and
+  the file permissions for backups and `exports/` are unverified. The
+  `reconnect` event is covered by host tests only, not tried on a device.
