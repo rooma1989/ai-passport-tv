@@ -41,6 +41,7 @@
 <script>
 "use strict";
 // 电脑版「让手机登录」给的一次性链接：/TV/P/<令牌>（二维码），或在 /tv/p 输入电脑屏幕上的 8 位码。
+// 小电视状态页上的「恢复登录」、管理员命令行给的也是同一种链接（只有二维码/链接，没有 8 位码）。
 // 打开这一页不会用掉链接；点「在这台手机上登录」才登录（链接预览只会 GET）。接口都在 /tv/ 下。
 const parts = location.pathname.split("/").filter(Boolean);
 const last = parts[parts.length - 1] || "";
@@ -85,13 +86,19 @@ function gone(text) {
 let timer = 0;
 function confirmView(info, by) {
   const dl = el("dl");
-  dl.append(row("账号", info.name), row("发起", info.pc + (info.pc_network ? " · " + info.pc_network : "")));
+  // 电脑版「让手机登录」、小电视状态页上的「恢复登录」（origin=device）、管理员给的链接（admin）。
+  const fromDevice = info.origin === "device";
+  const origin = fromDevice ? "小电视「" + (info.device_name || "小电视") + "」上的恢复登录"
+    : info.origin === "admin" ? "管理员给的链接"
+    : info.pc + (info.pc_network ? " · " + info.pc_network : "");
+  const again = fromDevice ? "请在小电视上再做一次「恢复登录」。" : "请在电脑上再点一次「让手机登录」。";
+  dl.append(row("账号", info.name), row("发起", origin));
   const left = el("p", "dim");
   const yes = el("button", "", "在这台手机上登录");
   let seconds = info.expires_in;
   const tick = () => {
     left.textContent = seconds > 0 ? "只在你自己的手机上点。" + Math.ceil(seconds / 60) + " 分钟内有效，只能用一次。"
-      : "已经过期了，请在电脑上再点一次「让手机登录」。";
+      : "已经过期了，" + again;
     yes.disabled = seconds <= 0;
     seconds -= 1;
   };

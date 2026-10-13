@@ -6,6 +6,8 @@
     users                       列出用户
     devices                     列出所有设备（含未绑定、退役的）
     invite [--name 名字] [--admin]  生成一个邀请链接（7 天内有效，用一次）
+    login-link <用户 id>        给这个用户一个手机登录链接（5 分钟内有效，用一次）：他的手机全退出了、
+                                设备也不在手边时的最后办法（平时用设备状态页上的「恢复登录」）
     adopt <旧设备 id> <新 id>   旧设备刷了新固件：把旧记录的主人、遥控码、投屏位搬到真 id 上
     unbind <设备 id>            解绑（回到未绑定，换绑定码和遥控码）
     repair <设备 id>            10 分钟内接受这台设备的新密钥（擦过 flash 之后）
@@ -26,6 +28,7 @@ from pathlib import Path
 
 from .accounts import Accounts
 from .gate import LEGACY_TOKEN_KEY
+from .phonelinks import PhoneLinks
 
 
 def _when(at: float) -> str:
@@ -45,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     invite = commands.add_parser("invite")
     invite.add_argument("--name", default="")
     invite.add_argument("--admin", action="store_true", help="被邀请的人也是管理员")
+    commands.add_parser("login-link").add_argument("user_id", type=int)
     adopt = commands.add_parser("adopt")
     adopt.add_argument("legacy_id")
     adopt.add_argument("device_id")
@@ -81,6 +85,13 @@ def main(argv: list[str] | None = None) -> int:
             site = accounts.meta("public_url", "<site>")
             print(f"{site}/tv/i/{code}")
             print("7 天内有效，只能用一次。用微信发给对方，在手机浏览器里打开。")
+        elif args.command == "login-link":
+            link = PhoneLinks(accounts).create_for_admin(args.user_id, admin)
+            site = accounts.meta("public_url", "").rstrip("/") or "<site>"
+            name = accounts.user(args.user_id)["name"]
+            print(f"{site.upper()}/TV/P/{link['token']}")
+            print(f"以「{name}」登录一台手机：{link['ttl'] // 60} 分钟内有效，只能用一次。在那台手机上打开"
+                  "（相机扫码或粘贴到 Safari），点「在这台手机上登录」。已记入操作记录。")
         elif args.command == "adopt":
             accounts.adopt(args.legacy_id, args.device_id, admin)
             print(f"{args.legacy_id} 的主人、遥控码和投屏位已经搬到 {args.device_id}；{args.legacy_id} 已退役。")

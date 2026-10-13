@@ -44,6 +44,7 @@ from .cast_switch import SwitchWatcher
 from .voice.session import VoiceService
 from .tenancy import gate as tenancy_gate, unbound as tenancy_unbound
 from .tenancy import wifi as tenancy_wifi
+from .tenancy import recover as tenancy_recover
 
 # 替代 --token-file 的环境变量名；只有令牌值需与固件一致，变量名无需一致。
 TOKEN_ENV = "TV_PAIRING_TOKEN"
@@ -324,6 +325,12 @@ class AVServer:
         # SWITCH 带加密的修改，STATUS 带回答（server/tenancy/wifi.py）。device_id 是这次会话认出来的设备。
         self.device_wifimgr = False
         self.device_id = ""
+        # 会「恢复登录」的固件（HELLO 里 "recover": 1，只在多用户模式下用）：STATUS {"recover": 1} 要一个
+        # 主人的一次性手机登录链接，回答排在 _recover_out 里，像语音结果一样在会话的各个循环里发出去
+        # （server/tenancy/recover.py）。device_peer 是这次会话设备的地址，只记网段进审计。
+        self.device_recover = False
+        self.device_peer = ""
+        self._recover_out: list[dict] = []
         # 上次握手时设备报的开机时长；变小说明设备重启过。
         self._device_uptime: int | None = None
         # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
@@ -626,9 +633,38 @@ class AVServer:
         self.logger(f"session={session} wifi change sent")
         return seq + 1
 
+    def _recover_config(self) -> dict:
+        """CONFIG 里的 "recover": 1：这次会话可以在设备上「恢复登录」。只给报了的固件、已绑定的设备、配了网站时。"""
+        if not self.device_recover or self.tenancy is None or not self.device_id:
+            return {}
+        return {"recover": 1} if tenancy_recover.enabled(self.tenancy.accounts) else {}
+
+    def _recover_ask(self) -> None:
+        """设备上做了「恢复登录」手势：要一个链接（或说为什么不行），排队等发。"""
+        if not self.device_recover:
+            self.logger("device asked to recover a login without announcing it; ignored")
+            return
+        if self.tenancy is None:
+            self._recover_out.append({"recover": {"err": "off"}})
+            return
+        self._recover_out.append(tenancy_recover.answer(self.tenancy.accounts, self.device_id,
+                                                        self.device_peer, self.logger))
+
+    def recover_flush(self, connection: socket.socket, session: int, seq: int) -> int:
+        """把排好的恢复登录回答发出去（SWITCH，占序号）；返回下一个序号。"""
+        while self._recover_out:
+            payload = self._recover_out.pop(0)
+            self.phase = "recover_send"
+            send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes(payload)))
+            seq += 1
+        return seq
+
     def _take_status(self, packet: Packet) -> None:
         """设备的音量或亮度变了：记下来给手机看，会话照常。也每 30 秒报一次信号。"""
         report = json_object(packet.payload)
+        if report.get("recover") == 1:
+            self._recover_ask()
+            return
         if isinstance(report.get("wifi"), dict):
             # 设备对一次 Wi-Fi 修改的回答（只有名字，没有密码）。
             if self.tenancy is not None and self.device_id:
@@ -774,6 +810,7 @@ class AVServer:
                                                            **self._channel_payload(),
                                                            **({"playing": playing} if playing else {}),
                                                            **self._wifi_config(),
+                                                           **self._recover_config(),
                                                            **self.voice.config()))))
             self.phase = "live_palette"
             # 首帧前必须有调色板，缺失则设备无色可用，画面全黑。
@@ -1030,6 +1067,7 @@ class AVServer:
                     return
             self.keep_now_playing()
             seq = self.voice_flush(connection, session, seq)
+            seq = self.recover_flush(connection, session, seq)
             decision = self.switch_watcher.poll(self.channel_name, now)
             # 先于下面的控制：取走「正在加载」时连同「下一个」提示一起取走。
             seq = self.info_flush(connection, session, seq)
@@ -1337,6 +1375,7 @@ class AVServer:
             peer = connection.getpeername()[0]
         except OSError:
             peer = ""
+        self.device_peer = peer
         admission = self.tenancy.admit(json_object(hello.payload), self.token, self.port, peer)
         if not admission.bound:
             # 未绑定的设备没有主人：CONFIG 里不给 voice，语音也不替它调中转。
@@ -1352,6 +1391,10 @@ class AVServer:
 
     def _session(self, connection: socket.socket) -> None:
         self.phase = "hello_receive"
+        # 上一台设备的恢复登录不带到这次会话（未绑定的会话在 _admit 里就服务完了，也不会有）。
+        self.device_recover = False
+        self.device_id = ""
+        self._recover_out = []
         hello = receive_packet(connection, expected_session=0)
         self.phase = "authenticate"
         if self.tenancy is None:
@@ -1378,6 +1421,7 @@ class AVServer:
             self.device_progress = greeting.get("progress") == 1
             self.device_audio_only = greeting.get("audio_only") == 1
             self.device_wifimgr = self.tenancy is not None and greeting.get("wifimgr") == 1
+            self.device_recover = self.tenancy is not None and greeting.get("recover") == 1
             self.voice.reset()
             self.device_status = None
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):

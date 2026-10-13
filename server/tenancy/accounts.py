@@ -25,6 +25,10 @@ INVITE_S = 7 * 24 * 3600
 # 重新配对的窗口：这段时间里设备用新的密钥连上来，就记住新的。
 REPAIR_S = 10 * 60
 NAME_MAX = 20
+# 会话是怎么来的（session.via）：普通登录、设备恢复、管理员给的链接、扫绑定码注册。
+VIAS = ("", "recover", "admin", "signup")
+# 「有新手机通过设备恢复登录」在别的登录上提示多久。
+NOTICE_S = 7 * 24 * 3600
 MODEL_NAMES = {"xingzhi-cube-154": "小智", "ai-passport": "Passport"}
 _MODEL = re.compile(r"^[a-z0-9-]{1,32}$")
 
@@ -111,17 +115,20 @@ class Accounts:
     # ---- 会话 ----
 
     def new_session(self, user_id: int | None, kind: str = "phone", device_id: str | None = None,
-                    user_agent: str = "", ip: str = "") -> str:
+                    user_agent: str = "", ip: str = "", via: str = "") -> str:
+        """via：这个登录是怎么来的，登录列表上看得到（VIAS；空串是普通的登录）。"""
         if kind not in SESSION_S:
             raise ValueError(f"bad session kind {kind!r}")
         if (kind == "guest") != (device_id is not None and user_id is None):
             raise ValueError("a guest session has a device and no user")
+        if via not in VIAS:
+            raise ValueError(f"bad session origin {via!r}")
         token = secrets.token_urlsafe(32)
         now = self.clock()
         self._run("INSERT INTO session(token_sha256, user_id, kind, device_id, created_at, last_seen, "
-                  "expires_at, user_agent, ip_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  "expires_at, user_agent, ip_prefix, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                   (db.sha256(token), user_id, kind, device_id, now, now, now + SESSION_S[kind],
-                   (user_agent or "")[:160], db.ip_prefix(ip)))
+                   (user_agent or "")[:160], db.ip_prefix(ip), via))
         return token
 
     def import_session(self, token: str, user_id: int, created: float) -> bool:
@@ -172,7 +179,7 @@ class Accounts:
         mine = db.sha256(current) if current else b""
         rows = self._all(
             "SELECT s.token_sha256, s.kind, s.device_id, s.created_at, s.last_seen, s.user_agent, s.ip_prefix, "
-            "d.name AS device_name FROM session s LEFT JOIN device d ON d.id=s.device_id "
+            "s.via, d.name AS device_name FROM session s LEFT JOIN device d ON d.id=s.device_id "
             "WHERE s.expires_at > ? AND (s.user_id=? OR (s.kind='guest' AND s.device_id IN "
             "(SELECT device_id FROM device_member WHERE user_id=? AND role='owner'))) "
             "ORDER BY s.last_seen DESC", (self.clock(), user_id, user_id))
@@ -181,6 +188,24 @@ class Accounts:
             row["id"] = token_hash.hex()[:16]
             row["current"] = token_hash == mine
         return rows
+
+    def recovery_notice(self, user_id: int, current: str | None) -> dict | None:
+        """「有新手机通过设备恢复登录」：这个会话之后、7 天之内，这个用户有没有经设备恢复登录的新手机
+        （不算这个会话自己）。有就返回最近的那个 {id, at, browser, network}；页面按 id 只提示一次。"""
+        if not current:
+            return None
+        mine = self._one("SELECT created_at FROM session WHERE token_sha256=? AND user_id=?",
+                         (db.sha256(current), user_id))
+        if mine is None:
+            return None
+        row = self._one("SELECT token_sha256, created_at, user_agent, ip_prefix FROM session "
+                        "WHERE user_id=? AND via='recover' AND token_sha256 != ? AND created_at > ? "
+                        "AND created_at > ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+                        (user_id, db.sha256(current), mine["created_at"], self.clock() - NOTICE_S, self.clock()))
+        if row is None:
+            return None
+        return {"id": row["token_sha256"].hex()[:16], "at": row["created_at"], "user_agent": row["user_agent"],
+                "network": row["ip_prefix"]}
 
     def revoke_session_id(self, user_id: int, session_id: str) -> bool:
         """退出某一个：自己的，或自己设备上的访客。"""
@@ -250,6 +275,31 @@ class Accounts:
         token = self.new_session(user_id, "phone", user_agent=user_agent, ip=ip)
         self.audit("invite.accept", user_id, ip, "user", str(user_id))
         return user_id, token
+
+    def register_with_claim(self, claim: str, name: str, user_agent: str = "", ip: str = "") -> tuple[int, str, dict]:
+        """扫未绑定设备的绑定码自己注册：建一个普通用户、设备归他、发一个手机会话（180 天）。
+
+        设备屏幕上的绑定码就是凭据（只有在设备跟前才看得到）：和绑定一样只能用一次，码不对时 ValueError。
+        返回 (用户 id, 会话, 设备)。限流在调用方（server/tenancy/signup.py）。"""
+        name = _clean_name(name) or "我"
+        with self.lock, db.transaction(self.conn):
+            row = self.conn.execute("SELECT * FROM device WHERE claim_code=? AND status='unclaimed'",
+                                    ((claim or "").upper(),)).fetchone()
+            if row is None:
+                raise ValueError("这个绑定码不对，或者设备已经绑定过了")
+            now = self.clock()
+            user_id = int(self.conn.execute(
+                "INSERT INTO user(name, role, status, created_at) VALUES (?, 'user', 'active', ?)",
+                (name, now)).lastrowid)
+            self.conn.execute("UPDATE device SET status='active', claim_code=NULL, name=? WHERE id=?",
+                              (default_device_name(row["model"], row["id"]), row["id"]))
+            self.conn.execute("DELETE FROM device_member WHERE device_id=?", (row["id"],))
+            self.conn.execute("INSERT INTO device_member(device_id, user_id, role) VALUES (?, ?, 'owner')",
+                              (row["id"], user_id))
+        token = self.new_session(user_id, "phone", user_agent=user_agent, ip=ip, via="signup")
+        self.audit("user.signup", user_id, ip, "user", str(user_id), f"device={row['id']}")
+        self.audit("device.bind", user_id, ip, "device", row["id"])
+        return user_id, token, self.device(row["id"])
 
     # ---- 设备 ----
 

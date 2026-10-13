@@ -26,6 +26,10 @@
   button:disabled { opacity: .5; }
   a { color: var(--amber); }
   .bad { color: var(--red); }
+  .warn { border-left: 2px solid var(--amber); padding: 6px 0 6px 12px; font-size: 15px; }
+  label { display: block; margin: 16px 0 6px; color: var(--dim); font-size: 14px; }
+  details { margin-top: 22px; color: var(--dim); font-size: 14px; }
+  summary { cursor: pointer; }
   [hidden] { display: none; }
 </style>
 </head>
@@ -37,7 +41,8 @@
 </main>
 <script>
 "use strict";
-// 同一个页面服务三种链接：/TV/R/<码>（扫小电视的遥控码）、/TV/B/<码>（绑定）、/tv/i/<码>（邀请）。
+// 同一个页面服务三种链接：/TV/R/<码>（扫小电视的遥控码）、/TV/B/<码>（绑定；没登录时可以创建账号并绑定）、
+// /tv/i/<码>（邀请）。
 // 接口都在 /tv/ 下：登录的 cookie 只在那个路径下发送。
 const parts = location.pathname.split("/").filter(Boolean);
 const code = (parts[parts.length - 1] || "").toUpperCase();
@@ -75,8 +80,48 @@ async function scan() {
   show("打不开", el("p", "", answer ? answer.error : "这个二维码已经失效了。"));
 }
 
+function modelName(model) {
+  return model === "ai-passport" ? "AI Passport" : model === "xingzhi-cube-154" ? "小智（方块）" : "小电视";
+}
+
+// 还没登录的手机扫了未绑定设备的码：在这里建账号（只问名字），这台手机就登录了，设备归新账号。
+function register(info) {
+  const name = el("input");
+  name.placeholder = "你的名字（家里人看得懂就行）";
+  name.maxLength = 20;
+  name.value = "我";
+  name.autocomplete = "off";
+  const label = el("label", "", "怎么称呼你");
+  const button = el("button", "", "创建账号并绑定这台设备");
+  const note = el("p", "dim", "不用密码：这台手机会记住登录（180 天），打开后可以「添加到主屏幕」。" +
+    "以后换了手机，在小电视的状态页上连按 5 下 OK，就能用新手机扫码「恢复登录」。");
+  button.onclick = async () => {
+    button.disabled = true;
+    let answer = null;
+    try { answer = await api("POST", "api/bind/register", { claim: code, name: name.value }); } catch (error) { answer = null; }
+    if (!answer || !answer.ok) {
+      button.disabled = false;
+      note.className = "bad";
+      note.textContent = answer ? answer.error : "网络不通，请稍后再试。";
+      return;
+    }
+    location.replace(answer.redirect);
+  };
+  const other = el("details");
+  other.append(el("summary", "", "已经有账号了？"),
+    el("p", "dim", "从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 我的设备」里输入这串绑定码（小电视屏幕上也写着）："),
+    el("div", "code", grouped(code)));
+  const nodes = [el("p", "", modelName(info.model) + " · 尾号 " + info.tail), label, name, button, note, other];
+  // 微信里登录了也只在微信里有效，加不到桌面：先换到浏览器。
+  if (/MicroMessenger/i.test(navigator.userAgent)) {
+    nodes.unshift(el("p", "warn", "这是在微信里打开的。请点右上角「…」选「在浏览器打开」，在 Safari 里创建，才能放到桌面上。"));
+  }
+  show("这台小电视还没有主人", ...nodes);
+}
+
 async function bind() {
   const info = await api("GET", "api/bind/" + code);
+  if (info && info.ok && info.register) { register(info); return; }
   if (!info) {
     show("绑定小电视",
       el("p", "", "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 我的设备」里输入下面的绑定码："),
@@ -95,8 +140,7 @@ async function bind() {
     open.href = "/tv/";
     show("已绑定", el("p", "", "「" + answer.device.name + "」已经是你的了。小电视几秒后会换成你的频道。"), open);
   };
-  show("绑定这台小电视？", el("p", "", (info.model === "ai-passport" ? "AI Passport" : info.model === "xingzhi-cube-154" ? "小智（方块）" : "小电视") + " · 尾号 " + info.tail),
-       note, button);
+  show("绑定这台小电视？", el("p", "", modelName(info.model) + " · 尾号 " + info.tail), note, button);
 }
 
 async function invite() {

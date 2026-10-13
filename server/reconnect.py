@@ -140,6 +140,10 @@ def _flush_voice(server, connection, session: int, wire: WireState) -> None:
     flush = getattr(server, "voice_flush", None)
     if flush is not None:
         wire.seq = flush(connection, session, wire.seq)
+    # 设备上「恢复登录」的回答也一样：等画面、暂停时照样发。
+    flush = getattr(server, "recover_flush", None)
+    if flush is not None:
+        wire.seq = flush(connection, session, wire.seq)
 
 
 def _flush_info(server, connection, session: int, wire: WireState, fetch=None):

@@ -11,6 +11,13 @@
    不是密钥）能要；按用户、按网段限流；输错 8 位码按网段和全局限流。创建和使用都记审计。
 
 票据全中转通用：主站和 tv. 子域名上都能用（各自给自己的网站发 cookie）。
+
+同一种链接另有两个来路（origin 列；落地页、用掉的方式都一样）：
+- device：设备状态页上的「恢复登录」手势（没有登录着的手机也没有电脑时，设备本身就是凭据）。电视服务替
+  已绑定设备的主人要一个，设备全屏显示二维码。每台设备每小时最多 3 个；这台设备新要的让它以前没用掉的作废。
+  用这种链接登录的手机会话记作 via=recover，主人别的登录上会提示「有新手机通过设备恢复登录」。
+- admin：管理员命令行 `python3 -m server.tenancy.admin login-link <用户 id>`（最后的办法）。
+这两种都没有给人输入的 8 位码（库里放的是随机串的哈希，猜不中）。
 """
 
 from __future__ import annotations
@@ -32,6 +39,9 @@ GUESS_LIMIT = (10, 600)
 GUESS_ALL_LIMIT = (100, 600)
 KEEP_S = 3600
 
+# 设备恢复登录：每台设备每小时最多要这么多个（按库里的记录算，电视服务重启也不清零）。
+DEVICE_LIMIT = (3, 3600)
+
 _TOKEN = re.compile(r"^[A-Z2-7]{26}$")
 _CODE = re.compile(r"^[A-Z0-9]{8}$")
 
@@ -44,6 +54,10 @@ def normalize_code(text: str | None) -> str:
 def show_code(code: str) -> str:
     """K7P4QX2M → K7P4-QX2M。"""
     return f"{code[:4]}-{code[4:]}" if len(code) == CODE_LEN else code
+
+
+class NotBound(ValueError):
+    """设备没有绑定（或主人被封了）：没有人可以以主人身份登录。"""
 
 
 class PhoneLinks:
@@ -149,3 +163,73 @@ class PhoneLinks:
         if used != 1:
             return None
         return row["user_id"]
+
+    # ---- 设备上的「恢复登录」、管理员的登录链接 ----
+
+    def _insert(self, conn, user_id: int, origin: str, device_id: str | None, ip: str, now: float) -> str:
+        """新的一行，返回令牌。没有 8 位码，也没有电脑等结果：两样都存随机串的哈希，用不上也猜不中。"""
+        token = "".join(secrets.choice(db.CODE_ALPHABET) for _ in range(TOKEN_LEN))
+        conn.execute("INSERT INTO phone_link(token_sha256, code_sha256, poll_sha256, user_id, created_at, "
+                     "expires_at, pc_ip_prefix, pc_user_agent, origin, device_id) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)",
+                     (db.sha256(token), db.sha256(secrets.token_urlsafe(32)), db.sha256(secrets.token_urlsafe(32)),
+                      user_id, now, now + LINK_S, db.ip_prefix(ip), origin, device_id))
+        return token
+
+    def create_for_device(self, device_id: str, ip: str = "") -> dict:
+        """设备要「恢复登录」：给它的主人一个一次性登录链接 {token, ttl, user_id}。
+
+        设备没绑定、主人被封时 NotBound；这台设备一小时里要满 DEVICE_LIMIT 个时 Limited。
+        调用方（电视服务）已经按设备密钥认过这台设备。"""
+        accounts = self.accounts
+        now = self.clock()
+        limit, window = DEVICE_LIMIT
+        with accounts.lock, db.transaction(accounts.conn) as conn:
+            row = conn.execute(
+                "SELECT d.status, m.user_id, u.status AS user_status FROM device d "
+                "JOIN device_member m ON m.device_id=d.id AND m.role='owner' JOIN user u ON u.id=m.user_id "
+                "WHERE d.id=?", (device_id,)).fetchone()
+            if row is None or row["status"] != "active" or row["user_status"] != "active":
+                raise NotBound("这台设备还没有主人")
+            recent = conn.execute("SELECT COUNT(*) AS n FROM phone_link WHERE origin='device' AND device_id=? "
+                                  "AND created_at > ?", (device_id, now - window)).fetchone()["n"]
+            if recent >= limit:
+                raise Limited("恢复登录要得太频繁了，请一小时后再试")
+            conn.execute("DELETE FROM phone_link WHERE expires_at < ?", (now - KEEP_S,))
+            conn.execute("UPDATE phone_link SET expires_at=? WHERE origin='device' AND device_id=? "
+                         "AND used_at IS NULL AND expires_at > ?", (now, device_id, now))
+            user_id = row["user_id"]
+            token = self._insert(conn, user_id, "device", device_id, ip, now)
+        accounts.audit("phone_link.device", user_id, ip, "device", device_id, f"n={recent + 1}/{limit}")
+        return {"token": token, "ttl": LINK_S, "user_id": user_id}
+
+    def create_for_admin(self, user_id: int, actor: int | None = None) -> dict:
+        """管理员命令行的 login-link：给这个用户一个一次性登录链接 {token, ttl}。没有这个用户（或被封）时 ValueError。"""
+        accounts = self.accounts
+        now = self.clock()
+        with accounts.lock, db.transaction(accounts.conn) as conn:
+            row = conn.execute("SELECT status FROM user WHERE id=?", (user_id,)).fetchone()
+            if row is None or row["status"] != "active":
+                raise ValueError("没有这个用户，或者他被封了")
+            conn.execute("DELETE FROM phone_link WHERE expires_at < ?", (now - KEEP_S,))
+            conn.execute("UPDATE phone_link SET expires_at=? WHERE origin='admin' AND user_id=? "
+                         "AND used_at IS NULL AND expires_at > ?", (now, user_id, now))
+            token = self._insert(conn, user_id, "admin", None, "", now)
+        accounts.audit("phone_link.admin", actor, "", "user", str(user_id))
+        return {"token": token, "ttl": LINK_S}
+
+    def origin_of(self, token: str | None = None, code: str | None = None) -> dict:
+        """一个链接是哪儿来的：{origin: pc/device/admin, device_id, device_name}（找不到时当作 pc）。
+        落地页显示「谁发起的」、用掉之后给会话记来路，都用它；不改任何东西。"""
+        if token is not None:
+            token = str(token).upper()
+            key, where = (db.sha256(token), "l.token_sha256=?") if _TOKEN.match(token) else (None, "")
+        else:
+            code = normalize_code(code)
+            key, where = (db.sha256(code), "l.code_sha256=?") if code else (None, "")
+        row = None if key is None else self.accounts._one(
+            "SELECT l.origin, l.device_id, d.name AS device_name FROM phone_link l "
+            f"LEFT JOIN device d ON d.id=l.device_id WHERE {where}", (key,))
+        if row is None:
+            return {"origin": "pc", "device_id": None, "device_name": ""}
+        return {"origin": row["origin"] or "pc", "device_id": row["device_id"], "device_name": row["device_name"] or ""}

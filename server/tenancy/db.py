@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS session (
     last_seen REAL NOT NULL,
     expires_at REAL NOT NULL,
     user_agent TEXT NOT NULL DEFAULT '',
-    ip_prefix TEXT NOT NULL DEFAULT ''
+    ip_prefix TEXT NOT NULL DEFAULT '',
+    via TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS session_user ON session(user_id);
 CREATE INDEX IF NOT EXISTS session_device ON session(device_id);
@@ -78,7 +79,9 @@ CREATE TABLE IF NOT EXISTS phone_link (
     pc_ip_prefix TEXT NOT NULL DEFAULT '',
     pc_user_agent TEXT NOT NULL DEFAULT '',
     phone_ip_prefix TEXT NOT NULL DEFAULT '',
-    phone_user_agent TEXT NOT NULL DEFAULT ''
+    phone_user_agent TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'pc',
+    device_id TEXT
 );
 CREATE INDEX IF NOT EXISTS phone_link_code ON phone_link(code_sha256);
 CREATE INDEX IF NOT EXISTS phone_link_poll ON phone_link(poll_sha256);
@@ -181,7 +184,12 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 # 后来加的列：(表, 列, 类型)。旧库打开时补上（ALTER TABLE ADD COLUMN），已有的数据不动。
 # 阶段 2：电脑登录票据的轮询密钥（只在电脑上，二维码里是另一个），见 tickets.py。
-ADDED_COLUMNS = (("login_ticket", "poll_sha256", "BLOB"),)
+# 恢复登录：手机登录链接是谁要的（pc 电脑版、device 设备上的「恢复登录」、admin 管理员命令行）和
+# 哪台设备（phonelinks.py）；会话是怎么来的（via：recover 设备恢复、admin 管理员链接、signup 扫绑定码注册）。
+ADDED_COLUMNS = (("login_ticket", "poll_sha256", "BLOB"),
+                 ("phone_link", "origin", "TEXT NOT NULL DEFAULT 'pc'"),
+                 ("phone_link", "device_id", "TEXT"),
+                 ("session", "via", "TEXT NOT NULL DEFAULT ''"))
 
 
 def _add_columns(conn: sqlite3.Connection) -> None:
