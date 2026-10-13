@@ -8,6 +8,7 @@
 
 #include "av_provision.h"
 #include "av_config.h"
+#include "av_wifi_hint.h"
 #include "av_muse.h"
 
 #include "ssid_manager.h"
@@ -444,6 +445,40 @@ bool av_provision_saved_network_visible(void)
 {
     return s_initialized.load() && s_ap_running.load() &&
            WifiManager::GetInstance().ConfigApSeesSavedNetwork();
+}
+
+void av_provision_scan_hint(struct av_wifi_hint_s *out)
+{
+    if (!out) {
+        return;
+    }
+    av_wifi_hint_clear(out);
+    if (!s_initialized.load() || !s_ap_running.load()) {
+        return;
+    }
+    WifiManager::GetInstance().ConfigApForEachAccessPoint([out](const wifi_ap_record_t &record) {
+        // What the setup form can join: open, or a password (WEP, WPA, WPA2,
+        // WPA3 personal). Not enterprise, OWE, WAPI or DPP.
+        bool joinable = false;
+        switch (record.authmode) {
+        case WIFI_AUTH_OPEN:
+        case WIFI_AUTH_WEP:
+        case WIFI_AUTH_WPA_PSK:
+        case WIFI_AUTH_WPA2_PSK:
+        case WIFI_AUTH_WPA_WPA2_PSK:
+        case WIFI_AUTH_WPA3_PSK:
+        case WIFI_AUTH_WPA2_WPA3_PSK:
+        case WIFI_AUTH_WPA3_EXT_PSK:
+        case WIFI_AUTH_WPA3_EXT_PSK_MIXED_MODE:
+            joinable = true;
+            break;
+        default:
+            break;
+        }
+        const size_t len = strnlen(reinterpret_cast<const char *>(record.ssid), sizeof(record.ssid));
+        av_wifi_hint_offer(out, record.ssid, len, record.rssi, record.authmode == WIFI_AUTH_OPEN, joinable);
+    });
+    av_wifi_hint_finish(out);
 }
 
 bool av_provision_connect_and_save(const char *ssid, const char *password, const char *server)

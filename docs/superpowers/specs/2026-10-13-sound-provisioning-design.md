@@ -174,6 +174,43 @@ creates the WebAudio context inside the tap (iOS requires it), sets
 silent switch does not mute it, and loops one rendered repeat up to six times
 with a progress bar and "turn the volume up, hold the phone near the TV".
 
+### Nearby networks in the code
+
+A web page cannot read the phone's Wi-Fi name, so the device lists what it
+sees. While setup runs, `run_setup_mode()` takes the access point's scan
+(`av_provision_scan_hint()`, a visitor over the component's records under
+its lock — no copy) and keeps, in `main/av_wifi_hint.c`, the strongest six
+names it could join: not hidden, valid UTF-8 without control characters (so
+the page can show and send it back exactly; a GBK name is left out), open or
+personal-password security (not enterprise, OWE, WAPI or DPP), one entry per
+name at its best signal. They are ordered by signal bars (4 from −55 dBm, 3
+from −66, 2 from −77, else 1), then by name, so a signal wandering inside a
+bar does not reorder the list.
+
+The code becomes `<SITE>/TV/W#1<base32hex>`: records of one header byte (SSID
+length − 1, bars − 1, open bit) and the SSID's bytes, base32hex (`0-9A-V`, no
+padding) after a format digit `1`. The URL and the list are alphanumeric QR
+segments and only `#` is a byte segment, so a byte costs 8.8 bits rather than
+10.7 in base64. A fragment never reaches the server or nginx logs, and the
+relay still serves `/TV/W` as before. Networks are dropped from the weak end
+until the code fits version 5 (low error correction, raised when it fits); the
+setup page draws a version-5 code at 3 px a module, 123 px in its 120-px
+square (`ui_qr_setup_scale()`; 2 px modules, 0.23 mm on the Xingzhi panel,
+are too fine). Typical router names: six networks after a short site, four
+after a 40-character one. With no scan yet the code is the plain address,
+pixel for pixel as before. The list is read every 2 s until there is one,
+then every 10 s (the access point scans every 10 s), and only while nothing is
+being received or tried; the screen repaints only when names, bars, open or
+order change, and the code is encoded only then (`Sound page code: N of M
+nearby networks, version V` in the log).
+
+The page parses the fragment on load and lists "Wi-Fi near the TV" (in Chinese) above the
+name field: name, 🔓 for open, signal bars. A tap fills the name, puts the
+cursor in the password (or empties it for an open network), and restores the
+remembered password when it is the remembered network; a remembered name in
+the list is marked. Manual entry is unchanged and the page still has no
+network access. A shared link carries the nearby names in its fragment.
+
 ## Tests
 
 - `tests/test_av_soundprov.c` (in `./tools/validate.sh --static`): CRC-32 known
@@ -188,6 +225,15 @@ with a progress bar and "turn the volume up, hold the phone near the TV".
   and a strict CSP; the asset is registered. Node and compiler cases skip
   themselves when those tools are missing.
 - `tests/test_relay_web.py`: `/wifi`, `/tv/wifi`, `/TV/W` answer without sign-in.
+- `tests/test_av_wifi_hint.c` (in `--static`): what the scan keeps, bars,
+  order and sameness, a golden fragment, how many networks fit and that the
+  code is ≤ version 5 at ≥ 3 px; no list gives the old code byte for byte
+  (`--print` tabulates site lengths). `tests/test_ui_qr.c` checks
+  `ui_qr_setup_scale()`. `tests/test_soundprov_page.py` runs the page's
+  `parseNearby()` under node on the same golden fragment, a Python encoder
+  written from this description, truncated, mis-versioned, invalid-UTF-8 and
+  duplicate cases. `tools/render_ui` draws the page with a list on a new last
+  row (both boards); the rows above are unchanged.
 
 ## Not yet known
 

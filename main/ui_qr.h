@@ -24,6 +24,15 @@
 // Largest module size when a page shows a single code.
 #define UI_QR_SINGLE_MAX_SCALE 6
 
+// The setup pages draw one code centred in a 120-px square of the 240-px
+// design (the middle of both panels). A code that would get under 3 px a module
+// there may grow to UI_QR_SETUP_BOX_MAX instead: the sound page's code with
+// nearby networks in it is version 5, 41 modules with the quiet zone, 123 px at
+// 3 px -- 2 px modules (82 px, 0.23 mm on the Xingzhi's panel) are too fine
+// for a phone at arm's length.
+#define UI_QR_SETUP_BOX 120
+#define UI_QR_SETUP_BOX_MAX 126
+
 typedef struct {
     int scale;    // pixels per module, shared by both codes
     int x_a, x_b; // left edge of each code's quiet zone
@@ -48,6 +57,11 @@ bool ui_qr_layout(int panel_w, int y, int modules_a, int modules_b, ui_qr_layout
 // fits both `max_side` and the panel width less 2 px each side. Fills scale, x_a,
 // side_a and y; x_b and side_b are zero. False below UI_QR_MIN_SCALE.
 bool ui_qr_layout_single(int panel_w, int y, int modules, int max_side, ui_qr_layout_t *out);
+
+// Module size for a setup page's code of `modules` modules (quiet zone
+// included): the largest that fits UI_QR_SETUP_BOX, or 3 when that would be
+// smaller and 3 fits UI_QR_SETUP_BOX_MAX; never under UI_QR_MIN_SCALE.
+int ui_qr_setup_scale(int modules);
 
 // Paint one encoded code (qrcodegen format) with its quiet zone, top-left at
 // (x, y), clipped to the rows `surface` covers.

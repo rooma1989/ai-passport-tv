@@ -55,6 +55,10 @@ public:
     bool ConnectToWifi(const std::string &ssid, const std::string &password);
     void Save(const std::string &ssid, const std::string &password);
     std::vector<wifi_ap_record_t> GetAccessPoints();
+    // Call `visit` for each record of the last scan, under the scan lock and
+    // without copying the list (the setup screen reads it on a small stack
+    // with the heap given to the access point). `visit` must be quick.
+    void ForEachAccessPoint(const std::function<void(const wifi_ap_record_t &)> &visit);
     // What the web form's submit does, for a caller that is not the web form
     // (sound provisioning): check the network can be joined, save it, store the
     // server address when one is given. False when the network could not be

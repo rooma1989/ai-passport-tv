@@ -54,6 +54,7 @@
 | [`main/av_identity.c`/`.h`](../../main/av_identity.h) | HELLO 里给多用户服务器的设备身份（`device_id`、`model`、`device_secret`、`fw`）；格式化部分有主机测试。 |
 | [`main/av_wifi_ops.c`/`.h`](../../main/av_wifi_ops.h)、[`main/av_wifi_crypto.c`/`.h`](../../main/av_wifi_crypto.h)、[`main/av_wifimgr.c`/`.h`](../../main/av_wifimgr.h) | 手机管理保存的 Wi-Fi：修改检查和回答 JSON（主机测试）、X25519/HKDF/AES-GCM 信封（对 IDF 自带 mbedTLS 做主机测试）、以及衔接（HELLO `wifimgr`/`wkey`、CONFIG `wifi_key`、SWITCH `wifi`、STATUS 回答）。设计：[`2026-10-13-wifi-setup-design.zh_CN.md`](../superpowers/specs/2026-10-13-wifi-setup-design.zh_CN.md)。 |
 | [`main/av_soundsetup.c`/`.h`](../../main/av_soundsetup.h) | 配网模式里的声波配网：麦克风任务喂解码器 `av_soundprov`、给屏幕的进度、像网页表单那样试连并保存；构建定义了 `AV_SOUNDPROV_PRESENT`，缺了解码器会编译出错，而不是悄悄变成「不可用」。 |
+| [`main/av_wifi_hint.c`/`.h`](../../main/av_wifi_hint.h) | 配网热点扫到的 Wi-Fi，放进声波配网页的二维码 `<SITE>/TV/W#1<base32hex>`：留哪些扫描结果、片段编码、让码不超过 5 版（主机测试；页面 `wifi.html` 负责解析）。设计：[`2026-10-13-sound-provisioning-design.zh_CN.md`](../superpowers/specs/2026-10-13-sound-provisioning-design.zh_CN.md)。 |
 | [`main/av_soundprov.c`/`.h`](../../main/av_soundprov.h) | 声波配网解码器：输入 16 kHz 麦克风 PCM，输出 Wi-Fi 名称、密码、服务器地址；纯 C、只用整数，在模拟信道上有主机测试。手机端是 `server/relay/assets/wifi.html`（`/tv/wifi`、`/TV/W`）。 |
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
 | [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机，以及频道列表面板里的语音子状态——纯逻辑，无 LVGL。 |

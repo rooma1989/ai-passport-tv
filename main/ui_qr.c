@@ -33,6 +33,15 @@ bool ui_qr_wifi_text(char *out, size_t size, const char *ssid)
     return true;
 }
 
+int ui_qr_setup_scale(int modules)
+{
+    if (modules <= 0) return UI_QR_MIN_SCALE;
+    int scale = UI_QR_SETUP_BOX / modules;
+    if (scale < 3 && modules * 3 <= UI_QR_SETUP_BOX_MAX) scale = 3;
+    if (scale < UI_QR_MIN_SCALE) scale = UI_QR_MIN_SCALE;
+    return scale;
+}
+
 bool ui_qr_layout(int panel_w, int y, int modules_a, int modules_b, ui_qr_layout_t *out)
 {
     if (!out || modules_a <= 0 || modules_b <= 0) {

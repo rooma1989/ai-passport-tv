@@ -27,6 +27,8 @@
 #include <functional>
 #include <mutex>
 
+#include <esp_wifi_types_generic.h>
+
 #include "wifi_station.h"
 
 class WifiStation;
@@ -115,6 +117,9 @@ public:
     // The portal's default server address (WifiManagerConfig::server_default)
     // for the next StartConfigAp().
     void SetConfigApServerDefault(const std::string& address);
+    // Each record of the config AP's last scan (WifiConfigurationAp::
+    // ForEachAccessPoint); nothing when not in config mode.
+    void ConfigApForEachAccessPoint(const std::function<void(const wifi_ap_record_t&)>& visit);
     std::string GetApSsid() const;
     std::string GetApWebUrl() const;
 

@@ -305,6 +305,16 @@ bool WifiManager::ConfigApConnectAndSave(const std::string& ssid, const std::str
     return ap->ConnectAndSave(ssid, password, server);
 }
 
+void WifiManager::ConfigApForEachAccessPoint(const std::function<void(const wifi_ap_record_t&)>& visit) {
+    WifiConfigurationAp* ap = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!config_mode_active_ || !config_ap_) return;
+        ap = config_ap_.get();
+    }
+    ap->ForEachAccessPoint(visit);
+}
+
 void WifiManager::SetConfigApServerDefault(const std::string& address) {
     std::lock_guard<std::mutex> lock(mutex_);
     config_.server_default = address;

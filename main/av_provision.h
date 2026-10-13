@@ -124,6 +124,11 @@ bool av_provision_use_network(unsigned index);
 
 // Whether the setup access point's last scan saw a saved network.
 bool av_provision_saved_network_visible(void);
+// The networks of the setup access point's last scan that the setup could
+// join, cut to the strongest few (av_wifi_hint.h), for the sound page's code.
+// Empty when setup is not running or nothing has been scanned yet.
+struct av_wifi_hint_s;
+void av_provision_scan_hint(struct av_wifi_hint_s *out);
 // What the setup page's form does with what it was given: check the network
 // can be joined, save it, store the server if `server` is not empty. Blocks
 // for up to ~25 s. Only while the access point is up.

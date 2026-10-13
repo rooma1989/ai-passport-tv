@@ -20,6 +20,7 @@
 #include "av_wifimgr.h"
 #include "av_wifi_ops.h"
 #include "av_soundsetup.h"
+#include "av_wifi_hint.h"
 #include "ui_text.h"
 #include "ui_status.h"
 #include "ui_draw.h"
@@ -4959,6 +4960,16 @@ static bool pump_keys(uint32_t wait_ms);
 // fit -- so there is nothing of the session's left to draw into. It must be
 // STRIPE_BYTES long: this writes a whole stripe into it, and a shorter buffer is
 // a silent overwrite of whatever follows it in memory.
+// The networks the setup access point sees, in the sound page's code
+// (av_wifi_hint.h): taken from its scan by run_setup_mode() and counted by
+// s_hint_gen, which tells the paint below to encode the code again.
+static av_wifi_hint_t s_hint;
+static unsigned s_hint_gen;
+// The first list is looked for every 2 s, then a change at most every 10 s
+// (the access point scans every 10 s anyway).
+#define HINT_FIRST_MS 2000u
+#define HINT_REFRESH_MS 10000u
+
 static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page,
                                unsigned remaining_s, av_sound_state_t sound, unsigned progress,
                                unsigned y0, unsigned y1)
@@ -5032,9 +5043,34 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page
         view.line2_color=UI_MUTED;
         view.mood=1;
     }
-    if (payload[0] &&
-        qrcodegen_encodeText(payload,qr_temp,qr_code,qrcodegen_Ecc_LOW,1,6,qrcodegen_Mask_AUTO,true)) {
-        view.qr=qr_code;
+    // Encoded again only when the text or the network list changed: the sound
+    // page repaints for every percent received, and its code with networks in
+    // it is a version-5 code with the mask chosen automatically. The sound page
+    // carries the nearby networks after the address ("<SITE>/TV/W#1..."), as
+    // many as fit a code the screen shows at 3 px a module; with none it is the
+    // address alone, as before.
+    static char encoded[sizeof(payload)];
+    static unsigned encoded_gen=UINT_MAX;
+    static bool encoded_ok=false;
+    if (payload[0]) {
+        const bool sound_list=kind==AV_SETUP_PAGE_SOUND;
+        const unsigned gen=sound_list ? s_hint_gen : 0u;
+        if (strcmp(encoded,payload)!=0 || encoded_gen!=gen) {
+            if (sound_list) {
+                const int n=av_wifi_hint_qr(payload,&s_hint,AV_WIFI_HINT_QR_MAX_VERSION,qr_code,qr_temp);
+                encoded_ok=n>=0;
+                if (encoded_ok) {
+                    ESP_LOGI(TAG,"Sound page code: %d of %u nearby networks, version %d",n,s_hint.count,
+                             (qrcodegen_getSize(qr_code)-17)/4);
+                }
+            } else {
+                encoded_ok=qrcodegen_encodeText(payload,qr_temp,qr_code,qrcodegen_Ecc_LOW,1,6,
+                                                qrcodegen_Mask_AUTO,true);
+            }
+            snprintf(encoded,sizeof(encoded),"%s",payload);
+            encoded_gen=gen;
+        }
+        if (encoded_ok) view.qr=qr_code;
     }
     // The waiting square blinks once a second until a phone joins.
     const bool blink_on=(esp_timer_get_time()/1000000)%2==0;
@@ -5162,6 +5198,10 @@ static bool run_setup_mode(bool automatic)
     unsigned painted_second=UINT_MAX;
     av_sound_state_t painted_sound=AV_SOUND_OFF;
     unsigned painted_progress=0;
+    // A fresh list for this setup: the code starts as the plain address.
+    av_wifi_hint_clear(&s_hint);
+    s_hint_gen++;
+    uint32_t hint_next=(uint32_t)(esp_timer_get_time()/1000)+HINT_FIRST_MS;
     for(;;) {
         pump_keys(200);
         bool ready=av_provision_client_ready();
@@ -5178,10 +5218,27 @@ static bool run_setup_mode(bool automatic)
             atomic_store(&s_setup_page,0u);
             continue;
         }
+        // The nearby networks for the sound page's code, from the access
+        // point's scan. Not while a message is arriving or being tried: the
+        // code then stays as it is.
+        bool hint_changed=false;
+        const uint32_t now_ms=(uint32_t)(esp_timer_get_time()/1000);
+        if (av_soundsetup_available() && (sound==AV_SOUND_OFF || sound==AV_SOUND_LISTENING) &&
+            (int32_t)(now_ms-hint_next)>=0) {
+            static av_wifi_hint_t fresh;   // the main task's stack is small
+            av_provision_scan_hint(&fresh);
+            hint_next=now_ms+(s_hint.count || fresh.count ? HINT_REFRESH_MS : HINT_FIRST_MS);
+            if (!av_wifi_hint_same(&fresh,&s_hint)) {
+                s_hint=fresh;
+                s_hint_gen++;
+                hint_changed=true;
+            }
+        }
         // The sound page repaints when its line changes (progress in steps of
-        // whole percent, so a few repaints a second at most).
+        // whole percent, so a few repaints a second at most), and when its code
+        // gets a new list.
         const bool sound_changed=setup_page_kind(page)==AV_SETUP_PAGE_SOUND &&
-                                 (sound!=painted_sound || progress!=painted_progress);
+                                 (sound!=painted_sound || progress!=painted_progress || hint_changed);
         // The status page counts down and blinks: each second only those rows.
         if(painted && ready==painted_ready && page==painted_page &&
            setup_page_kind(page)==AV_SETUP_PAGE_STATUS && remaining!=painted_second) {

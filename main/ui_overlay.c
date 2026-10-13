@@ -959,10 +959,11 @@ void ui_overlay_setup(ui_surface_t surface, const ui_setup_page_t *page, bool bl
 
     if (!page->status) {
         if (page->qr) {
-            // As large as fits the design's 120 px square, centred in it.
+            // As large as fits the design's 120 px square, centred in it; a
+            // version-5 code (the sound page with nearby networks) spills a
+            // few pixels over it rather than drop to 2 px modules.
             const int modules = qrcodegen_getSize(page->qr) + 2 * UI_QR_QUIET;
-            int scale = 120 / modules;
-            if (scale < UI_QR_MIN_SCALE) scale = UI_QR_MIN_SCALE;
+            const int scale = ui_qr_setup_scale(modules);
             const int side = modules * scale;
             ui_qr_draw_colors(surface, 60 + (120 - side) / 2, 38 + (120 - side) / 2, scale, page->qr,
                               UI_PAPER, UI_DEEP);

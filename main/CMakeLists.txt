@@ -34,6 +34,7 @@ set(srcs "main.c"
          "av_wifi_crypto.c"
          "av_wifi_ops.c"
          "av_wifimgr.c"
+         "av_wifi_hint.c"
          "av_soundprov.c"
          "av_soundsetup.c")
 list(REMOVE_DUPLICATES srcs)

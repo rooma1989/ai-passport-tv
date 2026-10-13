@@ -77,6 +77,37 @@ if (job.kind === "golden") {
 """
 
 
+# The nearby-network list in the setup screen's code (main/av_wifi_hint.h):
+# the same list and fragment as GOLDEN in tests/test_av_wifi_hint.c.
+NEARBY_GOLDEN = ("1CL6NILR98PKKTPDGHVJR3CV8MUNUF55HSMCQH927ELIN6T0",
+                 [("MyWiFi", 4, False), ("小米路由器", 3, False), ("Guest", 2, True)])
+
+LIST_HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+const [src, cases] = [fs.readFileSync(process.argv[2], "utf8"), JSON.parse(process.argv[3])];
+const box = { TextDecoder, Uint8Array, Set };
+vm.runInNewContext(src + "\nthis.parseNearby = parseNearby;", box);
+console.log(JSON.stringify(cases.map((hash) => box.parseNearby(hash).map((n) => [n.ssid, n.bars, n.open]))));
+"""
+
+
+def nearby_fragment(nets) -> str:
+    """An encoder written from the format description, independent of the C one."""
+    import base64
+    data = b""
+    for ssid, bars, is_open in nets:
+        raw = ssid.encode()
+        data += bytes([(len(raw) - 1) | ((bars - 1) << 5) | (0x80 if is_open else 0)]) + raw
+    return "1" + base64.b32hexencode(data).decode().rstrip("=")
+
+
+def list_source() -> str:
+    text = PAGE.read_text(encoding="utf-8")
+    match = re.search(r"// BEGIN WIFI LIST\n(.*?)// END WIFI LIST", text, re.S)
+    assert match, "list markers missing from wifi.html"
+    return match.group(1)
+
+
 def encoder_source() -> str:
     text = PAGE.read_text(encoding="utf-8")
     match = re.search(r"// BEGIN SOUNDPROV ENCODER\n(.*?)// END SOUNDPROV ENCODER", text, re.S)
@@ -101,12 +132,51 @@ class PageTests(unittest.TestCase):
         for phrase in ("把音量调大，手机靠近电视", "显示密码", "发送", "清除"):
             self.assertIn(phrase, text)
 
+    def test_nearby_list_is_on_the_page(self):
+        text = PAGE.read_text(encoding="utf-8")
+        for phrase in ("电视附近的 Wi-Fi", "parseNearby(location.hash)", "🔓", 'id="nets"'):
+            self.assertIn(phrase, text)
+        # The names are put on the page as text, never as markup.
+        self.assertNotIn("innerHTML", text)
+
+    def test_python_encoder_matches_the_golden_fragment(self):
+        self.assertEqual(nearby_fragment(NEARBY_GOLDEN[1]), NEARBY_GOLDEN[0])
+
     def test_served_as_a_public_asset(self):
         sys.path.insert(0, str(ROOT))
         from server.relay import web
         kind, body = web.ASSETS["/wifi"]
         self.assertTrue(kind.startswith("text/html"))
         self.assertIn("声波配网".encode(), body)
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class NearbyListTests(unittest.TestCase):
+    def parse(self, hashes):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "list.js"
+            src.write_text(list_source(), encoding="utf-8")
+            harness = Path(tmp) / "harness.js"
+            harness.write_text(LIST_HARNESS, encoding="utf-8")
+            done = subprocess.run([NODE, str(harness), str(src), json.dumps(hashes)],
+                                  capture_output=True, text=True, encoding="utf-8", timeout=60, check=True)
+        return [[tuple(n) for n in parsed] for parsed in json.loads(done.stdout)]
+
+    def test_golden_and_edge_cases(self):
+        fragment, nets = NEARBY_GOLDEN
+        longest = [("x" * 32, 1, False), ("😀" * 8, 4, True)]
+        cases = ["#" + fragment, fragment, "#" + fragment.lower(), "", "#", "#2" + fragment[1:],
+                 "#1!!", "#" + fragment[:-6], "#" + nearby_fragment(longest),
+                 "#" + nearby_fragment([("A", 1, False), ("A", 3, True)])]
+        got = self.parse(cases)
+        expected = [nets, nets, nets, [], [], [], [], nets[:2], longest, [("A", 1, False)]]
+        self.assertEqual(got, [[tuple(n) for n in e] for e in expected])
+
+    def test_invalid_utf8_record_is_skipped(self):
+        import base64
+        bad = bytes([1, 0xC4, 0xE3]) + bytes([2]) + b"Net"   # GBK bytes, then "Net"
+        fragment = "#1" + base64.b32hexencode(bad).decode().rstrip("=")
+        self.assertEqual(self.parse([fragment]), [[("Net", 1, False)]])
 
 
 @unittest.skipUnless(NODE, "node is not installed")

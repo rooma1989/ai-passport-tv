@@ -74,6 +74,12 @@ run_static_checks() {
         tests/test_ui_qr.c main/ui_qr.c main/ui_text.c components/qrcodegen/qrcodegen.c \
         -o "${test_dir}/test_ui_qr"
     "${test_dir}/test_ui_qr"
+    # The networks in the sound page's code: which scan records are kept, the
+    # fragment the phone page parses, and how many fit a code the screen shows.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Icomponents/qrcodegen \
+        tests/test_av_wifi_hint.c main/av_wifi_hint.c main/ui_qr.c main/ui_text.c \
+        components/qrcodegen/qrcodegen.c -o "${test_dir}/test_av_wifi_hint"
+    "${test_dir}/test_av_wifi_hint"
     # Top-band status group: battery fill, low colour, signal bars, charging bolt.
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_ui_status.c main/ui_status.c main/ui_draw.c main/ui_text.c \
@@ -89,7 +95,7 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Icomponents/qrcodegen \
         tools/render_ui/render_ui.c tools/render_ui/font_blob.S \
         main/ui_overlay.c main/ui_status.c main/ui_draw.c main/ui_text.c main/ui_menu.c \
-        main/ui_qr.c main/av_provision_policy.c components/qrcodegen/qrcodegen.c \
+        main/ui_qr.c main/av_provision_policy.c main/av_wifi_hint.c components/qrcodegen/qrcodegen.c \
         -o "${test_dir}/render_ui"
     "${test_dir}/render_ui" "${test_dir}/screens.ppm"
     # The server address arrives as text someone typed or pasted, so the cases

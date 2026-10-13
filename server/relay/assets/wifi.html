@@ -37,6 +37,18 @@
   .bar { height: 6px; background: var(--rule); margin-top: 10px; }
   .bar div { height: 100%; width: 0; background: var(--amber); }
   .bad { color: var(--red); font-size: 14px; margin-top: 6px; }
+  .nets { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 2px; }
+  button.net { display: flex; align-items: center; gap: 10px; width: 100%; margin: 0; padding: 10px 12px;
+               background: var(--ink-deep); color: var(--paper); border: 1px solid var(--rule); text-align: left;
+               font: 16px -apple-system, "PingFang SC", sans-serif; letter-spacing: 0; }
+  button.net[aria-pressed="true"] { border-color: var(--amber); color: var(--paper-hi); }
+  .net .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .net .lock { font-size: 14px; }
+  .sig { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+  .sig i { display: block; width: 4px; background: var(--amber); }
+  .sig i:nth-child(1) { height: 4px; } .sig i:nth-child(2) { height: 7px; }
+  .sig i:nth-child(3) { height: 10px; } .sig i:nth-child(4) { height: 14px; }
+  .sig i.off { background: var(--rule); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -46,11 +58,17 @@
   <h1>声波配网</h1>
   <ol>
     <li>让电视进入配网（设置）页面。</li>
-    <li>填好 Wi-Fi 名称和密码，只要填一次，这台手机会记住。</li>
+    <li>选好 Wi-Fi（扫电视上的码打开时，电视附近的 Wi-Fi 会列在上面，点一下就行），填好密码。只要填一次，这台手机会记住。</li>
     <li>把手机音量调大，靠近电视，点「发送」。电视听到后会自己连上网。</li>
   </ol>
 
   <form id="form" autocomplete="off" novalidate>
+    <div id="nearby" hidden>
+      <label id="nearby-title">电视附近的 Wi-Fi</label>
+      <div class="dim">点一下就填好名字；不在这里的可以在下面自己填。</div>
+      <div class="nets" id="nets" role="group" aria-labelledby="nearby-title"></div>
+    </div>
+
     <label for="ssid">Wi-Fi 名称</label>
     <input id="ssid" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
            placeholder="例如 TP-LINK_5A3F">
@@ -208,6 +226,43 @@ const SoundProv = (() => {
 })();
 // END SOUNDPROV ENCODER
 
+// BEGIN WIFI LIST
+// 电视扫到的 Wi-Fi：电视把它们放在二维码网址的 # 后面（# 后面的部分浏览器不会发给服务器）。
+// 格式见 main/av_wifi_hint.h："1" 加上 base32hex（0-9A-V，不补 =）编码的若干条记录，
+// 每条：1 字节头（低 5 位 = 名字字节数 - 1，第 5-6 位 = 信号格数 - 1，最高位 = 不用密码），
+// 然后是名字的 UTF-8。返回 [{ssid, bars, open}]，格式不对就返回 []。
+function parseNearby(hash) {
+  const match = /^#?1([0-9A-Va-v]+)$/.exec(hash || "");
+  if (!match) return [];
+  const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUV";
+  const bytes = [];
+  let acc = 0, bits = 0;
+  for (const ch of match[1].toUpperCase()) {
+    acc = (acc << 5) | ALPHABET.indexOf(ch);
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((acc >> bits) & 255);
+    }
+    acc &= (1 << bits) - 1;
+  }
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const list = [], seen = new Set();
+  for (let i = 0; i < bytes.length && list.length < 8;) {
+    const head = bytes[i], len = (head & 31) + 1;
+    if (i + 1 + len > bytes.length) break;
+    let ssid = null;
+    try { ssid = decoder.decode(Uint8Array.from(bytes.slice(i + 1, i + 1 + len))); } catch (e) { ssid = null; }
+    if (ssid && !seen.has(ssid)) {
+      seen.add(ssid);
+      list.push({ ssid, bars: ((head >> 5) & 3) + 1, open: (head & 128) !== 0 });
+    }
+    i += 1 + len;
+  }
+  return list;
+}
+// END WIFI LIST
+
 const $ = (id) => document.getElementById(id);
 const REPEATS = 6;            // 一次最多播 6 遍（约 15–20 秒），电视收到了就可以点「停止」
 const STORE = { ssid: "tvwifi.ssid", pass: "tvwifi.pass", server: "tvwifi.server" };
@@ -230,11 +285,71 @@ $("pass").value = load(STORE.pass);
 $("server").value = load(STORE.server) || SITE;
 if ($("server").value && $("server").value !== SITE) $("more").open = true;
 
+// 电视附近的 Wi-Fi：点一下填好名字；要密码的把光标放到密码栏，不用密码的清空密码。
+const NEARBY = parseNearby(location.hash);
+
+function markNearby() {
+  for (const node of $("nets").children) {
+    node.setAttribute("aria-pressed", node.dataset.ssid === $("ssid").value ? "true" : "false");
+  }
+}
+
+function pickNearby(net) {
+  if ($("ssid").value !== net.ssid) {
+    // 换了一个网络：原来的密码多半不对；记住过这个网络就用记住的密码。
+    $("pass").value = net.ssid === load(STORE.ssid) ? load(STORE.pass) : "";
+  }
+  $("ssid").value = net.ssid;
+  BAD.forEach((id) => { $(id).hidden = true; });
+  if (net.open) {
+    $("pass").value = "";
+    $("pass").blur();
+  } else {
+    $("pass").focus();
+  }
+  markNearby();
+}
+
+if (NEARBY.length) {
+  for (const net of NEARBY) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "net";
+    button.dataset.ssid = net.ssid;
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = net.ssid;
+    const signal = document.createElement("span");
+    signal.className = "sig";
+    signal.setAttribute("aria-label", `信号 ${net.bars} 格`);
+    for (let k = 1; k <= 4; k++) {
+      const bar = document.createElement("i");
+      if (k > net.bars) bar.className = "off";
+      signal.appendChild(bar);
+    }
+    button.append(name);
+    if (net.open) {
+      const lock = document.createElement("span");
+      lock.className = "lock";
+      lock.textContent = "🔓";
+      lock.setAttribute("aria-label", "不用密码");
+      button.append(lock);
+    }
+    button.append(signal);
+    button.addEventListener("click", () => pickNearby(net));
+    $("nets").appendChild(button);
+  }
+  $("nearby").hidden = false;
+  markNearby();   // 记住的 Wi-Fi 在列表里就标出来
+}
+$("ssid").addEventListener("input", markNearby);
+
 $("show").addEventListener("change", () => { $("pass").type = $("show").checked ? "text" : "password"; });
 $("forget").addEventListener("click", () => {
   Object.values(STORE).forEach(forget);
   $("ssid").value = $("pass").value = "";
   $("server").value = SITE;
+  markNearby();
   $("forget").textContent = "已清除";
   setTimeout(() => { $("forget").textContent = "清除这台手机上记住的 Wi-Fi"; }, 2000);
 });

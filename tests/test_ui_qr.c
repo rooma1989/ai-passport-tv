@@ -124,8 +124,20 @@ static void test_draw(void)
     check(memcmp(buf, striped, sizeof(buf)) == 0, "stripe-by-stripe drawing matches");
 }
 
+static void test_setup_scale(void)
+{
+    // Versions 1..6 with the two-module quiet zone each side.
+    check(ui_qr_setup_scale(21 + 4) == 4 && ui_qr_setup_scale(25 + 4) == 4, "versions 1-2 at 4 px");
+    check(ui_qr_setup_scale(29 + 4) == 3 && ui_qr_setup_scale(33 + 4) == 3, "versions 3-4 at 3 px");
+    // Version 5 would be 2 px in 120; it takes 123 px at 3 px instead.
+    check(ui_qr_setup_scale(37 + 4) == 3 && (37 + 4) * 3 <= UI_QR_SETUP_BOX_MAX, "version 5 at 3 px");
+    check(ui_qr_setup_scale(41 + 4) == 2, "version 6 stays at 2 px");
+    check(ui_qr_setup_scale(0) == UI_QR_MIN_SCALE, "nonsense gets the smallest");
+}
+
 int main(void)
 {
+    test_setup_scale();
     test_wifi_text();
     test_layout();
     test_layout_single();

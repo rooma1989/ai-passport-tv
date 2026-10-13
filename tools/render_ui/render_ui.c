@@ -2,6 +2,7 @@
 // font, a stand-in for the picture, and each screen of the design laid out on
 // one sheet at 2x. Run through render_ui.sh.
 #include "av_provision_policy.h"
+#include "av_wifi_hint.h"
 #include "ui_draw.h"
 #include "ui_menu.h"
 #include "ui_overlay.h"
@@ -20,8 +21,9 @@
 // the voice screens (docs/superpowers/specs/2026-10-12-voice-control-design.md),
 // so the first seven rows can be compared with an older sheet pixel for pixel,
 // then one of the episode information (what loads, what plays), then one of
-// the playback progress.
-enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 13, GAP = 8 };
+// the playback progress, one of sound setup, and one of sound setup with the
+// nearby networks in its code.
+enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 14, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -496,6 +498,44 @@ int main(int argc, char **argv)
                                  .line1 = "相机扫码，或连 Wi-Fi", .line2 = "FoloToy-A1B2", .line2_color = UI_AMBER };
         ui_overlay_setup(view(), &join, true);
         place(n++);
+    }
+
+    // The sound page with the nearby networks in its code, on a row of its own:
+    // six typical names after a short site (version 5, 3 px a module), the
+    // same while receiving, and four after a long site. The rows above keep
+    // their pixels.
+    n = 13 * COLS;
+    {
+        static uint8_t hq[qrcodegen_BUFFER_LEN_FOR_VERSION(6)], ht[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+        static const struct { const char *ssid; int rssi; bool open; } near[] = {
+            { "TP-LINK_5A3F", -48, false }, { "ChinaNet-xQ7d", -59, false },
+            { "\xE5\xB0\x8F\xE7\xB1\xB3\xE8\xB7\xAF\xE7\x94\xB1\xE5\x99\xA8", -63, false },
+            { "CMCC-2F9A", -70, false }, { "HUAWEI-B3C1", -74, false }, { "Guest", -81, true },
+        };
+        av_wifi_hint_t hint;
+        av_wifi_hint_clear(&hint);
+        for (unsigned i = 0; i < sizeof(near) / sizeof(near[0]); i++) {
+            av_wifi_hint_offer(&hint, (const uint8_t *)near[i].ssid, strlen(near[i].ssid), near[i].rssi,
+                               near[i].open, true);
+        }
+        av_wifi_hint_finish(&hint);
+        static const char *const sites[] = { "https://example.com", "https://example.com",
+                                             "https://remote.a-longer-domain.example.org" };
+        const av_sound_state_t states[] = { AV_SOUND_LISTENING, AV_SOUND_RECEIVING, AV_SOUND_LISTENING };
+        for (unsigned i = 0; i < 3; i++) {
+            char page[80], text[80], line[48];
+            av_setup_wifi_page(sites[i], page, sizeof(page));
+            av_setup_wifi_page_text(sites[i], text, sizeof(text));
+            const int got = av_wifi_hint_qr(page, &hint, AV_WIFI_HINT_QR_MAX_VERSION, hq, ht);
+            fprintf(stderr, "sound page %s: %d networks, version %d\n", sites[i], got,
+                    (qrcodegen_getSize(hq) - 17) / 4);
+            av_setup_sound_line(states[i], 60, line, sizeof(line));
+            ui_setup_page_t setup = { .index = 0, .count = 5, .title = "手机声波配网", .qr = hq,
+                                      .line1 = text, .line2 = line, .line2_color = UI_AMBER,
+                                      .pet = 0, .mood = states[i] == AV_SOUND_RECEIVING };
+            ui_overlay_setup(view(), &setup, true);
+            place(n++);
+        }
     }
 
     FILE *out = fopen(argv[1], "wb");

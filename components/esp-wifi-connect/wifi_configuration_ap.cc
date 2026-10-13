@@ -44,6 +44,14 @@ std::vector<wifi_ap_record_t> WifiConfigurationAp::GetAccessPoints()
     return ap_records_;
 }   
 
+void WifiConfigurationAp::ForEachAccessPoint(const std::function<void(const wifi_ap_record_t &)> &visit)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto &record : ap_records_) {
+        visit(record);
+    }
+}
+
 WifiConfigurationAp::~WifiConfigurationAp()
 {
     Stop();
