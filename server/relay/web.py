@@ -23,6 +23,7 @@ from pathlib import Path
 
 from .. import channel_groups, now_playing
 from ..tenancy import files as tenancy_files
+from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.tickets import LoginTickets
 from . import console, events, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
@@ -114,6 +115,8 @@ class Relay:
         self.devices_dir = Path(devices_dir) if devices_dir is not None else None
         # 电脑扫码登录的票据（阶段 2，console.py）。
         self.login_tickets = LoginTickets(accounts) if accounts is not None else None
+        # 反方向：电脑版给手机的一次性登录链接（server/tenancy/phonelinks.py）。
+        self.phone_links = PhoneLinks(accounts) if accounts is not None else None
         # 每个网站一个客户端；YouTube 只经 cstone 节点，没配置时为 None。
         self.clients = {"bilibili": client, "youtube": youtube}
         self.events_out = Path(events_out) if events_out is not None else None

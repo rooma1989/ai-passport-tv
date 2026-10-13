@@ -311,6 +311,38 @@ Not in the console yet: per-user hiding and ordering of live channels and
 channel proposals; device members other than the owner (the console shows the
 device's guest QR code, which is the existing guest link); the admin backend.
 
+### Scanning from the remote, and letting a phone sign in
+
+Two later additions, deployed like the rest of phase 2 (copy `server/` and
+`packaging/help/`, restart `tv-relay`):
+
+- **Scan to sign in the PC** from the remote: Subscriptions has a button that
+  opens the phone's camera (`/tv/scan.js`, plus the vendored jsQR
+  `/tv/jsqr.js` where the browser has no `BarcodeDetector`, both loaded only on
+  the tap) and opens `/tv/l/<ticket>` on the site the remote runs on. Tickets
+  are relay-wide, so a remote on the main site confirms a QR code showing the
+  `tv.` subdomain and the other way round. No nginx change.
+- **Let a phone sign in** from a signed-in PC (Settings, or the hint on the
+  Remote page): the console shows `https://<site>/TV/P/<token>` as a QR code
+  and an 8-character code; the phone's camera opens the link, the page shows
+  whose account and which PC, and a tap gives that phone an ordinary member
+  phone session of the same user (180 days; then "Add to Home Screen" from the
+  remote, which keeps the session in its address). Opening the page does not
+  use the link up (link previews only GET it). The QR code uses `--public-url`
+  (the `tv.` subdomain), but the page and its API work on either host.
+  **nginx:** add the `/TV/P/` location from
+  [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf), then
+  `nginx -t` and reload. `/tv/p`, where the code is typed, is covered by `/tv/`.
+  The relay creates the `phone_link` table on its first start.
+
+| | |
+| --- | --- |
+| Paths | landing `/TV/P/<token>` (relay `/p/<token>`) and `/tv/p`; API `POST /api/phone-link` (PC), `GET /api/phone-link/status?poll=` (PC), `GET /api/phone-link/info?t=` or `?code=`, `POST /api/phone-link/accept` `{token}` or `{code}` |
+| Link | 26-character token (130 bits, upper-case base32) only in the QR code, 8-character code (alphabet without I, L, O, 0, 1; about 40 bits) on the screen, a 256-bit poll secret kept by the page; all three stored as SHA-256. Expires in 5 minutes, single use; a new link replaces the user's unused one; a banned user's link stops working |
+| Who creates | a signed-in member's PC session (cookie); not a phone session, not a guest, not the key |
+| Limits | 6 links per user and 12 per network per 10 minutes; 10 wrong codes per network and 100 overall per 10 minutes |
+| Audit | `phone_link.create` and `login.phone.link` |
+
 ## Left for later phases
 
 Per-user hiding and ordering of live channels and proposals (`user_state` has

@@ -193,6 +193,8 @@
                  border: 1px solid var(--rule); padding: 8px 10px; user-select: all; }
   .modal .row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
   .modal p { margin: 8px 0; color: var(--dim); font-size: 13px; }
+  .modal .pcode { margin: 4px 0 8px; font: 600 26px/1.3 var(--mono); color: var(--amber); letter-spacing: 4px; text-align: center; }
+  .modal p.live { color: var(--amber); }
 
   /* ---- 设备的 Wi-Fi（弹窗） ---- */
   .modal.wide { width: min(560px, calc(100vw - 32px)); }
@@ -308,6 +310,7 @@
           <div class="groups" id="groups"></div>
           <div class="grid" id="channels"></div>
           <p class="hint">点一下，小电视就换到这个台。<button class="linkbtn noguest" id="adjust">调整分组</button></p>
+          <p class="hint noguest">手机上还没有遥控？<button class="linkbtn" id="phoneLink1">让手机登录 ›</button></p>
         </div>
       </div>
     </section>
@@ -386,8 +389,9 @@
         <div class="inline" style="margin-top: 14px">
           <button class="ghost" id="logoutOthers">退出其他所有登录</button>
           <button class="ghost" id="logout2">退出这台电脑</button>
+          <button class="ghost noguest" id="phoneLink2">让手机登录</button>
         </div>
-        <p class="hint">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机要再扫一次邀请或小电视的码，电脑要再扫码）；访客不受影响，可以单独退出。</p>
+        <p class="hint">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机要再扫一次邀请或小电视的码，或者在这里点「让手机登录」；电脑要再扫码）；访客不受影响，可以单独退出。</p>
       </div>
       <div class="block" id="ytBlock" hidden>
         <div class="h3">YouTube 节点</div>
@@ -1401,6 +1405,49 @@ $("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
   toast(answer.ok ? "已退出 " + answer.count + " 个登录" : answer.error, !answer.ok);
   loadSessions();
 });
+
+// 让手机登录：一次性的手机登录链接（5 分钟、只能用一次），手机用相机扫码在 Safari 里打开。
+let phoneRun = 0;
+async function phoneLink() {
+  let answer;
+  try { answer = await call("POST", "api/phone-link", {}); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (!answer.ok) { toast(answer.error, true); return; }
+  const run = ++phoneRun;
+  const box = el("div", "qrbox");
+  box.innerHTML = answer.svg;   // 服务器画的二维码，只有数字和固定颜色
+  const state = el("p", "", "5 分钟内有效，只能用一次。");
+  const how = [el("p", "", "用手机相机扫这个二维码，在打开的 Safari（或手机浏览器）里点「在这台手机上登录」，再「添加到主屏幕」。"),
+               el("p", "", "扫不了的话，在手机浏览器里打开 " + answer.typed + "，输入："), el("div", "pcode", answer.code)];
+  const finish = (text, live) => {
+    for (const node of [box, ...how]) node.hidden = true;
+    box.replaceChildren();
+    state.className = live ? "live" : "";
+    state.textContent = text;
+  };
+  const row = el("div", "row");
+  row.append(button("关闭", "go", closeOverlays));
+  modal("让手机登录", box, ...how, state, el("p", "", "只给你自己的手机用：有这个码的人能以你的身份登录。"), row);
+  const until = Date.now() + answer.ttl * 1000;
+  while (run === phoneRun && !$("modal").hidden) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (run !== phoneRun || $("modal").hidden) return;
+    let status;
+    try { status = await call("GET", "api/phone-link/status?poll=" + encodeURIComponent(answer.poll)); }
+    catch (error) { if (error instanceof SignedOut) { signedOut(); return; } continue; }
+    if (status.state === "used") {
+      finish("手机已经登录了（" + status.phone + (status.network ? "，" + status.network : "") + "）。可以关掉这个窗口。", true);
+      if ($("settings").classList.contains("on")) loadSessions();
+      return;
+    }
+    if (status.state === "expired" || Date.now() > until) {
+      finish("过期了。需要的话再点一次「让手机登录」。", false);
+      return;
+    }
+  }
+}
+$("phoneLink1").onclick = phoneLink;
+$("phoneLink2").onclick = phoneLink;
 
 // ---------- 邀请（管理员） ----------
 

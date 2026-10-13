@@ -6,6 +6,8 @@
 
 谁能做什么：
 - 页面、要票据、等结果、扫码落地页：不用登录（票据本身就是凭据）。
+- 让手机登录（反方向，phonelinks.py）：已登录的电脑（成员）要链接、看结果；手机落地页和「登录」不用登录
+  （一次性链接本身就是凭据，GET 不会用掉它）。
 - 确认电脑登录、看登录列表、退出别处：已登录的手机或电脑（cookie），访客和密钥都不行。
 - 设备详情、二维码：账号（访客不行，密钥算管理员）。邀请列表：管理员。
 """
@@ -24,10 +26,13 @@ from . import qr
 # 和 web.COOKIE 相同（web 引用本模块，这里不反过来引用它）；tests/test_relay_console.py 核对。
 COOKIE = "tvs"
 _LOGIN_LINK = re.compile(r"^/(?:l|TV/L)/([A-Za-z2-7]{26})$")
+# 让手机登录的落地页：/TV/P/<令牌>（nginx 转成 /p/<令牌>），没有令牌的 /tv/p 是输入 8 位码的地方。
+_PHONE_LINK = re.compile(r"^/(?:p|TV/P)(?:/|/[A-Za-z2-7]{26})?$")
 QR_TEXT_MAX = 300
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 CONSOLE_PAGE = (_ASSET_DIR / "console.html").read_bytes()
 LOGIN_PAGE = (_ASSET_DIR / "login.html").read_bytes()
+PHONE_PAGE = (_ASSET_DIR / "phone.html").read_bytes()
 # 登录确认页和电脑版都不许被别的网站嵌进框里（防止骗点「确认」）。
 # 脚本只许本站的（'self'：扫码登录时才加载的 /tv/scan.js、/tv/jsqr.js）；相机画面是 srcObject，不受 media-src 管。
 PAGE_HEADERS = {
@@ -83,6 +88,12 @@ def _member_session(relay, handler) -> dict | None:
     return info if info is not None and info["role"] != "guest" else None
 
 
+def _pc_member_session(relay, handler) -> dict | None:
+    """让手机登录只给已登录的电脑（成员的电脑会话）：手机、访客、密钥都不行。"""
+    info = _member_session(relay, handler)
+    return info if info is not None and info["kind"] == "pc" else None
+
+
 # ---- GET ----
 
 def get(handler, relay, path: str) -> bool:
@@ -102,6 +113,19 @@ def get(handler, relay, path: str) -> bool:
         return True
     if path == "/api/login/info":
         _login_info(handler, relay)
+        return True
+    if _PHONE_LINK.match(path):
+        handler._send(200, PHONE_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
+        return True
+    if path == "/api/phone-link/info":
+        _phone_link_info(handler, relay)
+        return True
+    if path == "/api/phone-link/status":
+        info = _pc_member_session(relay, handler)
+        if info is None:
+            handler._not_found()
+            return True
+        handler._json({"ok": True, **relay.phone_links.status(info["user_id"], handler._query().get("poll"))})
         return True
     if path == "/api/sessions":
         info = _member_session(relay, handler)
@@ -160,6 +184,65 @@ def _login_info(handler, relay) -> None:
     handler._json(found)
 
 
+def _phone_link_info(handler, relay) -> None:
+    """手机落地页：谁的账号、哪台电脑。用令牌或 8 位码问；输错按网段和全局限流。不会把链接用掉。"""
+    query = handler._query()
+    links = relay.phone_links
+    ip = handler._ip()
+    by_code = query.get("t") is None
+    if by_code and links.blocked(ip):
+        handler._json({"ok": False, "error": "输错太多次了，请 10 分钟后再试"})
+        return
+    found = links.info(token=query.get("t"), code=query.get("code") if by_code else None)
+    if found is None:
+        if by_code:
+            links.missed(ip)
+        handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在电脑上再点一次「让手机登录」"})
+        return
+    handler._json({"ok": True, **found})
+
+
+def _new_phone_link(handler, relay) -> None:
+    member = _pc_member_session(relay, handler)
+    if member is None:
+        handler._not_found()
+        return
+    try:
+        made = relay.phone_links.create(member["user_id"], handler._ip(), handler._agent())
+    except Limited as error:
+        handler._json({"ok": False, "error": str(error)}, 429)
+        return
+    base = _base(relay, handler)
+    link = f"{base.upper()}/TV/P/{made.pop('token')}"
+    handler._json({"ok": True, "svg": qr.svg(link), "link": link, "typed": f"{base}/tv/p", **made})
+
+
+def _accept_phone_link(handler, relay, body: dict) -> None:
+    """手机点了「在这台手机上登录」：一次性链接换成这个用户普通的手机会话（180 天）。"""
+    token, code = body.get("token"), body.get("code")
+    if (token is not None and not isinstance(token, str)) or (code is not None and not isinstance(code, str)) \
+            or (token is None) == (code is None):
+        handler._json({"ok": False, "error": "请求格式不对"}, 400)
+        return
+    links = relay.phone_links
+    ip = handler._ip()
+    if code is not None and links.blocked(ip):
+        handler._json({"ok": False, "error": "输错太多次了，请 10 分钟后再试"})
+        return
+    user = links.consume(token=token, code=code, ip=ip, user_agent=handler._agent())
+    if user is None:
+        if code is not None:
+            links.missed(ip)
+        handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在电脑上再点一次「让手机登录」"})
+        return
+    session = relay.accounts.new_session(user, "phone", user_agent=handler._agent(), ip=ip)
+    relay.accounts.audit("login.phone.link", user, ip, "session", "", describe_agent(handler._agent()))
+    relay.log(f"用户 {user} 用电脑给的链接在手机上登录")
+    # 网址里带着会话：从这一页「添加到主屏幕」，图标记住它（见 web.py 的 _login）；home=1 让遥控提示添加。
+    handler._json({"ok": True, "redirect": f"/tv/?s={session}&home=1"},
+                  headers={"Set-Cookie": cookie_header(session, "phone")})
+
+
 def devices(relay, caller, base: str) -> list[dict]:
     """电脑版「设备」页：名字、型号、固件、在线、正在播什么、访客；主人还能拿到访客链接。"""
     rows = []
@@ -199,7 +282,11 @@ def post(handler, relay, path: str) -> bool:
     if path == "/api/login/ticket":
         _new_ticket(handler, relay)
         return True
-    if path not in ("/api/login/poll", "/api/login/confirm", "/api/logout", "/api/sessions/revoke", "/api/qr"):
+    if path == "/api/phone-link":
+        _new_phone_link(handler, relay)
+        return True
+    if path not in ("/api/login/poll", "/api/login/confirm", "/api/logout", "/api/sessions/revoke", "/api/qr",
+                    "/api/phone-link/accept"):
         return False
     body = handler._body()
     if body is None and path != "/api/logout":
@@ -217,6 +304,8 @@ def post(handler, relay, path: str) -> bool:
         handler._json({"ok": True}, headers={"Set-Cookie": _clear_cookie()})
     elif path == "/api/sessions/revoke":
         _revoke(handler, relay, body)
+    elif path == "/api/phone-link/accept":
+        _accept_phone_link(handler, relay, body)
     else:
         caller = handler._caller()
         text = body.get("text")

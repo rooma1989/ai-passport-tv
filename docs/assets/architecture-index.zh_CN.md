@@ -83,7 +83,7 @@
 | [`server/live_sender.py`](../../server/live_sender.py) | opt-in 的 v2 发送器（`TV_LIVE_ENGINE=v2`）；动它之前先看 [`docs/development/live-sender-v2.md`](../development/live-sender-v2.zh_CN.md) 的范围与边界。 |
 | [`server/relay/`](../../server/relay/web.py) | UP 主和剧集频道的视频中转：B 站接口、看过/进度状态、生成的频道表、MPEG-TS 流和带密钥的网页。独立服务（`python3 -m server.relay`）。 |
 | [`server/tenancy/`](../../server/tenancy/accounts.py) | 多用户阶段 1：SQLite 里的账号、会话、邀请、设备和每个用户的状态（`accounts.py`、`db.py`）；电视服务认设备（`gate.py`、`unbound.py`）；迁移（`migrate.py`）和管理命令（`admin.py`）。中转一侧：`server/relay/tenants.py`。运维手册：[`docs/development/tenancy-phase1-runbook.zh_CN.md`](../development/tenancy-phase1-runbook.zh_CN.md)。 |
-| [`server/relay/console.py`](../../server/relay/console.py) | 多用户阶段 2：电脑版（`assets/console.html`）、扫码登录的接口和手机确认页（`assets/login.html`）、手机上点了才加载的相机扫码（`assets/scan.js`，随附的 jsQR `assets/jsqr.js` 由 `tools/vendor_jsqr.py` 生成）、登录列表、跨站 POST 检查（`same_origin()`）。登录票据和限流：[`server/tenancy/tickets.py`](../../server/tenancy/tickets.py)。二维码画成 SVG：[`server/relay/qr.py`](../../server/relay/qr.py)。 |
+| [`server/relay/console.py`](../../server/relay/console.py) | 多用户阶段 2：电脑版（`assets/console.html`）、扫码登录的接口和手机确认页（`assets/login.html`）、手机上点了才加载的相机扫码（`assets/scan.js`，随附的 jsQR `assets/jsqr.js` 由 `tools/vendor_jsqr.py` 生成）、登录列表、跨站 POST 检查（`same_origin()`）；反方向「让手机登录」（`assets/phone.html`，链接在 [`server/tenancy/phonelinks.py`](../../server/tenancy/phonelinks.py)）。登录票据和限流：[`server/tenancy/tickets.py`](../../server/tenancy/tickets.py)。二维码画成 SVG：[`server/relay/qr.py`](../../server/relay/qr.py)。 |
 | [`server/channel_groups.py`](../../server/channel_groups.py) | 频道分组：按台名归类、手机上的调整、CONFIG 里的分组表。 |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | 正在播放（给手机看），以及把中转的事件变成 SWITCH 包或 HELLO 时的新台。 |
 | [`server/listen.py`](../../server/listen.py) | 用手机听（原型，尚未接入）：设备晚 H 秒照着放的时间表、HLS 音频段窗口、从队列取声音、收听令牌。设计见 [`2026-10-12-phone-audio-design.zh_CN.md`](../superpowers/specs/2026-10-12-phone-audio-design.zh_CN.md)；本机试验在 `tools/listen_proto/`。 |
@@ -139,7 +139,7 @@
 | 生产主机：systemd unit 和 drop-in、安装顺序、备份 | [`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md)、`packaging/systemd/` |
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
 | 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
-| 电脑版、扫码登录、登录列表 | `server/relay/console.py`、`assets/console.html`、`assets/login.html`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`） |
+| 电脑版、扫码登录、让手机登录、登录列表 | `server/relay/console.py`、`assets/console.html`、`assets/login.html`、`assets/scan.js`、`assets/phone.html`、`server/tenancy/phonelinks.py`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`） |
 | 线协议/包格式改动 | `main/av_protocol.h`、`server/protocol.py`、`server/frames.py`，见上文第 5 节 |
 | 语音命令、语音识别、一句话是什么意思 | `server/voice/intent.py`（及 `tests/test_voice_intent.py`）、`server/voice/session.py`、`docs/superpowers/specs/2026-10-12-voice-control-design.zh_CN.md` |
 | 画质、帧率、条带/几何参数 | `main/av_protocol.h`（`AV_VIDEO_*`、`AV_FPS`）、`server/frames.py`、`server/rate.py`、`main/av_player.c` 的 `video_task`/`push_stripe` |

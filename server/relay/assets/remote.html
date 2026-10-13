@@ -209,6 +209,12 @@
   .wifistate.bad { border-color: var(--red); color: var(--paper); }
   .wifistate[hidden] { display: none; }
   .wifiform input + input { margin-top: 8px; }
+  /* 电脑版「让手机登录」进来（?home=1）、还不是桌面图标打开的：提示添加到主屏幕。 */
+  .homehint { margin: 12px 14px 0; padding: 10px 12px; background: var(--ink-deep); border-left: 2px solid var(--amber);
+              font: 14px/1.6 var(--serif); color: var(--paper); }
+  .homehint[hidden] { display: none; }
+  .homehint b { color: var(--amber); font-weight: 400; }
+  .homehint button { display: block; margin-top: 6px; padding: 0; background: none; border: 0; color: var(--dim); font: 13px var(--serif); }
 </style>
 </head>
 <body>
@@ -224,6 +230,8 @@
         </ol>
       </div>
     </div>
+    <div class="homehint" id="homehint" hidden>已经登录。把遥控放到桌面：iPhone 点 Safari 的<b>「分享」→「添加到主屏幕」</b>，
+      安卓在浏览器菜单里选<b>「添加到主屏幕」</b>；以后从「小智电视」图标打开。<button id="homeok">知道了</button></div>
     <section class="page on" id="remote">
       <div class="mast"><h1>小智电视</h1><button id="adjust" class="noguest">调整分组</button></div>
       <div class="seg" id="devs" hidden></div>
@@ -372,6 +380,19 @@ let group = "";
 let pending = null;
 let adjusting = false;
 let toastTimer = 0;
+
+// 电脑版「让手机登录」跳过来的是 /tv/?s=<会话>&home=1：就在这一页「添加到主屏幕」，图标记住带会话的网址。
+(() => {
+  const standalone = navigator.standalone || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+  const query = new URLSearchParams(location.search);
+  if (query.get("home") !== "1") return;
+  if (!standalone) $("homehint").hidden = false;
+  $("homeok").onclick = () => {
+    $("homehint").hidden = true;
+    query.delete("home");
+    try { history.replaceState(null, "", location.pathname + "?" + query.toString()); } catch (error) {}
+  };
+})();
 
 function toast(text, bad) {
   const el = $("toast");

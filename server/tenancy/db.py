@@ -65,6 +65,23 @@ CREATE TABLE IF NOT EXISTS login_ticket (
     pc_user_agent TEXT NOT NULL DEFAULT '',
     poll_sha256 BLOB
 );
+-- 让手机登录（电脑版「让手机登录」）：一次性的手机登录链接 /TV/P/<token>，5 分钟、只能用一次。
+-- 令牌、8 位码、电脑等结果用的 poll 都只存 SHA-256。新表：旧库打开时自动建，版本号不变。
+CREATE TABLE IF NOT EXISTS phone_link (
+    token_sha256 BLOB PRIMARY KEY,
+    code_sha256 BLOB NOT NULL,
+    poll_sha256 BLOB NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES user(id),
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    used_at REAL,
+    pc_ip_prefix TEXT NOT NULL DEFAULT '',
+    pc_user_agent TEXT NOT NULL DEFAULT '',
+    phone_ip_prefix TEXT NOT NULL DEFAULT '',
+    phone_user_agent TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS phone_link_code ON phone_link(code_sha256);
+CREATE INDEX IF NOT EXISTS phone_link_poll ON phone_link(poll_sha256);
 CREATE TABLE IF NOT EXISTS device (
     id TEXT PRIMARY KEY,
     model TEXT NOT NULL DEFAULT '',

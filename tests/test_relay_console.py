@@ -20,6 +20,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -334,6 +335,113 @@ class ConsoleTests(unittest.TestCase):
         csp = self.raw("GET", "/login")[1]["Content-Security-Policy"]
         self.assertIn("script-src 'self' 'unsafe-inline';", csp)
         self.assertNotRegex(csp, r"https?:|\*")
+
+    # ---- the reverse direction: the PC lets a phone sign in ----
+
+    def pc_session(self, user=None):
+        return "tvs=" + self.accounts.new_session(user or self.alice, "pc", user_agent=CHROME_MAC, ip="203.0.113.9")
+
+    def phone_link(self, pc):
+        status, answer = self.call(pc, "POST", "/api/phone-link")
+        self.assertEqual(status, 200)
+        self.assertTrue(answer["ok"], answer)
+        return answer, answer["link"].rsplit("/", 1)[1]
+
+    def test_phone_link_signs_a_phone_in_as_the_same_user(self):
+        pc = self.pc_session()
+        answer, token = self.phone_link(pc)
+        self.assertRegex(answer["link"], r"^HTTPS://EXAMPLE\.COM/TV/P/[A-Z2-7]{26}$", "upper case: alphanumeric QR")
+        self.assertRegex(answer["code"], r"^[A-Z2-9]{4}-[A-Z2-9]{4}$")
+        self.assertEqual((answer["ttl"], answer["typed"]), (300, "https://example.com/tv/p"))
+        self.assertTrue(answer["svg"].startswith("<svg"))
+        self.assertNotIn("token", answer)
+        self.assertEqual(self.call(pc, "GET", "/api/phone-link/status?poll=" + answer["poll"])[1]["state"], "pending")
+        for path in (f"/TV/P/{token}", f"/p/{token}", f"/tv/p/{token.lower()}", "/tv/p", "/p", "/TV/P"):
+            status, headers, body = self.raw("GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+            self.assertIn("在这台手机上登录".encode(), body)
+        # Opening the page (or a link preview fetching it) does not use the link up.
+        for _ in range(2):
+            info = json.loads(self.raw("GET", f"/api/phone-link/info?t={token}")[2])
+            self.assertEqual((info["ok"], info["name"], info["pc"], info["pc_network"]),
+                             (True, "Alice", "Chrome · macOS", "127.0.0.0/24"))
+        status, headers, body = self.raw("POST", "/api/phone-link/accept", None, {"token": token},
+                                         {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) "
+                                                        "AppleWebKit/605.1.15 Version/26.0 Mobile/15E148 Safari/604.1"})
+        result = json.loads(body)
+        self.assertTrue(result["ok"])
+        self.assertRegex(result["redirect"], r"^/tv/\?s=[\w-]{40,}&home=1$")
+        cookie = headers["Set-Cookie"]
+        for part in ("HttpOnly", "Secure", "SameSite=Lax", "Path=/tv/", f"Max-Age={180 * 24 * 3600}"):
+            self.assertIn(part, cookie)
+        session = cookie.split(";")[0]
+        self.assertEqual(session[4:], result["redirect"].split("s=")[1].split("&")[0])
+        info = self.accounts.session(session[4:])
+        self.assertEqual((info["user_id"], info["kind"], info["role"]), (self.alice, "phone", "user"), "a member, not a guest")
+        state = self.call(session, "GET", "/api/state")[1]
+        self.assertEqual(state["me"]["name"], "Alice")
+        self.assertEqual([d["id"] for d in state["devices"]], [ALICE_DEVICE])
+        # Single use.
+        again = json.loads(self.raw("POST", "/api/phone-link/accept", None, {"token": token})[2])
+        self.assertFalse(again["ok"])
+        self.assertFalse(json.loads(self.raw("GET", f"/api/phone-link/info?t={token}")[2])["ok"])
+        done = self.call(pc, "GET", "/api/phone-link/status?poll=" + answer["poll"])[1]
+        self.assertEqual((done["state"], done["phone"]), ("used", "Safari · iOS"))
+        self.assertEqual(self.call(self.pc_session(self.bob), "GET", "/api/phone-link/status?poll=" + answer["poll"])[1]
+                         ["state"], "expired", "another user's poll tells nothing")
+        actions = [r["action"] for r in self.accounts.audit_rows()]
+        self.assertIn("phone_link.create", actions)
+        self.assertIn("login.phone.link", actions)
+        stored = self.accounts.conn.execute("SELECT * FROM phone_link").fetchone()
+        self.assertNotIn(token.encode(), b"".join(v if isinstance(v, bytes) else str(v).encode() for v in stored),
+                         "only hashes are stored")
+
+    def test_phone_link_only_for_signed_in_pcs(self):
+        code = self.accounts.device(ALICE_DEVICE)["remote_code"]
+        guest = self.raw("POST", "/api/scan", None, {"code": code})[1]["Set-Cookie"].split(";")[0]
+        guest_pc = "tvs=" + self.accounts.new_session(None, "guest", device_id=ALICE_DEVICE)
+        for who in (guest, guest_pc, self.cookies["alice"], "tvs=nonsense", ""):
+            self.assertEqual(self.call(who, "POST", "/api/phone-link")[0], 404, who)
+        self.assertEqual(self.call("", "POST", "/api/phone-link", headers={"X-Key": KEY})[0], 404, "not with the key")
+        self.assertEqual(self.call(self.cookies["alice"], "GET", "/api/phone-link/status?poll=" + "x" * 30)[0], 404)
+
+    def test_phone_link_by_code_expiry_and_replacement(self):
+        pc = self.pc_session()
+        first, first_token = self.phone_link(pc)
+        second, _ = self.phone_link(pc)
+        self.assertFalse(json.loads(self.raw("GET", f"/api/phone-link/info?t={first_token}")[2])["ok"],
+                         "a new link replaces the old one")
+        self.assertEqual(self.call(pc, "GET", "/api/phone-link/status?poll=" + first["poll"])[1]["state"], "expired")
+        typed = second["code"].lower().replace("-", " ")
+        info = json.loads(self.raw("GET", "/api/phone-link/info?code=" + urllib.parse.quote(typed))[2])
+        self.assertEqual(info["name"], "Alice")
+        result = json.loads(self.raw("POST", "/api/phone-link/accept", None, {"code": typed})[2])
+        self.assertTrue(result["ok"])
+        # Expiry after 5 minutes.
+        third, token = self.phone_link(pc)
+        self.now += 301
+        self.assertFalse(json.loads(self.raw("POST", "/api/phone-link/accept", None, {"token": token})[2])["ok"])
+        self.assertEqual(self.call(pc, "GET", "/api/phone-link/status?poll=" + third["poll"])[1]["state"], "expired")
+        for body in ({"token": 1}, {"token": token, "code": "ABCD2345"}, {}):
+            self.assertEqual(self.raw("POST", "/api/phone-link/accept", None, body)[0], 400, body)
+        # A banned user's link stops working.
+        fourth, token = self.phone_link(pc)
+        self.accounts.conn.execute("UPDATE user SET status='banned' WHERE id=?", (self.alice,))
+        self.assertFalse(json.loads(self.raw("POST", "/api/phone-link/accept", None, {"token": token})[2])["ok"])
+
+    def test_phone_link_rate_limits(self):
+        pc = self.pc_session()
+        for _ in range(6):
+            self.phone_link(pc)
+        self.assertEqual(self.call(pc, "POST", "/api/phone-link")[0], 429, "six links per user per 10 minutes")
+        self.now += 601
+        answer, _ = self.phone_link(pc)
+        for _ in range(10):
+            self.assertFalse(json.loads(self.raw("POST", "/api/phone-link/accept", None, {"code": "ZZZZ-ZZZZ"})[2])["ok"])
+        blocked = json.loads(self.raw("POST", "/api/phone-link/accept", None, {"code": answer["code"]})[2])
+        self.assertIn("太多次", blocked["error"], "guessing codes is rate-limited per network")
+        self.assertIn("太多次", json.loads(self.raw("GET", "/api/phone-link/info?code=" + answer["code"])[2])["error"])
 
     # ---- the console's pages and endpoints ----
 

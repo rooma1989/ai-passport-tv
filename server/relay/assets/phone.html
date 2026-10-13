@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#1c1915">
+<title>手机登录 · 小智电视</title>
+<style>
+  :root { --ink: #1c1915; --ink-deep: #0f0d0b; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
+          --dim: #8c8170; --faint: #6e6455; --red: #d2553f; --amber: #ffb547;
+          --serif: "Songti SC", "STSong", "Noto Serif SC", serif; --mono: "Menlo", "SF Mono", ui-monospace, monospace; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--ink); color: var(--paper); font: 15px/1.6 -apple-system, "PingFang SC", sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: calc(28px + env(safe-area-inset-top)) 20px 32px; }
+  h1 { margin: 0 0 6px; font: 700 24px/1.3 var(--serif); letter-spacing: 3px; color: var(--paper-hi); }
+  .tag { font-size: 12px; color: var(--red); letter-spacing: 3px; }
+  p { font: 16px/1.7 var(--serif); margin: 12px 0; }
+  .dim { color: var(--dim); font-size: 14px; }
+  .bad { color: var(--red); font-size: 14px; }
+  .warn { border-left: 2px solid var(--amber); padding: 6px 0 6px 12px; color: var(--paper); font-size: 15px; }
+  dl { margin: 16px 0; border-top: 1px dotted var(--rule); }
+  dl div { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px dotted var(--rule); }
+  dt { flex: none; width: 56px; color: var(--dim); font: 14px var(--serif); }
+  dd { margin: 0; flex: 1; min-width: 0; font: 15px var(--serif); color: var(--paper-hi); word-break: break-all; }
+  input { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule); color: var(--amber);
+          font: 600 24px var(--mono); letter-spacing: 5px; text-align: center; text-transform: uppercase;
+          padding: 10px 12px; border-radius: 0; }
+  input::placeholder { color: var(--faint); font: 15px -apple-system, "PingFang SC", sans-serif; letter-spacing: 0; text-transform: none; }
+  button { display: block; width: 100%; margin-top: 12px; background: var(--red); color: #fff4e6; border: 0;
+           padding: 12px; font: 17px var(--serif); letter-spacing: 4px; border-radius: 0; }
+  button:disabled { opacity: .5; }
+</style>
+</head>
+<body>
+<main>
+  <div class="tag">小智电视 · 手机登录</div>
+  <h1 id="title">正在打开…</h1>
+  <div id="body"></div>
+</main>
+<script>
+"use strict";
+// 电脑版「让手机登录」给的一次性链接：/TV/P/<令牌>（二维码），或在 /tv/p 输入电脑屏幕上的 8 位码。
+// 打开这一页不会用掉链接；点「在这台手机上登录」才登录（链接预览只会 GET）。接口都在 /tv/ 下。
+const parts = location.pathname.split("/").filter(Boolean);
+const last = parts[parts.length - 1] || "";
+const token = parts.length >= 2 && parts[parts.length - 2].toLowerCase() === "p" && /^[A-Za-z2-7]{26}$/.test(last)
+  ? last.toUpperCase() : "";
+const $ = (id) => document.getElementById(id);
+const wechat = /MicroMessenger/i.test(navigator.userAgent);
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function show(title, ...nodes) {
+  $("title").textContent = title;
+  $("body").replaceChildren(...nodes);
+}
+
+async function api(method, path, body) {
+  const options = { method, credentials: "same-origin", headers: {} };
+  if (body !== undefined) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch("/tv/" + path, options);
+  if (response.status === 404) return null;
+  return response.json();
+}
+
+function row(label, value) {
+  const div = el("div");
+  div.append(el("dt", "", label), el("dd", "", value));
+  return div;
+}
+
+function gone(text) {
+  show("链接用不了了", el("p", "", text || "这个登录链接已经用过或过期了。请在电脑上再点一次「让手机登录」。"));
+}
+
+let timer = 0;
+function confirmView(info, by) {
+  const dl = el("dl");
+  dl.append(row("账号", info.name), row("发起", info.pc + (info.pc_network ? " · " + info.pc_network : "")));
+  const left = el("p", "dim");
+  const yes = el("button", "", "在这台手机上登录");
+  let seconds = info.expires_in;
+  const tick = () => {
+    left.textContent = seconds > 0 ? "只在你自己的手机上点。" + Math.ceil(seconds / 60) + " 分钟内有效，只能用一次。"
+      : "已经过期了，请在电脑上再点一次「让手机登录」。";
+    yes.disabled = seconds <= 0;
+    seconds -= 1;
+  };
+  const note = el("p", "dim", "登录后这台手机就是你的遥控（180 天），可以「添加到主屏幕」，以后从图标打开。");
+  yes.onclick = async () => {
+    yes.disabled = true;
+    let answer = null;
+    try { answer = await api("POST", "api/phone-link/accept", by); } catch (error) { answer = null; }
+    if (!answer || !answer.ok) {
+      note.className = "bad";
+      note.textContent = answer ? answer.error : "网络不通，请稍后再试。";
+      yes.disabled = false;
+      return;
+    }
+    clearInterval(timer);
+    location.replace(answer.redirect);
+  };
+  const nodes = [dl, left, yes, note];
+  // 微信里登录了也只在微信里有效，加不到桌面：先换到浏览器。
+  if (wechat) nodes.unshift(el("p", "warn", "这是在微信里打开的。请点右上角「…」选「在浏览器打开」，在 Safari 里登录，才能放到桌面上。"));
+  tick();
+  clearInterval(timer);
+  timer = setInterval(tick, 1000);
+  show("以「" + info.name + "」登录这台手机？", ...nodes);
+}
+
+async function byToken() {
+  const info = await api("GET", "api/phone-link/info?t=" + encodeURIComponent(token));
+  if (!info || !info.ok) { gone(info && info.error); return; }
+  confirmView(info, { token });
+}
+
+function byCode() {
+  const input = el("input");
+  input.placeholder = "电脑屏幕上的 8 位码";
+  input.maxLength = 9;
+  input.autocomplete = "off";
+  input.setAttribute("autocapitalize", "characters");
+  const next = el("button", "", "下一步");
+  const note = el("p", "dim", "在已经登录的电脑版上点「让手机登录」，屏幕上有二维码和 8 位码。用手机相机扫二维码更省事。");
+  const go = async () => {
+    const code = input.value.replace(/[\s-]/g, "").toUpperCase();
+    if (code.length !== 8) { note.className = "bad"; note.textContent = "是 8 位字母和数字"; return; }
+    next.disabled = true;
+    let info = null;
+    try { info = await api("GET", "api/phone-link/info?code=" + encodeURIComponent(code)); } catch (error) { info = null; }
+    next.disabled = false;
+    if (!info || !info.ok) { note.className = "bad"; note.textContent = info ? info.error : "网络不通，请稍后再试。"; return; }
+    confirmView(info, { code });
+  };
+  next.onclick = go;
+  input.onkeydown = (event) => { if (event.key === "Enter") go(); };
+  show("手机登录", input, next, note);
+}
+
+if (token) byToken().catch(() => show("打不开", el("p", "", "网络不通，请稍后再试。")));
+else byCode();
+</script>
+</body>
+</html>
