@@ -275,7 +275,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(state["now"], {"channel": "ch001", "online": True, "switch": True,
                                         "group": "卫视", "name": "湖南卫视", "n": 1, "title": "",
                                         "since": self.now, "episode": 0, "total": 0,
-                                        "video": None, "device": None})
+                                        "video": None, "device": None, "listen": None})
         creators = next(g for g in state["groups"] if g["name"] == "UP 主")["channels"]
         self.assertEqual(creators, [{"id": "up01", "name": "UP42", "n": 1}])
 
@@ -1122,7 +1122,9 @@ class PageFieldTests(unittest.TestCase):
                   # {others}, POST /api/scan (console.py, web.py _scan).
                   "svg", "code", "poll", "ttl", "typed", "sessions", "count", "not_mine",
                   # GET /api/state for a member after another phone signed in by device recovery.
-                  "notice"}
+                  "notice",
+                  # 用手机听: now.listen, POST /api/listen (web.py Relay.listen).
+                  "listen", "url", "bye"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 
