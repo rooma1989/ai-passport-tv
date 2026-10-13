@@ -85,6 +85,7 @@
 5. **nginx**：[`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf)。
 6. **多用户**：`tenancy.conf` 这几个 drop-in，只作为[运维手册](tenancy-phase1-runbook.zh_CN.md)切换的一步（迁移之后）装。
 7. **海外节点**：`yt-relay.service`（`memory.conf` 只在基础 unit 较旧时要）。
+8. **产品网站**（可选）：见[下文](#产品网站)。
 
 在主机上的一份本仓库副本里（用 root）：
 
@@ -104,6 +105,26 @@ systemctl restart muse-asr tv-relay tv-xingzhi tv-passport   # 按这个顺序
 检查：`systemctl cat <unit>` 列出基础 unit 和每个 drop-in；每个媒体服务记一行
 `voice: on, relay on, transcripts not logged`（多用户时是 `relay per device`），并且没有
 `WARNING: TV_DEGRADE=ladder`；`systemctl list-timers muse-asr-warm.timer` 显示下一次运行。
+
+## 产品网站
+
+产品网站是静态的：[`packaging/site/`](../../packaging/site/)（`index.html` 和 `assets/`，
+不用构建，不请求第三方）。放在它自己那个域名的根目录，本节记作 `<site>`。
+
+- 把 `packaging/site/index.html` 和 `packaging/site/assets/` 拷进这个域名的网站根目录；
+  使用说明 [`packaging/help/index.html`](../../packaging/help/index.html) 拷成同一根目录下的
+  `TV/index.html`，这样 `/TV/` 在这里也能打开，和主站一样。
+- 页面用以 `/` 开头的相对路径链接中转的页面，所以这个域名也要像主站一样提供：`/tv/`
+  （手机遥控、`/tv/console`、`/tv/wifi`）、`/TV/R/`、`/TV/B/`、`/TV/L/`、`/TV/W`，以及 `/TV/`
+  （使用说明）。在这个 server 块里 include
+  [`packaging/nginx/tv-relay.conf`](../../packaging/nginx/tv-relay.conf)。
+  [`packaging/nginx/tv-site.conf`](../../packaging/nginx/tv-site.conf) 是整个 server 块的模板，
+  用 `<site>`、`<root>` 占位。
+- 登录 cookie 按域名分开（`Path=/tv/`，不带 `Domain`）。二维码、邀请链接和电脑版的登录码用的是
+  中转的 `--public-url`。它还是主站时，在主站登录过的手机在网站域名下仍是未登录；要让网站域名成为唯一入口，
+  就把 `--public-url` 改成网站域名（主站的 location 保留，已经打印或保存的链接照样能用）。
+- `assets/screen-*.png` 里的屏幕图是从固件自己的绘制代码截出来的：界面改了以后运行
+  `python3 tools/render_ui/site_shots.py`（要装 Pillow）。
 
 ## 主机和模板的差别
 
