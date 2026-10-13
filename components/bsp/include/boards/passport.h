@@ -70,6 +70,10 @@
 #define BSP_KEYS_ABOVE_VIDEO      1
 // 三击确定键:不用(亮度已经是上/下键双击)。
 #define BSP_OK_TRIPLE_IS_BRIGHTNESS 0
+// 恢复登录(main/av_recover.h)的手势:状态页上连按 5 下确定。三键共用一个 ADC 分压、上键 0Ω,
+// 两个键同时按只读得出上键,所以没有"一起按住"(BSP_RECOVER_CHORD 0)。改手势只改这两行。
+#define BSP_RECOVER_CLICKS        5
+#define BSP_RECOVER_CHORD         0
 
 // 每键的电压窗口 {min_mV, max_mV};边界取相邻档中点。
 // 确定键上界留宽到 1900,是为了和松开态的 3300mV 拉开距离。

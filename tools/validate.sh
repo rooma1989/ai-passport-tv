@@ -51,6 +51,13 @@ run_static_checks() {
         tests/test_av_voice_policy.c main/av_voice_policy.c \
         -o "${test_dir}/test_av_voice_policy"
     "${test_dir}/test_av_voice_policy"
+    # Account recovery: the status page's gesture against a model of the
+    # button driver's click counting (5 clicks, 2 + 3, a lone click handed
+    # back, abandoned attempts, the chord), the screen's phases, the address.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_av_recover.c main/av_recover.c \
+        -o "${test_dir}/test_av_recover"
+    "${test_dir}/test_av_recover"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_ui_text.c main/ui_text.c \
         -o "${test_dir}/test_ui_text"
@@ -95,7 +102,7 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Icomponents/qrcodegen \
         tools/render_ui/render_ui.c tools/render_ui/font_blob.S \
         main/ui_overlay.c main/ui_status.c main/ui_draw.c main/ui_text.c main/ui_menu.c \
-        main/ui_qr.c main/av_provision_policy.c main/av_wifi_hint.c components/qrcodegen/qrcodegen.c \
+        main/ui_qr.c main/av_provision_policy.c main/av_wifi_hint.c main/av_recover.c components/qrcodegen/qrcodegen.c \
         -o "${test_dir}/render_ui"
     "${test_dir}/render_ui" "${test_dir}/screens.ppm"
     # The server address arrives as text someone typed or pasted, so the cases

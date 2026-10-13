@@ -103,7 +103,11 @@ def get(handler, relay, path: str) -> bool:
     if path == "/api/login/status":
         info = _session(relay, handler)
         me = {"name": info["name"], "role": info["role"], "kind": info["kind"]} if info else None
-        handler._json({"ok": True, "signed_in": info is not None, "me": me})
+        answer = {"ok": True, "signed_in": info is not None, "me": me}
+        notice = recovery_notice(relay, info["user_id"], handler._cookie()) if info and info["user_id"] else None
+        if notice:
+            answer["notice"] = notice
+        handler._json(answer)
         return True
     if path == "/api/login/info":
         _login_info(handler, relay)
@@ -146,6 +150,19 @@ def get(handler, relay, path: str) -> bool:
         handler._json({"ok": True, "invites": invites(relay)})
         return True
     return False
+
+
+RECOVERY_NOTICE = "有新手机通过设备恢复登录"
+
+
+def recovery_notice(relay, user_id: int, token: str | None) -> dict | None:
+    """这个登录之后有别的手机经设备「恢复登录」登进了同一个账号：{id, text, at, browser, network}。
+    遥控页和电脑版各提示一次（按 id 记在浏览器里）；登录列表里那一行标着「设备恢复」，可以退出它。"""
+    found = relay.accounts.recovery_notice(user_id, token)
+    if found is None:
+        return None
+    return {"id": found["id"], "text": RECOVERY_NOTICE, "at": found["at"],
+            "browser": describe_agent(found["user_agent"]), "network": found["network"]}
 
 
 def _login_info(handler, relay) -> None:
@@ -193,7 +210,9 @@ def _phone_link_info(handler, relay) -> None:
             links.missed(ip)
         handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在已登录的电脑或手机上重新生成一个"})
         return
-    handler._json({"ok": True, **found})
+    # 设备上的「恢复登录」或管理员给的：落地页说是哪台设备、谁发起的。
+    origin = links.origin_of(token=query.get("t"), code=query.get("code") if by_code else None)
+    handler._json({"ok": True, **found, "origin": origin["origin"], "device_name": origin["device_name"]})
 
 
 def _new_phone_link(handler, relay) -> None:
@@ -230,9 +249,14 @@ def _accept_phone_link(handler, relay, body: dict) -> None:
             links.missed(ip)
         handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在已登录的电脑或手机上重新生成一个"})
         return
-    session = relay.accounts.new_session(user, "phone", user_agent=handler._agent(), ip=ip)
-    relay.accounts.audit("login.phone.link", user, ip, "session", "", describe_agent(handler._agent()))
-    relay.log(f"用户 {user} 用一次性链接在新手机上登录")
+    # 设备上的「恢复登录」（via=recover：主人别的登录上会提示）、管理员给的链接，各记各的来路。
+    origin = links.origin_of(token=token, code=code)
+    via = {"device": "recover", "admin": "admin"}.get(origin["origin"], "")
+    session = relay.accounts.new_session(user, "phone", user_agent=handler._agent(), ip=ip, via=via)
+    action = {"recover": "login.phone.recover", "admin": "login.phone.admin"}.get(via, "login.phone.link")
+    relay.accounts.audit(action, user, ip, "session", origin["device_id"] or "", describe_agent(handler._agent()))
+    source = {"recover": "设备恢复登录", "admin": "管理员"}.get(via, "另一台已登录的设备")
+    relay.log(f"用户 {user} 用{source}给的链接在手机上登录")
     # 网址里带着会话：从这一页「添加到主屏幕」，图标记住它（见 web.py 的 _login）；home=1 让遥控提示添加。
     handler._json({"ok": True, "redirect": f"/tv/?s={session}&home=1"},
                   headers={"Set-Cookie": cookie_header(session, "phone")})

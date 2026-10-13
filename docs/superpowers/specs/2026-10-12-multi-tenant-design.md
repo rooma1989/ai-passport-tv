@@ -86,6 +86,24 @@ The user accepted every recommendation in section 3:
 - Q7, server code: this fork's `server/` is canonical.
 - Q8, unbound devices: no transcoding, only a "scan to bind" still frame. A 15-minute demo allowance is optional.
 
+**Update (2026-10-13): bootstrap and recovery, decided by the user.** Q1 and
+Q2 leave two holes: a new user needs an admin's invite, and a user whose
+phones all lost their sessions has no way back short of the admin. Both are
+now closed with the device as the root of trust (only someone at the device
+can see its screen or press its keys): (a) a phone that is not signed in
+opening an unbound device's bind link may create an ordinary account that owns
+the device, no admin approval (rate-limited per network, audited); this is
+self-registration through hardware, not public sign-up, so Q1's "invite only"
+still holds for anyone without a device; (b) a gesture on a bound device's
+status page asks the server, over the device's authenticated session, for a
+one-time owner phone link shown as a QR code on the device (3 per device per
+hour, the owner's other sessions are told); (c) the admin's
+`login-link <user_id>` command is the break-glass. Implementation and
+operation: [`tenancy-phase1-runbook.md`](../../development/tenancy-phase1-runbook.md#getting-in-with-nobody-signed-in-account-recovery).
+Open: whether an admin page should list self-registered users for review
+(phase 3), and whether recovery should also be offered on unbound devices of a
+banned owner (today it is refused).
+
 ## 3. Questions for you to decide
 
 Each has options and a recommendation. The rest of the document assumes the
@@ -248,7 +266,8 @@ needs no firmware change**:
 
 A phone that is not signed in and scans the claim code is told to open the
 remote from its home-screen icon first, or to type the claim code there
-(section 5.2 explains why: cookie jars).
+(section 5.2 explains why: cookie jars). Since 2026-10-13 it may instead
+create an account that owns the device (see the update under "Decisions").
 
 Unbinding (owner or admin) returns the device to `unclaimed` with a fresh claim
 code, keeps its secret hash, and deletes its device state (cast slot, channel

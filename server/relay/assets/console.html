@@ -532,6 +532,19 @@ async function boot() {
   if (!status.signed_in) { showLogin(); return; }
   me = status.me;
   showApp();
+  recoveryNotice(status.notice);
+}
+
+// 别的手机通过设备上的「恢复登录」登进了这个账号：提示一次（按 id 记在这个浏览器里），登录列表里可以退出它。
+function recoveryNotice(notice) {
+  if (!notice) return;
+  let seen = "";
+  try { seen = localStorage.getItem("tvRecoveryNotice") || ""; } catch (error) {}
+  if (seen === notice.id) return;
+  try { localStorage.setItem("tvRecoveryNotice", notice.id); } catch (error) {}
+  toast(notice.text + "（" + notice.browser + "，" + when(notice.at) + "）。不是你的话，在「设置」里退出它", true);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $("toast").className = "toast"; }, 9000);
 }
 
 function showLogin() {
@@ -1386,6 +1399,8 @@ async function loadSessions() {
     const kind = el("td", "t", kinds[s.kind] || s.kind);
     if (s.kind === "guest") kind.appendChild(el("span", "sub", s.device_name || s.device_id));
     if (s.current) kind.appendChild(el("span", "sub live", "这台电脑"));
+    if (s.via === "recover") kind.appendChild(el("span", "sub live", "设备恢复登录"));
+    else if (s.via === "admin") kind.appendChild(el("span", "sub", "管理员给的链接"));
     const a = el("td", "a");
     if (!s.current) a.appendChild(button("退出", "linkbtn red", async () => {
       try {

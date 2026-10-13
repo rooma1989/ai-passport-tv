@@ -21,6 +21,7 @@
 #include "av_wifi_ops.h"
 #include "av_soundsetup.h"
 #include "av_wifi_hint.h"
+#include "av_recover.h"
 #include "ui_text.h"
 #include "ui_status.h"
 #include "ui_draw.h"
@@ -610,6 +611,19 @@ typedef struct {
     // it: writing to NVS on the button task would delay the next press, so the
     // session loop does the write when it next comes round.
     atomic_bool settings_dirty;
+    // Account recovery ("恢复登录", av_recover.h). recover_offered: the last
+    // CONFIG said "recover": 1; unbound: it said "bound": 0. recover_session:
+    // this session's CONFIG offered it and the socket is up (like
+    // voice_session). recover_ask: the gesture asked; the receive task sends
+    // AV_STATUS {"recover": 1} on a session that offers it, clears the flag
+    // and moves recover_sent. The answer (SWITCH "recover") is written under
+    // list_lock into recover_url / recover_ttl / recover_err, then
+    // recover_answer_gen moves; pump_keys applies it to the screen.
+    atomic_bool recover_offered, unbound, recover_session, recover_ask;
+    atomic_uint recover_sent, recover_answer_gen;
+    char recover_url[AV_RECOVER_URL_MAX+1];
+    unsigned recover_ttl;
+    int recover_err;
 } player_t;
 static player_t s;
 // The channel whose waiting screen is currently on the panel. A reconnect to the
@@ -726,6 +740,12 @@ static portMUX_TYPE clock_lock = portMUX_INITIALIZER_UNLOCKED;
 // count=0 first is not enough on its own, because a reader can pass the old
 // count check just before the writer starts overwriting the ids.
 static portMUX_TYPE list_lock = portMUX_INITIALIZER_UNLOCKED;
+// The recovery screen (av_recover.h) as the session owner last published it
+// for drawing: the owner works on its own copy (s_rc_work, beside
+// process_key) and copies it here under list_lock; the video task copies it
+// out the same way. The address it shows is s.recover_url (or, for the bind
+// code, s.remote_url), under the same lock.
+static av_recover_screen_t s_rc;
 static bool stopping(void) { return xEventGroupGetBits(s.events) & STOP; }
 static bool rx_done(void) { return xEventGroupGetBits(s.events) & RX_DONE; }
 static void fail(const char *reason) {
@@ -803,7 +823,13 @@ static void on_key(bsp_btn_t key, bsp_btn_ev_t ev, void *ctx) {
     // channel, a long press is volume or the menu, a double click is the status
     // page. Callbacks run in the button task, so only enqueue and drop when
     // full; never block or do work here.
-    if (ev!=BSP_BTN_CLICK && ev!=BSP_BTN_LONG && ev!=BSP_BTN_DOUBLE) {
+    // OK's press-down and its longer bursts (3, 4, 5+ clicks) are the
+    // recovery gesture's (av_recover.h): it counts clicks across bursts on the
+    // status page. Queued whatever the voice setting; process_key drops them
+    // everywhere else, so the other screens see exactly what they saw before.
+    const bool recover_ev=key==BSP_BTN_OK && (ev==BSP_BTN_PRESS || ev==BSP_BTN_TRIPLE ||
+                                             ev==BSP_BTN_QUAD || ev==BSP_BTN_PENTA);
+    if (ev!=BSP_BTN_CLICK && ev!=BSP_BTN_LONG && ev!=BSP_BTN_DOUBLE && !recover_ev) {
 #if CONFIG_AV_VOICE
         // With voice on, OK's press-down (capture starts there), its hold and
         // release, and its triple-click (the Xingzhi's backlight) mean something
@@ -1218,6 +1244,32 @@ static bool parse_episode(const cJSON *object, ui_episode_t *out) {
     }
     return ui_episode_known(out);
 }
+// The answer to the recovery gesture (SWITCH {"recover": {...}}): an owner
+// login address and its life, or why not. Kept under list_lock for pump_keys,
+// which owns the screen; an address that is not the expected upper-case form
+// is treated as a failure rather than drawn.
+static void take_recover(const cJSON *recover) {
+    const cJSON *url=cJSON_GetObjectItemCaseSensitive(recover,"url");
+    const cJSON *ttl=cJSON_GetObjectItemCaseSensitive(recover,"ttl");
+    const cJSON *err=cJSON_GetObjectItemCaseSensitive(recover,"err");
+    char text[AV_RECOVER_URL_MAX+1]={0};
+    int error=AV_RECOVER_ERR_NONE;
+    if (cJSON_IsString(url) && av_recover_url_ok(url->valuestring)) {
+        strncpy(text,url->valuestring,sizeof(text)-1);
+    } else {
+        error=(int)av_recover_error_from(cJSON_IsString(err) ? err->valuestring : NULL);
+    }
+    unsigned life=cJSON_IsNumber(ttl) && ttl->valuedouble>=1 && ttl->valuedouble<=AV_RECOVER_TTL_MAX_S
+                  ? (unsigned)ttl->valuedouble : 0u;
+    taskENTER_CRITICAL(&list_lock);
+    memcpy(s.recover_url,text,sizeof(text));
+    s.recover_ttl=life;
+    s.recover_err=error;
+    taskEXIT_CRITICAL(&list_lock);
+    memset(text,0,sizeof(text));
+    atomic_fetch_add(&s.recover_answer_gen,1u);
+    ESP_LOGI(TAG,"Recovery answer: %s",error==AV_RECOVER_ERR_NONE ? "a login code" : "refused");
+}
 // Keep the channel an AV_SWITCH names for the main loop. A request that does not
 // parse or names nothing usable is logged and dropped: it is advice from the
 // server, and ignoring it leaves the device playing what it was.
@@ -1235,6 +1287,16 @@ static void take_switch(char *buf, size_t n) {
     if (cJSON_IsObject(wifi)) {
         av_wifimgr_post(wifi);
         // The envelope is ciphertext, but the buffer is reused for everything.
+        memset(buf,0,n);
+        cJSON_Delete(j);
+        return;
+    }
+    // The owner login code the recovery gesture asked for (av_recover.h).
+    const cJSON *recover=cJSON_GetObjectItemCaseSensitive(j,"recover");
+    if (cJSON_IsObject(recover)) {
+        take_recover(recover);
+        // The address signs a phone in for five minutes: do not leave it in
+        // the receive buffer, which is reused for everything.
         memset(buf,0,n);
         cJSON_Delete(j);
         return;
@@ -1615,6 +1677,17 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
     }
 #endif
     if (ok) {
+        // Account recovery: a multi-user server that can mint an owner login
+        // code says "recover": 1 to a bound device; an unbound one gets
+        // "bound": 0 and its bind address in remote_url (av_recover.h).
+        const cJSON *recover=cJSON_GetObjectItemCaseSensitive(j,"recover");
+        const cJSON *bound=cJSON_GetObjectItemCaseSensitive(j,"bound");
+        const bool offered=cJSON_IsNumber(recover) && recover->valuedouble==1;
+        atomic_store(&s.recover_offered,offered);
+        atomic_store(&s.recover_session,offered);
+        atomic_store(&s.unbound,cJSON_IsNumber(bound) && bound->valuedouble==0);
+    }
+    if (ok) {
         // The relay's key for the encrypted Wi-Fi messages, pinned with the
         // address this session dialled (av_wifimgr.h). Only a server told
         // "wifimgr": 1 sends it.
@@ -1662,6 +1735,16 @@ static void send_wifi_ack(int fd, uint32_t session) {
     } else {
         ESP_LOGW(TAG,"Wi-Fi ack not sent");
     }
+}
+
+// The recovery gesture's request (av_recover.h), as an AV_STATUS like the
+// volume report. False when it could not be written.
+static bool send_recover(int fd, uint32_t session) {
+    char body[]="{\"recover\":1}";
+    uint8_t wire[AV_HEADER_BYTES];
+    av_header_t h={.type=AV_STATUS,.session=session,.length=(uint32_t)(sizeof(body)-1)};
+    av_header_encode(wire,&h);
+    return io_all(fd,wire,sizeof(wire),true,1000) && io_all(fd,body,sizeof(body)-1,true,1000);
 }
 
 // Who this device is, for the multi-tenant server (av_identity.h). Filled
@@ -1750,6 +1833,9 @@ static bool hello(int fd) {
     // The saved networks (names only) and this device's public key for the
     // encrypted Wi-Fi messages; their presence says SWITCH may carry "wifi".
     if (ok) ok=av_wifimgr_hello(j);
+    // This firmware can ask for an owner login code (STATUS "recover") and
+    // show it (SWITCH "recover"); see av_recover.h.
+    if (ok) ok=cJSON_AddNumberToObject(j,"recover",1)!=NULL;
     // The link as it is now, for the server's log: which network, how strong,
     // which channel, and the transmit power actually in effect (the setup
     // page's Advanced tab can change it).
@@ -1878,6 +1964,17 @@ static void receive_task(void *arg) {
         if (stream.configured) {
             s_rx_stage="wifi-ack-send";
             send_wifi_ack(fd,stream.session);
+        }
+        // The recovery gesture, on a session whose server offered it; kept for
+        // the next one when this one cannot take it.
+        if (stream.configured && atomic_load(&s.recover_session) && atomic_exchange(&s.recover_ask,false)) {
+            s_rx_stage="recover-send";
+            if (send_recover(fd,stream.session)) {
+                atomic_fetch_add(&s.recover_sent,1u);
+            } else {
+                atomic_store(&s.recover_ask,true);
+                ESP_LOGW(TAG,"Recovery request not sent");
+            }
         }
 #if CONFIG_AV_VOICE
         if (stream.configured) {
@@ -2100,6 +2197,7 @@ done:
 #if CONFIG_AV_VOICE
     atomic_store(&s.voice_session,false);
 #endif
+    atomic_store(&s.recover_session,false);
     free(control);
     // Only a real socket is shut down and closed. AV_TRANSPORT_USB is a
     // negative sentinel, not a descriptor, and passing it to close() would
@@ -2490,6 +2588,9 @@ static void build_topbar_label(ui_topbar_label_t *label) {
     case UI_VIEW_STATUS:
         texts[n]="状态"; colors[n++]=UI_PAPER;
         break;
+    case UI_VIEW_RECOVER:
+        texts[n]="恢复登录"; colors[n++]=UI_PAPER;
+        break;
     case UI_VIEW_PET:
         snprintf(count,sizeof(count)," %u/%u",s.menu.pet_browse+1u,s.menu.pet_count);
         texts[n]="选择宠物"; colors[n++]=UI_PAPER;
@@ -2608,6 +2709,13 @@ static void info_bars_stripe(ui_surface_t surface, const band_reading_t *reading
                                     (unsigned)((atomic_load(&s.rx_bytes_per_s)+512u)/1024u));
         } else if (s.menu.view==UI_VIEW_STATUS) {
             ui_overlay_status_bottom(ui_surface_centered(surface),bottom,atomic_load(&s.audio_only));
+        } else if (s.menu.view==UI_VIEW_RECOVER) {
+            av_recover_screen_t r;
+            taskENTER_CRITICAL(&list_lock);
+            r=s_rc;
+            taskEXIT_CRITICAL(&list_lock);
+            ui_overlay_recover_bottom(ui_surface_centered(surface),bottom,
+                                      av_recover_seconds_left(&r,(uint32_t)(esp_timer_get_time()/1000)));
         } else if (s.menu.view==UI_VIEW_PET) {
             ui_overlay_pet_bottom(ui_surface_centered(surface),bottom);
         }
@@ -2661,7 +2769,7 @@ static bool refresh_info_bars(void) {
     const unsigned bar=(unsigned)AV_VIDEO_Y_OFFSET;
     if (bar==0) return true;
     const bool want_bottom=s.menu.view==UI_VIEW_MENU || s.menu.view==UI_VIEW_STATUS ||
-                           s.menu.view==UI_VIEW_PET;
+                           s.menu.view==UI_VIEW_PET || s.menu.view==UI_VIEW_RECOVER;
     const int64_t now=esp_timer_get_time();
     build_topbar_label(&topbar_label);
     // Below 10% the percentage blinks, so the bar is repainted every second.
@@ -2786,6 +2894,41 @@ static void refresh_status_page(void) {
     }
 }
 
+// The recovery screen's contents, rebuilt for each stripe from what the
+// session owner published (a copy under list_lock, so cheap); the code is
+// encoded only when its address changes. Only the video task touches these.
+// The address is a credential for five minutes: the copies are wiped when the
+// screen no longer shows it.
+static ui_recover_page_t recover_page;
+static void refresh_recover_page(void) {
+    static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(5)];
+    static uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(5)];
+    static char encoded[AV_RECOVER_URL_MAX+1];
+    static bool encoded_ok;
+    char url[AV_RECOVER_URL_MAX+1]={0};
+    av_recover_screen_t r;
+    taskENTER_CRITICAL(&list_lock);
+    r=s_rc;
+    if (r.phase==AV_RECOVER_SHOWING) memcpy(url,s.recover_url,sizeof(url));
+    else if (r.phase==AV_RECOVER_BIND) memcpy(url,s.remote_url,sizeof(s.remote_url));
+    taskEXIT_CRITICAL(&list_lock);
+    url[sizeof(url)-1]='\0';
+    if (strcmp(url,encoded)!=0) {
+        // Version 5 at most: the server keeps the address within version 4
+        // (AV_RECOVER_URL_MAX), so this is never the limit in practice.
+        encoded_ok=url[0] && qrcodegen_encodeText(url,tmp,qr,qrcodegen_Ecc_LOW,1,5,qrcodegen_Mask_AUTO,true);
+        memcpy(encoded,url,sizeof(encoded));
+        if (!url[0]) {
+            memset(qr,0,sizeof(qr));
+            memset(tmp,0,sizeof(tmp));
+        }
+    }
+    memset(url,0,sizeof(url));
+    recover_page.qr=encoded[0] && encoded_ok ? qr : NULL;
+    av_recover_lines(&r,&recover_page.line1,&recover_page.line2,&recover_page.alarm);
+    recover_page.pet=atomic_load(&s.pet);
+}
+
 // Set while the channel's waiting screen is painted: it shows what is loading
 // itself, so the band over pictures is left off it.
 static bool s_wait_says_loading;
@@ -2824,6 +2967,10 @@ static void overlay_stripe(unsigned stripe_y, uint8_t *pixels) {
         // 4.9. Drawn without a channel list, so the backlight is reachable on a
         // device that has not connected to a server yet.
         ui_overlay_brightness(view,av_brightness_percent(s.menu.brightness));
+    } else if (s.menu.view==UI_VIEW_RECOVER) {
+        // The owner login code, the bind code, or why not (av_recover.h).
+        refresh_recover_page();
+        ui_overlay_recover(view,&recover_page);
     } else {
         // 4.10. The readings are rebuilt once a second, not per stripe: this runs
         // for every stripe of every frame, and building them in place meant a
@@ -4625,6 +4772,9 @@ static bool voice_key(key_ev_t *item) {
     case BSP_BTN_CLICK:   g=AV_VOICE_G_CLICK; break;
     case BSP_BTN_DOUBLE:  g=AV_VOICE_G_DOUBLE; break;
     case BSP_BTN_TRIPLE:  g=AV_VOICE_G_TRIPLE; break;
+    // Four or more clicks are a multi-click like the triple: not talking.
+    case BSP_BTN_QUAD:
+    case BSP_BTN_PENTA:   g=AV_VOICE_G_TRIPLE; break;
     case BSP_BTN_HOLD:    g=AV_VOICE_G_HOLD; break;
     case BSP_BTN_RELEASE: g=AV_VOICE_G_RELEASE; break;
     default:              g=AV_VOICE_G_LONG; break;
@@ -4643,6 +4793,172 @@ static bool voice_key(key_ev_t *item) {
     return !(e & AV_VOICE_DO_PASS);
 }
 #endif
+
+// ---- Account recovery: the gesture and the screen (av_recover.h) ----
+// Which gesture asks is a board fact (components/bsp/include/boards/*.h); a
+// board that says nothing gets the clicks and no chord.
+#ifndef BSP_RECOVER_CLICKS
+#define BSP_RECOVER_CLICKS 5
+#endif
+#ifndef BSP_RECOVER_CHORD
+#define BSP_RECOVER_CHORD 0
+#endif
+//
+// The gesture is counted on the status page only; the screen it opens shows
+// the owner login code the server sends, the bind code (unbound device), or
+// why not, and any key closes it. All of this runs on the session owner.
+static av_rg_t s_rg;
+static av_recover_screen_t s_rc_work;
+// A held-back click handed back to the status page goes through process_key
+// again; it must not be counted a second time.
+static bool s_rg_replay;
+static unsigned s_rc_answer_seen, s_rc_sent_seen;
+
+static uint32_t recover_now(void) { return (uint32_t)(esp_timer_get_time()/1000); }
+
+static void recover_publish(void) {
+    taskENTER_CRITICAL(&list_lock);
+    s_rc=s_rc_work;
+    taskEXIT_CRITICAL(&list_lock);
+}
+
+static void recover_close(void) {
+    atomic_store(&s.recover_ask,false);
+    av_recover_close(&s_rc_work);
+    taskENTER_CRITICAL(&list_lock);
+    s_rc=s_rc_work;
+    // The code signs a phone in: do not keep it once it is off the screen.
+    memset(s.recover_url,0,sizeof(s.recover_url));
+    taskEXIT_CRITICAL(&list_lock);
+    if (s.menu.view==UI_VIEW_RECOVER) ui_menu_close(&s.menu);
+}
+
+static void recover_open(void) {
+    taskENTER_CRITICAL(&list_lock);
+    const bool bind_code=s.remote_url[0]!='\0';
+    memset(s.recover_url,0,sizeof(s.recover_url));
+    taskEXIT_CRITICAL(&list_lock);
+    const av_recover_ctx_t ctx={ atomic_load(&s.unbound), bind_code, atomic_load(&s.recover_offered),
+                                 atomic_load(&s.link)==(int)LINK_UP };
+    s_rc_answer_seen=atomic_load(&s.recover_answer_gen);
+    s_rc_sent_seen=atomic_load(&s.recover_sent);
+    const bool ask=av_recover_open(&s_rc_work,&ctx,recover_now());
+    atomic_store(&s.recover_ask,ask);
+    recover_publish();
+    ui_menu_open_recover(&s.menu);
+    ESP_LOGI(TAG,"Recovery gesture: %s",ask ? "asking the server for an owner login code"
+             : s_rc_work.phase==AV_RECOVER_BIND ? "unbound, showing the bind code" : "cannot ask");
+}
+
+// Before the voice policy, which takes OK's press-down on a page: a further
+// press while clicks are held back says another burst is coming.
+static void recover_press(const key_ev_t *item) {
+    if (!s_rg_replay && item->key==BSP_BTN_OK && item->ev==BSP_BTN_PRESS) {
+        (void)av_rg_key(&s_rg,s.menu.view==UI_VIEW_STATUS,AV_RG_KEY_OK,AV_RG_EV_PRESS,0,false,recover_now());
+    }
+}
+
+// After the voice policy: the gesture's clicks and long presses, and the
+// recovery screen's keys. True when the key was taken.
+static bool recover_key(const key_ev_t *item) {
+    if (s_rg_replay) return false;
+    if (item->ev==BSP_BTN_PRESS) return s.menu.view==UI_VIEW_RECOVER;   // counted in recover_press
+    const av_rg_key_t key=item->key==BSP_BTN_OK ? AV_RG_KEY_OK : item->key==BSP_BTN_UP ? AV_RG_KEY_UP
+                                                                                     : AV_RG_KEY_DOWN;
+    av_rg_ev_t ev=AV_RG_EV_CLICKS;
+    unsigned count=0;
+    switch (item->ev) {
+    case BSP_BTN_CLICK:  count=1; break;
+    case BSP_BTN_DOUBLE: count=2; break;
+    case BSP_BTN_TRIPLE: count=3; break;
+    case BSP_BTN_QUAD:   count=4; break;
+    case BSP_BTN_PENTA:  count=5; break;
+    case BSP_BTN_LONG:   ev=AV_RG_EV_LONG; break;
+    default:             ev=AV_RG_EV_OTHER; break;
+    }
+    const bool on_page=s.menu.view==UI_VIEW_STATUS;
+    bool other_down=false;
+#if BSP_RECOVER_CHORD
+    // ▲ and OK held together: whichever long press comes first, with the other
+    // key still down (read from its pin; only the Xingzhi can tell).
+    if (on_page && ev==AV_RG_EV_LONG && key!=AV_RG_KEY_DOWN) {
+        other_down=bsp_button_is_down(key==AV_RG_KEY_OK ? BSP_BTN_UP : BSP_BTN_OK);
+    }
+#endif
+    const av_rg_out_t out=av_rg_key(&s_rg,on_page,key,ev,count,other_down,recover_now());
+    if (out==AV_RG_RECOVER) {
+        recover_open();
+        return true;
+    }
+    if (out==AV_RG_TAKEN) return true;
+    if (s.menu.view==UI_VIEW_RECOVER) {
+        // Any key closes it: its click or long press. The hold and release
+        // on the way there do nothing.
+        if (ev!=AV_RG_EV_OTHER) recover_close();
+        return true;
+    }
+    return false;
+}
+
+// Once per pass of the key pump: held-back clicks handed back to the status
+// page, the server's answer, the countdown running out.
+static void process_key(const key_ev_t *event);
+static void recover_pump(void) {
+    const uint32_t now=recover_now();
+    const av_rg_out_t out=av_rg_tick(&s_rg,now);
+    if ((out==AV_RG_CLICK || out==AV_RG_DOUBLE) && s.menu.view==UI_VIEW_STATUS) {
+        const key_ev_t replay={ .key=BSP_BTN_OK, .ev=out==AV_RG_CLICK ? BSP_BTN_CLICK : BSP_BTN_DOUBLE, .at_ms=0 };
+        s_rg_replay=true;
+        process_key(&replay);
+        s_rg_replay=false;
+    }
+    if (s_rc_work.phase==AV_RECOVER_NONE) return;
+    if (s.menu.view!=UI_VIEW_RECOVER) {
+        // Closed some other way (the phone switched the channel, setup).
+        recover_close();
+        return;
+    }
+    bool changed=false;
+    const unsigned sent=atomic_load(&s.recover_sent);
+    if (sent!=s_rc_sent_seen) {
+        s_rc_sent_seen=sent;
+        av_recover_sent(&s_rc_work);
+    }
+    const unsigned gen=atomic_load(&s.recover_answer_gen);
+    if (gen!=s_rc_answer_seen) {
+        s_rc_answer_seen=gen;
+        char url[AV_RECOVER_URL_MAX+1];
+        taskENTER_CRITICAL(&list_lock);
+        memcpy(url,s.recover_url,sizeof(url));
+        const unsigned ttl=s.recover_ttl;
+        const int error=s.recover_err;
+        taskEXIT_CRITICAL(&list_lock);
+        url[sizeof(url)-1]='\0';
+        changed|=av_recover_answer(&s_rc_work,url,ttl,(av_recover_error_t)error,now);
+        memset(url,0,sizeof(url));
+    }
+    if (s_rc_work.phase==AV_RECOVER_ASKING && !s_rc_work.sent && !atomic_load(&s.recover_offered)) {
+        // A session came up whose server does not offer it after all.
+        changed|=av_recover_answer(&s_rc_work,NULL,0,AV_RECOVER_ERR_OFF,now);
+    }
+    const av_recover_tick_t tick=av_recover_tick(&s_rc_work,now);
+    if (tick==AV_RECOVER_TICK_CLOSE) {
+        recover_close();
+        return;
+    }
+    if (changed || tick==AV_RECOVER_TICK_CHANGED) {
+        if (s_rc_work.phase!=AV_RECOVER_ASKING) atomic_store(&s.recover_ask,false);
+        if (s_rc_work.phase==AV_RECOVER_FAILED) {
+            taskENTER_CRITICAL(&list_lock);
+            memset(s.recover_url,0,sizeof(s.recover_url));
+            taskEXIT_CRITICAL(&list_lock);
+            ESP_LOGI(TAG,"Recovery: not shown (reason %d)",(int)s_rc_work.error);
+        } else if (s_rc_work.phase==AV_RECOVER_SHOWING) {
+            ESP_LOGI(TAG,"Recovery: owner login code on screen for %u s",av_recover_seconds_left(&s_rc_work,now));
+        }
+        recover_publish();
+    }
+}
 
 // Applies one gesture. Called only from the session owner (main loop), so it can
 // touch s.channel while no connection is being built.
@@ -4671,6 +4987,8 @@ static void process_key(const key_ev_t *event) {
         return;
     }
 
+    // The recovery gesture sees OK's press-down before voice takes it.
+    recover_press(item);
 #if CONFIG_AV_VOICE
     // Voice first: OK down starts the microphone, a hold talks, and inside the
     // panel the keys pick, cancel and go back. Whatever it passes on means what
@@ -4678,6 +4996,17 @@ static void process_key(const key_ev_t *event) {
     key_ev_t routed=*event;
     if (voice_key(&routed)) return;
     item=&routed;
+#endif
+    // Then the recovery gesture on the status page, and the recovery screen.
+    if (recover_key(item)) return;
+    // OK's press-down and its 4- and 5-click bursts are queued for the
+    // recovery gesture alone; the triple keeps its one meaning (the Xingzhi's
+    // backlight, with voice on). Everything below sees what it saw before.
+    if (item->ev==BSP_BTN_PRESS || item->ev==BSP_BTN_QUAD || item->ev==BSP_BTN_PENTA) return;
+#if CONFIG_AV_VOICE
+    if (item->ev==BSP_BTN_TRIPLE && !atomic_load(&s_voice_keys)) return;
+#else
+    if (item->ev==BSP_BTN_TRIPLE) return;
 #endif
 
     // While the list, the status page or the backlight page is open the keys
@@ -5422,6 +5751,7 @@ static bool pump_keys(uint32_t wait_ms) {
         }
         process_key(&item);
     }
+    recover_pump();
     // Anything the phone asks for counts as the viewer being here, for the
     // audio-only backlight.
     acted = acted || atomic_load(&s.remote_volume) || atomic_load(&s.remote_brightness) ||
@@ -5625,6 +5955,9 @@ void av_player_main(void) {
     }
 #endif
     // Buttons come up before the mode decision, because leaving setup needs one.
+    // The recovery gesture: N quick OK clicks, and on boards that can tell,
+    // ▲ and OK held together (components/bsp/include/boards/*.h).
+    av_rg_init(&s_rg,BSP_RECOVER_CLICKS,BSP_RECOVER_CHORD!=0);
     if(bsp_button_init(on_key,NULL)!=ESP_OK) ESP_LOGW(TAG,"Buttons unavailable");
     ui_menu_init(&s.menu);
 #if CONFIG_AV_VOICE

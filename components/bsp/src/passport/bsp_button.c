@@ -76,6 +76,13 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
     return ESP_OK;
 }
 
+// 三键共用一个 ADC 分压(上 0Ω):两个键同时按只读得出上键,分不出"一起按住"。
+// ADC 又由按键组件的定时器任务在读,这里不去碰它。见 bsp_button.h。
+bool bsp_button_is_down(bsp_btn_t btn) {
+    (void)btn;
+    return false;
+}
+
 int bsp_button_read_mv(void) {
     // 读的是 bsp_button_init() 建好、并与 iot_button 共用的那一路 ADC。
     // 单次采样与组件的按键轮询互不干扰(oneshot 内部自带锁)。

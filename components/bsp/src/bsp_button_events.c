@@ -31,6 +31,8 @@ static void cb_click (void *a, void *u) { (void)a; emit(u, BSP_BTN_CLICK);  }
 static void cb_double(void *a, void *u) { (void)a; emit(u, BSP_BTN_DOUBLE); }
 static void cb_long  (void *a, void *u) { (void)a; emit(u, BSP_BTN_LONG);   }
 static void cb_triple(void *a, void *u) { (void)a; emit(u, BSP_BTN_TRIPLE); }
+static void cb_quad  (void *a, void *u) { (void)a; emit(u, BSP_BTN_QUAD);   }
+static void cb_penta (void *a, void *u) { (void)a; emit(u, BSP_BTN_PENTA);  }
 static void cb_hold  (void *a, void *u) { (void)a; s_ok_held = true; emit(u, BSP_BTN_HOLD); }
 static void cb_up    (void *a, void *u) {
     (void)a;
@@ -61,6 +63,14 @@ esp_err_t bsp_button_events_attach(button_handle_t h, bsp_btn_t key) {
     e |= iot_button_register_cb(h, BUTTON_LONG_PRESS_START, &hold, cb_hold, idx);
     e |= iot_button_register_cb(h, BUTTON_LONG_PRESS_START, &legacy, cb_long, idx);
     e |= iot_button_register_cb(h, BUTTON_MULTIPLE_CLICK, &triple, cb_triple, idx);
+    // 恢复登录的连按:4 次报 QUAD,5~10 次都报 PENTA(组件只对登记过的次数回调,
+    // 不登记的话 5 次以上什么也不报)。单击、双击的报法不变:组件只在整串是 1、2 次时报它们。
+    button_event_args_t quad = { .multiple_clicks.clicks = 4 };
+    e |= iot_button_register_cb(h, BUTTON_MULTIPLE_CLICK, &quad, cb_quad, idx);
+    for (uint16_t n = 5; n <= 10; n++) {
+        button_event_args_t many = { .multiple_clicks.clicks = n };
+        e |= iot_button_register_cb(h, BUTTON_MULTIPLE_CLICK, &many, cb_penta, idx);
+    }
     e |= iot_button_register_cb(h, BUTTON_PRESS_UP, NULL, cb_up, idx);
     // 登记较短的那档时组件会把 long_press_time 改成它;先回到以前的值,语音开了再改。
     iot_button_set_param(h, BUTTON_LONG_PRESS_TIME_MS, (void *)(intptr_t)LEGACY_LONG_MS);

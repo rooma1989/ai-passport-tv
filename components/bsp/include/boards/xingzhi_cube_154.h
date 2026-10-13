@@ -80,6 +80,10 @@
 #define BSP_MIC_SHIFT        12
 // 三击确定键打开亮度页(按住确定键已经给了语音)。Passport 用上/下键双击调亮度,不需要。
 #define BSP_OK_TRIPLE_IS_BRIGHTNESS 1
+// 恢复登录(main/av_recover.h)的手势:状态页上 ▲ 和确定一起按住 1.5 秒,或连按 5 下确定。
+// 改成别的连按次数(或 0 关掉连按)、关掉一起按住,都只改这两行。
+#define BSP_RECOVER_CLICKS        5
+#define BSP_RECOVER_CHORD         1
 
 // ============================================================================
 // 电量:电池经分压接 ADC2_CH6(GPIO17)。充电检测接 GPIO38,高电平 = 充电中。

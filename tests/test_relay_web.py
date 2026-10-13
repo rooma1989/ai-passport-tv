@@ -1120,7 +1120,9 @@ class PageFieldTests(unittest.TestCase):
                   "supported", "networks", "current", "reported_at", "pending", "key_changed", "seq",
                   # 我的: POST /api/phone-link and /api/qr, GET /api/sessions, POST /api/sessions/revoke
                   # {others}, POST /api/scan (console.py, web.py _scan).
-                  "svg", "code", "poll", "ttl", "typed", "sessions", "count", "not_mine"}
+                  "svg", "code", "poll", "ttl", "typed", "sessions", "count", "not_mine",
+                  # GET /api/state for a member after another phone signed in by device recovery.
+                  "notice"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

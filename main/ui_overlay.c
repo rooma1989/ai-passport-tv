@@ -408,6 +408,48 @@ void ui_overlay_status_bottom(ui_surface_t surface, int top, bool audio_only)
     ui_overlay_key_line(surface, (surface.width - ui_text_width(text)) / 2, top + 7, text, UI_DEEP);
 }
 
+static void centred(ui_surface_t surface, int y, const char *text, uint16_t color);
+
+void ui_overlay_recover(ui_surface_t surface, const ui_recover_page_t *page)
+{
+    if (!page) {
+        return;
+    }
+    if (page->qr) {
+        // Large enough to read from arm's length on both panels: 4 px a module
+        // for the usual version-3 code (33 modules with the quiet zone, 132 px),
+        // never under 3.
+        const int modules = qrcodegen_getSize(page->qr) + 2 * UI_QR_QUIET;
+        int scale = UI_RECOVER_QR_BOX / modules;
+        if (scale > 4) scale = 4;
+        if (scale < 3) scale = 3;
+        const int side = modules * scale;
+        ui_qr_draw_colors(surface, (surface.width - side) / 2, 36 + (UI_RECOVER_QR_BOX - side) / 2, scale,
+                          page->qr, UI_PAPER, UI_DEEP);
+        centred(surface, 172, page->line1, UI_PAPER);
+        centred(surface, 191, page->line2, UI_AMBER);
+        return;
+    }
+    ui_draw_pet(surface, page->pet, page->alarm ? 0u : 1u, (surface.width - 2 * UI_PET_SIZE) / 2, 62, 2);
+    centred(surface, 124, page->line1, page->alarm ? UI_VERM : UI_PAPER);
+    centred(surface, 148, page->line2, UI_MUTED);
+}
+
+void ui_overlay_recover_bottom(ui_surface_t surface, int top, unsigned seconds_left)
+{
+    static const char tail[] = " 后失效  任意键关闭";
+    if (!seconds_left) {
+        ui_overlay_bottom_text(surface, top, "任意键关闭", UI_MUTED);
+        return;
+    }
+    char time[12];
+    snprintf(time, sizeof(time), "%u:%02u", seconds_left / 60u, seconds_left % 60u);
+    const int x = (surface.width - ui_text_width(time) - ui_text_width(tail)) / 2;
+    // Unpadded runs, so the second does not paint over the end of the first.
+    const int pen = ui_text_draw_scaled(surface, x, top + 7, time, 1, UI_AMBER, UI_DEEP);
+    ui_text_draw_scaled(surface, pen, top + 7, tail, 1, UI_MUTED, UI_DEEP);
+}
+
 void ui_overlay_bottom_text(ui_surface_t surface, int top, const char *text, uint16_t color)
 {
     if (!text) {

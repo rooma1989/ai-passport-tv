@@ -1435,6 +1435,15 @@ function render() {
 
 async function refresh() {
   try { data = await call("GET", "api/state"); } catch (error) { return; }
+  // 别的手机通过设备「恢复登录」登进了这个账号：提示一次（按 id 记在这台手机上）。
+  if (data && data.notice) {
+    let seen = "";
+    try { seen = localStorage.getItem("tvRecoveryNotice") || ""; } catch (error) {}
+    if (seen !== data.notice.id) {
+      try { localStorage.setItem("tvRecoveryNotice", data.notice.id); } catch (error) {}
+      toast(data.notice.text + "（" + data.notice.browser + "）。不是你的话，在电脑版「设置」里退出它", true);
+    }
+  }
   fetchedAt = Date.now();
   settlePending();
   render();

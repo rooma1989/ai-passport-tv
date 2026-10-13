@@ -24,7 +24,8 @@ from pathlib import Path
 from .. import channel_groups, now_playing
 from ..tenancy import files as tenancy_files
 from ..tenancy.phonelinks import PhoneLinks
-from ..tenancy.tickets import LoginTickets
+from ..tenancy.signup import SignUp
+from ..tenancy.tickets import Limited, LoginTickets
 from . import console, events, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -117,6 +118,8 @@ class Relay:
         self.login_tickets = LoginTickets(accounts) if accounts is not None else None
         # 反方向：电脑版给手机的一次性登录链接（server/tenancy/phonelinks.py）。
         self.phone_links = PhoneLinks(accounts) if accounts is not None else None
+        # 没登录的手机扫未绑定设备的绑定码：建账号并绑定（server/tenancy/signup.py）。
+        self.signup = SignUp(accounts) if accounts is not None else None
         # 每个网站一个客户端；YouTube 只经 cstone 节点，没配置时为 None。
         self.clients = {"bilibili": client, "youtube": youtube}
         self.events_out = Path(events_out) if events_out is not None else None
@@ -1298,6 +1301,26 @@ class Relay:
             return {"ok": False, "error": "这个绑定码不对，或者设备已经绑定过了"}
         return {"ok": True, "model": row["model"], "tail": row["id"][-4:].upper()}
 
+    def bind_preview(self, claim: str) -> dict:
+        """没登录（或只是访客）的手机打开绑定码：设备是什么型号、尾号几位，可以「创建账号并绑定」。"""
+        row = self.accounts.device_by_claim(claim)
+        if row is None:
+            return {"ok": False, "error": "这个绑定码不对，或者设备已经绑定过了"}
+        return {"ok": True, "model": row["model"], "tail": row["id"][-4:].upper(), "register": True}
+
+    def register_bind(self, claim: str, name: str, ip: str = "", agent: str = "") -> tuple[dict, str | None]:
+        """创建账号并绑定这台设备：(给页面的回答, 新会话或 None)。"""
+        try:
+            user_id, token, row = self.signup.register(claim, name, ip, agent)
+        except (Limited, ValueError) as error:
+            return {"ok": False, "error": str(error)}, None
+        with self._cache_lock:
+            self._casts.pop(row["id"], None)
+        self.sync_devices()
+        self.log(f"新用户 {user_id} 扫绑定码注册，{row['id']} 绑定给他")
+        return {"ok": True, "device": {"id": row["id"], "name": row["name"]},
+                "redirect": f"/tv/?s={token}&home=1"}, token
+
     def bind(self, claim: str, caller: Caller, ip: str = "") -> dict:
         if caller.guest or caller.user is None:
             raise NotFound("bind")
@@ -1580,6 +1603,13 @@ def _manage_handler(relay: Relay):
                 if _JOIN.match(path):
                     self._send(200, JOIN_PAGE.encode(), "text/html; charset=utf-8")
                     return
+                match = _BIND_INFO.match(path)
+                if match:
+                    # 没登录、或只是访客：可以「创建账号并绑定」；登录了的手机走下面原来的绑定确认。
+                    member = self._caller()
+                    if member is None or member.guest or member.user is None:
+                        self._json(relay.bind_preview(match.group(1)))
+                        return
                 match = _INVITE_INFO.match(path)
                 if match:
                     invite = relay.accounts.invite(match.group(1))
@@ -1612,7 +1642,13 @@ def _manage_handler(relay: Relay):
             if path == "/":
                 self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             elif path == "/api/state":
-                self._json(relay.summary(caller, device))
+                summary = relay.summary(caller, device)
+                if relay.tenant and not caller.guest and caller.user is not None:
+                    # 别的手机通过设备「恢复登录」登进了这个账号：遥控页提示一次（console.recovery_notice）。
+                    notice = console.recovery_notice(relay, caller.user, self._cookie() or self._query().get("s"))
+                    if notice:
+                        summary["notice"] = notice
+                self._json(summary)
             elif _EPISODES.match(path):
                 self._json(relay.episodes(_EPISODES.match(path).group(1), caller, device))
             elif path == "/api/voice/catalog":
@@ -1661,6 +1697,20 @@ def _manage_handler(relay: Relay):
             self._json({"ok": True, "redirect": f"/tv/?s={token}"},
                        headers={"Set-Cookie": self._cookie_header(token)})
 
+        def _register(self, body: dict) -> None:
+            """没登录的手机扫了未绑定设备的绑定码，点了「创建账号并绑定这台设备」。"""
+            claim, name = body.get("claim"), body.get("name") or ""
+            if not isinstance(claim, str) or not isinstance(name, str):
+                self._json({"ok": False, "error": "请求格式不对"}, 400)
+                return
+            caller = self._session_caller(self._cookie())
+            if caller is not None and not caller.guest:
+                self._json({"ok": False, "error": "这台手机已经登录了，请刷新页面，直接绑定到你的账号"})
+                return
+            answer, token = relay.register_bind(claim.strip().replace(" ", "").replace("-", ""), name,
+                                                self._ip(), self._agent())
+            self._json(answer, headers={"Set-Cookie": self._cookie_header(token)} if token else None)
+
         def _accept_invite(self, body: dict) -> None:
             code, name = body.get("code"), body.get("name") or ""
             if not isinstance(code, str) or not isinstance(name, str):
@@ -1679,12 +1729,14 @@ def _manage_handler(relay: Relay):
             path = self._path()
             if relay.tenant and console.post(self, relay, path):
                 return
-            if relay.tenant and path in ("/api/scan", "/api/invite/accept"):
+            if relay.tenant and path in ("/api/scan", "/api/invite/accept", "/api/bind/register"):
                 body = self._body()
                 if body is None:
                     self._json({"ok": False, "error": "请求格式不对"}, 400)
                 elif path == "/api/scan":
                     self._scan(body)
+                elif path == "/api/bind/register":
+                    self._register(body)
                 else:
                     self._accept_invite(body)
                 return

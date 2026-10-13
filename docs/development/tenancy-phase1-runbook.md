@@ -345,6 +345,80 @@ Two later additions, deployed like the rest of phase 2 (copy `server/` and
 | Limits | 6 links per user and 12 per network per 10 minutes; 10 wrong codes per network and 100 overall per 10 minutes |
 | Audit | `phone_link.create` (detail starts with `pc` or `phone`, the asking session) and `login.phone.link` |
 
+## Getting in with nobody signed in (account recovery)
+
+Phones lose their sessions (a new phone, cleared Safari data, the home-screen
+icon deleted) and an invite needs an admin. Three ways in, all ending in an
+ordinary member phone session (180 days); the device itself is the root of
+trust for the first two, because only someone standing at it can see its
+screen or press its keys. Deploy: copy `server/` and `packaging/help/`,
+restart `tv-relay` and both media servers (`tv-xingzhi`, `tv-passport`); no
+nginx change (`/TV/B/` and `/TV/P/` already exist). The relay adds
+`phone_link.origin`, `phone_link.device_id` and `session.via` on its first
+start (old rows read as `pc` / plain sign-ins). The device side needs the new
+firmware; older firmware simply does not offer the gesture.
+
+**1. Self-registration with an unbound device (no invite).** A phone that is
+not signed in (or only a guest) opens the device's bind link `/TV/B/<claim>`
+(the "BIND THIS TV" still frame's code, or the status page's QR code). The page
+offers "Create an account and bind this device" (in Chinese) and asks only for a name (default "me"); one tap
+creates a `user`, binds the device to them, gives that phone a member phone
+session and lands on the remote with the "Add to Home Screen" hint. A
+signed-in phone still gets the old "bind to my account" confirmation. The
+claim stays single use (cleared on bind).
+
+**2. Device recovery ("recover sign-in").** On the device's status page:
+
+| Board | Gesture |
+| --- | --- |
+| Xingzhi | hold ▲ and OK together for 1.5 s, or click OK 5 times quickly |
+| AI Passport | click OK 5 times quickly (its three keys share one ADC ladder with ▲ at 0 Ω, so two keys held together read as ▲ alone) |
+
+"Quickly" is the button driver's rule: every press after the first and every
+gap shorter than 180 ms; a pause of up to about 0.4 s between groups still
+counts (2 + 3 is 5). Because OK clicks on the status page are held back until
+the count is known, OK there (audio-only) now acts about 0.6 s after release
+instead of 0.2 s, and a double OK (the Passport's back to Muse) the same; an
+abandoned attempt (four clicks, a fumbled press) does nothing. ▲ held
+(setup), ▼ held (pets) and OK held (close) are unchanged; with the chord, the
+second key's own long press or click is swallowed. The gesture is chosen in
+`components/bsp/include/boards/*.h` (`BSP_RECOVER_CLICKS`, `BSP_RECOVER_CHORD`).
+
+The device sends `STATUS {"recover": 1}` on its authenticated session; the
+media server mints a one-time owner link (`phone_link` with `origin=device`)
+and answers `SWITCH {"recover": {"url": "HTTPS://<SITE>/TV/P/<TOKEN>", "ttl": 300}}`.
+The device shows the QR code full screen (version 3 at 4 px a module for a
+usual site; the server keeps the address within 96 characters, version 4),
+"scan with the phone camera / sign in as the owner" (in Chinese) and a countdown; any key closes it. Scanning
+with any phone camera opens the same landing page as "Let a phone sign in",
+which names the device the recovery came from; the tap signs the phone in as the owner.
+The new session is marked `via=recover`: the owner's other sessions show
+"a new phone signed in by device recovery" once (console on load, remote on its next refresh),
+and the console's session list labels it "device recovery" with "Sign out". An
+unbound device shows its bind code instead (way 1). If the server refuses the
+screen says why: limited (three an hour), not bound, server too old / no
+`--public-url`, no network.
+
+**3. Admin break-glass.** On the host:
+
+```
+sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db users
+sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db login-link <user_id>
+```
+
+prints `HTTPS://<SITE>/TV/P/<TOKEN>` (5 minutes, single use); send it to the
+person, who opens it on the phone and taps the button. Not offered in the PC
+console yet (no users page before phase 3).
+
+| | |
+| --- | --- |
+| Paths | `GET /api/bind/<claim>` answers `register: true` to a phone that is not signed in; `POST /api/bind/register` `{claim, name}`; the landing page and `/api/phone-link/*` as above, `info` adds `origin` and `device_name`; `/api/login/status` and `/api/state` add `notice`; `/api/sessions` rows carry `via` |
+| Protocol | HELLO `"recover": 1`; CONFIG `"recover": 1` (multi-user, bound device, site known); STATUS `{"recover": 1}`; SWITCH `{"recover": {"url", "ttl"}}` or `{"recover": {"err": "limited" \| "unbound" \| "off" \| "fail"}}` |
+| Who | registration: anyone holding an unbound device's claim, not a signed-in member; recovery: the media server for a device it authenticated by its secret, only when bound and the owner is active; login-link: shell access to the database |
+| Limits | registration 3 accounts per network and 30 overall per hour (counted on success, in relay memory); recovery 3 links per device per hour (counted in the database, survives restarts); a new device link voids its unused one; links 5 minutes, single use; device and admin links have no typed code |
+| Audit | `user.signup`, `device.bind`; `phone_link.device`, `login.phone.recover`; `phone_link.admin`, `login.phone.admin` |
+| Logs | never the token: the media server logs `recover link issued for user N` or the refusal |
+
 ## Left for later phases
 
 Per-user hiding and ordering of live channels and proposals (`user_state` has
@@ -364,6 +438,11 @@ workers, model profiles and admission control (phase 4).
   only; how each firmware draws the picture was not looked at on a device.
 - Phone flows were checked in a desktop browser at phone width against a local
   relay with synthetic state, not on an iPhone home-screen app or in WeChat.
+- Self-registration, device recovery and `login-link` are covered by
+  `tests/test_account_recovery.py` and the gesture by `tests/test_av_recover.c`
+  (against a model of the button driver); neither gesture has been pressed on
+  a device, the QR codes have not been scanned by a phone camera, and the
+  timing (0.4 s between groups, the 180 ms driver window) is unmeasured by hand.
 - The PC console was checked in the desktop app's Chromium pane at 1440 and 900
   px wide, against a local relay with synthetic state, fake video sites and a
   fake device; the QR code was decoded by that browser's `BarcodeDetector`, not
