@@ -13,10 +13,14 @@ docs/superpowers/specs/2026-10-12-voice-control-design.md 第 3 节。
 - 搜索（「搜视频猫和老鼠」「油管搜频道 lofi」「我想看猫和老鼠的视频」）：`search`，由 session
   调中转去网站搜；结果页、追问和选中 UP 主后的两个动作也在这里拼（search_page、search_question、
   creator_menu），选项的 ref 是 `s?:…`。
+- 第二批（见「第二批」一节）：问现在播什么（中转报的标题和进度，只回答不动作）、定时暂停
+  （`relay` 的 timer）、回到刚才的台和随机换台（`do` 换台，刚才的台由中转记）、继续看某部剧、
+  订阅正在放的视频的作者、删掉一个 UP 主或剧集台（先确认，ref `rm:…`）、从投屏历史再放（recast）。
 """
 
 from __future__ import annotations
 
+import random
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -50,7 +54,16 @@ _CREATOR_ID = re.compile(r"^up\d+$")
 REPLY_UNKNOWN = "没听懂，再说一次？"
 REPLY_EMPTY = "没听清，再说一次？"
 REPLY_SWITCH = "换台中…"
-REPLY_HELP = "可以说：湖南卫视、熊出没第3集、有哪些台、大声一点、暂停、只听声音"
+REPLY_HELP = "可以说台名、第几集、暂停、定时……选一类看例子"
+# 「你能做什么」的几类，选一类（ref hp:N）回答这一类的说法；每句不超过 REPLY_MAX（40 字）。
+HELP_TOPICS = (
+    ("换台", "「湖南卫视」「第12台」「回到刚才的台」「随便换个台」「随机放个动画片」"),
+    ("剧集和播放", "「熊出没第3集」「继续看犬夜叉」「下一集」「暂停」「跳到3分20秒」"),
+    ("现在播什么", "「现在播的是什么」「这是第几集」「还剩多久」「犬夜叉看到第几集了」"),
+    ("定时暂停", "「30分钟后暂停」「一小时后关机」「看完这集就停」「取消定时」"),
+    ("搜索和订阅", "「搜视频猫和老鼠」「搜UP主老番茄」「订阅这个UP主」「取消订阅王志安」"),
+    ("投屏和设置", "「重播刚才那个视频」「上一个投屏」「大声一点」「亮一点」「只听声音」"),
+)
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,9 @@ class Series:
     id: str
     name: str
     total: int = 0
+    # 中转报的：下一次播第几集（看到哪一集）、那一集播到第几秒；不知道为 0。
+    next: int = 0
+    position: int = 0
 
 
 @dataclass
@@ -89,6 +105,21 @@ class Catalog:
     audio_only: int | None = None
     # 上次静音前的音量，「取消静音」恢复它。
     unmute_volume: int | None = None
+    # 中转回答了目录（下面这些才有意义）。
+    relay: bool = False
+    # 中转报的正在放的视频：标题、播到第几秒（不知道为 None）、多长（秒）、剧集共几集。
+    title: str = ""
+    position: int | None = None
+    duration: int = 0
+    total: int = 0
+    # 这台设备刚才看过的台，新的在前，不含正在播的（中转记的，「回到刚才的台」）。
+    back: list[str] = field(default_factory=list)
+    # 定时：{"kind": "time", "left": 秒} 或 {"kind": "end", "what": "episode" | "video"}；没有为 None。
+    timer: dict | None = None
+    # 最近几次投屏的标题，新的在前。
+    casts: list[str] = field(default_factory=list)
+    # 随机换台用的；测试里给一个定了种子的。
+    rand: random.Random | None = None
 
     def channel(self, cid: str) -> Channel | None:
         return next((c for c in self.channels if c.id == cid), None)
@@ -363,9 +394,10 @@ _BRIGHT_MAX = _rx(r"(最亮|亮度最大|亮度最高)")
 _BRIGHT_MIN = _rx(r"(最暗|亮度最小|亮度最低)")
 _PAUSE = _rx(r"^(暂停|暂停播放|停(1|一)?下|停1停|停一停|先停|停|停住|别放了|别播了|暂停1?下)$")
 _RESUME = _rx(r"^(继续|继续播放?|继续看|接着播|接着放|接着看|恢复播放|开始播放|播放|开始|取消暂停|放吧|接着来)$")
+# 「再看一遍」：开头的「再」整理时已经去掉，「遍」前的「一」不转成数字。
 _RESTART = _rx(r"^(从头播放?|从头看|从头开始|从头开始播放?|从头开始看|重新播放?|重播|重播这集|重看|从头放|"
-               r"重新开始|再看1遍|再放1遍|回到开头|回到最开始|回到开始|跳到开头|跳回开头|从第1秒开始(?:播放?|看)?|"
-               r"重新看这集|重新看1遍|重新看)$")
+               r"重新开始|再?看[1一]遍|再?放[1一]遍|再?播[1一]遍|回到开头|回到最开始|回到开始|跳到开头|跳回开头|"
+               r"从第1秒开始(?:播放?|看)?|重新看这集|重新看[1一]遍|重新看)$")
 _NEXT_EP = _rx(r"^(下1集|下一集|下集|播下一集|看下一集|下1个视频|下一个视频|换1个视频|换一个视频|下个视频|"
                r"跳过|跳过这集|跳过这个|下1个|下一个|下个)$")
 _PREV_EP = _rx(r"^(上1集|上一集|上集|播上一集|看上一集|上1个视频|上一个视频|上个视频|回上一集)$")
@@ -696,6 +728,9 @@ def _playback(text: str, catalog: Catalog, transcript: str = "") -> Decision | N
             return None                         # 「下一个」在直播台上是换台
         if kind == "resume" and not catalog.paused:
             return Decision("resume", reply="正在播")
+        if kind == "resume":
+            # 直播台只有语音定时到了才会暂停（停在暂停画面上）：说继续就继续。
+            return Decision("resume", reply="继续播放", relay=("resume", {}))
         return Decision(kind, reply={"pause": "直播台不能暂停", "resume": "直播台不能暂停",
                                      "restart": "直播台不能从头播", "seek": "直播台不能快进快退",
                                      "next": "直播台没有下一集", "previous": "直播台没有上一集"}[kind])
@@ -1361,6 +1396,413 @@ def creator_answer(transcript: str) -> str | None:
     return "follow" if _WANTS_FOLLOW.search(text) else None
 
 
+# ---- 第二批：现在播什么、定时、刚才的台、随机换台、继续看、订阅和删台、投屏历史 ----
+#
+# 都是整句匹配（^…$），在搜索之后、音量和播放控制之前认（「还剩多久关机」不能被当成问视频还剩多久，
+# 「不看小Lin说了」不能被当成「不看了」）；随机换台、刚才的台、继续看在列一类台和剧集之前。
+# 中转记的东西（标题、进度、刚才的台、定时）在 Catalog 里；中转没回应时回答说不知道。
+
+def help_decision() -> Decision:
+    """「你能做什么」：几类说法，选一类（ref hp:N）看例子。"""
+    return Decision("help", reply=REPLY_HELP, choices=[
+        {"label": label, "lead": "", "ref": f"hp:{n}"} for n, (label, _) in enumerate(HELP_TOPICS)])
+
+
+def help_topic(ref: str) -> Decision | None:
+    found = re.match(r"^hp:(\d)$", ref or "")
+    if not found or int(found.group(1)) >= len(HELP_TOPICS):
+        return None
+    return Decision("help", reply=HELP_TOPICS[int(found.group(1))][1])
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:max(1, limit - 1)] + "…"
+
+
+def _minutes_words(minutes: int) -> str:
+    """「30 分钟」「1 小时」「1 小时 30 分钟」。"""
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} 小时" + (f" {rest} 分钟" if rest else "")
+
+
+# ---- 定时：「30分钟后暂停」「半小时后关掉」「定时30分钟」「看完这集就停」「取消定时」「还剩多久关机」 ----
+
+_TIMER_VERBS = (r"(?:暂停|关掉|关机|关闭|关上|停止播放|停播|停止|停下来?|停|关电视|关了|关|睡觉|休眠|不看了|"
+                r"别放了|别播了|关屏幕?)")
+_TIMER_AFTER = _rx(rf"^(?:定时)?(.+?)(?:以后|之后|后)(?:就|再|自动)?(?:帮我|给我)?{_TIMER_VERBS}(?:吧|了)?$")
+_TIMER_SET = _rx(rf"^(?:设置|设个|设|定个|开个|开启)?(?:睡眠)?定时(?:关机|暂停|关闭|关掉)?(?:为|到)?(.+?)"
+                 rf"(?:(?:以后|之后|后)?{_TIMER_VERBS})?$")
+_TIMER_SET_AFTER = _rx(r"^(.+?)(?:以后|之后|后)?(?:睡眠)?定时(?:关机|暂停|关闭|关掉)?$")
+_TIMER_END = _rx(rf"^(?:等|等到)?(?:看完|放完|播完|这)(?:这|当前)?(?:1|一)?(?:集|个视频|个|视频|个节目|部)"
+                 rf"(?:放完|播完|看完|结束)?(?:了)?(?:以后|之后|后)?(?:就|再)?{_TIMER_VERBS}(?:吧|了)?$")
+_TIMER_CANCEL = _rx(r"^(?:取消|关掉|关闭|停止|不要|删掉|撤销|去掉)(?:了)?(?:睡眠)?定时(?:关机|暂停|器|关闭)?(?:了)?$|"
+                    r"^(?:不用|不要)定时了?$|^定时取消$")
+_TIMER_STATUS = _rx(r"^(?:定时|睡眠定时)?(?:还(?:剩|有|要)|剩)(?:多久|多长时间|几分钟|多少时间|多少分钟)(?:就|才)?"
+                    r"(?:关机|暂停|关掉|停|关闭|关)(?:了)?$|"
+                    r"^(?:什么时候|几点|多久)(?:以后|后)?(?:关机|暂停|关掉|关闭|停)$|"
+                    r"^定时(?:还剩多久|还有多久|还剩多少时间|还有多长时间|是多久|状态|情况)$|^(?:有|有没有)定时(?:吗)?$")
+
+
+def _timer_minutes(span: str) -> int | None:
+    """「30分钟」「半小时」「一个半小时」「1小时20分」→ 分钟；不是时长（或没说单位）为 None。"""
+    if not span or span.isdigit():
+        return None
+    seconds = seek_seconds(span)
+    if seconds is None or seconds < 60:
+        return None
+    return int(round(seconds / 60))
+
+
+def _timer(text: str, catalog: Catalog) -> Decision | None:
+    if _TIMER_CANCEL.match(text):
+        return Decision("timer", reply="取消定时", relay=("timer", {"action": "cancel"}))
+    if _TIMER_STATUS.match(text):
+        return Decision("timer", reply="没有定时", relay=("timer", {"action": "status"}))
+    if _TIMER_END.match(text):
+        if not _relay_playing(catalog):
+            return Decision("timer", reply="直播台没有「这集」，说「30分钟后暂停」吧")
+        what = "这集" if _SERIES_ID.match(catalog.current) else "这个视频"
+        return Decision("timer", reply=f"{what}放完就暂停", relay=("timer", {"action": "end"}))
+    for pattern in (_TIMER_AFTER, _TIMER_SET, _TIMER_SET_AFTER):
+        found = pattern.match(text)
+        if found:
+            minutes = _timer_minutes(found.group(1))
+            if minutes is None:
+                continue
+            if minutes > 12 * 60:
+                return Decision("timer", reply="定时最长 12 小时")
+            return Decision("timer", reply=f"{_minutes_words(minutes)}后暂停",
+                            relay=("timer", {"action": "set", "minutes": minutes}))
+    return None
+
+
+def timer_reply(action: str, timer: dict | None, minutes: int | None = None) -> str:
+    """中转做完定时后给设备看的话；timer 是中转回答的（取消时是取消掉的那个）。"""
+    if action == "set":
+        return f"{_minutes_words(int(minutes or 0))}后暂停"
+    if action == "cancel":
+        return "已取消定时" if timer else "没有定时"
+    if not timer:
+        return "没有定时"
+    if timer.get("kind") == "end":
+        return "这集放完就暂停" if timer.get("what") == "episode" else "这个视频放完就暂停"
+    left = int(timer.get("left") or 0)
+    if left < 60:
+        return "不到 1 分钟就暂停"
+    return f"还有 {_minutes_words(-(-left // 60))}暂停"
+
+
+# ---- 现在播什么：「现在播的是什么」「这是第几集」「还剩多久」「这个视频多长」「播到哪了」「犬夜叉看到第几集了」 ----
+
+_NOW_WHAT = _rx(r"^(?:现在|这会儿|当前|目前)?(?:在|正在)?(?:播|放|演|看)(?:的|着)?(?:是)?(?:什么|啥|哪个|哪部|哪1个|哪一个)"
+                r"(?:节目|台|频道|视频|内容|东西|片子|剧|电视|动画片?)?$")
+_NOW_THIS = _rx(r"^(?:这|这个|现在|当前|这里)(?:是|播的是|放的是|演的是|在播|在放)(?:什么|啥|哪个|哪1个|哪一个|哪)"
+                r"(?:节目|台|频道|视频|电视台|片子|剧|动画片?|内容)?$")
+_NOW_EPISODE = _rx(r"^(?:这|这个|这集|这1集|现在|当前|现在播的|现在放的|我|我们)?(?:是|播到|放到|看到|追到|到)?"
+                   r"第几集(?:了)?$")
+_NOW_LEFT = _rx(r"^(?:这集|这1集|这个视频|这个节目|视频|节目|这个|这部|这部片子?)?(?:还(?:剩|有|要)|剩)"
+                r"(?:多久|多长时间|多少时间|几分钟|多少分钟|多长)(?:才|就)?(?:结束|播完|放完|看完|完)?(?:了)?$")
+_NOW_LENGTH = _rx(r"^(?:这个|这|这1|当前)?(?:视频|集|节目|片子|片)(?:1共|一共|总共)?(?:有|是)?(?:多长|多少分钟|多久)"
+                  r"(?:时间)?$")
+_NOW_WHERE = _rx(r"^(?:现在|这集|视频|这个视频)?(?:播|放|看)到(?:哪|哪里|哪儿|几分钟?|什么地方|哪个位置|多少分钟?|第几分钟)"
+                 r"(?:了)?$")
+_PROGRESS = _rx(r"^(.+?)(?:我|我们)?(?:看到|播到|追到|看了|放到)(?:第几集|哪|哪里|哪儿|哪1集|哪一集|几集)(?:了)?$")
+_NOT_A_SERIES = ("这", "这个", "这集", "现在", "当前", "我", "我们", "视频", "节目", "这个视频")
+
+
+def _now_question(text: str, catalog: Catalog) -> Decision | None:
+    if _NOW_WHAT.match(text) or _NOW_THIS.match(text):
+        return _now_info(catalog, "what")
+    if _NOW_EPISODE.match(text):
+        return _now_info(catalog, "episode")
+    if _NOW_LEFT.match(text):
+        return _now_info(catalog, "left")
+    if _NOW_LENGTH.match(text):
+        return _now_info(catalog, "length")
+    if _NOW_WHERE.match(text):
+        return _now_info(catalog, "where")
+    found = _PROGRESS.match(text)
+    if found:
+        named = _strip_verbs(found.group(1)).removesuffix("的")
+        if named in _NOT_A_SERIES or not named:
+            # 「我看到哪了」：在看剧时说第几集，否则说播到哪。
+            return _now_info(catalog, "episode" if _SERIES_ID.match(catalog.current) else "where")
+        return _series_progress(named, catalog)
+    return None
+
+
+def _now_info(catalog: Catalog, asked: str) -> Decision:
+    """回答正在放的东西，不做任何动作；面板上显示这个台。"""
+    channel = catalog.channel(catalog.current)
+    if channel is None:
+        return Decision("info", reply="不知道现在在播什么")
+    name, lead = _label(channel.name), f"{channel.number:02d}"
+
+    def info(reply: str) -> Decision:
+        return Decision("info", reply=reply, label=_marked_label(channel), lead=lead)
+
+    if not _relay_playing(catalog):
+        if asked in ("what", "episode"):
+            return info(f"{name}（直播）")
+        return info(f"{name}是直播，没有进度")
+    if not catalog.relay or not catalog.title:
+        if asked == "what":
+            return info(f"正在播{name}")
+        return info("还不知道播到哪了" if catalog.relay else "视频中转没回应，不知道进度")
+    duration, position = catalog.duration, catalog.position
+    paused = "（暂停中）" if catalog.paused else ""
+    series = bool(_SERIES_ID.match(catalog.current))
+    episode = (f"第 {catalog.episode}/{catalog.total} 集" if catalog.total else f"第 {catalog.episode} 集") \
+        if series and catalog.episode else ""
+    if asked == "episode":
+        if not series:
+            return info("现在不是在看剧")
+        return info(f"{name} {episode}" if episode else "不知道是第几集")
+    if asked == "length":
+        if not duration:
+            return info("不知道这个视频有多长")
+        return info(f"{'这集' if series else '这个视频'} {time_words(duration)}")
+    if asked == "left":
+        if not duration or position is None:
+            return info("不知道这个视频有多长")
+        return info(f"还剩 {time_words(max(0, duration - position))}{paused}")
+    times = ""
+    if position is not None:
+        times = f"{_clock(position)} / {_clock(duration)}" if duration else _clock(position)
+    if asked == "where":
+        return info(f"播到 {times}{paused}" if times else "不知道播到哪了")
+    if series and episode:
+        return info(f"{name} {episode}" + (f" · 已播 {times}" if times else "") + paused)
+    suffix = (f" · {times}" if times else "") + paused
+    return info(_clip(_plain(catalog.title), 40 - len(suffix)) + suffix)
+
+
+def _series_progress(named: str, catalog: Catalog) -> Decision:
+    """「犬夜叉看到第几集了」：那部剧看到哪（设备主人的进度），不换台。"""
+    series = _series_list(catalog)
+    index = [Channel(s.id, s.name, n) for n, s in enumerate(series, 1)]
+    kind, picked = _pick(rank_channels([named, _strip_tail(named)], index))
+    if kind == "none":
+        return _not_found(named)
+    if kind == "some":
+        names = "、".join(_label(series[c.number - 1].name) for c in picked[:3])
+        return Decision("info", reply=_clip(f"是哪一部：{names}？", 40))
+    chosen = series[picked[0].number - 1]
+    name = _label(chosen.name)
+    of = f"/{chosen.total}" if chosen.total else ""
+    if chosen.id == catalog.current and catalog.episode:
+        at = f" {_clock(catalog.position)}" if catalog.position else ""
+        return Decision("info", reply=f"正在看{name}第 {catalog.episode}{of} 集{at}")
+    if not chosen.next:
+        return Decision("info", reply="视频中转没回应，不知道看到哪了")
+    if chosen.position:
+        return Decision("info", reply=f"{name}看到第 {chosen.next}{of} 集 {_clock(chosen.position)}")
+    return Decision("info", reply=f"{name}下次从第 {chosen.next}{of} 集开始")
+
+
+# ---- 回到刚才的台、随机换台、继续看 ----
+
+_BACK = _rx(r"^(?:回到|回|返回|换回到?|切回到?|跳回到?|转回到?|调回到?|看)?(?:刚才|刚刚|之前|上次|原来)(?:看)?"
+            r"(?:的|那个|那)?(?:台|频道|节目)?$|^(?:换|切|跳|转|调|返)?回去$|^(?:换|切|调)回来$")
+# 「上一个台」：中转记着刚才的台时回到它；不知道时还是频道表里的上一个（▲）。
+_PREV_LAST = _rx(r"^(?:回到|返回|回)?上(?:1|一)?个(?:台|频道)$")
+_RANDOM = _rx(r"^(?:随便|随机|任意|随意)(.*)$")
+_RANDOM_VERBS = ("给我", "换", "放", "来", "看", "播", "挑", "选", "找", "切", "开", "听")
+_RANDOM_COUNT = re.compile(r"^(?:1|一)?(?:个|部|集|点|首|下|台)?")
+_CONTINUE = _rx(r"^(?:继续|接着|接著)(?:看|播放?|放|听)(.+)$")
+
+
+def _back(text: str, catalog: Catalog) -> Decision | None:
+    explicit = bool(_BACK.match(text))
+    if not explicit and not _PREV_LAST.match(text):
+        return None
+    return _back_decision(catalog, explicit)
+
+
+def _back_decision(catalog: Catalog, explicit: bool = True) -> Decision | None:
+    target = next((c for c in (catalog.channel(cid) for cid in catalog.back)
+                   if c is not None and c.id != catalog.current), None)
+    if target is not None:
+        decision = _channel_decision(target, catalog)
+        if decision.do:
+            decision.reply = f"回到{_label(target.name)}"
+        return decision
+    if not explicit:
+        return None                     # 「上一个台」：照旧是频道表里的上一个
+    if not catalog.relay:
+        return Decision("none", reply="视频中转没回应，不知道刚才看的是哪个台")
+    return Decision("none", reply="还不知道刚才看的是哪个台")
+
+
+def _random(text: str, catalog: Catalog) -> Decision | None:
+    found = _RANDOM.match(text)
+    if not found:
+        return None
+    rest = found.group(1)
+    if not rest and text.startswith("随便"):
+        return None                     # 只说「随便」（回答别的问题时）：不当成换台
+    changed = True
+    while changed and rest:
+        changed = False
+        for verb in _RANDOM_VERBS:
+            if rest.startswith(verb):
+                rest, changed = rest[len(verb):], True
+    rest = _RANDOM_COUNT.sub("", rest, count=1)
+    category = Category()
+    if rest:
+        words = _words(rest)
+        if words is None:
+            return None             # 「随便搜点什么」之类：不是在换台
+        category = _category_of(words)
+        if category is None:
+            return None
+    pool = [c for c in catalog.channels if c.id != catalog.current and c.id != "cast"
+            and (category.everything or category.holds(c))]
+    if not pool:
+        return Decision("none", reply="没有别的台可以换" if category.everything else f"还没有 {category.noun()}")
+    chosen = (catalog.rand or random).choice(pool)
+    decision = _channel_decision(chosen, catalog)
+    decision.reply = f"随机换到{_label(chosen.name)}"
+    return decision
+
+
+def _continue(text: str, catalog: Catalog) -> Decision | None:
+    """「继续看犬夜叉」「接着看海尔兄弟」：换到那个台，从停下的地方接着放（中转记着进度）。"""
+    found = _CONTINUE.match(text)
+    if not found:
+        return None
+    named = found.group(1)
+    if _BACK.match(named):
+        return _back_decision(catalog)
+    if _EPISODE.match(named) or _LATEST.match(named):
+        return _series_episode(named, catalog)
+    named = _strip_tail(named).removesuffix("的")
+    kind, picked = _pick(rank_channels([named], catalog.channels))
+    if kind == "some":
+        return _choices(picked, f"找到 {len(picked)} 个，选一个")
+    if kind == "none":
+        return _not_found(named, hint=True)
+    channel = picked[0]
+    decision = _channel_decision(channel, catalog)
+    name = _label(channel.name)
+    if channel.id == catalog.current:
+        if catalog.paused:
+            return Decision("resume", reply="继续播放", relay=("resume", {}))
+        return decision
+    series = next((s for s in _series_list(catalog) if s.id == channel.id), None)
+    if series is not None and series.next:
+        decision.reply = f"接着看{name}第 {series.next} 集"
+    elif _RELAY_ID.match(channel.id):
+        decision.reply = f"接着看{name}"
+    return decision
+
+
+# ---- 订阅正在放的视频的作者、删掉一个 UP 主或剧集台 ----
+
+_FOLLOW_THIS = _rx(r"^(?:订阅|关注|收藏)(?:1下)?(?:这个|这位|他|她|它|这)?(?:视频的?)?(?:up主|作者|博主|频道|创作者|up|人|号)?$|"
+                   r"^把(?:这个|这位|他|她|它)(?:视频的?)?(?:up主|作者|博主|频道|创作者|up|人)?(?:也)?"
+                   r"(?:加进来|加上|加到频道(?:里|列表里?)?|加进频道(?:里|列表里?)?|加成频道|加为频道|加入频道|"
+                   r"订阅了?|关注了?|收藏了?)$")
+_UNFOLLOW = _rx(r"^(?:取消订阅|取消关注|退订|不再订阅|不再关注)(.+)$")
+# 「删掉」「去掉」也可能说的是别的（「去掉画面」）：只有说的是订阅的台时才算。
+_UNFOLLOW_WEAK = _rx(r"^(?:删掉|删除|删了|去掉|移除)(.+)$")
+_UNFOLLOW_BA = _rx(r"^把(.+?)(?:删掉|删了|删除|去掉|移除|取消订阅|取消关注|退订)(?:了|吧)?$")
+_UNFOLLOW_NOT = _rx(r"^(?:不看|不要看|不想看|不再看|不订阅|不关注)(.+?)了$")
+_THIS_ONE = ("这个", "这", "这部", "这部剧", "这个剧", "这剧", "这个台", "这个频道", "这个up主", "这个作者",
+             "这个博主", "这个节目", "他", "她", "它", "这位", "这个up")
+_UNFOLLOW_TAIL = ("这个up主", "这个作者", "这个博主", "这个频道", "这个台", "这部剧", "这个剧", "这个节目", "的频道",
+                  "up主", "频道", "剧集", "这个")
+REF_REMOVE = "rm:"
+
+
+def _subscription(text: str, catalog: Catalog) -> Decision | None:
+    if _FOLLOW_THIS.match(text):
+        current = catalog.channel(catalog.current)
+        if _CREATOR_ID.match(catalog.current) or _SERIES_ID.match(catalog.current):
+            name = _label(current.name) if current else catalog.current
+            return Decision("follow", reply=f"「{name}」已经在频道列表里了")
+        if catalog.current != "cast":
+            return Decision("follow", reply="现在放的不是投屏的视频，没有 UP 主可订阅")
+        return Decision("follow", reply="正在订阅…", relay=("subscribe", {}))
+    explicit = _UNFOLLOW.match(text)
+    found = explicit or _UNFOLLOW_BA.match(text) or _UNFOLLOW_WEAK.match(text) or _UNFOLLOW_NOT.match(text)
+    if not found:
+        return None
+    named = found.group(1).removeprefix("了")
+    relay_channels = [c for c in catalog.channels if _CREATOR_ID.match(c.id) or _SERIES_ID.match(c.id)]
+    if named in _THIS_ONE:
+        current = catalog.channel(catalog.current)
+        if current is None or current not in relay_channels:
+            return Decision("none", reply="现在放的不是订阅的 UP 主或剧集")
+        return _unfollow_confirm(current)
+    for tail in _UNFOLLOW_TAIL:
+        if named.endswith(tail) and len(named) > len(tail):
+            named = named[:-len(tail)]
+            break
+    named = named.removesuffix("的")
+    kind, picked = _pick(rank_channels([named], relay_channels))
+    if kind == "one":
+        return _unfollow_confirm(picked[0])
+    if kind == "some":
+        rows = [{"label": _clip(f"删除「{_marked_label(c)}」", 20), "lead": f"{c.number:02d}",
+                 "ref": f"{REF_REMOVE}{c.id}"} for c in picked[:CHOICES_MAX - 1]]
+        rows.append({"label": "算了", "lead": "", "do": {"page": "close"}})
+        return Decision("confirm", reply="删除哪一个？", choices=rows)
+    if not explicit:
+        return None                     # 「不看X了」，X 不是订阅的台：交给后面
+    return _not_found(named)
+
+
+def _unfollow_confirm(channel: Channel) -> Decision:
+    """删台要先确认（会删掉进度）：「确定删除「王志安」？」→ 删除 / 算了。"""
+    name = _label(channel.full_name or channel.name)
+    return Decision("confirm", reply=f"确定删除「{name}」？", label=_marked_label(channel),
+                    lead=f"{channel.number:02d}",
+                    choices=[{"label": "删除", "lead": "", "ref": f"{REF_REMOVE}{channel.id}"},
+                             {"label": "算了", "lead": "", "do": {"page": "close"}}])
+
+
+def removal_ref(ref: str) -> str | None:
+    """rm:up04 → up04；不是删台的 ref 为 None。"""
+    found = re.match(r"^rm:((?:up|sr)\d{1,4})$", ref or "")
+    return found.group(1) if found else None
+
+
+_CONFIRM_YES = re.compile(r"^(?:确定|确认|是的?|对|对的|删|删除|删掉|删吧|删了吧|好的?|可以|没错|嗯|行|确定删除)$")
+
+
+def confirms(transcript: str) -> bool:
+    """确认删台时说的「确定」「删除」「是的」。"""
+    return bool(_CONFIRM_YES.match(match.normalize(transcript)))
+
+
+# ---- 投屏历史：「重播刚才那个视频」「再放一遍刚才的」「播放上一个投屏」「上上个投屏」「继续看刚才投屏的」 ----
+
+_RECAST_REPLAY = _rx(r"^(?:重播|重放|重新播放?|重新放|放1遍|放一遍|播1遍|播一遍|看1遍|看一遍|再放|再播|再看)"
+                     r"(?:1下|一下|1遍|一遍|1次|一次)?(?:刚才|刚刚|上次)(?:的|那个|那)?(?:投屏的?|投的)?(?:视频|投屏)?$|"
+                     r"^(?:把)?(?:刚才|刚刚|上次)(?:的|那个|那)?(?:视频|投屏)?(?:再|重新)?(?:放|播|看)(?:1遍|一遍|1次|一次)$")
+_RECAST_PREV = _rx(r"^(?:播放?|放|看|打开|回到|再放)?(上+)(?:1|一)?个?投屏(?:的视频|的|视频)?$")
+_RECAST_RESUME = _rx(r"^(?:继续|接着)(?:看|播放?|放)?(?:刚才|刚刚|上次|之前)?(?:投屏|投)(?:的|那个)?(?:视频)?$|"
+                     r"^(?:继续|接着)(?:看|播放?|放)(?:刚才|刚刚|上次|之前)(?:的|那个)?视频$")
+
+
+def _recast(text: str, catalog: Catalog) -> Decision | None:
+    if _RECAST_REPLAY.match(text):
+        return Decision("cast", reply=REPLY_CASTING, relay=("recast", {"step": 0, "resume": False}))
+    found = _RECAST_PREV.match(text)
+    if found:
+        return Decision("cast", reply=REPLY_CASTING, relay=("recast", {"step": len(found.group(1)),
+                                                                       "resume": False}))
+    if _RECAST_RESUME.match(text):
+        return Decision("cast", reply=REPLY_CASTING, relay=("recast", {"step": 0, "resume": True}))
+    return None
+
+
+REPLY_CASTING = "投屏中…"
+
+
 def decide(transcript: str, catalog: Catalog) -> Decision:
     """识别出来的一句话 → 决定。"""
     raw = match.normalize(transcript)
@@ -1370,17 +1812,26 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
     if _CANCEL.match(text) or _CANCEL.match(raw):
         return Decision("cancel", reply="好的", do={"page": "close"})
     if _HELP.search(text):
-        return Decision("help", reply=REPLY_HELP)
+        return help_decision()
     if _SETUP.search(text):
         return Decision("setup", reply="进入配网会停止播放",
                         choices=[{"label": "进入配网", "do": {"setup": 1}},
                                  {"label": "算了", "do": {"page": "close"}}])
     if _STATUS.match(text) or _STATUS.match(_strip_verbs(text)):
         return _device_says("page", "打开状态页", page="status")
+    # 投屏历史（「接着看刚才的视频」）在搜索之前：它以「的视频」结尾，会被当成搜「接着看刚才」。
+    decision = _recast(text, catalog)
+    if decision is not None:
+        return decision
     # 搜索要以搜索动词开头或以「的视频」结尾，比音量、换台这些先认（搜的词里可能有「大声」）。
     decision = _search(transcript)
     if decision is not None:
         return decision
+    # 第二批：定时（「还剩多久关机」先于「还剩多久」）、问现在播什么、订阅和删台。
+    for handler in (_timer, _now_question, _subscription):
+        decision = handler(text, catalog)
+        if decision is not None:
+            return decision
     if _AUDIO_OFF.search(text):
         if catalog.audio_only == 0:
             return Decision("audio_only", reply="画面已经开着")
@@ -1396,6 +1847,11 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
     decision = _playback(text, catalog, transcript)
     if decision is not None:
         return decision
+    # 回到刚才的台（「上一个台」不知道刚才的台时照旧是 ▲）、随机换台、继续看某部剧。
+    for handler in (_back, _random, _continue):
+        decision = handler(text, catalog)
+        if decision is not None:
+            return decision
     if _NEXT_CH.match(text) or _PREV_CH.match(text) or (_NEXT_EP.match(text) and not _relay_playing(catalog)):
         target = _step_channel(catalog, -1 if _PREV_CH.match(text) else 1)
         return Decision("none", reply=REPLY_UNKNOWN) if target is None else _channel_decision(target, catalog)

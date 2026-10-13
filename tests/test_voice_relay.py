@@ -126,7 +126,7 @@ class VoiceRelayTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(answer["device"], {"id": "d1", "name": "Passport", "online": True})
         self.assertEqual(answer["series"], [{"id": "sr01", "name": "番剧ss7", "site": "bilibili",
-                                             "total": 3, "next": 1}])
+                                             "total": 3, "next": 1, "position": 0}])
         self.assertEqual(answer["creators"], [{"id": "up01", "name": "UP42", "site": "bilibili"}])
         self.assertEqual(answer["playing"]["channel"], "sr01")
         self.assertFalse(answer["playing"]["paused"])

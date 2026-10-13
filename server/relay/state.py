@@ -108,6 +108,8 @@ class State:
         self.code = ""
         # 多用户时：这个用户调整过的直播台分组（单用户时在 channel-groups.json 里）。
         self.group_overrides: dict[str, str] = {}
+        # 单用户时每台设备的语音记忆（换台历史、定时、投屏历史，见 voicecmds.py），按设备 id。
+        self.voice: dict[str, dict] = {}
         source = str(self.path) if store is None else "用户状态"
         try:
             if store is not None:
@@ -129,6 +131,9 @@ class State:
         self.sessions = {str(k): float(v) for k, v in (data.get("sessions") or {}).items()}
         self.code = str(data.get("code") or "")
         self.group_overrides = {str(k): str(v) for k, v in (data.get("group_overrides") or {}).items()}
+        voice = data.get("voice")
+        self.voice = {str(k): dict(v) for k, v in voice.items() if isinstance(v, dict)} \
+            if isinstance(voice, dict) else {}
 
     def snapshot(self) -> dict:
         """要存的内容。文件里的格式和以前一样；存进数据库的只有这个用户自己的部分。"""
@@ -144,6 +149,8 @@ class State:
             data["history"] = self.history
             data["sessions"] = self.sessions
             data["code"] = self.code
+            if any(self.voice.values()):
+                data["voice"] = json.loads(json.dumps(self.voice))
             return data
 
     def save(self) -> None:
@@ -348,7 +355,8 @@ class CastSlot:
     """多用户时每台设备一个投屏位（两台设备可以各投各的）；和 State 的投屏部分接口一样。
 
     store 有 load() 和 save(dict)：数据库里这台设备的 device_state，格式是
-    {"cast": {"video": …, "position": …, "done": …}}，和 relay-state.json 里的 cast 一样。
+    {"cast": {"video": …, "position": …, "done": …}}，和 relay-state.json 里的 cast 一样；
+    再加 "voice"：这台设备的语音记忆（换台历史、定时、投屏历史，见 voicecmds.py）。
     """
 
     def __init__(self, store):
@@ -356,10 +364,14 @@ class CastSlot:
         self.lock = threading.RLock()
         data = store.load() or {}
         self.cast, self.cast_position, self.cast_done = _cast_from(data.get("cast"))
+        self.voice: dict = dict(data["voice"]) if isinstance(data.get("voice"), dict) else {}
 
     def save(self) -> None:
         with self.lock:
-            self.store.save({"cast": _cast_record(self.cast, self.cast_position, self.cast_done)})
+            data = {"cast": _cast_record(self.cast, self.cast_position, self.cast_done)}
+            if self.voice:
+                data["voice"] = json.loads(json.dumps(self.voice))
+            self.store.save(data)
 
     set_cast = State.set_cast
     save_cast_position = State.save_cast_position

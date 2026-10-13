@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import voicecmds
 from .bilibili import Bilibili
 from .state import State
 from .web import Relay, make_servers
@@ -83,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     state.ensure_code()
     state.save()
     relay.write_remote_url()
+    # 语音：换台历史、到点的定时（voicecmds.py）。
+    voicecmds.start(relay)
     # 只监听回环：播放流给本机电视服务，管理网页由 nginx 转进来。
     streams, manage = make_servers(relay, args.stream_port, args.manage_port)
     threading.Thread(target=streams.serve_forever, daemon=True).start()
@@ -132,6 +135,7 @@ def _serve_tenants(args, key: str, youtube) -> int:
                 print(f"同步设备文件失败：{type(error).__name__}: {error}", flush=True)
 
     threading.Thread(target=keep_in_sync, daemon=True).start()
+    voicecmds.start(relay)
     streams, manage = make_servers(relay, args.stream_port, args.manage_port)
     threading.Thread(target=streams.serve_forever, daemon=True).start()
     print(f"视频中转已启动（多用户）：播放流 127.0.0.1:{args.stream_port}，"
