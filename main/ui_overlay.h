@@ -73,6 +73,25 @@ typedef struct {
 
 void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page);
 
+// The recovery screen ("恢复登录", main/av_recover.h), on the opaque panel:
+// with a code, the code as large as fits a 132 px square from y=36 (4 px a
+// module for a version-3 code, 3 px for versions 4 and 5) and two lines under
+// it; without one (asking, or why not), the pet and the two lines.
+typedef struct {
+    const uint8_t *qr;      // the owner login code or the bind code, or NULL
+    const char *line1;
+    const char *line2;
+    bool alarm;             // line1 says why not (vermilion)
+    unsigned pet;
+} ui_recover_page_t;
+
+#define UI_RECOVER_QR_BOX 132
+
+void ui_overlay_recover(ui_surface_t surface, const ui_recover_page_t *page);
+// Its bottom bar: "4:59 后失效  任意键关闭", the time in amber; without
+// `seconds_left`, "任意键关闭".
+void ui_overlay_recover_bottom(ui_surface_t surface, int top, unsigned seconds_left);
+
 // The bottom bar's contents, rows [top, top + 30): the list's frame and
 // receive rates, or one centred line.
 void ui_overlay_bottom_rates(ui_surface_t surface, int top, unsigned fps_x10, unsigned kbytes_per_s);

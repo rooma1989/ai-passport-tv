@@ -1117,7 +1117,9 @@ class PageFieldTests(unittest.TestCase):
                   "series", "room", "fits", "episode", "devices", "auto", "target",
                   "episodes", "next", "playing", "cut", "note", "me", "link",
                   # GET/POST /api/wifi (server/relay/wifi.py, server/tenancy/wifi.py state()).
-                  "supported", "networks", "current", "reported_at", "pending", "key_changed", "seq"}
+                  "supported", "networks", "current", "reported_at", "pending", "key_changed", "seq",
+                  # GET /api/state for a member after another phone signed in by device recovery.
+                  "notice"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

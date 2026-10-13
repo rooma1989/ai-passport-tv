@@ -471,6 +471,17 @@ void ui_menu_open_status(ui_menu_t *menu)
     menu->action = UI_ACTION_NONE;
 }
 
+void ui_menu_open_recover(ui_menu_t *menu)
+{
+    if (!menu) {
+        return;
+    }
+    ui_menu_voice_clear(menu);
+    menu->view = UI_VIEW_RECOVER;
+    menu->timeout_ms = 0;
+    menu->action = UI_ACTION_NONE;
+}
+
 void ui_menu_close(ui_menu_t *menu)
 {
     if (!menu) {

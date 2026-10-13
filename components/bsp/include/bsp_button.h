@@ -22,6 +22,9 @@ typedef enum {
     BSP_BTN_HOLD,        // 确定键按住满 BSP_OK_HOLD_MS(只在 bsp_button_set_ok_hold(true) 之后报)
     BSP_BTN_RELEASE,     // 报过 HOLD 之后松开
     BSP_BTN_TRIPLE,      // 三击
+    // 恢复登录（main/av_recover.h）加的，也只有确定键报：一串快速连击的次数。
+    BSP_BTN_QUAD,        // 四击
+    BSP_BTN_PENTA,       // 五击及以上（5~10 次；再多组件不报）
 } bsp_btn_ev_t;
 
 // 确定键"按住"的门限。默认取语音的 Kconfig(CONFIG_AV_VOICE_HOLD_MS),没有就是 450 ms。
@@ -46,6 +49,11 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user);
 //   开:按住 BSP_OK_HOLD_MS 报 HOLD,1.5 s 照样报 LONG,松开报 RELEASE;按住过就不再报单击。
 // 可在任意任务里调(组件内部有临界区),不阻塞。方向键不受影响。
 void bsp_button_set_ok_hold(bool on);
+
+// 这个键现在是不是按着（读引脚电平，不经过消抖）。给"两个键一起按住"用:
+// 星智板三个键各有 GPIO,读得准;Passport 三键共用一个 ADC 分压,两个键同时按只读得出一个,
+// 而且这个 ADC 由按键组件的定时器任务在读,别处再读会撞车 —— 所以 Passport 上恒为 false。
+bool bsp_button_is_down(bsp_btn_t btn);
 
 // 读当前 ADC 原始电压(mV)。松开时约 3300;按住某键时约为该键的分压值。
 // ★ 换了分压/上拉阻值后,用它测出自己的三档电压,再改 bsp_pins.h 的 BSP_BTN_MV_TABLE。

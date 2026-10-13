@@ -5,6 +5,7 @@
 #include "iot_button.h"
 #include "bsp_button_events.h"
 #include "button_gpio.h"
+#include "driver/gpio.h"
 #include "esp_log.h"
 
 static const char *TAG = "bsp_btn";
@@ -29,6 +30,12 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
     ESP_LOGI(TAG, "按键就绪:上=GPIO%d 下=GPIO%d 确定=GPIO%d",
              BSP_BTN_GPIO_UP, BSP_BTN_GPIO_DOWN, BSP_BTN_GPIO_OK);
     return ESP_OK;
+}
+
+// 按下接地:低电平是按着。直接读引脚(不经过组件的消抖),给"▲ 和确定一起按住"用。
+bool bsp_button_is_down(bsp_btn_t btn) {
+    if ((int)btn < 0 || (int)btn >= BSP_BTN_COUNT) return false;
+    return gpio_get_level(BTN_GPIO[btn]) == 0;
 }
 
 // 没有分压电路,没有电压可读。

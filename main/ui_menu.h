@@ -26,6 +26,7 @@ typedef enum {
     UI_VIEW_STATUS,      // the status page is up
     UI_VIEW_BRIGHTNESS,  // the backlight level is being set
     UI_VIEW_PET,         // choosing the pet, from the status page
+    UI_VIEW_RECOVER,     // the owner login code ("恢复登录", av_recover.h), from the status page
 } ui_view_t;
 
 // What the overlay wants the caller to do next.
@@ -245,6 +246,10 @@ const char *ui_menu_row_label(const ui_menu_t *menu, unsigned row);
 const char *ui_menu_title(const ui_menu_t *menu);
 // Open the status page.
 void ui_menu_open_status(ui_menu_t *menu);
+// Open the recovery screen (av_recover.h). It has no timeout of its own: the
+// player closes it when the code expires, a refusal has been read, or a key
+// is pressed.
+void ui_menu_open_recover(ui_menu_t *menu);
 // Open the backlight page. Unlike the list this needs no channel data, so it
 // opens on a device that has not received a channel list yet.
 void ui_menu_open_brightness(ui_menu_t *menu);

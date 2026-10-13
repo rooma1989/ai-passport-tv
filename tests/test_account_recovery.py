@@ -344,6 +344,13 @@ class MediaServerRecoverTests(unittest.TestCase):
         self.status({"recover": 1})
         self.assertEqual(self.sent(), [], "not announced in HELLO: nothing sent")
 
+    def test_the_firmware_takes_the_longest_address(self):
+        import re
+        header = (Path(__file__).resolve().parents[1] / "main" / "av_protocol.h").read_text()
+        limit = int(re.search(r"#define AV_RECOVER_URL_MAX (\d+)u", header).group(1))
+        self.assertEqual(limit, recover.RECOVER_URL_MAX)
+        self.assertIn('"recover"', (Path(__file__).resolve().parents[1] / "main" / "av_player.c").read_text())
+
     def test_a_long_site_does_not_produce_a_broken_code(self):
         self.assertEqual(recover.link_url("https://" + "a" * 80 + ".example.com", "A" * 26), "")
         self.assertEqual(recover.link_url("https://example.com/", "A" * 26), "HTTPS://EXAMPLE.COM/TV/P/" + "A" * 26)

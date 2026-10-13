@@ -597,6 +597,19 @@ static void test_voice_screens_share_the_panel(void)
     check(empty.view == UI_VIEW_VIDEO, "no list to go back to: closed");
 }
 
+static void test_recover_screen_stays_until_closed(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    ui_menu_open_status(&menu);
+    ui_menu_open_recover(&menu);
+    check(menu.view == UI_VIEW_RECOVER && menu.timeout_ms == 0, "the recovery screen replaces the status page");
+    for (int i = 0; i < 400; i++) ui_menu_tick(&menu, 1000);
+    check(menu.view == UI_VIEW_RECOVER, "it has no timeout of its own (the code lasts five minutes)");
+    ui_menu_close(&menu);
+    check(menu.view == UI_VIEW_VIDEO, "closed by the player");
+}
+
 static void test_episode_loading(void)
 {
     ui_menu_t menu;
@@ -745,6 +758,7 @@ static void test_progress(void)
 
 int main(void)
 {
+    test_recover_screen_stays_until_closed();
     test_voice_screens_share_the_panel();
     test_open_selects_the_playing_channel();
     test_stepping_wraps_and_keeps_the_selection_sane();

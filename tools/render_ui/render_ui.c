@@ -2,6 +2,7 @@
 // font, a stand-in for the picture, and each screen of the design laid out on
 // one sheet at 2x. Run through render_ui.sh.
 #include "av_provision_policy.h"
+#include "av_recover.h"
 #include "av_wifi_hint.h"
 #include "ui_draw.h"
 #include "ui_menu.h"
@@ -21,9 +22,9 @@
 // the voice screens (docs/superpowers/specs/2026-10-12-voice-control-design.md),
 // so the first seven rows can be compared with an older sheet pixel for pixel,
 // then one of the episode information (what loads, what plays), then one of
-// the playback progress, one of sound setup, and one of sound setup with the
-// nearby networks in its code.
-enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 14, GAP = 8 };
+// the playback progress, one of sound setup, one of sound setup with the
+// nearby networks in its code, and two of account recovery (main/av_recover.h).
+enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 16, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -534,6 +535,45 @@ int main(int argc, char **argv)
                                       .line1 = text, .line2 = line, .line2_color = UI_AMBER,
                                       .pet = 0, .mood = states[i] == AV_SOUND_RECEIVING };
             ui_overlay_setup(view(), &setup, true);
+            place(n++);
+        }
+    }
+
+    // Account recovery, on two rows of their own: the owner's code (a usual
+    // site, version 3, 4 px a module; the longest address the server sends,
+    // version 4, 3 px), the bind code of an unbound device, a refusal; then
+    // asking, expired, an older server and no network. The rows above keep
+    // their pixels.
+    n = 14 * COLS;
+    {
+        static uint8_t rq[qrcodegen_BUFFER_LEN_FOR_VERSION(5)], rt[qrcodegen_BUFFER_LEN_FOR_VERSION(5)];
+        char longest[AV_RECOVER_URL_MAX + 1];
+        memset(longest, 'A', AV_RECOVER_URL_MAX);
+        memcpy(longest, "HTTPS://TV.A-LONGER-HOST-NAME.EXAMPLE.ORG/TV/P/", 47);
+        longest[AV_RECOVER_URL_MAX] = '\0';
+        static const char *const urls[] = { "HTTPS://TV.EXAMPLE.COM/TV/P/K7P4QX2MABCDEFGHJKLMNPQRST", NULL,
+                                            "HTTPS://TV.EXAMPLE.COM/TV/B/ABCDEFGHIJKLMNOPQRST", NULL };
+        const struct { av_recover_phase_t phase; av_recover_error_t error; unsigned left; } shots[] = {
+            { AV_RECOVER_SHOWING, AV_RECOVER_ERR_NONE, 299 }, { AV_RECOVER_SHOWING, AV_RECOVER_ERR_NONE, 61 },
+            { AV_RECOVER_BIND, AV_RECOVER_ERR_NONE, 0 }, { AV_RECOVER_FAILED, AV_RECOVER_ERR_LIMITED, 0 },
+            { AV_RECOVER_ASKING, AV_RECOVER_ERR_NONE, 0 }, { AV_RECOVER_FAILED, AV_RECOVER_ERR_EXPIRED, 0 },
+            { AV_RECOVER_FAILED, AV_RECOVER_ERR_OFF, 0 }, { AV_RECOVER_FAILED, AV_RECOVER_ERR_OFFLINE, 0 },
+        };
+        for (unsigned i = 0; i < sizeof(shots) / sizeof(shots[0]); i++) {
+            const char *url = i == 1 ? longest : i < 4 ? urls[i] : NULL;
+            av_recover_screen_t r = { .phase = shots[i].phase, .error = shots[i].error };
+            ui_recover_page_t page = { .pet = i % 3 };
+            if (url) {
+                qrcodegen_encodeText(url, rt, rq, qrcodegen_Ecc_LOW, 1, 5, qrcodegen_Mask_AUTO, true);
+                fprintf(stderr, "recovery code %u: %zu characters, version %d\n", i, strlen(url),
+                        (qrcodegen_getSize(rq) - 17) / 4);
+                page.qr = rq;
+            }
+            av_recover_lines(&r, &page.line1, &page.line2, &page.alarm);
+            picture(); bars(NULL, "恢复登录", 76, 0, 3);
+            ui_draw_panel(whole(), 30, 210);
+            ui_overlay_recover(view(), &page);
+            ui_overlay_recover_bottom(view(), 210, shots[i].left);
             place(n++);
         }
     }

@@ -232,6 +232,15 @@
 // The phone remote's sign-in address carried in CONFIG ("remote_url"), drawn as a
 // QR code on the status page. Same limit as REMOTE_URL_MAX in server/tv_server.py.
 #define AV_REMOTE_URL_MAX 64u
+// Account recovery ("恢复登录", main/av_recover.h, server/tenancy/recover.py),
+// on the multi-user server only. HELLO "recover": 1 says this firmware can; a
+// bound device's CONFIG then carries "recover": 1 when the server can too.
+// The status page's gesture sends AV_STATUS {"recover": 1}; the answer is
+// AV_SWITCH {"recover": {"url": "HTTPS://<SITE>/TV/P/<TOKEN>", "ttl": 300}}
+// or {"recover": {"err": "limited" | "unbound" | "off" | "fail"}}. The url is
+// upper case for an alphanumeric QR code, at most this long (RECOVER_URL_MAX
+// in server/tenancy/recover.py), which keeps it within a version-4 code.
+#define AV_RECOVER_URL_MAX 96u
 
 // AV_SWITCH: the server asks the device to change to the channel named in its
 // JSON payload ({"channel": id}); sent only to a device whose HELLO carried
