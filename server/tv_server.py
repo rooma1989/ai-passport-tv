@@ -111,6 +111,9 @@ def reset_reason_name(code: int) -> str:
     return _RESET_REASONS.get(code, str(code))
 # 暂停最长多久，之后自动继续（与中转的 PAUSE_MAX_S 一致）。
 PAUSE_MAX_S = 30 * 60
+# 语音定时到了的暂停（pause 事件 value=1，控制里叫 sleep）最长多久：不自动继续，等用户说「继续」、
+# 换台或重连（与中转的 voicecmds.SLEEP_PAUSE_MAX_S 一致）。
+SLEEP_PAUSE_MAX_S = 12 * 3600
 _REMOTE_URL = re.compile(r"^HTTPS?://[A-Z0-9.:/%-]+$")
 
 
@@ -697,13 +700,16 @@ class AVServer:
             return "leave"
         controls = self.switch_watcher.take_controls()
         resumed = any(kind == "resume" for kind, _ in controls)
+        if any(kind == "sleep" for kind, _ in controls):
+            # 暂停着的时候定时到了：改成定时暂停，不再 30 分钟后自动继续。
+            self.pause_limit_s = SLEEP_PAUSE_MAX_S
         # 音量、亮度留到恢复播放后再发。
         self.switch_watcher.requeue([c for c in controls
                                      if c[0] in ("volume", "brightness", "pet", "audio", "loading", "wifi")])
         if resumed:
             self.logger("resume")
             return "resume"
-        if time.monotonic() - paused_at > PAUSE_MAX_S:
+        if time.monotonic() - paused_at > getattr(self, "pause_limit_s", PAUSE_MAX_S):
             self.logger("pause expired; resuming")
             return "resume"
         return "paused"
@@ -1040,9 +1046,11 @@ class AVServer:
                                                    json_bytes({"channel": target})))
                     seq += 1
             for kind, value in self.switch_watcher.take_controls():
-                if kind == "pause":
+                if kind in ("pause", "sleep"):
                     # 手机上暂停：停在 PAUSED 画面，继续时重启视频源（reconnect.hold 的 paused 模式）。
-                    self.logger(f"session={session} pause")
+                    # sleep 是语音定时到了的暂停，直播台也一样停（关掉直播源），不自动继续。
+                    self.pause_limit_s = SLEEP_PAUSE_MAX_S if kind == "sleep" else PAUSE_MAX_S
+                    self.logger(f"session={session} {kind}")
                     if not hold_on_notice(time.monotonic(), paused=True, title=str(value or "")):
                         return
                     now = time.monotonic()

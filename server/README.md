@@ -483,6 +483,80 @@ multi-user mode): `GET /api/voice/search?device=&site=bilibili|youtube&kind=vide
 `POST /api/voice/creator {device, site, id, name, action: follow|latest, wait}`.
 The node endpoint is `GET /yt/search?q=&n=&kind=video|channel`.
 
+### What's playing, sleep timer, last channel, subscriptions, cast history
+
+The second batch of rules is the "di er pi" (second batch) section of `intent.py`; the relay's side is
+`server/relay/voicecmds.py`. Each is matched as a whole sentence, the timer before "how
+long is left", the cast history before search (it ends in "... de shi pin"), and the last
+channel, random channel and "carry on" after playback but before list questions and episodes.
+`tests/test_voice_commands.py` holds the phrasings, including the older ones they must not take.
+
+- **What's playing** (an answer only, nothing done): "xian zai bo de shi shen me", "zhe shi
+  shen me jie mu", "zhe shi di ji ji", "hai sheng duo jiu", "hai you duo chang shi jian", "zhe
+  ge shi pin duo chang", "bo dao na le". The relay catalogue's `playing` now also carries
+  `title`, `position`, `duration` and `total` for creator, series and cast channels: "Quan Ye
+  Cha di 12/167 ji · yi bo 8:30 / 23:40", "<title> · 1:05 / 12:34", or "CCTV1 (zhi bo)" on a
+  live channel. "Quan Ye Cha kan dao di ji ji le" / "Hai Er Xiong Di kan dao na le" answer from
+  the series rows' `next` and new `position` (the owner's progress) without switching.
+- **Last channel**: "hui dao gang cai de tai", "gang cai na ge tai", "huan hui qu", "shang yi
+  ge tai" switch to the device's previous channel. The relay keeps each device's last 8
+  channels (catalogue field `back`), read from its now-playing file every 2 s and at every
+  catalogue request; a channel watched less than 10 s does not count. Without a history
+  "shang yi ge tai" still steps back in the list as before.
+- **Random**: "sui bian huan ge tai", "sui ji huan tai", "sui bian kan kan" (never the current
+  channel or My cast); "sui ji fang ge dong hua pian", "sui bian lai bu ju", "sui ji yi ge UP
+  zhu", "sui bian fang shou ge" stay within that category (the list questions' vocabulary).
+  "sui bian" alone is not a command.
+- **Carry on**: "ji xu kan Quan Ye Cha", "jie zhe kan Hai Er Xiong Di" switch to that channel,
+  which resumes where it stopped ("jie zhe kan ... di 7 ji"); on that channel and paused it
+  resumes. "ji xu kan ... di 3 ji" is an episode pick, "jie zhe kan gang cai de tai" the last channel.
+- **Sleep timer**: "30 fen zhong hou zan ting", "ban xiao shi hou guan diao", "yi xiao shi hou
+  guan ji", "yi ge ban xiao shi hou guan ji", "ding shi 30 fen zhong", "kan wan zhe ji jiu ting"
+  (the end of this episode or video), "qu xiao ding shi", "hai sheng duo jiu guan ji". One
+  timer per device, at most 12 h; a new one replaces it. Reply "30 fen zhong hou zan ting".
+- **Subscriptions**: while a cast plays, "ding yue zhe ge UP zhu", "guan zhu ta", "ba zhe ge
+  zuo zhe jia jin lai" subscribe its uploader (Bilibili: the video's owner from
+  `/x/web-interface/view`; YouTube: the channel from the node's `/yt/info`) with the search's
+  follow limits (12 creators, room in CONFIG), to the device owner's subscriptions. "qu xiao ding
+  yue Wang Zhi An", "bu kan Xiao Lin Shuo le", "shan diao zhe bu ju", "ba Ke Nan OVA shan le"
+  match the device's creator and series channels and ask first, "que ding shan chu 'Wang Zhi
+  An'?" with "shan chu" (ref `rm:<channel>`) and "suan le"; "que ding" / "shan chu" / "shi de"
+  said within 30 s confirms too. Several matches list "shan chu '...'" rows. The removed channel
+  goes from the owner's list; a device on it is switched to its last channel.
+- **Cast history**: each device keeps its last 10 casts (phone, voice search, replays) and where
+  each stopped. "chong bo gang cai na ge shi pin", "zai fang yi bian gang cai de" cast the latest
+  again from the start; "bo fang shang yi ge tou ping" is the latest when not watching a cast and
+  the one before it when watching one, "shang shang ge tou ping" one further; "ji xu kan gang cai
+  tou ping de" switches to My cast (which resumes) or casts it again from where it stopped.
+- **Help**: "ni neng zuo shen me" lists six topics as choices (`hp:0`...`hp:5`); each shows its
+  example sentences.
+
+**When the timer fires** (the relay's background thread, every 2 s): a `brightness` event to the
+dimmest step (when the device reports its brightness), then a `pause` event with `value: 1`. On
+creator, series and cast channels the relay also does what the phone's pause does (stores the
+position, cuts the stream, serves none while paused). On a live channel only the media server
+acts: it holds the session on its pause screen, closes the live source and sends silence. This
+was chosen over audio-only plus a dim backlight, which would keep the sound on all night. The
+media server turns a value-1 pause into a `sleep` control that does not resume after
+`PAUSE_MAX_S` (30 min) like the phone's pause, only after `SLEEP_PAUSE_MAX_S` (12 h); "ji xu"
+(voice, or the phone's resume), changing channel, or a new session (reconnect, power cycle)
+ends it, and the backlight goes back to the step it had. A timer that falls due while the device
+is offline, or more than 10 min late (the relay was down), is dropped. "kan wan zhe ji jiu ting"
+fires within the last 3 s, when the next episode has started, or when a finished cast took the
+device back to its channel; switching channel by hand drops it, and live channels refuse it.
+
+**Storage**: single-user relay in `relay-state.json` under `"voice"`, per device id;
+multi-user in the device's `device_state` row next to its cast slot (deleted on unbind, carried
+over on adopt). It survives a relay restart.
+
+Relay endpoints (always with `device`, as that device's guest in multi-user mode):
+`POST /api/voice/timer {device, action: set|end|cancel|status, minutes}`,
+`POST /api/voice/subscribe {device, wait}`, `POST /api/voice/unsubscribe {device, id}`,
+`POST /api/voice/recast {device, step, resume}`; the catalogue adds `back`, `timer`, `casts`,
+the `playing` fields above and each series' `position`. In multi-user mode a removal is accepted
+only from the media server (the key, naming the device) or the owner's own phone, never from a
+guest phone.
+
 Relay actions always carry `device`, so they act on the device that spoke, not
 on the one the phone is driving (`Relay.target()`). Which device that is depends
 on the relay's mode:
@@ -497,9 +571,10 @@ own devices, yet a media unit may serve anyone's device. So a request with the
 key (`X-Key`) that names a device on a single-device endpoint (`switch`, `seek`,
 `next`, `previous`, `pause`, `resume`, `device`, `audio`, `pet`,
 `series/<id>/play`, `series/<id>/episodes`, `voice/catalog`, `voice/search`,
-`voice/cast`, `voice/creator`) is served as that device's **guest**: that one
+`voice/cast`, `voice/creator`, `voice/timer`, `voice/subscribe`, `voice/unsubscribe`,
+`voice/recast`) is served as that device's **guest**: that one
 device, its owner's series and progress, no account data except a voice
-subscription to the owner's creators. Names are not accepted there (users choose them, so they are not unique),
+subscription to the owner's creators and a confirmed voice removal of one. Names are not accepted there (users choose them, so they are not unique),
 and an unknown or unbound id answers 404. Phones (cookie sessions) keep their
 own rules. An unbound device gets neither `voice` in CONFIG nor a relay client.
 An utterance finishes with the relay client of the session it started in.
@@ -540,7 +615,9 @@ An utterance finishes with the relay client of the session it started in.
    also needs this version of the YouTube node (`server/relay/ytnode.py`, for
    `/yt/search`); with an older node YouTube search answers that YouTube did not
    respond, and Bilibili search works. Restart order: muse-asr, tv-relay, then the
-   media servers. Multi-user mode adds nothing for voice: the drop-ins in
+   media servers. The sleep timer needs the relay and the media servers of the same version:
+   an older media server takes the timer's pause for a phone pause and resumes it after 30
+   minutes while the relay still holds the stream. Multi-user mode adds nothing for voice: the drop-ins in
    `packaging/systemd/tenancy/` leave these variables alone
    ([runbook](../docs/development/tenancy-phase1-runbook.md#voice-control-in-both-modes)).
    Every unit and drop-in on the host, and the install order:

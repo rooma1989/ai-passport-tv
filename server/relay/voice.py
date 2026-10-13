@@ -233,16 +233,25 @@ def creator(relay, key, caller: Caller = LEGACY, body: dict | None = None) -> di
     if relay.tenant and device.get("owner") is None:
         return {"ok": False, "error": "这台电视还没绑定账号，不能订阅"}
     state = relay._state_of(device)
+    refusal = follow_refusal(relay, state, site, source, name, cid)
+    if refusal:
+        return {"ok": False, "error": refusal}
+    return _within(relay, site, lambda: _follow(relay, state, client, site, source),
+                   _wait(body.get("wait")))
+
+
+def follow_refusal(relay, state, site: str, source: str, name: str, fallback: str = "") -> str:
+    """语音订阅（搜到的 UP 主，或正在放的投屏视频的作者，见 voicecmds.py）不能做时的话；能做为空。
+    和手机「添加 UP 主」一样：最多 MAX_CREATORS 个，设备的频道列表还得放得进 CONFIG。"""
     with state.lock:
         ups = [c for c in state.creators if c.kind == "up"]
         if any(c.site == site and c.source == source for c in ups):
-            return {"ok": False, "error": f"已经订阅过「{name}」了" if name else "已经订阅过了"}
+            return f"已经订阅过「{name}」了" if name else "已经订阅过了"
         if len(ups) >= MAX_CREATORS:
-            return {"ok": False, "error": f"最多只能订阅 {MAX_CREATORS} 个 UP 主"}
-    if not relay.room_of(state, table.label_for(name, site, cid))["fits"]:
-        return {"ok": False, "error": "频道列表满了，先删掉几个台"}
-    return _within(relay, site, lambda: _follow(relay, state, client, site, source),
-                   _wait(body.get("wait")))
+            return f"最多只能订阅 {MAX_CREATORS} 个 UP 主"
+    if not relay.room_of(state, table.label_for(name, site, fallback or source))["fits"]:
+        return "频道列表满了，先删掉几个台"
+    return ""
 
 
 def _follow(relay, state, client, site: str, source: str) -> dict:

@@ -24,7 +24,7 @@ from pathlib import Path
 from .. import channel_groups, now_playing
 from ..tenancy import files as tenancy_files
 from ..tenancy.tickets import LoginTickets
-from . import console, events, stream, table, voice, wifi as wifi_api, youtube as youtube_links
+from . import console, events, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
@@ -53,10 +53,11 @@ _BIND_INFO = re.compile(r"^/api/bind/([A-Za-z2-7]{20})$")
 _DEVICE_API = re.compile(r"^/api/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})(?:/(unbind|repair))?$")
 # 只作用在一台设备上的遥控接口。多用户时，带密钥（X-Key）并点名设备的这些请求——电视服务替
 # 说话的那台设备发的语音命令——按那台设备的访客处理：只能动那一台，按设备主人的剧和进度来，
-# 碰不到账号数据（唯一的例外：语音搜到的 UP 主可以订阅到主人名下，用户决定的）。见 voice.py。
+# 碰不到账号数据（例外：语音搜到的、或正在投屏的 UP 主可以订阅到主人名下，用户决定的；设备上确认过的
+# 语音删台，见 voice.py、voicecmds.py）。
 _DEVICE_SCOPED = frozenset({"/api/switch", "/api/seek", "/api/next", "/api/previous", "/api/device",
                             "/api/audio", "/api/pet", "/api/pause", "/api/resume", "/api/voice/catalog",
-                            "/api/voice/search", "/api/voice/cast", "/api/voice/creator"})
+                            "/api/voice/search", "/api/voice/cast", "/api/voice/creator"} | set(voicecmds.PATHS))
 COOKIE = "tvs"
 # 中转推出的内容要经电视服务缓冲约这么久才在小智屏幕上出现（实测音频领先约 2.7 秒，加上解码起步）。
 PLAYBACK_LAG_S = 4.0
@@ -597,12 +598,16 @@ class Relay:
         self.log(f"{cid} {reason}：掐断当前的流，电视服务会重新打开")
 
     def _paused_on(self, dev: dict, cid: str) -> dict | None:
-        """cid 正在暂停时返回暂停信息。暂停超过 PAUSE_MAX_S，或设备已换到别的台，就当作结束了。"""
+        """cid 正在暂停时返回暂停信息。暂停超过 PAUSE_MAX_S，或设备已换到别的台，就当作结束了。
+        语音定时的暂停（"sleep"，voicecmds.py）最长 SLEEP_PAUSE_MAX_S，设备重连（新会话）也算结束。"""
         paused = self._paused.get(dev["slot"])
         if paused is None or paused["cid"] != cid:
             return None
         playing = self._playing(dev)
-        if self.clock() - paused["at"] > PAUSE_MAX_S or (playing["online"] and playing["channel"] != cid):
+        sleep = paused.get("sleep")
+        limit = voicecmds.SLEEP_PAUSE_MAX_S if sleep else PAUSE_MAX_S
+        if self.clock() - paused["at"] > limit or (playing["online"] and playing["channel"] != cid) or \
+                (sleep and playing["online"] and playing["since"] > paused["at"] + 1):
             self._paused.pop(dev["slot"], None)
             return None
         return paused
@@ -620,22 +625,28 @@ class Relay:
             state.save()
 
     def pause(self, caller: Caller = LEGACY, device: str | None = None) -> dict:
-        dev = self._pick(caller, device)
+        return self.pause_device(self._pick(caller, device))
+
+    def pause_device(self, dev: dict, sleep: bool = False) -> dict:
+        """sleep：语音定时到了（voicecmds.sleep）：pause 事件带 value=1，电视服务不自动继续。"""
         cid, video, position, entry = self._current(dev)
         if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
         self._store_position(dev, cid, video, position)
-        self._paused[dev["slot"]] = {"cid": cid, "video": video, "position": position, "at": self.clock()}
+        self._paused[dev["slot"]] = {"cid": cid, "video": video, "position": position, "at": self.clock(),
+                                     "sleep": sleep}
         self._bridge.pop((dev["slot"], cid), None)
         if entry is not None:
-            self._cut(cid, entry, "暂停")
-        self._event(dev, "pause", text=video.title)
+            self._cut(cid, entry, "定时暂停" if sleep else "暂停")
+        self._event(dev, "pause", value=1 if sleep else None, text=video.title)
         return {"ok": True, "at": self.clock(), "position": position}
 
     def resume(self, caller: Caller = LEGACY, device: str | None = None) -> dict:
         dev = self._pick(caller, device)
         playing = self._playing(dev)
-        if self._paused_on(dev, playing["channel"]) is None:
+        # 语音定时暂停的（直播台也算）：醒来，背光恢复（voicecmds.wake）。
+        asleep = voicecmds.wake(self, dev)
+        if self._paused_on(dev, playing["channel"]) is None and not asleep:
             return {"ok": False, "error": "现在没有暂停"}
         self._paused.pop(dev["slot"], None)
         self._event(dev, "resume")
@@ -1208,11 +1219,18 @@ class Relay:
             return {"ok": False, "error": f"{_SITE_NAMES[site]}暂时取不到，请稍后再试"}
         return self._cast_video(video, caller, dev)
 
-    def _cast_video(self, video, caller: Caller, dev: dict) -> dict:
+    def _cast_video(self, video, caller: Caller, dev: dict, position: float = 0.0) -> dict:
+        """position：从这里接着放（语音「继续看刚才投屏的」，voicecmds.recast）。"""
         if self.tenant and not dev["id"]:
             return {"ok": False, "error": "还没有绑定小电视"}
         cast = self._cast_of(dev)
+        with cast.lock:
+            previous, at, done = cast.cast, cast.cast_position, cast.cast_done
         cast.set_cast(video)
+        if position > 0:
+            cast.save_cast_position(video.bvid, position)
+        # 这台设备的投屏历史（语音「重播刚才那个视频」「上一个投屏」）。
+        voicecmds.remember_cast(self, dev, video, previous, at, done)
         try:
             # 投屏历史记在投屏的人名下；访客没有历史。
             account = self._account(caller)
@@ -1593,7 +1611,7 @@ def _manage_handler(relay: Relay):
             elif _EPISODES.match(path):
                 self._json(relay.episodes(_EPISODES.match(path).group(1), caller, device))
             elif path == "/api/voice/catalog":
-                self._json(voice.catalog(relay, device, caller))
+                self._json(voicecmds.catalog(relay, device, caller))
             elif path == "/api/voice/search":
                 # 语音搜索视频或 UP 主（server/relay/voice.py）。
                 query = self._query()
@@ -1745,6 +1763,11 @@ def _manage_handler(relay: Relay):
                 # 语音搜到的视频投屏、UP 主订阅或播最新（server/relay/voice.py）；device 上面已经认过。
                 act = voice.cast if path == "/api/voice/cast" else voice.creator
                 self._json(act(relay, device, caller, body))
+                return
+            if path in voicecmds.PATHS:
+                # 语音定时、订阅正在放的、删台、投屏历史（server/relay/voicecmds.py）。
+                self._json(voicecmds.post(relay, path, device, caller, body,
+                                          keyed=relay.key_ok(self.headers.get("X-Key"))))
                 return
             if path == "/api/history/play":
                 self._json(relay.replay(str(body.get("site") or ""), str(body.get("id") or ""), caller, device))

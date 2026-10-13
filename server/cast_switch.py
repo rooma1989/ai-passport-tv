@@ -62,7 +62,11 @@ class SwitchWatcher:
                 # 同类的数值只留最新的，免得拖滑条时一个个依次发过去。
                 if action in ("volume", "brightness", "pet", "audio"):
                     self._controls = [c for c in self._controls if c[0] != action]
-                # 暂停带的是标题（text），其余带数值。
+                # 暂停带的是标题（text），其余带数值。value=1 的暂停是语音定时到了（「sleep」）：
+                # 不在 PAUSE_MAX_S 后自动继续（server/relay/voicecmds.py）。
+                if action == "pause" and event.value == 1:
+                    self._controls.append(("sleep", event.text))
+                    continue
                 self._controls.append((action, event.text if action == "pause" else event.value))
                 continue
             if action == "wifi":

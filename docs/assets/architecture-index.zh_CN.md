@@ -91,6 +91,7 @@
 | [`server/progress.py`](../../server/progress.py) | 给 `"progress": 1` 的固件的进度条锚点：中转 `/info/<台>` 的 `duration`/`offset`，每个片源开始时的 SWITCH `progress`，断流或暂停时的 `stop`。设备侧：`main/ui_menu.c` 的 `ui_progress_*`，由 `ui_overlay_progress_*` 画。 |
 | [`server/voice/`](../../server/voice/session.py) | 设备的语音命令：VOICE_CTL/VOICE 包和结果队列（`session.py`）、到 muse-asr 的 Unix 套接字桥（`asr.py`）、规则优先的意图引擎（`intent.py`、`match.py`、`numbers.py`、由 `tools/make_pinyin_table.py` 生成的 `pinyin_table.py`）、带明确设备的中转调用（`relay_client.py`）。运维说明见 [`server/README.zh_CN.md`](../../server/README.zh_CN.md#语音控制)。 |
 | [`server/relay/voice.py`](../../server/relay/voice.py) | 给媒体服务的 `GET /api/voice/catalog`。`device` 字段本身在 `web.py` 的 `Relay.find_device()`/`_pick()`（单用户时也认名字；有 `--db` 时带密钥点名设备的请求按那台设备的访客处理，`_DEVICE_SCOPED`）。 |
+| [`server/relay/voicecmds.py`](../../server/relay/voicecmds.py) | 中转这边的第二批语音命令：每台设备的换台历史、定时（后台定时检查：背光调到最暗，再发 value 为 1 的 `pause`，媒体服务不会 30 分钟后自动继续）、投屏历史、订阅正在放的投屏的作者、删台；目录里加的字段。存在 `relay-state.json` 的 `voice` 或设备的 `device_state` 里。 |
 | [`server/relay/wifi.py`](../../server/relay/wifi.py)、[`server/tenancy/wifi.py`](../../server/tenancy/wifi.py)、[`server/wifi_crypto.py`](../../server/wifi_crypto.py) | 手机/电脑管理设备保存的 Wi-Fi（只有主人）：`GET`/`POST /api/wifi`、为设备加密、表 `device_wifi`（记住的公钥、名字、等回答的修改、回答）。 |
 | [`server/fault.py`](../../server/fault.py) | 面向受控设备实验（B02-R）的故障注入工具；不在正式发布的服务端路径里。 |
 

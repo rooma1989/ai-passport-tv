@@ -158,3 +158,23 @@ class RelayClient:
         return self._call("POST", "/api/voice/creator",
                           {"site": site, "id": creator_id, "name": name, "action": action,
                            "wait": float(self._wait(timeout)), "device": self.device}, timeout=timeout)
+
+    # ---- 第二批语音命令（server/relay/voicecmds.py）：定时、订阅正在放的、删台、投屏历史 ----
+
+    def timer(self, action: str, minutes: int | None = None) -> dict:
+        """action：set（minutes 分钟后暂停）、end（这个视频放完就暂停）、cancel、status。"""
+        body = {"action": action}
+        if minutes is not None:
+            body["minutes"] = minutes
+        return self.post("/api/voice/timer", body)
+
+    def subscribe_playing(self, timeout: float) -> dict:
+        """订阅正在放的投屏视频的作者；要问网站，timeout 内没做完回答 pending（后台做完）。"""
+        return self._call("POST", "/api/voice/subscribe",
+                          {"wait": float(self._wait(timeout)), "device": self.device}, timeout=timeout)
+
+    def unsubscribe(self, channel: str) -> dict:
+        return self.post("/api/voice/unsubscribe", {"id": channel})
+
+    def recast(self, step: int = 0, resume: bool = False) -> dict:
+        return self.post("/api/voice/recast", {"step": step, "resume": resume})
