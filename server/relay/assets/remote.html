@@ -1054,7 +1054,8 @@ function renderMine() {
   $("meNote").textContent = "";
   $("adminBox").hidden = me.role !== "admin";
   // 多用户时换的是正在遥控的那台的访客码：只有它是自己的才显示。
-  $("newcode").hidden = !(data.devices || []).some((x) => x.target && x.mine);
+  // 多用户时每台设备的「访客码」里就能换码；这一行只留给单用户（那时没有 data.me）。
+  $("newcode").hidden = Boolean(data.me) || !(data.devices || []).some((x) => x.target && x.mine);
   $("newcodeNote").textContent = (data.devices || []).length > 1 ? "「" + devName() + "」的，旧码作废" : "旧码作废，客人要重新扫";
   renderDeviceList();
 }
