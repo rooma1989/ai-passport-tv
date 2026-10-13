@@ -147,8 +147,8 @@ static void test_usability(void)
 
 static void test_a_portless_address_takes_the_build_port(void)
 {
-    // The report that made this rule: "iewww.com" typed on the phone, and the
-    // device dialled iewww.com:8096 while its relay listens on 8097.
+    // The report that made this rule: the site's domain typed on the phone, and the
+    // device dialled <domain>:8096 while its relay listens on 8097.
     av_server_addr_t a;
     check(av_server_addr_parse("iewww.example", &a) && !a.port_given, "no port in the text");
     check(av_server_addr_use_build_port(&a, 8097) && a.port == 8097, "the Passport build's port");
