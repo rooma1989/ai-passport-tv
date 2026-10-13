@@ -207,7 +207,7 @@ class PhoneLinks:
         accounts.audit("phone_link.device", user_id, ip, "device", device_id, f"n={recent + 1}/{limit}")
         return {"token": token, "ttl": LINK_S, "user_id": user_id}
 
-    def create_for_admin(self, user_id: int, actor: int | None = None) -> dict:
+    def create_for_admin(self, user_id: int, actor: int | None = None, ip: str = "") -> dict:
         """管理员命令行的 login-link：给这个用户一个一次性登录链接 {token, ttl}。没有这个用户（或被封）时 ValueError。"""
         accounts = self.accounts
         now = self.clock()
@@ -219,7 +219,7 @@ class PhoneLinks:
             conn.execute("UPDATE phone_link SET expires_at=? WHERE origin='admin' AND user_id=? "
                          "AND used_at IS NULL AND expires_at > ?", (now, user_id, now))
             token = self._insert(conn, user_id, "admin", None, "", now)
-        accounts.audit("phone_link.admin", actor, "", "user", str(user_id))
+        accounts.audit("phone_link.admin", actor, ip, "user", str(user_id))
         return {"token": token, "ttl": LINK_S}
 
     def origin_of(self, token: str | None = None, code: str | None = None) -> dict:

@@ -186,10 +186,12 @@ def connect(path: Path | str) -> sqlite3.Connection:
 # 阶段 2：电脑登录票据的轮询密钥（只在电脑上，二维码里是另一个），见 tickets.py。
 # 恢复登录：手机登录链接是谁要的（pc 电脑版、device 设备上的「恢复登录」、admin 管理员命令行）和
 # 哪台设备（phonelinks.py）；会话是怎么来的（via：recover 设备恢复、admin 管理员链接、signup 扫绑定码注册）。
+# 阶段 3：管理员在总后台看过一个自己注册的用户、点了「知道了」的时间（manage.py；NULL 是还没看过）。
 ADDED_COLUMNS = (("login_ticket", "poll_sha256", "BLOB"),
                  ("phone_link", "origin", "TEXT NOT NULL DEFAULT 'pc'"),
                  ("phone_link", "device_id", "TEXT"),
-                 ("session", "via", "TEXT NOT NULL DEFAULT ''"))
+                 ("session", "via", "TEXT NOT NULL DEFAULT ''"),
+                 ("user", "reviewed_at", "REAL"))
 
 
 def _add_columns(conn: sqlite3.Connection) -> None:

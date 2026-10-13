@@ -99,7 +99,7 @@ class Accounts:
         row = self._one("SELECT id FROM user WHERE role='admin' AND status='active' ORDER BY id LIMIT 1")
         return row["id"] if row else None
 
-    def set_user_status(self, user_id: int, status: str, actor: int | None = None) -> bool:
+    def set_user_status(self, user_id: int, status: str, actor: int | None = None, ip: str = "") -> bool:
         if status not in ("active", "banned"):
             raise ValueError("没有这个状态")
         with self.lock, db.transaction(self.conn):
@@ -108,7 +108,7 @@ class Accounts:
                 # 封禁同时结束这个人的所有会话。
                 self.conn.execute("DELETE FROM session WHERE user_id=?", (user_id,))
         if changed:
-            self.audit("user." + ("ban" if status == "banned" else "unban"), actor, target_kind="user",
+            self.audit("user." + ("ban" if status == "banned" else "unban"), actor, ip, target_kind="user",
                        target_id=str(user_id))
         return bool(changed)
 
@@ -231,7 +231,7 @@ class Accounts:
     # ---- 邀请 ----
 
     def create_invite(self, created_by: int | None, role: str = "user", name: str = "",
-                      ttl_s: float = INVITE_S) -> str:
+                      ttl_s: float = INVITE_S, ip: str = "") -> str:
         if role not in ("admin", "user"):
             raise ValueError("没有这个角色")
         code = db.new_code()
@@ -239,7 +239,7 @@ class Accounts:
         self._run("INSERT INTO invite(code_sha256, created_by, role, name, created_at, expires_at) "
                   "VALUES (?, ?, ?, ?, ?, ?)", (db.sha256(code), created_by, role, _clean_name(name),
                                                 now, now + ttl_s))
-        self.audit("invite.create", created_by, target_kind="invite", detail=f"role={role}")
+        self.audit("invite.create", created_by, ip, target_kind="invite", detail=f"role={role}")
         return code
 
     def invite(self, code: str | None) -> dict | None:
@@ -418,28 +418,28 @@ class Accounts:
             self.conn.execute("DELETE FROM session WHERE device_id=?", (device_id,))
         self.audit("device.unbind", actor, ip, "device", device_id)
 
-    def rename(self, device_id: str, name: str, actor: int | None) -> str:
+    def rename(self, device_id: str, name: str, actor: int | None, ip: str = "") -> str:
         name = _clean_name(name)
         if not name:
             raise ValueError("名字不能是空的")
         self._run("UPDATE device SET name=? WHERE id=?", (name, device_id))
-        self.audit("device.rename", actor, "", "device", device_id)
+        self.audit("device.rename", actor, ip, "device", device_id)
         return name
 
-    def start_repair(self, device_id: str, actor: int | None) -> float:
+    def start_repair(self, device_id: str, actor: int | None, ip: str = "") -> float:
         until = self.clock() + REPAIR_S
         self._run("UPDATE device SET repair_until=? WHERE id=?", (until, device_id))
-        self.audit("device.repair", actor, "", "device", device_id)
+        self.audit("device.repair", actor, ip, "device", device_id)
         return until
 
-    def set_device_status(self, device_id: str, status: str, actor: int | None) -> bool:
+    def set_device_status(self, device_id: str, status: str, actor: int | None, ip: str = "") -> bool:
         if status not in ("active", "banned", "unclaimed"):
             raise ValueError("没有这个状态")
         changed = self._run("UPDATE device SET status=? WHERE id=?", (status, device_id))
         if changed and status == "banned":
             self._run("DELETE FROM session WHERE device_id=?", (device_id,))
         if changed:
-            self.audit(f"device.{status}", actor, "", "device", device_id)
+            self.audit(f"device.{status}", actor, ip, "device", device_id)
         return bool(changed)
 
     def new_remote_code(self, device_id: str, actor: int | None = None) -> str:

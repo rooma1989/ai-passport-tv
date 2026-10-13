@@ -57,6 +57,7 @@
   .who { padding: 16px 22px 20px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--dim); }
   .who b { display: block; font: 15px var(--serif); color: var(--paper-hi); }
   .who button { margin-top: 8px; background: none; border: 0; padding: 0; color: var(--red); font: 13px var(--serif); }
+  .who a { display: inline-block; margin: 8px 14px 0 0; color: var(--amber); font: 13px var(--serif); text-decoration: none; }
 
   main { min-width: 0; padding: 0 32px 48px; }
   .top { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 72px;
@@ -265,7 +266,7 @@
       <button data-page="settings"><i>05</i>设置</button>
       <button data-page="invites" id="navInvites" hidden><i>06</i>邀请</button>
     </nav>
-    <div class="who"><b id="meName">—</b><span id="meRole"></span><br><button id="logout">退出登录</button></div>
+    <div class="who"><b id="meName">—</b><span id="meRole"></span><br><a href="admin" id="toAdmin" hidden>总后台 ›</a><button id="logout">退出登录</button></div>
   </aside>
 
   <main>
@@ -638,6 +639,7 @@ function showApp() {
   $("meName").textContent = me.name;
   $("meRole").textContent = me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人";
   $("navInvites").hidden = me.role !== "admin";
+  $("toAdmin").hidden = me.role !== "admin";     // 总后台（admin.html）：服务端也只给管理员
   for (const b of document.querySelectorAll(".noguest")) b.hidden = me.role === "guest";
   try { chosen = localStorage.getItem("console.device") || ""; } catch (error) {}
   let saved = "remote";

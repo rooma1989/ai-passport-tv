@@ -1,0 +1,567 @@
+"""总后台（多用户阶段 3）：/tv/admin 页面和 /api/admin/* 接口。
+
+设计见 docs/superpowers/specs/2026-10-12-multi-tenant-design.md 第 6 节。只在多用户（--db）时有；
+web.py 的处理类在最前面转过来（get()/post() 返回 True 表示处理过了），和 console.py 一样。
+
+谁能用：只有管理员（管理员的手机或电脑会话，或带密钥的请求）。每个接口都在服务端查角色：
+不是管理员（家人、访客、没登录）一律 404，和不存在一样；页面本身对他们跳回电脑版。
+POST 和电脑版一样只收本站页面发的（web.py 的 do_POST 先过 console.same_origin），
+每个改东西的操作都写进操作记录（谁、什么时候、哪个网段、做了什么、对谁）。
+
+页面：概览（设备在不在线、谁的、在播什么、流量；主机 CPU、内存、出站流量；YouTube 节点）、
+用户（改名、封禁、删除前导出、一次性登录链接、他的登录）、设备（解绑、封禁、让它重连、重新配对）、
+频道表（全局 channels.txt，见 channeltable.py）、操作记录、系统设置。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import threading
+import time
+from pathlib import Path
+
+from .. import channel_groups, now_playing
+from ..tenancy import files as tenancy_files, phonelinks, signup
+from ..tenancy.accounts import MODEL_NAMES, SESSION_S
+from ..tenancy.gate import LEGACY_TOKEN_KEY
+from ..tenancy.manage import AdminOps
+from . import channeltable, console, events, qr, table
+from .ytnode import MAX_STREAMS
+
+_ASSET_DIR = Path(__file__).resolve().parent / "assets"
+ADMIN_PAGE = (_ASSET_DIR / "admin.html").read_bytes()
+# 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
+BODY_MAX = 8000
+_USER = re.compile(r"^/api/admin/users/(\d{1,9})(?:/(rename|ban|unban|reviewed|login-link|delete|export|"
+                   r"sessions|sessions/revoke))?$")
+_DEVICE = re.compile(r"^/api/admin/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/"
+                     r"(unbind|ban|unban|reconnect|repair|rename)$")
+# 用户删除前的导出：数据库旁边的 exports/（和数据库一样只给服务账号和它的组读）。
+EXPORT_DIR = "exports"
+_channels_lock = threading.Lock()
+
+
+def global_groups(relay) -> dict[str, str]:
+    """总后台给全局直播台设的默认分组（manage.GLOBAL_GROUPS_KEY），读一次记在中转上。"""
+    cached = getattr(relay, "_admin_groups", None)
+    if cached is None:
+        cached = relay._admin_groups = AdminOps(relay.accounts).global_groups() if relay.accounts else {}
+    return cached
+
+
+def _ops(relay) -> AdminOps:
+    ops = getattr(relay, "_admin_ops", None)
+    if ops is None:
+        ops = relay._admin_ops = AdminOps(relay.accounts)
+    return ops
+
+
+def _admin(handler):
+    """管理员的调用者；别人 None（调用方回 404）。"""
+    caller = handler._caller()
+    if caller is None or caller.role != "admin" or caller.user is None:
+        return None
+    return caller
+
+
+def _read_body(handler) -> dict | None:
+    """读掉请求体（不管是谁都要读掉，keep-alive 上剩下的字节会粘到下一个请求前面）。"""
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        return None
+    if length <= 0:
+        return {}
+    if length > BODY_MAX:
+        # 太大的不读：连接随后关掉，免得剩下的字节被当成下一个请求。
+        handler.close_connection = True
+        return None
+    try:
+        body = json.loads(handler.rfile.read(length))
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+# ---- GET ----
+
+def get(handler, relay, path: str) -> bool:
+    if path in ("/admin", "/admin/"):
+        if _admin(handler) is None:
+            # 不是管理员（或没登录）：回电脑版，那里登录、或者本来就该在那里。
+            handler._send(302, b"", "text/plain", {"Location": "/tv/console"})
+        else:
+            handler._send(200, ADMIN_PAGE, "text/html; charset=utf-8", console.PAGE_HEADERS)
+        return True
+    if not path.startswith("/api/admin/"):
+        return False
+    caller = _admin(handler)
+    if caller is None:
+        handler._not_found()
+        return True
+    query = handler._query()
+    if path == "/api/admin/overview":
+        handler._json(overview(relay, history=query.get("history") == "1"))
+    elif path == "/api/admin/users":
+        handler._json({"ok": True, "users": _ops(relay).users(), "invites": console.invites(relay), "me": caller.user})
+    elif path == "/api/admin/devices":
+        handler._json({"ok": True, "devices": devices(relay)})
+    elif path == "/api/admin/audit":
+        _audit(handler, relay, query)
+    elif path == "/api/admin/system":
+        handler._json(system(relay))
+    elif path == "/api/admin/channels":
+        handler._json(channels(relay))
+    else:
+        match = _USER.match(path)
+        if match and match.group(2) == "sessions":
+            handler._json({"ok": True, "sessions": _ops(relay).sessions(int(match.group(1)))})
+        elif match and match.group(2) == "export":
+            _export(handler, relay, int(match.group(1)), caller)
+        else:
+            handler._not_found()
+    return True
+
+
+def _audit(handler, relay, query: dict) -> None:
+    def number(key):
+        value = query.get(key) or ""
+        return int(value) if value.isdigit() else None
+    device = query.get("device") or None
+    if device is not None and not tenancy_files.DEVICE_ID.match(device):
+        device = "-"
+    rows = _ops(relay).audit(user=number("user"), device=device, action=(query.get("action") or "")[:40] or None,
+                             before=number("before"), limit=number("limit") or 50)
+    handler._json({"ok": True, "rows": rows, "actions": _ops(relay).audit_actions(),
+                   "next": rows[-1]["id"] if rows else None})
+
+
+def _export(handler, relay, user_id: int, caller) -> None:
+    data = _ops(relay).export(user_id)
+    if data is None:
+        handler._not_found()
+        return
+    relay.accounts.audit("user.export", caller.user, handler._ip(), "user", str(user_id))
+    body = json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8")
+    handler._send(200, body, "application/json; charset=utf-8",
+                  {"Content-Disposition": f'attachment; filename="user-{user_id}.json"'})
+
+
+# ---- 概览 ----
+
+def _device_rows(relay) -> list[dict]:
+    """所有没退役的设备：状态、主人、在线、在播什么、这次会话多久、流量。"""
+    accounts = relay.accounts
+    now = relay.clock()
+    owners = {row["device_id"]: row for row in accounts._all(
+        "SELECT m.device_id, u.id, u.name, u.status FROM device_member m JOIN user u ON u.id=m.user_id "
+        "WHERE m.role='owner'")}
+    guests = {row["device_id"]: row["n"] for row in accounts._all(
+        "SELECT device_id, COUNT(*) AS n FROM session WHERE kind='guest' AND expires_at > ? GROUP BY device_id",
+        (now,))}
+    live = {dev["id"]: dev for dev in relay.devices}
+    rows = []
+    for row in accounts.all_devices():
+        files = tenancy_files.device_files(relay.devices_dir, row["id"])
+        playing = now_playing.read(files.now, now)
+        owner = owners.get(row["id"])
+        item = {"id": row["id"], "name": row["name"] or row["id"], "model": row["model"],
+                "model_name": MODEL_NAMES.get(row["model"], row["model"] or "?"), "fw": row["fw"],
+                "status": row["status"], "legacy": row["legacy_port"] is not None, "last_seen": row["last_seen"],
+                "network": row["last_ip_prefix"], "created_at": row["created_at"],
+                "owner": owner["id"] if owner else None, "owner_name": owner["name"] if owner else "",
+                "owner_banned": bool(owner) and owner["status"] == "banned",
+                "guests": guests.get(row["id"], 0), "online": playing["online"],
+                "repair": bool(row["repair_until"] and row["repair_until"] > now)}
+        if playing["online"]:
+            item.update(channel=playing["channel"], since=playing["since"],
+                        session_s=max(0, int(now - playing["since"])) if playing["since"] else 0,
+                        audio_only=bool((playing["device"] or {}).get("audio_only")))
+            metrics = now_playing.read_metrics(files.now, now) or {}
+            item.update(bytes_10s=metrics.get("bytes_10s"), fps=metrics.get("fps"),
+                        target_rate=metrics.get("target_rate"))
+            dev = live.get(row["id"])
+            if dev is not None:
+                try:
+                    shown = relay.now(relay.groups(dev), dev)
+                    item.update(channel_name=shown["name"], title=shown["title"])
+                except Exception as error:      # noqa: BLE001 —— 概览少一个台名不要紧
+                    relay.log(f"总后台：{row['id']} 正在播放读不出来：{type(error).__name__}")
+        rows.append(item)
+    return rows
+
+
+def devices(relay) -> list[dict]:
+    """设备页：在用的、未绑定的、封禁的在前，退役的旧记录放最后。"""
+    return sorted(_device_rows(relay), key=lambda row: row["status"] == "retired")
+
+
+def overview(relay, history: bool = False) -> dict:
+    rows = [row for row in _device_rows(relay) if row["status"] != "retired"]
+    stats = getattr(relay, "host_stats", None)
+    host = {"available": bool(stats and stats.available)}
+    if host["available"]:
+        latest = stats.latest()
+        if latest is not None:
+            host.update(cpu=latest[1], mem_used=latest[2], mem_total=latest[3], rx=latest[4], tx=latest[5])
+        host["processes"] = stats.processes()
+        if history:
+            # 曲线：分钟点（时刻, CPU %, 已用内存 MB, 发 字节/秒），一天最多 1440 个。
+            host["history"] = [[int(p[0]), p[1], p[2], p[5]] for p in stats.history()]
+    youtube = {"configured": relay.clients.get("youtube") is not None, "max_streams": MAX_STREAMS}
+    if youtube["configured"]:
+        youtube["state"] = relay.youtube_state()
+        with relay._active_lock:
+            youtube["streams"] = sum(1 for entry in relay._active.values()
+                                     if getattr(entry["video"], "site", "") == "youtube")
+    users = _ops(relay).users()
+    return {"ok": True, "now": relay.clock(), "devices": rows, "host": host, "youtube": youtube,
+            "counts": {"online": sum(r["online"] for r in rows), "devices": len(rows),
+                       "users": len(users), "banned": sum(u["status"] == "banned" for u in users),
+                       "review": sum(u["origin"] == "signup" and not u["reviewed_at"] for u in users)}}
+
+
+# ---- 系统 ----
+
+def system(relay) -> dict:
+    accounts = relay.accounts
+    path = accounts.path
+    size = sum(p.stat().st_size for p in (path, Path(str(path) + "-wal")) if p.is_file())
+    counts = accounts._one("SELECT (SELECT COUNT(*) FROM user) AS users, (SELECT COUNT(*) FROM device) AS devices, "
+                           "(SELECT COUNT(*) FROM session WHERE expires_at > ?) AS sessions, "
+                           "(SELECT COUNT(*) FROM audit_log) AS audit", (relay.clock(),))
+    main = relay.main_channels
+    backups = sorted(p.name for p in main.parent.glob(main.name + ".bak-*")) if main is not None else []
+    stats = getattr(relay, "host_stats", None)
+    return {"ok": True, "legacy_token": accounts.meta(LEGACY_TOKEN_KEY, "1") != "0",
+            "public_url": relay.public_url, "signup_limits": {"net": signup.NET_LIMIT[0], "all": signup.ALL_LIMIT[0]},
+            "recover_limit": phonelinks.DEVICE_LIMIT[0], "sessions_days": {k: v // 86400 for k, v in SESSION_S.items()},
+            "db": {"name": path.name, "bytes": size, **counts},
+            "channels": {"file": str(main) if main else "", "backups": backups[-5:], "backup_count": len(backups)},
+            "sampler": bool(stats and stats.available), "youtube": relay.clients.get("youtube") is not None}
+
+
+# ---- 频道表 ----
+
+def _owners_rows(relay) -> list[tuple[str, list[tuple[str, str]]]]:
+    """每个有在用设备的用户：(名字, 他自己的台：投屏台、UP 主、剧集)。设备收到的列表是这些再接上全局表。"""
+    owners = {dev["owner"] for dev in relay.devices if dev["owner"] is not None}
+    result = []
+    for owner in sorted(owners):
+        user = relay.accounts.user(owner)
+        state = relay.user_state(owner)
+        with state.lock:
+            own = [(table.CAST_ID, table.CAST_LABEL)] + [(c.id, table.label(c)) for c in state.creators]
+        result.append((user["name"] if user else str(owner), own))
+    return result
+
+
+def _fit(relay, rows: list[tuple[str, str]]) -> list[dict]:
+    """每个用户的设备频道列表放不放得下（和加 UP 主时的检查一样，留 CONFIG_SPARE_BYTES 余量）。"""
+    from .web import CONFIG_SPARE_BYTES
+    found = []
+    for name, own in _owners_rows(relay) or [("", [(table.CAST_ID, table.CAST_LABEL)])]:
+        listed = own + rows
+        used = channel_groups.config_bytes(listed) + CONFIG_SPARE_BYTES
+        found.append({"user": name, "channels": len(listed), "bytes": used,
+                      "fits": used <= channel_groups.CONFIG_MAX and len(listed) <= channel_groups.CHANNEL_MAX})
+    return found
+
+
+def channels(relay) -> dict:
+    path = relay.main_channels
+    if path is None:
+        return {"ok": True, "configured": False}
+    current = channeltable.read(path)
+    groups = global_groups(relay)
+    rows = [dict(row, group=groups.get(row["id"], ""), auto=channel_groups.classify(row["id"], row["name"]))
+            for row in current["rows"]]
+    backups = sorted(p.name for p in path.parent.glob(path.name + ".bak-*"))
+    return {"ok": True, "configured": True, "version": current["version"], "rows": rows, "bad": current["bad"],
+            "groups": list(channel_groups.GROUPS[2:]), "limits": {"channels": channel_groups.CHANNEL_MAX,
+                                                                  "bytes": channel_groups.CONFIG_MAX},
+            "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:]}
+
+
+def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
+    """检查（dry）或保存频道表。body: {version, rows: [id 或 {id?, name, url, agent, group}], dry}。"""
+    path = relay.main_channels
+    if path is None:
+        return {"ok": False, "error": "中转没有配置 --main-channels，没有全局频道表"}
+    with _channels_lock:
+        current = channeltable.read(path)
+        if body.get("version") != current["version"]:
+            return {"ok": False, "stale": True, "error": "频道表在你编辑的时候被改过了（别处保存或手动改了文件）：请刷新后重新改"}
+        if current["bad"]:
+            return {"ok": False, "error": f"文件里有看不懂的行（第 {', '.join(map(str, current['bad']))} 行），"
+                                         "为了不把它们弄丢，请先在服务器上改好"}
+        try:
+            rows = channeltable.apply_edits(current["rows"], body.get("rows"))
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        old_groups = global_groups(relay)
+        groups = {}
+        for item, row in zip(body["rows"], rows):
+            group = item.get("group") if isinstance(item, dict) and "group" in item else old_groups.get(row["id"], "")
+            if group and group not in channel_groups.GROUPS[2:]:
+                return {"ok": False, "error": f"「{row['name']}」：没有「{group}」这个分组"}
+            if group and group != channel_groups.classify(row["id"], row["name"]):
+                groups[row["id"]] = group
+        problems = channeltable.problems(rows)
+        fit = _fit(relay, [(r["id"], r["name"]) for r in rows])
+        for item in fit:
+            if not item["fits"]:
+                who = f"「{item['user']}」的" if item["user"] else ""
+                problems.append(f"{who}小电视放不下：频道列表 {item['channels']} 个台、约 {item['bytes']} 字节，"
+                                f"设备最多 {channel_groups.CHANNEL_MAX} 个台、{channel_groups.CONFIG_MAX} 字节。"
+                                "删几个台或缩短名字")
+        if problems:
+            return {"ok": False, "error": problems[0], "problems": problems[:20], "fit": fit}
+        text = channeltable.render(rows)
+        checked = channeltable.media_check(text)
+        if not checked.get("ok"):
+            return {"ok": False, "error": checked.get("error") or "电视服务的检查没通过", "fit": fit}
+        before = {row["id"]: row for row in current["rows"]}
+        added = [r for r in rows if r["id"] not in before]
+        removed = [r for r in current["rows"] if r["id"] not in {x["id"] for x in rows}]
+        changed = [r for r in rows if r["id"] in before and (r["name"], r["url"], r["agent"]) !=
+                   (before[r["id"]]["name"], before[r["id"]]["url"], before[r["id"]]["agent"])]
+        moved = [r["id"] for r in rows if r["id"] in before] != [r["id"] for r in current["rows"]
+                                                                  if r["id"] in {x["id"] for x in rows}]
+        kept = {r["id"] for r in rows}
+        summary = {"added": len(added), "removed": len(removed), "changed": len(changed), "moved": moved,
+                   "groups": groups != {k: v for k, v in old_groups.items() if k in kept}, "total": len(rows)}
+        if body.get("dry") is True:
+            return {"ok": True, "dry": True, "summary": summary, "warnings": checked.get("warnings") or [], "fit": fit}
+        backup = channeltable.save(path, text, relay.clock)
+        _ops(relay).set_global_groups(groups)
+        relay._admin_groups = groups
+    detail = (f"{len(current['rows'])}→{len(rows)} 个台，+{len(added)} −{len(removed)} 改{len(changed)}"
+              f"{' 换序' if moved else ''}；备份 {backup or '无'}")
+    relay.accounts.audit("channels.save", caller.user, ip, "channels", path.name, detail)
+    relay.log(f"总后台保存了频道表：{detail}")
+    # 分组变了：每台设备的分组文件要重写（电视服务下次发频道列表时读）。
+    relay.sync_devices(force=True)
+    return {"ok": True, "version": channeltable.version_of(text), "backup": backup, "summary": summary,
+            "warnings": checked.get("warnings") or []}
+
+
+# ---- POST ----
+
+def post(handler, relay, path: str) -> bool:
+    if not path.startswith("/api/admin/"):
+        return False
+    body = _read_body(handler)
+    caller = _admin(handler)
+    if caller is None:
+        handler._not_found()
+        return True
+    if body is None:
+        handler._json({"ok": False, "error": "请求格式不对（或太大）"}, 400)
+        return True
+    ip = handler._ip()
+    if path == "/api/admin/channels":
+        handler._json(save_channels(relay, body, caller, ip))
+        return True
+    if path == "/api/admin/invites":
+        name = body.get("name") if isinstance(body.get("name"), str) else ""
+        role = "admin" if body.get("admin") is True else "user"
+        code = relay.accounts.create_invite(caller.user, role, name, ip=ip)
+        link = f"{console._base(relay, handler)}/tv/i/{code}"
+        handler._json({"ok": True, "link": link, "svg": qr.svg(link), "role": role})
+        return True
+    if path == "/api/admin/system/legacy-token":
+        if not isinstance(body.get("on"), bool):
+            handler._json({"ok": False, "error": "请求格式不对"}, 400)
+            return True
+        state = "on" if body["on"] else "off"
+        relay.accounts.set_meta(LEGACY_TOKEN_KEY, "1" if body["on"] else "0")
+        relay.accounts.audit("legacy_token." + state, caller.user, ip)
+        handler._json({"ok": True})
+        return True
+    match = _USER.match(path)
+    if match and match.group(2) not in (None, "sessions", "export"):
+        handler._json(_user_action(handler, relay, int(match.group(1)), match.group(2), body, caller, ip))
+        return True
+    match = _DEVICE.match(path)
+    if match:
+        handler._json(_device_action(relay, match.group(1), match.group(2), body, caller, ip))
+        return True
+    handler._not_found()
+    return True
+
+
+def _last_admin(relay, user_id: int) -> bool:
+    row = relay.accounts._one("SELECT COUNT(*) AS n FROM user WHERE role='admin' AND status='active' AND id!=?",
+                              (user_id,))
+    target = relay.accounts.user(user_id)
+    return target is not None and target["role"] == "admin" and row["n"] == 0
+
+
+def _kick(relay, device_id: str) -> None:
+    """让设备马上重连（电视服务结束这次会话）：封禁、解绑之后它重新认一次，就被拒绝或看到绑定画面。"""
+    try:
+        files = tenancy_files.ensure_dir(relay.devices_dir, device_id)
+        events.write_event(files.events, "reconnect")
+    except (OSError, ValueError) as error:
+        relay.log(f"{device_id} 写重连事件失败：{error}")
+
+
+def _forget_device(relay, device_id: str) -> None:
+    """中转内存里这台设备的东西：投屏位、手机选定、正在推的流。"""
+    with relay._cache_lock:
+        relay._casts.pop(device_id, None)
+    relay._targets = {k: v for k, v in relay._targets.items() if v != device_id}
+    relay._synced.pop(device_id, None)
+    with relay._active_lock:
+        cut = [(key, entry) for key, entry in relay._active.items() if key[0] == device_id]
+    for key, entry in cut:
+        relay._cut(key[1], entry, "设备解绑")
+
+
+def _owned_devices(relay, user_id: int) -> list[str]:
+    return [row["device_id"] for row in relay.accounts._all(
+        "SELECT device_id FROM device_member WHERE user_id=? AND role='owner'", (user_id,))]
+
+
+def _user_action(handler, relay, user_id: int, action: str, body: dict, caller, ip: str) -> dict:
+    accounts, ops = relay.accounts, _ops(relay)
+    user = accounts.user(user_id)
+    if user is None:
+        return {"ok": False, "error": "没有这个用户"}
+    if action == "rename":
+        name = body.get("name")
+        if not isinstance(name, str):
+            return {"ok": False, "error": "请求格式不对"}
+        try:
+            name = ops.rename_user(user_id, name, caller.user, ip)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        relay.log(f"总后台：用户 {user_id} 改名为 {name}")
+        return {"ok": True, "name": name}
+    if action in ("ban", "unban"):
+        if action == "ban" and user_id == caller.user:
+            return {"ok": False, "error": "不能封禁自己"}
+        if action == "ban" and _last_admin(relay, user_id):
+            return {"ok": False, "error": "这是最后一个管理员，不能封禁"}
+        accounts.set_user_status(user_id, "banned" if action == "ban" else "active", caller.user, ip)
+        if action == "ban":
+            # 会话已经删了；他的设备马上断开，重连时被电视服务拒绝（gate.py 查主人的状态）。
+            for device_id in _owned_devices(relay, user_id):
+                _kick(relay, device_id)
+        relay.log(f"总后台：用户 {user_id} {'封禁' if action == 'ban' else '解封'}")
+        return {"ok": True}
+    if action == "reviewed":
+        ops.mark_reviewed(user_id, caller.user, ip)
+        return {"ok": True}
+    if action == "login-link":
+        # 和命令行 `python3 -m server.tenancy.admin login-link <id>` 同一条路（PhoneLinks.create_for_admin）。
+        try:
+            made = relay.phone_links.create_for_admin(user_id, caller.user, ip)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        link = f"{console._base(relay, handler).upper()}/TV/P/{made['token']}"
+        relay.log(f"总后台：给用户 {user_id} 生成了一次性登录链接")
+        return {"ok": True, "link": link, "svg": qr.svg(link), "ttl": made["ttl"], "name": user["name"]}
+    if action == "sessions/revoke":
+        if body.get("all") is True:
+            count = ops.revoke_all(user_id, caller.user, ip)
+            return {"ok": True, "count": count}
+        session_id = body.get("id")
+        if not isinstance(session_id, str) or not ops.revoke_session(user_id, session_id, caller.user, ip):
+            return {"ok": False, "error": "没有这个登录"}
+        return {"ok": True}
+    if action == "delete":
+        return _delete_user(relay, user, body, caller, ip)
+    return {"ok": False, "error": "没有这个操作"}
+
+
+def _delete_user(relay, user: dict, body: dict, caller, ip: str) -> dict:
+    """先导出（存一份在服务器上，也交给页面下载），再删。要输入用户的名字确认。"""
+    if body.get("confirm") != user["name"]:
+        return {"ok": False, "error": "请输入这个用户的名字确认删除"}
+    ops = _ops(relay)
+    data = ops.export(user["id"])
+    folder = Path(relay.accounts.path).parent / EXPORT_DIR
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(relay.clock()))
+    target = folder / f"user-{user['id']}-{stamp}.json"
+    try:
+        folder.mkdir(mode=0o750, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, target)
+    except OSError as error:
+        return {"ok": False, "error": f"导出没能保存（{error.strerror or error}），没有删除"}
+    # 中转正在给他的设备推的流先掐掉：流结束时会存进度，存到一个删掉的用户上就出错了。
+    for device_id in _owned_devices(relay, user["id"]):
+        _forget_device(relay, device_id)
+    try:
+        unbound = ops.delete_user(user["id"], caller.user, ip)
+    except ValueError as error:
+        return {"ok": False, "error": str(error)}
+    with relay._cache_lock:
+        relay._users.pop(user["id"], None)
+    for device_id in unbound:
+        _kick(relay, device_id)
+    relay.sync_devices()
+    relay.log(f"总后台：删除了用户 {user['id']}（导出在 {EXPORT_DIR}/{target.name}），解绑了 {len(unbound)} 台设备")
+    return {"ok": True, "export": data, "file": f"{EXPORT_DIR}/{target.name}", "unbound": unbound}
+
+
+def _device_action(relay, device_id: str, action: str, body: dict, caller, ip: str) -> dict:
+    accounts = relay.accounts
+    row = accounts.device(device_id)
+    if row is None:
+        return {"ok": False, "error": "没有这台设备"}
+    if row["status"] == "retired":
+        return {"ok": False, "error": "这台设备已经退役（旧记录，已经搬到新 id 上了）"}
+    if action == "rename":
+        name = body.get("name")
+        if not isinstance(name, str):
+            return {"ok": False, "error": "请求格式不对"}
+        try:
+            name = accounts.rename(device_id, name, caller.user, ip)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        relay.sync_devices()
+        return {"ok": True, "name": name}
+    if action == "unbind":
+        try:
+            accounts.unbind(device_id, caller.user, ip)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
+        _forget_device(relay, device_id)
+        _kick(relay, device_id)
+        relay.log(f"总后台：{device_id} 解绑")
+        return {"ok": True}
+    if action == "ban":
+        if row["status"] == "banned":
+            return {"ok": True}
+        accounts.set_device_status(device_id, "banned", caller.user, ip)
+        _forget_device(relay, device_id)
+        _kick(relay, device_id)
+        relay.log(f"总后台：{device_id} 封禁")
+        return {"ok": True}
+    if action == "unban":
+        if row["status"] != "banned":
+            return {"ok": True}
+        status = "active" if accounts.owner(device_id) is not None else "unclaimed"
+        accounts.set_device_status(device_id, status, caller.user, ip)
+        relay.sync_devices()
+        return {"ok": True, "status": status}
+    if action == "reconnect":
+        if row["status"] != "active":
+            return {"ok": False, "error": "只有在用的设备能让它重连"}
+        _kick(relay, device_id)
+        accounts.audit("device.reconnect", caller.user, ip, "device", device_id)
+        return {"ok": True, "note": "设备会在一两秒内断开再连上（旧固件不认这个命令）"}
+    if action == "repair":
+        if row["legacy_port"] is not None:
+            return {"ok": False, "error": "旧固件的设备没有自己的密钥，不用重新配对"}
+        accounts.start_repair(device_id, caller.user, ip)
+        return {"ok": True, "note": "10 分钟内让小电视重新连上网络，它的新密钥会被记住"}
+    return {"ok": False, "error": "没有这个操作"}
+

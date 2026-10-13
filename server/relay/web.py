@@ -26,7 +26,7 @@ from ..tenancy import files as tenancy_files
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
-from . import console, events, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
+from . import admin, console, events, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
@@ -278,7 +278,7 @@ class Relay:
         state = self._state_of(dev)
         with state.lock:
             text = table.render(state.creators, base=f"{table.STREAM_BASE}{dev['id']}/")
-            groups = json.dumps(state.group_overrides, ensure_ascii=False, indent=1)
+            groups = json.dumps(self._overrides(state), ensure_ascii=False, indent=1)
             count = len(state.creators)
         if table.write_if_changed(dev["channels"], text):
             self.log(f"{dev['id']} 频道表已更新：{count} 个台")
@@ -936,8 +936,9 @@ class Relay:
     def _overrides(self, state: State | None = None) -> dict:
         if not self.tenant:
             return channel_groups.load_overrides(self.groups_out)
-        return {k: v for k, v in (state.group_overrides if state is not None else {}).items()
-                if v in channel_groups.GROUPS}
+        # 总后台给直播台设的默认分组垫在下面，用户自己调的盖在上面（admin.global_groups）。
+        own = state.group_overrides if state is not None else {}
+        return {k: v for k, v in {**admin.global_groups(self), **own}.items() if v in channel_groups.GROUPS}
 
     def _rows_of(self, state: State, marked: bool = True) -> list[tuple[str, str]]:
         """marked：名字和设备列表里一样带网站标记（算 CONFIG 字节用）；手机网页另有网站标签，不带。"""
@@ -1080,8 +1081,11 @@ class Relay:
             return {"ok": False, "error": "没有这个分组"}
         if not self.tenant and self.groups_out is None:
             return {"ok": False, "error": "没有配置分组文件"}
-        overrides = self._overrides(state)
-        if group is None or group == channel_groups.classify(channel, names[channel]):
+        # 多用户时只改用户自己的那一层；「自动」和选回默认分组（总后台设的，或按名字归的）都是去掉这一条。
+        overrides = self._overrides(state) if not self.tenant else dict(state.group_overrides)
+        default = (admin.global_groups(self).get(channel) if self.tenant else None) or \
+            channel_groups.classify(channel, names[channel])
+        if group is None or group == default:
             overrides.pop(channel, None)
         else:
             overrides[channel] = group
@@ -1595,8 +1599,8 @@ def _manage_handler(relay: Relay):
                 kind, data = ASSETS[path]
                 self._send(200, data, kind, {"Cache-Control": "public, max-age=86400"})
                 return
-            # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py。
-            if relay.tenant and console.get(self, relay, path):
+            # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
+            if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)):
                 return
             if relay.tenant:
                 # 扫设备二维码、绑定码、邀请链接：落地页不用登录，页面里的脚本再带着 cookie 问接口。
@@ -1727,7 +1731,7 @@ def _manage_handler(relay: Relay):
 
         def _post(self):
             path = self._path()
-            if relay.tenant and console.post(self, relay, path):
+            if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)):
                 return
             if relay.tenant and path in ("/api/scan", "/api/invite/accept", "/api/bind/register"):
                 body = self._body()

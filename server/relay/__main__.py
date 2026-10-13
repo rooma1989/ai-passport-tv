@@ -135,6 +135,10 @@ def _serve_tenants(args, key: str, youtube) -> int:
                 print(f"同步设备文件失败：{type(error).__name__}: {error}", flush=True)
 
     threading.Thread(target=keep_in_sync, daemon=True).start()
+    # 总后台的主机负载曲线：每 5 秒读一次 /proc，留 24 小时（没有 /proc 时不采样）。
+    from .hoststats import HostStats
+    relay.host_stats = HostStats()
+    relay.host_stats.start()
     voicecmds.start(relay)
     streams, manage = make_servers(relay, args.stream_port, args.manage_port)
     threading.Thread(target=streams.serve_forever, daemon=True).start()
