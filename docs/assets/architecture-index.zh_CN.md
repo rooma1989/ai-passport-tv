@@ -59,6 +59,7 @@
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
 | [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机，以及频道列表面板里的语音子状态——纯逻辑，无 LVGL。 |
 | [`main/av_voice_policy.c`/`.h`](../../main/av_voice_policy.h) | 按住说话：每种语音状态下每个按键做什么、按住与短按的区分、各种超时——纯逻辑，有主机测试。 |
+| [`main/av_recover.c`/`.h`](../../main/av_recover.h) | 设备上的「恢复登录」：状态页上的手势（快速连按 N 下 OK、同时按住 ▲ 和 OK）以及它和状态页怎么分用 OK、恢复画面的各个阶段、网址检查——纯逻辑，有主机测试（`tests/test_av_recover.c`）。 |
 | [`main/av_voice.c`/`.h`](../../main/av_voice.h) | 设备端的按住说话：录音任务、高通、ADPCM、由 `receive_task()` 发出的上行环形缓冲、`AV_VOICE_RESULT` 解析。与播放器的衔接在 `av_player.c` 的 `voice_*`。 |
 | [`main/ui_text.c`/`.h`](../../main/ui_text.h) | 直接画到屏幕条带上的位图文字（非 LVGL）；CJK 字形来自 `ui_font_cjk.bin`，由 `tools/make_font.py` 重新生成。 |
 | [`main/ui_draw.c`/`.h`](../../main/ui_draw.h) | 设备端 UI 设计稿的图标、宠物和像素图形（点线、切角矩形、10 格进度条、不透明面板）；素材在 `main/xiaozhi_tv_ui_assets.h`，由设计稿导出。 |
@@ -140,6 +141,7 @@
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
 | 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
 | 电脑版、扫码登录、让手机登录、登录列表 | `server/relay/console.py`、`assets/console.html`、`assets/login.html`、`assets/scan.js`、`assets/phone.html`、`server/tenancy/phonelinks.py`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`） |
+| 没有登录时怎么进来：扫未绑定设备自己注册、设备恢复登录、管理员登录链接 | `server/tenancy/signup.py`、`server/tenancy/recover.py`、`server/tenancy/phonelinks.py`、`server/tenancy/admin.py`、`assets/join.html`、`assets/phone.html`、`main/av_recover.c`（及 `tests/test_account_recovery.py`、`tests/test_av_recover.c`） |
 | 线协议/包格式改动 | `main/av_protocol.h`、`server/protocol.py`、`server/frames.py`，见上文第 5 节 |
 | 语音命令、语音识别、一句话是什么意思 | `server/voice/intent.py`（及 `tests/test_voice_intent.py`）、`server/voice/session.py`、`docs/superpowers/specs/2026-10-12-voice-control-design.zh_CN.md` |
 | 画质、帧率、条带/几何参数 | `main/av_protocol.h`（`AV_VIDEO_*`、`AV_FPS`）、`server/frames.py`、`server/rate.py`、`main/av_player.c` 的 `video_task`/`push_stripe` |

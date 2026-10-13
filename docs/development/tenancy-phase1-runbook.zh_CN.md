@@ -299,6 +299,61 @@ database …`，然后 `voice: on, relay per device`），每次调中转都点�
 | 限流 | 每个用户 10 分钟 6 个、每个网段 12 个；输错码每个网段 10 分钟 10 次、全中转 100 次 |
 | 审计 | `phone_link.create` 和 `login.phone.link` |
 
+## 没有登录时怎么进来 / 恢复登录
+
+手机上的登录会丢（换了手机、清了 Safari 数据、删了桌面图标），邀请又要管理员。下面三条路都以一个
+普通的成员手机会话（180 天）结束；前两条以设备本身为信任的根：只有站在它跟前的人才看得到它的屏幕、
+按得到它的键。部署：复制 `server/` 和 `packaging/help/`，重启 `tv-relay` 和两个电视服务
+（`tv-xingzhi`、`tv-passport`）；nginx 不用改（`/TV/B/`、`/TV/P/` 已经有了）。中转第一次启动时给
+`phone_link` 加 `origin`、`device_id`，给 `session` 加 `via`（旧行当作 `pc` / 普通登录）。设备一侧要新固件；
+旧固件只是没有这个手势。
+
+**1. 用未绑定的设备自己注册（不用邀请）。** 没登录（或只是访客）的手机打开设备的绑定链接 `/TV/B/<码>`
+（「BIND THIS TV」静止画面上的码，或状态页的二维码）。页面给「创建账号并绑定这台设备」，只问一个名字
+（默认「我」）；点一下就建一个普通用户、设备归他、这台手机得到成员手机会话，跳到遥控页并提示「添加到主屏幕」。
+已登录的手机还是原来的「绑定到我的账号」。绑定码照旧只能用一次（绑定后清掉）。
+
+**2. 设备上的「恢复登录」。** 在设备的状态页上：
+
+| 板子 | 手势 |
+| --- | --- |
+| 小智（星智） | 同时按住 ▲ 和 OK 1.5 秒，或快速连按 5 下 OK |
+| AI Passport | 快速连按 5 下 OK（三个键共用一个 ADC 分压、▲ 是 0 Ω，两个键一起按只读得出 ▲） |
+
+「快速」是按键驱动的规矩：第一下以后每一下按住、每个间隔都不到 180 毫秒；两组之间停顿到 0.4 秒左右
+仍算一次（2 + 3 = 5）。因为状态页上的 OK 单击要等次数数清楚才处理，那里的 OK（只听声音）现在松开后约
+0.6 秒才生效（以前约 0.2 秒），Passport 的双击 OK 回 Muse 也一样；没按完的尝试（4 下、按慢了一下）什么也不做。
+长按 ▲（配网）、长按 ▼（宠物）、长按 OK（关闭）不变；一起按住时，后一个键自己的长按或单击会被吞掉。
+手势在 `components/bsp/include/boards/*.h` 里选（`BSP_RECOVER_CLICKS`、`BSP_RECOVER_CHORD`）。
+
+设备在已认证的会话上发 `STATUS {"recover": 1}`；电视服务给主人要一个一次性链接（`phone_link`，
+`origin=device`），回 `SWITCH {"recover": {"url": "HTTPS://<网站>/TV/P/<令牌>", "ttl": 300}}`。设备全屏显示
+二维码（一般的网站是第 3 版、每模块 4 像素；服务端保证网址不超过 96 个字符，第 4 版以内）、「用手机相机扫码 /
+以主人身份登录」和倒计时；任意键关闭。任何手机相机扫了都打开「让手机登录」同一个落地页，上面写着
+「小电视「…」上的恢复登录」，点按钮就以主人身份登录。新会话记作 `via=recover`：主人别的登录会提示一次
+「有新手机通过设备恢复登录」（电脑版打开时、遥控下次刷新时），电脑版登录列表里那一行标着「设备恢复登录」，
+可以退出它。未绑定的设备显示它的绑定码（第 1 条路）。服务端拒绝时屏幕上说原因：一小时 3 次用完了、
+没有主人、服务器太旧或没配 `--public-url`、没联网。
+
+**3. 管理员的最后办法。** 在主机上：
+
+```
+sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db users
+sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db login-link <用户 id>
+```
+
+打印 `HTTPS://<网站>/TV/P/<令牌>`（5 分钟、一次）；发给本人，在手机上打开、点按钮。电脑版里还没有这个按钮
+（阶段 3 之前没有用户管理页）。
+
+| | |
+| --- | --- |
+| 路径 | `GET /api/bind/<码>` 对没登录的手机回答 `register: true`；`POST /api/bind/register` `{claim, name}`；落地页和 `/api/phone-link/*` 同上，`info` 多了 `origin`、`device_name`；`/api/login/status`、`/api/state` 多了 `notice`；`/api/sessions` 每行带 `via` |
+| 协议 | HELLO `"recover": 1`；CONFIG `"recover": 1`（多用户、已绑定、知道网站地址）；STATUS `{"recover": 1}`；SWITCH `{"recover": {"url", "ttl"}}` 或 `{"recover": {"err": "limited" \| "unbound" \| "off" \| "fail"}}` |
+| 谁能 | 注册：拿着未绑定设备绑定码的人，已登录的成员不行；恢复：电视服务替它按密钥认过的设备要，只在已绑定、主人没被封时；login-link：能动数据库的 shell |
+| 限流 | 注册每个网段每小时 3 个账号、全中转 30 个（建成才算，在中转内存里）；恢复每台设备每小时 3 个链接（按库里的记录算，重启不清零）；同一台设备新要的让没用掉的作废；链接 5 分钟、一次；设备和管理员的链接没有 8 位码 |
+| 审计 | `user.signup`、`device.bind`；`phone_link.device`、`login.phone.recover`；`phone_link.admin`、`login.phone.admin` |
+| 日志 | 从不写令牌：电视服务只记 `recover link issued for user N` 或拒绝的原因 |
+
 ## 留给以后的阶段
 
 每个用户隐藏、排序直播台和提议新台（`user_state` 给 `hidden`/`order` 留了位置）；主人以外的设备成员
@@ -313,6 +368,9 @@ database …`，然后 `voice: on, relay per device`），每次调中转都点�
 - 绑定画面和 `bound: 0` 只对着服务器测过；两种固件在屏幕上怎么画这张画面没在设备上看过。
 - 手机上的流程是在桌面浏览器里按手机宽度、对着本机中转和合成状态检查的，没在 iPhone 主屏幕
   应用或微信里试过。
+- 自己注册、设备恢复登录和 `login-link` 由 `tests/test_account_recovery.py` 覆盖，手势由
+  `tests/test_av_recover.c`（对着按键驱动的模型）覆盖；两种手势都没在设备上按过，二维码没用手机相机扫过，
+  时间（两组之间 0.4 秒、驱动的 180 毫秒）没有用手实测。
 - 电脑版是在桌面应用的 Chromium 窗格里按 1440 和 900 像素宽、对着本机中转、合成状态、假的视频网站
   和假设备检查的；二维码由这个浏览器的 `BarcodeDetector` 识别，没用手机相机或微信扫过。没在 Safari、
   Firefox、Edge 里试过，也没经过 nginx。
