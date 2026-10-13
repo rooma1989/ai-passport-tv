@@ -12,6 +12,7 @@
 #include <esp_netif.h>
 #include <esp_system.h>
 #include "ssid_manager.h"
+#include "wifi_order.h"
 
 #define TAG "WifiStation"
 #define WIFI_EVENT_CONNECTED BIT0
@@ -193,7 +194,14 @@ bool WifiStation::WaitForConnected(int timeout_ms) {
 void WifiStation::StartScan() {
     std::vector<uint8_t> channels;
     if (use_saved_channels_scan_) {
-        channels = SsidManager::GetInstance().GetSavedChannels();
+        // Only when the first network's channel is known. A network added from
+        // the phone remote (or moved to the top) has none until it has been
+        // joined once, and a scan of the other networks' channels would miss it
+        // and settle for one the viewer ranked lower.
+        const auto& saved = SsidManager::GetInstance().GetSsidList();
+        if (saved.empty() || saved.front().channel != 0) {
+            channels = SsidManager::GetInstance().GetSavedChannels();
+        }
     }
 
     if (channels.empty()) {
@@ -243,34 +251,43 @@ void WifiStation::HandleScanResult() {
     esp_wifi_scan_get_ap_num(&ap_num);
     wifi_ap_record_t *ap_records = (wifi_ap_record_t *)malloc(ap_num * sizeof(wifi_ap_record_t));
     esp_wifi_scan_get_ap_records(&ap_num, ap_records);
-    // sort by rssi descending
-    std::sort(ap_records, ap_records + ap_num, [](const wifi_ap_record_t& a, const wifi_ap_record_t& b) {
-        return a.rssi > b.rssi;
-    });
-
+    // The saved list's order decides, except that a network barely in range
+    // goes after every usable one (wifi_order.h). It used to be signal strength
+    // alone, which ignored the order the viewer set on the setup page and the
+    // phone remote.
     auto& ssid_manager = SsidManager::GetInstance();
     auto ssid_list = ssid_manager.GetSsidList();
+    std::vector<wifi_order_candidate_t> candidates;
+    std::vector<int> records;
     for (int i = 0; i < ap_num; i++) {
-        auto ap_record = ap_records[i];
-        auto it = std::find_if(ssid_list.begin(), ssid_list.end(), [ap_record](const SsidItem& item) {
-            return strcmp((char *)ap_record.ssid, item.ssid.c_str()) == 0;
+        auto it = std::find_if(ssid_list.begin(), ssid_list.end(), [&](const SsidItem& item) {
+            return strcmp((char *)ap_records[i].ssid, item.ssid.c_str()) == 0;
         });
-        if (it != ssid_list.end()) {
-            ESP_LOGI(TAG, "Found AP: %s, BSSID: %02x:%02x:%02x:%02x:%02x:%02x, RSSI: %d, Channel: %d, Authmode: %d",
-                (char *)ap_record.ssid, 
-                ap_record.bssid[0], ap_record.bssid[1], ap_record.bssid[2],
-                ap_record.bssid[3], ap_record.bssid[4], ap_record.bssid[5],
-                ap_record.rssi, ap_record.primary, ap_record.authmode);
-            WifiApRecord record = {
-                .ssid = it->ssid,
-                .password = it->password,
-                .channel = ap_record.primary,
-                .authmode = ap_record.authmode,
-                .bssid = {0}
-            };
-            memcpy(record.bssid, ap_record.bssid, 6);
-            connect_queue_.push_back(record);
+        if (it == ssid_list.end()) {
+            continue;
         }
+        candidates.push_back({static_cast<int>(it - ssid_list.begin()), ap_records[i].rssi});
+        records.push_back(i);
+    }
+    std::vector<size_t> order(candidates.size());
+    wifi_order_sort(candidates.data(), candidates.size(), order.data());
+    for (size_t k : order) {
+        const auto& ap_record = ap_records[records[k]];
+        const auto& item = ssid_list[candidates[k].priority];
+        ESP_LOGI(TAG, "Found AP: %s, BSSID: %02x:%02x:%02x:%02x:%02x:%02x, RSSI: %d, Channel: %d, Authmode: %d, priority %d",
+            (char *)ap_record.ssid,
+            ap_record.bssid[0], ap_record.bssid[1], ap_record.bssid[2],
+            ap_record.bssid[3], ap_record.bssid[4], ap_record.bssid[5],
+            ap_record.rssi, ap_record.primary, ap_record.authmode, candidates[k].priority);
+        WifiApRecord record = {
+            .ssid = item.ssid,
+            .password = item.password,
+            .channel = ap_record.primary,
+            .authmode = ap_record.authmode,
+            .bssid = {0}
+        };
+        memcpy(record.bssid, ap_record.bssid, 6);
+        connect_queue_.push_back(record);
     }
     free(ap_records);
 

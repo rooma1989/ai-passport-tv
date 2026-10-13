@@ -37,6 +37,9 @@ public:
     void SetLanguage(const std::string &language);
     void SetShowOtaConfig(bool show) { show_ota_config_ = show; }
     void SetShowSleepConfig(bool show) { show_sleep_config_ = show; }
+    // This build already knows its streaming server, so the page keeps the
+    // address field behind a small "Advanced" toggle and does not require it.
+    void SetServerBuiltin(bool builtin) { server_builtin_ = builtin; }
     // Store the address this project keeps in the URL field. Persisted here
     // rather than by the caller so both endpoints that accept it -- the Wi-Fi
     // form and the Advanced form -- go through one place.
@@ -49,6 +52,14 @@ public:
     bool ConnectToWifi(const std::string &ssid, const std::string &password);
     void Save(const std::string &ssid, const std::string &password);
     std::vector<wifi_ap_record_t> GetAccessPoints();
+    // What the web form's submit does, for a caller that is not the web form
+    // (sound provisioning): check the network can be joined, save it, store the
+    // server address when one is given. False when the network could not be
+    // joined or another attempt is already running.
+    bool ConnectAndSave(const std::string &ssid, const std::string &password, const std::string &server);
+    // Whether the last scan saw any saved network, so a device that entered
+    // setup on its own can go back to it.
+    bool SeesSavedNetwork();
     std::string GetSsid();
     std::string GetWebServerUrl();
 
@@ -80,6 +91,10 @@ private:
     bool sleep_mode_;
     bool show_ota_config_ = false;
     bool show_sleep_config_ = false;
+    bool server_builtin_ = false;
+    // One connection test at a time: the web form and sound provisioning both
+    // drive the station interface.
+    std::mutex connect_mutex_;
 
     // Callbacks
     std::function<void()> on_exit_requested_;

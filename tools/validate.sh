@@ -89,7 +89,7 @@ run_static_checks() {
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Icomponents/qrcodegen \
         tools/render_ui/render_ui.c tools/render_ui/font_blob.S \
         main/ui_overlay.c main/ui_status.c main/ui_draw.c main/ui_text.c main/ui_menu.c \
-        main/ui_qr.c components/qrcodegen/qrcodegen.c \
+        main/ui_qr.c main/av_provision_policy.c components/qrcodegen/qrcodegen.c \
         -o "${test_dir}/render_ui"
     "${test_dir}/render_ui" "${test_dir}/screens.ppm"
     # The server address arrives as text someone typed or pasted, so the cases
@@ -118,6 +118,41 @@ run_static_checks() {
         tests/test_av_identity.c main/av_identity.c \
         -o "${test_dir}/test_av_identity"
     "${test_dir}/test_av_identity"
+    # Managing saved networks from the phone: what each message may do to the
+    # list, the names the phone is shown, and the ack JSON.
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_av_wifi_ops.c main/av_wifi_ops.c \
+        -o "${test_dir}/test_av_wifi_ops"
+    "${test_dir}/test_av_wifi_ops"
+    # Which saved network the station tries first (priority, weak ones last).
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/esp-wifi-connect/include \
+        tests/test_wifi_order.c components/esp-wifi-connect/wifi_order.c \
+        -o "${test_dir}/test_wifi_order"
+    "${test_dir}/test_wifi_order"
+    # The device half of the Wi-Fi message encryption, against the mbedTLS
+    # sources ESP-IDF ships (the same library code the firmware links) and the
+    # envelope tests/test_wifi_crypto.py checks on the server side. Needs an
+    # ESP-IDF tree: IDF_PATH, or ~/esp/esp-idf.
+    local mbedtls_dir="${IDF_PATH:-${HOME}/esp/esp-idf}/components/mbedtls/mbedtls"
+    if [[ -f "${mbedtls_dir}/library/gcm.c" ]]; then
+        local mbedtls_src=()
+        local f
+        for f in aes gcm cipher cipher_wrap block_cipher ecp ecp_curves bignum bignum_core \
+                 constant_time platform_util md sha256; do
+            mbedtls_src+=("${mbedtls_dir}/library/${f}.c")
+        done
+        # The library quietly (it is not ours to fix), our code with -Werror.
+        mkdir -p "${test_dir}/mbedtls"
+        (cd "${test_dir}/mbedtls" && "${CC:-cc}" -std=c11 -O1 -w -I"${repo_root}/tests" \
+            -I"${mbedtls_dir}/include" -DMBEDTLS_CONFIG_FILE='"mbedtls_host_config.h"' -c "${mbedtls_src[@]}")
+        "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests -I"${mbedtls_dir}/include" \
+            -DMBEDTLS_CONFIG_FILE='"mbedtls_host_config.h"' \
+            tests/test_av_wifi_crypto.c main/av_wifi_crypto.c "${test_dir}"/mbedtls/*.o \
+            -o "${test_dir}/test_av_wifi_crypto"
+        "${test_dir}/test_av_wifi_crypto"
+    else
+        echo "test_av_wifi_crypto: SKIPPED (no ESP-IDF mbedTLS sources at ${mbedtls_dir})"
+    fi
     python3 tests/test_verify_firmware.py
     python3 tests/test_tv_server.py
     python3 tests/test_video_import.py

@@ -11,6 +11,7 @@ if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
             "wifi_station.cc"
             "ssid_manager.cc"
             "dns_server.cc"
+            "wifi_order.c"
         INCLUDE_DIRS
             "include"
         EMBED_TXTFILES
@@ -29,6 +30,7 @@ else()
             "wifi_station.cc"
             "ssid_manager.cc"
             "dns_server.cc"
+            "wifi_order.c"
         INCLUDE_DIRS
             "include"
         EMBED_TXTFILES

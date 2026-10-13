@@ -443,6 +443,12 @@ void WifiConfigurationAp::StartWebServer()
 
             // 获取当前对象
             auto *this_ = static_cast<WifiConfigurationAp *>(req->user_ctx);
+            std::unique_lock<std::mutex> busy(this_->connect_mutex_, std::try_to_lock);
+            if (!busy.owns_lock()) {
+                cJSON_Delete(json);
+                httpd_resp_send(req, "{\"success\":false,\"error\":\"Busy, try again\"}", HTTPD_RESP_USE_STRLEN);
+                return ESP_OK;
+            }
             if (!this_->ConnectToWifi(ssid_str, password_str)) {
                 cJSON_Delete(json);
                 httpd_resp_send(req, "{\"success\":false,\"error\":\"Failed to connect to the Access Point\"}", HTTPD_RESP_USE_STRLEN);
@@ -588,6 +594,7 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
             cJSON_AddBoolToObject(json, "show_ota_config", this_->show_ota_config_);
             cJSON_AddBoolToObject(json, "show_sleep_config", this_->show_sleep_config_);
+            cJSON_AddBoolToObject(json, "server_builtin", this_->server_builtin_);
 
             // 发送JSON响应
             char *json_str = cJSON_PrintUnformatted(json);
@@ -887,6 +894,39 @@ void WifiConfigurationAp::Save(const std::string &ssid, const std::string &passw
     SsidManager::GetInstance().AddSsid(ssid, password, channel);
 }
 
+bool WifiConfigurationAp::ConnectAndSave(const std::string &ssid, const std::string &password,
+                                         const std::string &server)
+{
+    std::unique_lock<std::mutex> busy(connect_mutex_, std::try_to_lock);
+    if (!busy.owns_lock() || ssid.empty() || ssid.size() > 32 || password.size() > 64) {
+        return false;
+    }
+    if (!ConnectToWifi(ssid, password)) {
+        return false;
+    }
+    Save(ssid, password);
+    // Same rule as the form: an empty or blank address leaves the stored one.
+    const bool blank = server.find_first_not_of(" \t\r\n") == std::string::npos;
+    if (!blank && server.size() < 128) {
+        SetOtaUrl(server);
+    }
+    return true;
+}
+
+bool WifiConfigurationAp::SeesSavedNetwork()
+{
+    const auto saved = SsidManager::GetInstance().GetSsidList();
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto &record : ap_records_) {
+        for (const auto &item : saved) {
+            if (item.ssid == reinterpret_cast<const char *>(record.ssid)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void WifiConfigurationAp::OnExitRequested(std::function<void()> callback)
 {
     on_exit_requested_ = callback;
@@ -966,7 +1006,7 @@ void WifiConfigurationAp::SmartConfigEventHandler(void *arg, esp_event_base_t ev
             char password[65] = {0};
             memcpy(ssid, evt->ssid, sizeof(evt->ssid));
             memcpy(password, evt->password, sizeof(evt->password));
-            ESP_LOGI(TAG, "SmartConfig SSID: %s, Password: %s", ssid, password);
+            ESP_LOGI(TAG, "SmartConfig SSID: %s", ssid);
             // 尝试连接WiFi会失败，故不连接
             self->Save(ssid, password);
             // 延迟退出配网模式

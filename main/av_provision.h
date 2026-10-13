@@ -93,6 +93,40 @@ bool av_provision_client_ready(void);
 // so a stored network means the job is done.
 bool av_provision_has_network(void);
 
+// Tell the setup page that this build already knows its streaming server, so
+// it keeps the address field behind an "Advanced" toggle. Call before
+// av_provision_init().
+void av_provision_set_server_builtin(bool builtin);
+
+// ---- Saved networks, managed from the phone remote (av_wifimgr.c) ----
+//
+// The list is the component's (SsidManager): up to AV_WIFI_SAVED_MAX networks
+// in priority order, the order the station tries visible ones in.
+
+// Copy up to `max` saved SSIDs, raw, in order. Returns how many.
+unsigned av_provision_saved(char names[][33], unsigned max);
+// Add a network at the front, or give a saved one its new password.
+bool av_provision_add_network(const char *ssid, const char *password);
+bool av_provision_remove_network(unsigned index);
+// One place up.
+bool av_provision_raise_network(unsigned index);
+// Move to the front and rejoin now: the station is stopped and started again,
+// so the current session ends. If the network cannot be joined the station
+// goes on to the next visible one, as it does at boot.
+bool av_provision_use_network(unsigned index);
+
+// ---- Setup mode helpers ----
+
+// Whether the setup access point's last scan saw a saved network.
+bool av_provision_saved_network_visible(void);
+// What the setup page's form does with what it was given: check the network
+// can be joined, save it, store the server if `server` is not empty. Blocks
+// for up to ~25 s. Only while the access point is up.
+bool av_provision_connect_and_save(const char *ssid, const char *password, const char *server);
+// End setup after av_provision_connect_and_save() succeeded: the same step the
+// page's "done" takes, after which av_provision_has_network() is true.
+void av_provision_finish_setup(void);
+
 // Called from the WiFi event task when the station loses a network it had. The
 // callback must not block.
 void av_provision_on_disconnected(void (*callback)(void));

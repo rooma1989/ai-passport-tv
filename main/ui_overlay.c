@@ -950,8 +950,11 @@ void ui_overlay_setup(ui_surface_t surface, const ui_setup_page_t *page, bool bl
     snprintf(number, sizeof(number), "%u/%u", page->index + 1u, page->count);
     int pen = ui_text_draw_scaled(bar, 20, 7, number, 1, UI_AMBER, UI_DEEP);
     ui_text_draw_scaled(bar, pen + 6, 7, page->title ? page->title : "", 1, UI_PAPER, UI_DEEP);
-    for (unsigned k = 0; k < page->count && k < 4u; k++) {
-        ui_text_fill(bar, bar.width - 44 + 8 * (int)k, 13, 4, 4, k == page->index ? UI_AMBER : UI_RULE);
+    // Up to four squares end where they always did; a fifth (the sound page)
+    // moves the row left by one step rather than past the edge.
+    const int extra = page->count > 4u ? (int)page->count - 4 : 0;
+    for (unsigned k = 0; k < page->count && k < 5u; k++) {
+        ui_text_fill(bar, bar.width - 44 - 8 * extra + 8 * (int)k, 13, 4, 4, k == page->index ? UI_AMBER : UI_RULE);
     }
 
     if (!page->status) {

@@ -50,3 +50,31 @@ bool av_store_save_device_secret(const char *secret);
 // component -- the setup page's server field and its storage belong to it -- so
 // this reads that value and parses it; it does not write.
 bool av_store_server_addr_load(av_server_addr_t *addr);
+
+// ---- Wi-Fi management from the phone (av_wifimgr.c) ----
+//
+// The device's X25519 key pair for the encrypted Wi-Fi messages
+// (av_wifi_crypto.h): 32 private + 32 public bytes, key "wkey". Made once, like
+// the device secret, and kept across firmware updates; an NVS erase makes a new
+// one, which the server accepts after "re-pair" like a new secret.
+bool av_store_load_wifi_key(uint8_t private_key[32], uint8_t public_key[32]);
+bool av_store_save_wifi_key(const uint8_t private_key[32], const uint8_t public_key[32]);
+
+// The relay's public key as first seen in CONFIG ("wifi_key"), pinned together
+// with the server address it came from (keys "wsrv", "wsrva"). A CONFIG from
+// another address replaces it; from the same address with a different key it
+// is refused until setup is run again (av_store_forget_server_key()).
+bool av_store_load_server_key(uint8_t public_key[32], char *addr, size_t addr_size);
+bool av_store_save_server_key(const uint8_t public_key[32], const char *addr);
+void av_store_forget_server_key(void);
+
+// The seq of the last Wi-Fi message applied (key "wseq"); a message must carry
+// a larger one. Reset to 0 whenever a new server key is pinned.
+uint64_t av_store_load_wifi_seq(void);
+bool av_store_save_wifi_seq(uint64_t seq);
+
+// The public site the phone remote lives on ("https://example.com", key "site"),
+// learned from CONFIG's remote_url, so the setup screen can point a phone at
+// <site>/tv/wifi while the device is offline. Written only when it changes.
+bool av_store_load_site(char *out, size_t size);
+bool av_store_save_site(const char *site);

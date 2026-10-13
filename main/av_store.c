@@ -5,6 +5,7 @@
 
 #include <esp_log.h>
 #include <nvs.h>
+#include <string.h>
 
 static const char *TAG = "av_store";
 
@@ -275,4 +276,163 @@ bool av_store_save_device_secret(const char *secret)
         return false;
     }
     return true;
+}
+
+// ---- Wi-Fi management (av_wifimgr.c) ----
+
+#define AV_STORE_KEY_WIFI_KEY "wkey"
+#define AV_STORE_KEY_SERVER_KEY "wsrv"
+#define AV_STORE_KEY_SERVER_ADDR "wsrva"
+#define AV_STORE_KEY_WIFI_SEQ "wseq"
+#define AV_STORE_KEY_SITE "site"
+
+static bool load_blob(const char *key, void *out, size_t size)
+{
+    nvs_handle_t handle;
+    if (!open_readonly(&handle)) {
+        return false;
+    }
+    size_t length = size;
+    esp_err_t e = nvs_get_blob(handle, key, out, &length);
+    nvs_close(handle);
+    return e == ESP_OK && length == size;
+}
+
+// Set (or with `erase`, remove) some keys and commit once.
+typedef struct { const char *key; const void *blob; size_t size; const char *text; bool u64; uint64_t value; } store_item_t;
+
+static bool store_items(const store_item_t *items, size_t count, const char *what)
+{
+    nvs_handle_t handle;
+    esp_err_t e = nvs_open(AV_STORE_NAMESPACE, NVS_READWRITE, &handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Cannot open settings store: %s", esp_err_to_name(e));
+        return false;
+    }
+    for (size_t i = 0; i < count && e == ESP_OK; i++) {
+        if (items[i].blob) e = nvs_set_blob(handle, items[i].key, items[i].blob, items[i].size);
+        else if (items[i].text) e = nvs_set_str(handle, items[i].key, items[i].text);
+        else if (items[i].u64) e = nvs_set_u64(handle, items[i].key, items[i].value);
+        else {
+            e = nvs_erase_key(handle, items[i].key);
+            if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
+        }
+    }
+    if (e == ESP_OK) {
+        e = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "Saving %s failed: %s", what, esp_err_to_name(e));
+        return false;
+    }
+    return true;
+}
+
+bool av_store_load_wifi_key(uint8_t private_key[32], uint8_t public_key[32])
+{
+    uint8_t both[64];
+    if (!load_blob(AV_STORE_KEY_WIFI_KEY, both, sizeof(both))) {
+        return false;
+    }
+    memcpy(private_key, both, 32);
+    memcpy(public_key, both + 32, 32);
+    memset(both, 0, sizeof(both));
+    return true;
+}
+
+bool av_store_save_wifi_key(const uint8_t private_key[32], const uint8_t public_key[32])
+{
+    uint8_t both[64];
+    memcpy(both, private_key, 32);
+    memcpy(both + 32, public_key, 32);
+    const store_item_t item = { .key = AV_STORE_KEY_WIFI_KEY, .blob = both, .size = sizeof(both) };
+    const bool ok = store_items(&item, 1, "the Wi-Fi key");
+    memset(both, 0, sizeof(both));
+    return ok;
+}
+
+bool av_store_load_server_key(uint8_t public_key[32], char *addr, size_t addr_size)
+{
+    if (!load_blob(AV_STORE_KEY_SERVER_KEY, public_key, 32)) {
+        return false;
+    }
+    nvs_handle_t handle;
+    if (!open_readonly(&handle)) {
+        return false;
+    }
+    size_t length = addr_size;
+    esp_err_t e = nvs_get_str(handle, AV_STORE_KEY_SERVER_ADDR, addr, &length);
+    nvs_close(handle);
+    return e == ESP_OK;
+}
+
+bool av_store_save_server_key(const uint8_t public_key[32], const char *addr)
+{
+    // A new key starts a new sequence: the seq is the relay's clock, and
+    // another relay's clock owes this one nothing.
+    const store_item_t items[] = {
+        { .key = AV_STORE_KEY_SERVER_KEY, .blob = public_key, .size = 32 },
+        { .key = AV_STORE_KEY_SERVER_ADDR, .text = addr ? addr : "" },
+        { .key = AV_STORE_KEY_WIFI_SEQ, .u64 = true, .value = 0 },
+    };
+    return store_items(items, sizeof(items) / sizeof(items[0]), "the server key");
+}
+
+void av_store_forget_server_key(void)
+{
+    const store_item_t items[] = {
+        { .key = AV_STORE_KEY_SERVER_KEY }, { .key = AV_STORE_KEY_SERVER_ADDR }, { .key = AV_STORE_KEY_WIFI_SEQ },
+    };
+    store_items(items, sizeof(items) / sizeof(items[0]), "forgetting the server key");
+}
+
+uint64_t av_store_load_wifi_seq(void)
+{
+    nvs_handle_t handle;
+    if (!open_readonly(&handle)) {
+        return 0;
+    }
+    uint64_t value = 0;
+    if (nvs_get_u64(handle, AV_STORE_KEY_WIFI_SEQ, &value) != ESP_OK) {
+        value = 0;
+    }
+    nvs_close(handle);
+    return value;
+}
+
+bool av_store_save_wifi_seq(uint64_t seq)
+{
+    const store_item_t item = { .key = AV_STORE_KEY_WIFI_SEQ, .u64 = true, .value = seq };
+    return store_items(&item, 1, "the Wi-Fi message counter");
+}
+
+bool av_store_load_site(char *out, size_t size)
+{
+    if (!out || size == 0) {
+        return false;
+    }
+    out[0] = '\0';
+    nvs_handle_t handle;
+    if (!open_readonly(&handle)) {
+        return false;
+    }
+    size_t length = size;
+    esp_err_t e = nvs_get_str(handle, AV_STORE_KEY_SITE, out, &length);
+    nvs_close(handle);
+    if (e != ESP_OK) {
+        out[0] = '\0';
+        return false;
+    }
+    return out[0] != '\0';
+}
+
+bool av_store_save_site(const char *site)
+{
+    char current[96];
+    if (!site || (av_store_load_site(current, sizeof(current)) && !strcmp(current, site))) {
+        return true;
+    }
+    const store_item_t item = { .key = AV_STORE_KEY_SITE, .text = site };
+    return store_items(&item, 1, "the site address");
 }

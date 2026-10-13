@@ -179,6 +179,56 @@ config AV_JPEG_BENCH
         prints per-tier decode time. Off by default; enable with
         tools/sdkconfig.jpeg-bench. Embeds main/jpeg_test.bin
         (tools/make_jpeg_clip.py).
+config AV_DEFAULT_SERVER
+    string "Streaming server this build uses when none is stored (host[:port])"
+    depends on AV_RAW_PROTOTYPE
+    default ""
+    help
+        A public build's default server, so the setup page only asks for the
+        Wi-Fi network and its password: the server field moves behind a small
+        "Advanced" toggle there. An address stored on the setup page (or sent
+        by sound provisioning) still takes precedence, and a private build's
+        compiled-in address (main/av_private_config.h) comes before this.
+
+        Set it in the build's own sdkconfig (which git ignores), never in a
+        committed defaults file: host names and addresses stay out of the
+        repository. Empty means no default, as before.
+
+config AV_PUBLIC_SITE
+    string "Public site of the phone remote (https://host), for the setup screen"
+    depends on AV_RAW_PROTOTYPE
+    default ""
+    help
+        Where the phone remote is served, e.g. https://example.com. The setup
+        screen's first page shows a code for <site>/tv/wifi, the phone page
+        that sends the network to the device as sound. A device that has
+        been online learns the site from the server (CONFIG's remote_url)
+        and remembers it; this is the answer before that. A private build
+        also derives it from AV_HELP_URL. Like AV_DEFAULT_SERVER, set it only
+        in a git-ignored sdkconfig.
+
+config AV_SOUNDPROV_DUMP
+    bool "Print the setup screen's microphone audio to the console (sound setup debugging)"
+    depends on AV_RAW_PROTOTYPE
+    default n
+    help
+        When a sound message starts arriving on the setup screen (the decoder's
+        progress rises above 0), print half a second from before it and then
+        AV_SOUNDPROV_DUMP_S seconds of the 16 kHz microphone signal as
+        "SNDDUMP" lines. tools/soundprov_dump.py turns a saved console log
+        into a WAV that tests/test_av_soundprov --wav replays, so a capture
+        that failed in a room can be studied on a computer.
+
+        Off by default: it holds 16 KB for the half-second ring, and prints
+        about 45 KB of text per second while dumping, which can delay the
+        reads enough to cost the decoder samples on a slow console.
+
+config AV_SOUNDPROV_DUMP_S
+    int "Seconds of microphone audio to print per message"
+    depends on AV_SOUNDPROV_DUMP
+    range 1 30
+    default 10
+
 config AV_MUSE_DUAL
     bool "Run from the Muse gadget firmware's second app slot"
     depends on AV_RAW_PROTOTYPE

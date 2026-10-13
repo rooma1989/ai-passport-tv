@@ -1,6 +1,7 @@
 // Host renderer for the device UI: the firmware's own drawing code, the real
 // font, a stand-in for the picture, and each screen of the design laid out on
 // one sheet at 2x. Run through render_ui.sh.
+#include "av_provision_policy.h"
 #include "ui_draw.h"
 #include "ui_menu.h"
 #include "ui_overlay.h"
@@ -20,7 +21,7 @@
 // so the first seven rows can be compared with an older sheet pixel for pixel,
 // then one of the episode information (what loads, what plays), then one of
 // the playback progress.
-enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 12, GAP = 8 };
+enum { W = RENDER_W, H = 240, SCALE = 2, COLS = 4, ROWS = 13, GAP = 8 };
 
 static uint8_t screen[W * H * 2];
 
@@ -468,6 +469,34 @@ int main(int argc, char **argv)
     ui_overlay_pause_hint(view(), 210, 240);
     ui_overlay_progress_line(whole(), 210, 300000, 1420000, false);
     place(n++);
+
+    // Sound provisioning, on a row of its own: the setup screen's first page
+    // while listening, receiving and after a failed join, then the hotspot page
+    // second of five. The rows above keep their pixels.
+    n = 12 * COLS;
+    {
+        static uint8_t wq[qrcodegen_BUFFER_LEN_FOR_VERSION(6)], wt[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
+        char page[80], text[80], line[48];
+        av_setup_wifi_page("https://example.com", page, sizeof(page));
+        av_setup_wifi_page_text("https://example.com", text, sizeof(text));
+        qrcodegen_encodeText(page, wt, wq, qrcodegen_Ecc_LOW, 1, 6, qrcodegen_Mask_AUTO, true);
+        const av_sound_state_t states[] = { AV_SOUND_LISTENING, AV_SOUND_RECEIVING, AV_SOUND_FAILED };
+        for (unsigned i = 0; i < 3; i++) {
+            av_setup_sound_line(states[i], 60, line, sizeof(line));
+            ui_setup_page_t setup = { .index = 0, .count = 5, .title = "手机声波配网", .qr = wq,
+                                      .line1 = text, .line2 = line,
+                                      .line2_color = states[i] == AV_SOUND_FAILED ? UI_VERM : UI_AMBER,
+                                      .pet = 0, .mood = states[i] == AV_SOUND_RECEIVING };
+            ui_overlay_setup(view(), &setup, true);
+            place(n++);
+        }
+        qrcodegen_encodeText("WIFI:T:nopass;S:FoloToy-A1B2;;", wt, wq, qrcodegen_Ecc_LOW, 1, 6,
+                             qrcodegen_Mask_AUTO, true);
+        ui_setup_page_t join = { .index = 1, .count = 5, .title = "连接设备热点", .qr = wq,
+                                 .line1 = "相机扫码，或连 Wi-Fi", .line2 = "FoloToy-A1B2", .line2_color = UI_AMBER };
+        ui_overlay_setup(view(), &join, true);
+        place(n++);
+    }
 
     FILE *out = fopen(argv[1], "wb");
     if (!out) {

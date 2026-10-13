@@ -17,6 +17,9 @@
 #include "av_channel_policy.h"
 #include "av_voice.h"
 #include "av_voice_policy.h"
+#include "av_wifimgr.h"
+#include "av_wifi_ops.h"
+#include "av_soundsetup.h"
 #include "ui_text.h"
 #include "ui_status.h"
 #include "ui_draw.h"
@@ -687,12 +690,18 @@ static atomic_bool s_setup_active;
 static atomic_bool s_setup_leave;
 // Which setup page is showing. Turned by the arrows while setup is up.
 static atomic_uint s_setup_page;
-// The setup pages, in order. The help page is there only when a help URL was
-// compiled in; without it the cycle is join, open, status.
-enum { SETUP_PAGE_JOIN, SETUP_PAGE_OPEN, SETUP_PAGE_HELP, SETUP_PAGE_STATUS };
-static unsigned setup_page_count(void) { return AV_HELP_URL[0] ? 4u : 3u; }
-static unsigned setup_page_kind(unsigned index) {
-    return (!AV_HELP_URL[0] && index>=SETUP_PAGE_HELP) ? SETUP_PAGE_STATUS : index;
+// The setup pages, in order (av_setup_pages()): sound first when this build
+// has the decoder, then join, open, help (only with a help URL), status.
+// Decided when setup starts and fixed while it runs; the key handler turns
+// through them.
+static av_setup_page_kind_t s_setup_kinds[AV_SETUP_PAGES_MAX];
+static atomic_uint s_setup_count;
+static unsigned setup_page_count(void) {
+    const unsigned n=atomic_load(&s_setup_count);
+    return n ? n : 1u;
+}
+static av_setup_page_kind_t setup_page_kind(unsigned index) {
+    return s_setup_kinds[index%setup_page_count()];
 }
 // The viewer asked to open the setup screen, set from the status page and
 // consumed at a session boundary -- the same shape as switch_pending, and for
@@ -835,7 +844,11 @@ static void on_wifi_down(void) {
 // `has_network` reports whether a network is known: one saved by an earlier
 // provisioning run, or the credentials compiled into this build. When it is
 // false the device has nothing to join and must raise the setup access point.
+static bool builtin_server_address(av_server_addr_t *out);
 static esp_err_t wifi_init(bool *has_network) {
+    // With a server built in, the setup page asks only for the network.
+    av_server_addr_t builtin;
+    av_provision_set_server_builtin(builtin_server_address(&builtin));
     if (!av_provision_init(has_network)) {
         ESP_LOGE(TAG,"WiFi stack unavailable");
         return ESP_FAIL;
@@ -994,11 +1007,21 @@ static bool io_all(int fd, void *buf, size_t n, bool sending, unsigned deadline_
 // changed on the setup page while the device is running, and a cached copy would
 // keep dialling the old one until the next reflash. The read is a few
 // milliseconds against a connection that already allows three seconds.
-static bool server_address(av_server_addr_t *out) {
-    if (av_store_server_addr_load(out)) return true;
-    // A published build has none of these compiled in, which is the point: the
-    // store is then the only source, and an unset address is an ordinary state
-    // that the setup page exists to fix rather than an error.
+// A public build's default server and phone-remote site, from the build's own
+// (git-ignored) sdkconfig; empty when not set. See main/Kconfig.projbuild.
+#if defined(CONFIG_AV_DEFAULT_SERVER)
+#define AV_DEFAULT_SERVER_TEXT CONFIG_AV_DEFAULT_SERVER
+#else
+#define AV_DEFAULT_SERVER_TEXT ""
+#endif
+#if defined(CONFIG_AV_PUBLIC_SITE)
+#define AV_PUBLIC_SITE_TEXT CONFIG_AV_PUBLIC_SITE
+#else
+#define AV_PUBLIC_SITE_TEXT ""
+#endif
+// The address this build carries itself, when it carries one: a private
+// build's compiled-in address first, then a public build's Kconfig default.
+static bool builtin_server_address(av_server_addr_t *out) {
     if (AV_SERVER_IPV4[0] && strcmp(AV_SERVER_IPV4,"0.0.0.0")) {
         // Composed and then parsed by the same reader the page's text goes
         // through, so a compiled-in address and a typed one cannot come out
@@ -1007,7 +1030,28 @@ static bool server_address(av_server_addr_t *out) {
         int n=snprintf(text,sizeof(text),"%s:%u",AV_SERVER_IPV4,(unsigned)AV_SERVER_PORT);
         if (n>0 && (size_t)n<sizeof(text) && av_server_addr_parse(text,out)) return true;
     }
+    av_server_addr_t parsed;
+    if (AV_DEFAULT_SERVER_TEXT[0] && av_server_addr_parse(AV_DEFAULT_SERVER_TEXT,&parsed) &&
+        av_server_addr_usable(&parsed)) {
+        *out=parsed;
+        return true;
+    }
     return false;
+}
+static bool server_address(av_server_addr_t *out) {
+    if (av_store_server_addr_load(out)) return true;
+    // A published build without a Kconfig default has none of these, which is
+    // the point: the store is then the only source, and an unset address is an
+    // ordinary state that the setup page exists to fix rather than an error.
+    return builtin_server_address(out);
+}
+// Where the phone remote lives, for the setup screen's sound page: what the
+// server last said (CONFIG remote_url, kept in NVS), else this build's Kconfig
+// site, else the site of a compiled-in help URL. Lower case, no path.
+static bool setup_site(char *site, size_t size) {
+    if (av_store_load_site(site,size)) return true;
+    if (av_setup_site_from_url(AV_PUBLIC_SITE_TEXT,site,size)) return true;
+    return av_setup_site_from_url(AV_HELP_URL,site,size);
 }
 // Say where the device will connect, but only when the answer changes.
 //
@@ -1152,6 +1196,16 @@ static void take_switch(char *buf, size_t n) {
     buf[n]=0;
     const char *end=NULL;
     cJSON *j=cJSON_ParseWithLengthOpts(buf,n+1,&end,true);
+    // An encrypted change to the saved networks, from the phone remote. Handed
+    // to a worker task; the ack goes back in STATUS (av_wifimgr.h).
+    const cJSON *wifi=cJSON_GetObjectItemCaseSensitive(j,"wifi");
+    if (cJSON_IsObject(wifi)) {
+        av_wifimgr_post(wifi);
+        // The envelope is ciphertext, but the buffer is reused for everything.
+        memset(buf,0,n);
+        cJSON_Delete(j);
+        return;
+    }
     const cJSON *paused=cJSON_GetObjectItemCaseSensitive(j,"paused");
     if (cJSON_IsNumber(paused) || cJSON_IsBool(paused)) {
         const bool on=cJSON_IsTrue(paused) || (cJSON_IsNumber(paused) && paused->valuedouble!=0);
@@ -1433,6 +1487,10 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
                 if (changed) memcpy(s.remote_url,url,sizeof(url));
                 taskEXIT_CRITICAL(&list_lock);
                 if (changed) atomic_fetch_add(&s.remote_gen,1u);
+                // The site goes into NVS for the setup screen, which runs with
+                // no server to ask (av_setup_site_from_url, a no-op when same).
+                char site[AV_REMOTE_URL_MAX+1];
+                if (changed && av_setup_site_from_url(url,site,sizeof(site))) av_store_save_site(site);
             }
             unsigned n=0;
             const cJSON *entry=NULL;
@@ -1523,6 +1581,18 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
         atomic_store(&s.voice_session,offered);
     }
 #endif
+    if (ok) {
+        // The relay's key for the encrypted Wi-Fi messages, pinned with the
+        // address this session dialled (av_wifimgr.h). Only a server told
+        // "wifimgr": 1 sends it.
+        const cJSON *wifi_key=cJSON_GetObjectItemCaseSensitive(j,"wifi_key");
+        av_server_addr_t dialled;
+        if (cJSON_IsString(wifi_key) && wifi_key->valuestring && server_address(&dialled)) {
+            char text[AV_SERVER_ADDR_MAX+8];
+            snprintf(text,sizeof(text),"%s:%u",dialled.host,(unsigned)dialled.port);
+            av_wifimgr_config(wifi_key->valuestring,text);
+        }
+    }
     cJSON_Delete(j);
     return ok;
 }
@@ -1542,6 +1612,22 @@ static void send_status(int fd, uint32_t session) {
     av_header_encode(wire,&h);
     if (!io_all(fd,wire,sizeof(wire),true,1000) || !io_all(fd,body,(size_t)n,true,1000)) {
         ESP_LOGW(TAG,"STATUS not sent");
+    }
+}
+
+// The ack for a Wi-Fi change (av_wifimgr.h), as an AV_STATUS like the volume
+// report; kept for the next session if it cannot be sent in this one.
+static void send_wifi_ack(int fd, uint32_t session) {
+    char body[AV_WIFIMGR_ACK_MAX];
+    const size_t n=av_wifimgr_ack(body,sizeof(body));
+    if (!n) return;
+    uint8_t wire[AV_HEADER_BYTES];
+    av_header_t h={.type=AV_STATUS,.session=session,.length=(uint32_t)n};
+    av_header_encode(wire,&h);
+    if (io_all(fd,wire,sizeof(wire),true,1000) && io_all(fd,body,n,true,1000)) {
+        av_wifimgr_ack_sent();
+    } else {
+        ESP_LOGW(TAG,"Wi-Fi ack not sent");
     }
 }
 
@@ -1628,6 +1714,9 @@ static bool hello(int fd) {
     // AV_VOICE_RESULT; the server answers with "voice" in CONFIG if it can.
     if (ok) ok=cJSON_AddNumberToObject(j,"voice",1)!=NULL;
 #endif
+    // The saved networks (names only) and this device's public key for the
+    // encrypted Wi-Fi messages; their presence says SWITCH may carry "wifi".
+    if (ok) ok=av_wifimgr_hello(j);
     // The link as it is now, for the server's log: which network, how strong,
     // which channel, and the transmit power actually in effect (the setup
     // page's Advanced tab can change it).
@@ -1636,7 +1725,14 @@ static bool hello(int fd) {
         int8_t quarter_dbm=0;
         cJSON *wifi=cJSON_CreateObject();
         if (wifi && esp_wifi_sta_get_ap_info(&ap)==ESP_OK) {
-            cJSON_AddStringToObject(wifi,"ssid",(const char *)ap.ssid);
+            // An SSID is 32 arbitrary bytes; one that is not UTF-8 would make
+            // the whole HELLO unreadable to the server's JSON parser.
+            char shown[AV_WIFI_SSID_MAX*3+1];
+            char raw[AV_WIFI_SSID_MAX+1];
+            memcpy(raw,ap.ssid,AV_WIFI_SSID_MAX);
+            raw[AV_WIFI_SSID_MAX]='\0';
+            av_wifi_display_name(raw,shown,sizeof(shown));
+            cJSON_AddStringToObject(wifi,"ssid",shown);
             cJSON_AddNumberToObject(wifi,"rssi",ap.rssi);
             cJSON_AddNumberToObject(wifi,"ch",ap.primary);
         }
@@ -1744,6 +1840,11 @@ static void receive_task(void *arg) {
             last_status_us=esp_timer_get_time();
             s_rx_stage="status-send";
             send_status(fd,stream.session);
+        }
+        // The answer to a Wi-Fi change from the phone, when one is ready.
+        if (stream.configured) {
+            s_rx_stage="wifi-ack-send";
+            send_wifi_ack(fd,stream.session);
         }
 #if CONFIG_AV_VOICE
         if (stream.configured) {
@@ -4827,7 +4928,8 @@ static bool pump_keys(uint32_t wait_ms);
 // STRIPE_BYTES long: this writes a whole stripe into it, and a shorter buffer is
 // a silent overwrite of whatever follows it in memory.
 static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page,
-                               unsigned remaining_s, unsigned y0, unsigned y1)
+                               unsigned remaining_s, av_sound_state_t sound, unsigned progress,
+                               unsigned y0, unsigned y1)
 {
     char ssid[64] = {0};
     char url[64] = {0};
@@ -4848,30 +4950,50 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page
     // what its code is for.
     const unsigned count=setup_page_count();
     if (page>=count) page=0;
-    const unsigned kind=setup_page_kind(page);
-    static const char *const titles[]={ "连接设备热点", "打开配网页", "使用说明", "当前状态" };
+    const av_setup_page_kind_t kind=setup_page_kind(page);
+    static const char *const titles[]={ "手机声波配网", "连接设备热点", "打开配网页", "使用说明", "当前状态" };
 
     // The page's code, encoded into static buffers: this runs on the main task,
     // whose stack is 3.5 KB, and only when the page or its state changes.
     static uint8_t qr_code[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
     static uint8_t qr_temp[qrcodegen_BUFFER_LEN_FOR_VERSION(6)];
     char payload[96]={0};
-    ui_setup_page_t view={ .index=page, .count=count, .status=kind==SETUP_PAGE_STATUS,
+    ui_setup_page_t view={ .index=page, .count=count, .status=kind==AV_SETUP_PAGE_STATUS,
                            .title=titles[kind], .pet=atomic_load(&s.pet), .mood=0,
                            .ssid=ssid, .page_url=url, .server=server,
                            .client_ready=client_ready, .remaining_s=remaining_s,
                            .line2_color=UI_AMBER };
-    if (kind==SETUP_PAGE_JOIN) {
+    // The sound page: a code for <SITE>/TV/W, the address without its scheme
+    // (short enough for the line), and how the listening is going. Static like
+    // the code buffers below: this runs on the main task's 3.5 KB stack.
+    static char site[AV_REMOTE_URL_MAX+1], wifi_page[AV_REMOTE_URL_MAX+16], wifi_text[AV_REMOTE_URL_MAX+16];
+    static char sound_line[48];
+    if (kind==AV_SETUP_PAGE_SOUND) {
+        av_setup_sound_line(sound,progress,sound_line,sizeof(sound_line));
+        if (setup_site(site,sizeof(site)) && av_setup_wifi_page(site,wifi_page,sizeof(wifi_page)) &&
+            av_setup_wifi_page_text(site,wifi_text,sizeof(wifi_text))) {
+            // Upper case for the code (alphanumeric mode), the short form to read.
+            snprintf(payload,sizeof(payload),"%s",wifi_page);
+            view.line1=wifi_text;
+        } else {
+            // No site known yet (a public build that has never been online):
+            // the phone page is still the remote's /tv/wifi.
+            view.line1="手机打开遥控页的 /tv/wifi";
+        }
+        view.line2=sound_line;
+        view.line2_color=sound==AV_SOUND_FAILED ? UI_VERM : UI_AMBER;
+        view.mood=(sound==AV_SOUND_RECEIVING || sound==AV_SOUND_DONE) ? 1u : 0u;
+    } else if (kind==AV_SETUP_PAGE_JOIN) {
         // A phone camera joins the hotspot from this form; WeChat's scanner
         // cannot, which is why the line names the camera.
         if (!ui_qr_wifi_text(payload,sizeof(payload),ssid)) payload[0]='\0';
         view.line1="相机扫码，或连 Wi-Fi";
         view.line2=ssid;
-    } else if (kind==SETUP_PAGE_OPEN) {
+    } else if (kind==AV_SETUP_PAGE_OPEN) {
         snprintf(payload,sizeof(payload),"%s",url);
         view.line1="扫码，或浏览器打开";
         view.line2=url;
-    } else if (kind==SETUP_PAGE_HELP) {
+    } else if (kind==AV_SETUP_PAGE_HELP) {
         snprintf(payload,sizeof(payload),"%s",AV_HELP_URL);
         view.line1="扫码看按键说明";
         view.line2="微信也能扫";
@@ -4906,7 +5028,12 @@ static bool paint_setup_screen(uint8_t *buffer, bool client_ready, unsigned page
 // Returns true when the viewer left deliberately and playback should resume;
 // false when setup ran out of time, which the caller answers with a restart
 // because the radio has to come back up in station mode.
-static bool run_setup_mode(void)
+//
+// `automatic`: the device opened setup by itself because no saved network was
+// reachable at boot (av_boot_auto_setup). Such a setup also ends -- returning
+// true, as if the viewer had left -- once a saved network shows up in the
+// access point's scans and nobody is using the setup (av_auto_setup_leave).
+static bool run_setup_mode(bool automatic)
 {
     // Start from a clean stop flag.
     //
@@ -4925,6 +5052,9 @@ static bool run_setup_mode(void)
         ESP_LOGE(TAG,"Cannot show setup: the display is still owned by playback");
         return false;
     }
+    // Which pages, decided once for this setup: sound only when the decoder is
+    // linked in (it is a separate module).
+    atomic_store(&s_setup_count,av_setup_pages(av_soundsetup_available(),AV_HELP_URL[0]!='\0',s_setup_kinds));
     atomic_store(&s_setup_page,0u);
     atomic_store(&s_setup_active,true);
     atomic_store(&s_setup_leave,false);
@@ -4971,6 +5101,11 @@ static bool run_setup_mode(void)
         return false;
     }
 
+    // Listen for the phone page's sound beside the hotspot. Needs the codec
+    // open at 16 kHz on the AI Passport (just done above, for the hiss); the
+    // Xingzhi's microphone has its own port. Without it setup is as before.
+    const bool listening=audio_ready && av_soundsetup_available() && av_soundsetup_start();
+
     // Bounded, because the access point is open: anyone in range can join it and
     // change this device's network. The window is long enough to find the
     // network, open the page and type a password, and it does not last forever.
@@ -4985,6 +5120,8 @@ static bool run_setup_mode(void)
 
     bool paint_failed=false;
     unsigned painted_second=UINT_MAX;
+    av_sound_state_t painted_sound=AV_SOUND_OFF;
+    unsigned painted_progress=0;
     for(;;) {
         pump_keys(200);
         bool ready=av_provision_client_ready();
@@ -4992,24 +5129,38 @@ static bool run_setup_mode(void)
         const uint32_t elapsed=(uint32_t)(esp_timer_get_time()/1000)-started;
         const unsigned remaining=elapsed>=AV_SETUP_WINDOW_MS ? 0u
                                  : (AV_SETUP_WINDOW_MS-elapsed+999u)/1000u;
+        unsigned progress=0;
+        const av_sound_state_t sound=av_soundsetup_state(&progress);
+        // Hearing a message turns to the sound page, wherever the viewer was:
+        // that is where its progress is shown.
+        if(sound>=AV_SOUND_RECEIVING && painted_sound<AV_SOUND_RECEIVING &&
+           setup_page_kind(page)!=AV_SETUP_PAGE_SOUND) {
+            atomic_store(&s_setup_page,0u);
+            continue;
+        }
+        // The sound page repaints when its line changes (progress in steps of
+        // whole percent, so a few repaints a second at most).
+        const bool sound_changed=setup_page_kind(page)==AV_SETUP_PAGE_SOUND &&
+                                 (sound!=painted_sound || progress!=painted_progress);
         // The status page counts down and blinks: each second only those rows.
         if(painted && ready==painted_ready && page==painted_page &&
-           setup_page_kind(page)==SETUP_PAGE_STATUS && remaining!=painted_second) {
+           setup_page_kind(page)==AV_SETUP_PAGE_STATUS && remaining!=painted_second) {
             painted_second=remaining;
-            if(!paint_setup_screen(buffer,ready,page,remaining,UI_SETUP_TICK_Y0,UI_SETUP_TICK_Y1)) {
+            if(!paint_setup_screen(buffer,ready,page,remaining,sound,progress,UI_SETUP_TICK_Y0,UI_SETUP_TICK_Y1)) {
                 ESP_LOGE(TAG,"Setup screen could not be drawn; leaving setup");
                 paint_failed=true;
                 break;
             }
         }
-        if(!painted || ready!=painted_ready || page!=painted_page) {
+        if(!painted || ready!=painted_ready || page!=painted_page || sound_changed) {
             painted=true; painted_ready=ready; painted_page=page; painted_second=remaining;
+            painted_sound=sound; painted_progress=progress;
             // A failed paint stops the loop. Retrying it would fail the same way
             // every time -- the panel or its DMA is gone -- and each attempt
             // routes through fail(), which logs and raises STOP, so the loop
             // would spin printing while nothing on screen changed. Leaving is
             // what gets the device back to a state it can recover from.
-            if(!paint_setup_screen(buffer,ready,page,remaining,0,AV_HEIGHT)) {
+            if(!paint_setup_screen(buffer,ready,page,remaining,sound,progress,0,AV_HEIGHT)) {
                 ESP_LOGE(TAG,"Setup screen could not be drawn; leaving setup");
                 paint_failed=true;
                 break;
@@ -5030,6 +5181,13 @@ static bool run_setup_mode(void)
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         }
         if(atomic_load(&s_setup_leave)) { left=true; break; }
+        // Opened by itself and a saved network is back: go and join it.
+        if(av_auto_setup_leave(automatic,av_provision_saved_network_visible(),ready,
+                               sound>=AV_SOUND_RECEIVING && sound<=AV_SOUND_CONNECTING)) {
+            ESP_LOGI(TAG,"Setup: a saved network is in range again; leaving setup");
+            left=true;
+            break;
+        }
         if(av_setup_expired(started,(uint32_t)(esp_timer_get_time()/1000),
                             AV_SETUP_WINDOW_MS)) {
             ESP_LOGW(TAG,"Setup was not completed within %u minutes",
@@ -5043,6 +5201,10 @@ static bool run_setup_mode(void)
         // reliable than unwinding them and re-initializing in place.
         if(av_provision_has_network()) {
             ESP_LOGI(TAG,"Setup stored a network; restarting to join it");
+            if (listening) av_soundsetup_stop();
+            // Someone with the device in hand set it up: trust the server's
+            // Wi-Fi key afresh (av_wifimgr.h), in case the server was changed.
+            av_wifimgr_forget_server_key();
             if (audio_ready) {
                 // Muted first: cutting power to an enabled output is audible as
                 // a click, and this is the one moment the device is quiet.
@@ -5058,6 +5220,8 @@ static bool run_setup_mode(void)
         }
     }
 
+    // The microphone first: on the AI Passport it reads the codec closed below.
+    if (listening) av_soundsetup_stop();
     if (audio_ready) {
         // Muted before the codec is closed, so leaving does not pop.
         bsp_audio_set_mute(true);
@@ -5407,7 +5571,7 @@ void av_player_main(void) {
     // continuously, which is precisely what its time limit exists to avoid.
     if(av_boot_mode(has_network,server_configured)==AV_BOOT_SETUP) {
         ESP_LOGW(TAG,"Setup needed: network=%d server=%d",(int)has_network,(int)server_configured);
-        if(!run_setup_mode()) {
+        if(!run_setup_mode(false)) {
             // Setup timed out. Restarting is how the radio comes back up in
             // station mode on the next pass, and how a device left alone in an
             // open access point gets out of it.
@@ -5440,7 +5604,11 @@ void av_player_main(void) {
     atomic_store(&s.battery_soc,-1);
     char last_announced[UI_MENU_NAME_MAX];
     memset(last_announced,0,sizeof(last_announced));
+    // For opening setup by itself at boot (av_boot_auto_setup): whether any
+    // network has answered since boot, and whether it has been opened already.
+    bool wifi_ever_up=false, auto_setup_done=false;
     while(true) {
+        if(xEventGroupGetBits(s.events)&WIFI_READY) wifi_ever_up=true;
         pump_keys(50);
         // Apply a requested channel before opening the next session, so the
         // handshake names the new channel. Clearing the flag here (not in the
@@ -5457,11 +5625,25 @@ void av_player_main(void) {
         // while it does so the viewer is never locked out of the device.
         if(!(xEventGroupGetBits(s.events)&WIFI_READY)) {
             wait_for_wifi(15000);
+            if(xEventGroupGetBits(s.events)&WIFI_READY) wifi_ever_up=true;
+            // Saved networks, none reachable since boot: the device was probably
+            // carried somewhere new. Open setup by itself (once), and let it
+            // close again if one of the networks comes back.
+            if(av_boot_auto_setup(has_network,wifi_ever_up,auto_setup_done,
+                                  (uint32_t)(esp_timer_get_time()/1000))) {
+                auto_setup_done=true;
+                ESP_LOGW(TAG,"No saved network reachable for %u s; opening setup",
+                         (unsigned)(AV_BOOT_WIFI_WAIT_MS/1000u));
+                if(run_setup_mode(true)) { continue; }
+                ESP_LOGW(TAG,"Restarting after an unfinished setup");
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
+            }
             if(atomic_exchange(&s_setup_request,false)) {
                 // Asked for from the status page drawn over the Wi-Fi screen. No
                 // session holds memory here, so the access point can start at once.
                 ESP_LOGW(TAG,"Entering setup mode from the Wi-Fi wait");
-                if(run_setup_mode()) { has_network=true; continue; }
+                if(run_setup_mode(false)) { has_network=true; continue; }
                 ESP_LOGW(TAG,"Restarting after an unfinished setup");
                 vTaskDelay(pdMS_TO_TICKS(200));
                 esp_restart();
@@ -5529,6 +5711,11 @@ void av_player_main(void) {
             }
         }
         s.last_packet_ms=(uint32_t)(esp_timer_get_time()/1000);
+        // The key pair for the phone's Wi-Fi messages: loaded once per boot,
+        // made once per device, before the session takes its buffers -- making
+        // it needs a 6 KB task for a moment (X25519). Wi-Fi is up, so the
+        // hardware RNG has its entropy.
+        av_wifimgr_init();
         if(!allocate_session()) {
             ESP_LOGE(TAG,"Session allocation failed free=%u largest=%u",(unsigned)esp_get_free_heap_size(),
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
@@ -5889,7 +6076,7 @@ void av_player_main(void) {
             ESP_LOGW(TAG,"Entering setup mode on request; heap=%u largest=%u",
                      (unsigned)esp_get_free_heap_size(),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-            if(run_setup_mode()) {
+            if(run_setup_mode(false)) {
                 // The viewer cancelled. The stored network is unchanged, so this
                 // rejoins whatever was already working.
                 ESP_LOGI(TAG,"Left setup; resuming playback");

@@ -137,7 +137,7 @@ wifi_manager.SetEventCallback([](WifiEvent event, const std::string& data) {
 });
 
 // Check if there are saved Wi-Fi credentials
-auto& ssid_list = SsidManager::GetInstance().GetSsidList();
+auto ssid_list = SsidManager::GetInstance().GetSsidList();
 if (ssid_list.empty()) {
     // No credentials saved, start config AP mode
     wifi_manager.StartConfigAp();

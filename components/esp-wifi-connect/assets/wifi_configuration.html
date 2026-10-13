@@ -152,6 +152,8 @@
             color: var(--text-muted);
         }
         .field-note:empty { display: none; }
+        .more-toggle { margin: 4px 0 0; font-size: 13px; }
+        .more-toggle a { color: var(--text-muted); text-decoration: underline; }
 
         input[type="submit"] {
             width: 100%;
@@ -555,6 +557,17 @@
                   its optional URL, so the storage and the request handling stay
                   as they are.
                 -->
+                <!--
+                  A build that already knows its server (a private build's
+                  compiled-in address, or a public build's Kconfig default)
+                  keeps all of this behind the small toggle below: only the
+                  network and its password are asked for. The device says which
+                  case it is in /advanced/config ("server_builtin").
+                -->
+                <p class="more-toggle" id="server_toggle" hidden>
+                    <a href="#" id="server_toggle_link" data-lang="server_more">Advanced</a>
+                </p>
+                <div id="server_box">
                 <p>
                     <label for="ota_url" data-lang="ota_url">Server address:</label>
                     <!--
@@ -599,7 +612,8 @@
                   and do something: on a second visit the server is already
                   running, and telling that reader to set one up would be wrong.
                 -->
-                <p class="field-note" data-lang="server_note"></p>
+                <p class="field-note" id="server_note" data-lang="server_note"></p>
+                </div>
                 <p>
                     <input type="submit" value="Connect" id="button" data-lang-value="connect">
                 </p>
@@ -813,6 +827,8 @@
                 advanced_tab: 'Advanced',
                 ota_url: 'Streaming server address:',
                 server_note: 'Needs a streaming server running on your network. See the project documentation for how to set one up.',
+                server_more: 'Advanced',
+                server_builtin_note: 'This device already knows its server. Change it only if you run your own.',
                 max_tx_power: 'Wi-Fi Max TX Power:',
                 remember_bssid: 'Remember BSSID when connecting to Wi-Fi',
                 sleep_mode: 'Enable Sleep Mode',
@@ -1338,6 +1354,8 @@
                 advanced_tab: '高级选项',
                 ota_url: '直播服务器地址:',
                 server_note: '需要你的网络里已有直播服务器在运行。搭建方法见项目文档。',
+                server_more: '高级',
+                server_builtin_note: '这台设备已经内置了服务器地址，一般不用填；自己搭了服务器才改。',
                 max_tx_power: 'Wi-Fi 最大发射功率:',
                 remember_bssid: '连接 Wi-Fi 时记住 BSSID',
                 sleep_mode: '启用睡眠模式',
@@ -1359,6 +1377,8 @@
                 advanced_tab: '進階選項',
                 ota_url: '直播伺服器位址:',
                 server_note: '需要你的網路裡已有直播伺服器在執行。架設方法見專案文件。',
+                server_more: '進階',
+                server_builtin_note: '這台裝置已內建伺服器位址，一般不用填；自己架了伺服器才改。',
                 max_tx_power: 'Wi-Fi 最大發射功率:',
                 remember_bssid: '連接 Wi-Fi 時記住 BSSID',
                 sleep_mode: '啟用睡眠模式',
@@ -1813,6 +1833,17 @@
                 // the first form rather than behind a tab.
                 document.getElementById('sleep_config_row').style.display =
                     data.show_sleep_config ? 'flex' : 'none';
+                if (data.server_builtin) {
+                    // Only the network and its password are needed; the
+                    // address stays reachable behind the toggle.
+                    const field = document.getElementById('ota_url');
+                    field.required = false;
+                    document.getElementById('server_box').hidden = true;
+                    document.getElementById('server_toggle').hidden = false;
+                    const note = document.getElementById('server_note');
+                    note.setAttribute('data-lang', 'server_builtin_note');
+                    note.textContent = translate('server_builtin_note');
+                }
                 if (data.ota_url) {
                     document.getElementById('ota_url').value = data.ota_url;
                 }
@@ -1829,6 +1860,12 @@
                 console.error('Error loading advanced config:', error);
             }
         }
+
+        document.getElementById('server_toggle_link').addEventListener('click', event => {
+            event.preventDefault();
+            const box = document.getElementById('server_box');
+            box.hidden = !box.hidden;
+        });
 
         /**
          * Clear OTA URL input field

@@ -254,6 +254,7 @@ void WifiManager::StartConfigAp() {
     config_ap_->SetLanguage(config_.language);
     config_ap_->SetShowOtaConfig(config_.show_ota_config);
     config_ap_->SetShowSleepConfig(config_.show_sleep_config);
+    config_ap_->SetServerBuiltin(config_.server_builtin);
 
     // Web handler calls this when user submits config
     config_ap_->OnExitRequested([this]() {
@@ -288,6 +289,29 @@ void WifiManager::StopConfigAp() {
 bool WifiManager::IsConfigMode() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return config_mode_active_;
+}
+
+bool WifiManager::ConfigApConnectAndSave(const std::string& ssid, const std::string& password,
+                                         const std::string& server) {
+    WifiConfigurationAp* ap = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!config_mode_active_ || !config_ap_) return false;
+        ap = config_ap_.get();
+    }
+    // Not under the lock: the attempt takes seconds, and StopConfigAp() or a
+    // status query from another task must not wait for it.
+    return ap->ConnectAndSave(ssid, password, server);
+}
+
+bool WifiManager::ConfigApSeesSavedNetwork() {
+    WifiConfigurationAp* ap = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!config_mode_active_ || !config_ap_) return false;
+        ap = config_ap_.get();
+    }
+    return ap->SeesSavedNetwork();
 }
 
 std::string WifiManager::GetApSsid() const {

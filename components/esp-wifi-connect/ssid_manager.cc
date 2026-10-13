@@ -6,7 +6,7 @@
 
 #define TAG "SsidManager"
 #define NVS_NAMESPACE "wifi"
-#define MAX_WIFI_SSID_COUNT 10
+#define MAX_WIFI_SSID_COUNT static_cast<int>(SsidManager::kMaxCount)
 
 static std::string MakeWifiKey(const char* prefix, int index) {
     if (index <= 0) {
@@ -23,6 +23,7 @@ SsidManager::~SsidManager() {
 }
 
 void SsidManager::Clear() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     ssid_list_.clear();
     SaveToNvs();
 }
@@ -86,9 +87,8 @@ void SsidManager::SaveToNvs() {
 }
 
 void SsidManager::AddSsid(const std::string& ssid, const std::string& password, uint8_t channel) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     for (auto& item : ssid_list_) {
-        ESP_LOGI(TAG, "compare [%s:%d] [%s:%d]", item.ssid.c_str(), item.ssid.size(), ssid.c_str(),
-                 ssid.size());
         if (item.ssid == ssid) {
             ESP_LOGW(TAG, "SSID %s already exists, overwrite it", ssid.c_str());
             item.password = password;
@@ -110,6 +110,7 @@ void SsidManager::AddSsid(const std::string& ssid, const std::string& password, 
 }
 
 void SsidManager::UpdateSsidChannel(const std::string& ssid, uint8_t channel) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (channel == 0) {
         return;
     }
@@ -127,6 +128,7 @@ void SsidManager::UpdateSsidChannel(const std::string& ssid, uint8_t channel) {
 }
 
 void SsidManager::RemoveSsid(int index) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (index < 0 || index >= ssid_list_.size()) {
         ESP_LOGW(TAG, "Invalid index %d", index);
         return;
@@ -136,6 +138,7 @@ void SsidManager::RemoveSsid(int index) {
 }
 
 void SsidManager::SetDefaultSsid(int index) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (index < 0 || index >= ssid_list_.size()) {
         ESP_LOGW(TAG, "Invalid index %d", index);
         return;
@@ -148,6 +151,7 @@ void SsidManager::SetDefaultSsid(int index) {
 }
 
 std::vector<uint8_t> SsidManager::GetSavedChannels() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::vector<uint8_t> channels;
     for (const auto& item : ssid_list_) {
         if (item.channel == 0) {
@@ -158,4 +162,24 @@ std::vector<uint8_t> SsidManager::GetSavedChannels() const {
         }
     }
     return channels;
+}
+
+void SsidManager::MoveUp(int index) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (index <= 0 || index >= static_cast<int>(ssid_list_.size())) {
+        ESP_LOGW(TAG, "Invalid index %d", index);
+        return;
+    }
+    std::swap(ssid_list_[index - 1], ssid_list_[index]);
+    SaveToNvs();
+}
+
+bool SsidManager::IsFull() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return ssid_list_.size() >= kMaxCount;
+}
+
+std::vector<SsidItem> SsidManager::GetSsidList() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return ssid_list_;
 }

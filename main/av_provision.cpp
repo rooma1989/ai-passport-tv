@@ -48,6 +48,8 @@ std::atomic<bool> s_client_ready{false};
 void (*s_on_disconnected)(void) = nullptr;
 void (*s_on_connected)(void) = nullptr;
 
+bool s_server_builtin = false;
+
 char s_ap_name[64];
 char s_ap_url[64];
 
@@ -144,6 +146,7 @@ bool av_provision_init(bool *has_stored_network)
     WifiManagerConfig config;
     config.ssid_prefix = "FoloToy";
     config.language = "zh-CN";
+    config.server_builtin = s_server_builtin;
     auto &manager = WifiManager::GetInstance();
     if (!manager.Initialize(config)) {
         ESP_LOGE(TAG, "Could not start the WiFi stack");
@@ -352,6 +355,107 @@ bool av_provision_has_network(void)
     // the count unchanged and the screen sat on the setup page while the phone
     // reported success.
     return !WifiManager::GetInstance().IsConfigMode();
+}
+
+void av_provision_set_server_builtin(bool builtin)
+{
+    s_server_builtin = builtin;
+}
+
+unsigned av_provision_saved(char names[][33], unsigned max)
+{
+    if (!names || max == 0) {
+        return 0;
+    }
+    const auto list = SsidManager::GetInstance().GetSsidList();
+    unsigned n = 0;
+    for (const auto &item : list) {
+        if (n >= max) {
+            break;
+        }
+        copy_out(names[n], 33, item.ssid.c_str());
+        n++;
+    }
+    return n;
+}
+
+bool av_provision_add_network(const char *ssid, const char *password)
+{
+    if (!s_initialized.load() || !ssid || !ssid[0] || strlen(ssid) > 32 ||
+        (password && strlen(password) > 64)) {
+        return false;
+    }
+    SsidManager::GetInstance().AddSsid(ssid, password ? password : "");
+    ESP_LOGI(TAG, "Network added from the remote");
+    return true;
+}
+
+static bool valid_index(unsigned index)
+{
+    return s_initialized.load() && index < SsidManager::GetInstance().GetSsidList().size();
+}
+
+bool av_provision_remove_network(unsigned index)
+{
+    if (!valid_index(index)) {
+        return false;
+    }
+    SsidManager::GetInstance().RemoveSsid((int)index);
+    ESP_LOGI(TAG, "Network %u removed from the remote", index);
+    return true;
+}
+
+bool av_provision_raise_network(unsigned index)
+{
+    if (!valid_index(index)) {
+        return false;
+    }
+    if (index > 0) {
+        SsidManager::GetInstance().MoveUp((int)index);
+    }
+    return true;
+}
+
+bool av_provision_use_network(unsigned index)
+{
+    if (!valid_index(index) || s_ap_running.load()) {
+        return false;
+    }
+    if (index > 0) {
+        SsidManager::GetInstance().SetDefaultSsid((int)index);
+    }
+    ESP_LOGI(TAG, "Rejoining with network %u first", index);
+    // A real disconnect, reported as one: the session on the old network ends.
+    auto &manager = WifiManager::GetInstance();
+    manager.StopStation();
+    manager.StartStation();
+    av_provision_keep_radio_awake();
+    return true;
+}
+
+bool av_provision_saved_network_visible(void)
+{
+    return s_initialized.load() && s_ap_running.load() &&
+           WifiManager::GetInstance().ConfigApSeesSavedNetwork();
+}
+
+bool av_provision_connect_and_save(const char *ssid, const char *password, const char *server)
+{
+    if (!s_initialized.load() || !s_ap_running.load() || !ssid) {
+        return false;
+    }
+    return WifiManager::GetInstance().ConfigApConnectAndSave(ssid, password ? password : "",
+                                                             server ? server : "");
+}
+
+void av_provision_finish_setup(void)
+{
+    if (!s_initialized.load() || !s_ap_running.load()) {
+        return;
+    }
+    // What the page's /exit does: leave config mode. av_provision_has_network()
+    // reads that as "a network was stored", and the setup loop restarts.
+    WifiManager::GetInstance().StopConfigAp();
 }
 
 void av_provision_on_disconnected(void (*callback)(void))

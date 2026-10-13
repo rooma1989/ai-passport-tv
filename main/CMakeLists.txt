@@ -1,5 +1,4 @@
-idf_component_register(
-    SRCS "main.c"
+set(srcs "main.c"
          "ui_pixel.c"
          "ui_pixel_math.c"
          "demo_display.c"
@@ -32,6 +31,20 @@ idf_component_register(
          "av_voice.c"
          "av_voice_policy.c"
          "av_identity.c"
+         "av_wifi_crypto.c"
+         "av_wifi_ops.c"
+         "av_wifimgr.c"
+         "av_soundsetup.c")
+# The sound-provisioning decoder is its own module (av_soundprov.c/.h). It is
+# built when it is in the tree; av_soundsetup.c checks for its header the same
+# way, so a tree without it still builds and simply has no sound page.
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/av_soundprov.c")
+    list(APPEND srcs "av_soundprov.c")
+endif()
+list(REMOVE_DUPLICATES srcs)
+
+idf_component_register(
+    SRCS ${srcs}
     INCLUDE_DIRS "."
     # The non-ASCII glyph table, written by tools/make_font.py. Embedded as a
     # blob rather than included as a header: the same data as C source is about
@@ -39,7 +52,7 @@ idf_component_register(
     EMBED_FILES "ui_font_cjk.bin"
     REQUIRES bsp qrcodegen bt esp_driver_usb_serial_jtag esp_event esp_hw_support esp_netif
              esp_timer esp_wifi nvs_flash json esp_rom
-             esp-wifi-connect app_update
+             esp-wifi-connect app_update mbedtls
 )
 # The glyph blob is checked in, so a fresh clone builds without extra steps. Say
 # what to run if it is ever missing: EMBED_FILES would otherwise fail with a
@@ -48,6 +61,13 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ui_font_cjk.bin")
     message(FATAL_ERROR
         "main/ui_font_cjk.bin is missing. Regenerate it with:\n"
         "    python3 tools/make_font.py --text-file channels.txt")
+endif()
+# With the decoder present, say so on the command line too: a changed flag makes
+# every file of this component rebuild, so av_soundsetup.c is not left compiled
+# from before the decoder arrived (its __has_include is not a dependency ninja
+# can see).
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/av_soundprov.c")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE AV_SOUNDPROV_PRESENT=1)
 endif()
 # Release/validation builds must never ingest a developer's private header.
 if(AV_PUBLIC_BUILD)

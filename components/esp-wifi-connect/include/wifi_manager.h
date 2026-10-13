@@ -63,6 +63,10 @@ struct WifiManagerConfig {
 
     // Whether to show the sleep mode toggle in the config portal advanced tab.
     bool show_sleep_config = false;
+
+    // The firmware has a streaming server compiled in, so the portal hides the
+    // server-address field behind an "Advanced" toggle and does not require it.
+    bool server_builtin = false;
 };
 
 /**
@@ -95,6 +99,14 @@ public:
     void StopConfigAp();   // Non-blocking
     
     bool IsConfigMode() const;
+    // The web form's submit for another caller (sound provisioning): test the
+    // network, save it, store the server if given. Blocks for up to ~25 s while
+    // it tries; false when not in config mode or the network could not be joined.
+    // Leaving config mode afterwards is the caller's job (StopConfigAp()).
+    bool ConfigApConnectAndSave(const std::string& ssid, const std::string& password,
+                                const std::string& server);
+    // Whether the config AP's last scan saw a saved network.
+    bool ConfigApSeesSavedNetwork();
     std::string GetApSsid() const;
     std::string GetApWebUrl() const;
 
