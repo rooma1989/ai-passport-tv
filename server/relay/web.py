@@ -24,7 +24,7 @@ from pathlib import Path
 from .. import channel_groups, now_playing
 from ..tenancy import files as tenancy_files
 from ..tenancy.tickets import LoginTickets
-from . import console, events, stream, table, voice, youtube as youtube_links
+from . import console, events, stream, table, voice, wifi as wifi_api, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
@@ -161,6 +161,8 @@ class Relay:
         self._cache_lock = threading.RLock()
         # 设备文件上次写的样子（主人、遥控码），变了就重写。
         self._synced: dict[str, tuple] = {}
+        # 多用户：给设备加密 Wi-Fi 修改用的 X25519 私钥（wifi.setup_key 在启动时读进来）。
+        self.wifi_private: bytes | None = None
 
     @property
     def tenant(self) -> bool:
@@ -1599,6 +1601,9 @@ def _manage_handler(relay: Relay):
                                         query.get("wait"), query.get("kind") or "video"))
             elif relay.tenant and path == "/api/devices":
                 self._json({"ok": True, "devices": relay.my_devices(caller)})
+            elif relay.tenant and path == "/api/wifi":
+                # 设备保存的 Wi-Fi（只有名字）和最近一次修改的结果：主人才看得到（server/relay/wifi.py）。
+                self._json(wifi_api.get(relay, caller, device))
             elif relay.tenant and _BIND_INFO.match(path):
                 self._json(relay.bind_info(_BIND_INFO.match(path).group(1), caller))
             else:
@@ -1765,6 +1770,10 @@ def _manage_handler(relay: Relay):
             self._not_found()
 
         def _post_tenant(self, path: str, body: dict, caller: Caller) -> None:
+            if path == "/api/wifi":
+                # 改设备保存的 Wi-Fi：加密后经电视服务发给设备（server/relay/wifi.py）。
+                self._json(wifi_api.post(relay, caller, body, self._ip()))
+                return
             if path == "/api/bind":
                 claim = body.get("claim")
                 if not isinstance(claim, str):

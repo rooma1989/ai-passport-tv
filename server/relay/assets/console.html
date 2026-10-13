@@ -194,6 +194,23 @@
   .modal .row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
   .modal p { margin: 8px 0; color: var(--dim); font-size: 13px; }
 
+  /* ---- 设备的 Wi-Fi（弹窗） ---- */
+  .modal.wide { width: min(560px, calc(100vw - 32px)); }
+  .wifitab td { padding: 9px 10px 9px 0; }
+  .wifitab td.n { font: 12px var(--mono); color: var(--red); width: 28px; }
+  .wifitab td.t small { font: 12px var(--mono); color: var(--amber); margin-left: 8px; }
+  .wifitab td.a button + button { margin-left: 12px; }
+  .wifitab button:disabled { opacity: .35; }
+  .wifiform { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; margin-top: 14px; }
+  .wifiform input { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule); color: var(--paper);
+                    font: 15px/1.5 var(--sans); padding: 9px 10px; border-radius: 0; }
+  .wifistate { margin: 10px 0 0; padding: 8px 12px; font: 14px/1.5 var(--serif); background: var(--ink-deep);
+               border-left: 2px solid var(--rule); color: var(--dim); }
+  .wifistate.busy { border-color: var(--amber); color: var(--amber); }
+  .wifistate.ok { border-color: var(--amber); color: var(--paper); }
+  .wifistate.bad { border-color: var(--red); color: var(--paper); }
+  .wifistate:empty { display: none; }
+
   .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: var(--paper-hi); color: var(--ink);
            padding: 9px 18px; font: 14px var(--serif); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; max-width: 80vw; }
   .toast.on { opacity: 1; }
@@ -965,6 +982,7 @@ async function openEpisodes(id) {
 function closeOverlays() {
   $("shade").hidden = $("drawer").hidden = $("modal").hidden = true;
   eps = null;
+  if (typeof closeWifi === "function" && wifiDev) closeWifi();
 }
 $("epClose").onclick = closeOverlays;
 $("shade").onclick = closeOverlays;
@@ -1144,6 +1162,7 @@ async function loadDevices() {
     if (d.mine) {
       actions.append(
         button("改名", "linkbtn", () => renameDevice(d)),
+        button("Wi-Fi", "linkbtn", () => openWifi(d)),
         button("访客码", "linkbtn", () => guestCode(d)),
         ...(d.legacy ? [] : [button("重新配对", "linkbtn", () => repairDevice(d)), button("解绑", "linkbtn red", () => unbindDevice(d))]));
     }
@@ -1206,6 +1225,139 @@ async function guestCode(d) {
         el("p", "", "客人用手机相机或微信扫这个码，就能遥控这一台（换台、音量、投屏），看不到你的订阅，也碰不到别的设备。小电视状态页上的二维码是同一个。"),
         el("div", "link", d.guest_link), row);
 }
+// ---------- 设备的 Wi-Fi（主人；接口和手机同一套：GET/POST api/wifi，见 server/relay/wifi.py） ----------
+// 密码加密后经电视服务发给设备，只有那台设备解得开；这里也拿不到已保存的密码。
+let wifiDev = null;     // { id, name, data, wait }
+let wifiTimer = 0;
+
+async function openWifi(d) {
+  wifiDev = { id: d.id, name: d.name, data: null, wait: null };
+  const box = $("modal");
+  box.classList.add("wide");
+  const ssid = el("input"); ssid.type = "text"; ssid.id = "wifiSsid"; ssid.placeholder = "Wi-Fi 名字"; ssid.maxLength = 32;
+  ssid.autocomplete = "off"; ssid.spellcheck = false;
+  const pass = el("input"); pass.type = "password"; pass.id = "wifiPass"; pass.placeholder = "密码（没有就留空）";
+  pass.autocomplete = "new-password"; pass.maxLength = 64;
+  const add = button("保存到小电视", "go", () => {
+    if (!ssid.value.trim()) { toast("先填 Wi-Fi 名字", true); return; }
+    if (pass.value && pass.value.length < 8) { toast("Wi-Fi 密码至少 8 位；没有密码就留空", true); return; }
+    const body = { op: "add", ssid: ssid.value, password: pass.value };
+    pass.value = "";
+    wifiChange(body, "保存「" + ssid.value + "」");
+  });
+  add.id = "wifiAdd";
+  const form = el("div", "wifiform");
+  form.append(ssid, pass, add);
+  const table = el("table", "wifitab");
+  table.appendChild(el("tbody"));
+  table.firstChild.id = "wifiRows";
+  const state = el("div", "wifistate");
+  state.id = "wifiState";
+  const row = el("div", "row");
+  row.append(button("关闭", "ghost", () => { closeWifi(); closeOverlays(); }));
+  modal("「" + d.name + "」的 Wi-Fi",
+        el("p", "", "小电视按这个顺序找能连上的 Wi-Fi，信号太弱的排到最后。新加的排在最前面；最多存 10 个。"),
+        table, state, form,
+        el("p", "", "「立即切换」会让小电视断开几秒；连不上时它会自己回到原来的 Wi-Fi。"), row);
+  await loadWifi();
+}
+
+function closeWifi() {
+  wifiDev = null;
+  clearTimeout(wifiTimer);
+  $("modal").classList.remove("wide");
+}
+
+async function loadWifi() {
+  if (!wifiDev) return;
+  clearTimeout(wifiTimer);
+  let answer;
+  try { answer = await call("GET", "api/wifi?device=" + encodeURIComponent(wifiDev.id)); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (!wifiDev || !answer.ok) return;
+  wifiDev.data = answer;
+  renderWifi();
+  if (wifiDev && wifiDev.wait) wifiTimer = setTimeout(loadWifi, 1000);
+}
+
+function wifiSay(text, kind) {
+  const box = $("wifiState");
+  if (!box) return;
+  box.textContent = text;
+  box.className = "wifistate" + (kind ? " " + kind : "");
+}
+
+function renderWifi() {
+  const d = wifiDev.data, wait = wifiDev.wait;
+  const rows = $("wifiRows");
+  if (!rows) return;
+  rows.replaceChildren();
+  $("wifiAdd").disabled = !d.supported || !!wait;
+  if (!d.supported) { rows.appendChild(emptyRow("这台小电视的固件还不支持在这里管理 Wi-Fi，升级后再来", 3)); return; }
+  if (d.key_changed) wifiSay("小电视的钥匙变了（刷过机？）：先在设备列表里点「重新配对」，再让它重新连一次网。", "bad");
+  const names = d.networks || [];
+  if (!names.length) rows.appendChild(emptyRow("还没有保存的 Wi-Fi", 3));
+  names.forEach((name, i) => {
+    const tr = el("tr");
+    const label = el("td", "t", name);
+    const using = d.online && name === d.current;
+    if (using) label.appendChild(el("small", "", "正在用"));
+    const actions = el("td", "a");
+    const up = button("上移", "linkbtn", () => wifiChange({ op: "up", i, ssid: name }, "「" + name + "」上移"));
+    up.disabled = i === 0 || !!wait;
+    const use = button("立即切换", "linkbtn", () => {
+      if (!confirm("让小电视马上换到「" + name + "」？它会断开几秒；连不上时会自己回到原来的 Wi-Fi。")) return;
+      wifiChange({ op: "switch", i, ssid: name }, "切换到「" + name + "」");
+    });
+    use.disabled = using || !!wait;
+    const remove = button("删除", "linkbtn red", () => {
+      const last = names.length === 1 ? "这是最后一个，删掉后小电视下次开机会进入配网模式。" : "";
+      if (!confirm("从小电视上删掉「" + name + "」？" + last)) return;
+      wifiChange({ op: "remove", i, ssid: name }, "删除「" + name + "」");
+    });
+    remove.disabled = !!wait;
+    actions.append(up, use, remove);
+    tr.append(el("td", "n", pad(i + 1)), label, actions);
+    rows.appendChild(tr);
+  });
+  followWifi();
+}
+
+function followWifi() {
+  const d = wifiDev.data, wait = wifiDev.wait;
+  if (!wait) return;
+  const p = d.pending;
+  if (!p || p.seq !== wait.seq) return;
+  if (p.state === "sent") { wifiSay(wait.label + "：正在发给小电视…", "busy"); return; }
+  if (p.state !== "saved") { wifiSay(wait.label + "：" + p.error, "bad"); wifiDev.wait = null; renderWifi(); return; }
+  if (wait.op !== "switch") { wifiSay(wait.label + "：已保存", "ok"); wifiDev.wait = null; renderWifi(); return; }
+  const elapsed = (Date.now() - wait.sentAt) / 1000;
+  if (d.online && d.current === wait.ssid) {
+    wifiSay("已切换到「" + wait.ssid + "」", "ok");
+  } else if (d.online && elapsed > 8 && d.current && d.reported_at * 1000 > wait.sentAt) {
+    wifiSay("没能连上「" + wait.ssid + "」（密码不对或不在范围内），小电视回到了「" + d.current + "」", "bad");
+  } else if (elapsed > 90) {
+    wifiSay("小电视还没重新上线。过一会儿刷新看看；连不上时它会自己回到能用的 Wi-Fi。", "bad");
+  } else {
+    wifiSay("已保存，小电视正在切换到「" + wait.ssid + "」…", "busy");
+    return;
+  }
+  wifiDev.wait = null;
+  renderWifi();
+}
+
+async function wifiChange(body, label) {
+  if (!wifiDev) return;
+  let answer;
+  try { answer = await call("POST", "api/wifi", Object.assign({ device: wifiDev.id }, body)); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (!answer.ok) { wifiSay(label + "：" + answer.error, "bad"); return; }
+  if (body.op === "add" && $("wifiSsid")) $("wifiSsid").value = "";
+  wifiDev.wait = { seq: answer.seq, op: body.op, ssid: body.ssid, label, sentAt: Date.now() };
+  wifiSay(label + "：正在发给小电视…", "busy");
+  await loadWifi();
+}
+
 $("bind").onclick = () => busy($("bind"), async () => {
   const claim = $("claim").value.replace(/[\s-]/g, "").toUpperCase();
   if (!claim) { toast("请先输入绑定码", true); return; }

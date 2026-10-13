@@ -339,6 +339,27 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
 - `TV_VOICE_LOG_TEXT=1` 在日志里加上识别出的文字（`heard='…'`），用来调阈值。默认关闭，调完要关掉。
 - `TV_VOICE_WAV_DIR=<目录>`（仅开发用，默认关闭）把每句话存成 WAV，用来攒测试语料。共用的主机上不要设。
 
+## 管理设备的 Wi-Fi（多用户中转）
+
+设计和威胁模型：[`2026-10-13-wifi-setup-design.zh_CN.md`](../docs/superpowers/specs/2026-10-13-wifi-setup-design.zh_CN.md)。
+
+设备主人（或者是这台设备成员的管理员）可以在手机遥控页和电脑版上查看、添加、删除、调整顺序、立即切换设备保存的 Wi-Fi
+（`GET`/`POST /api/wifi`，`server/relay/wifi.py`）。其他人一律 404。
+
+- **钥匙。** 中转（只在 `--db` 时）启动时从 `--wifi-key` 读 X25519 私钥（默认是数据库旁边的 `wifi-key`，第一次启动时以 0600 生成），
+  把公钥写进数据库 meta `wifi_pub`。这个文件要和数据库一起备份：换了钥匙，设备会拒绝修改，直到在设备上完成一次配网。
+- **路径。** 中转用设备记住的公钥加密每一条修改（X25519 + HKDF-SHA256 + AES-256-GCM，`server/wifi_crypto.py`），
+  在设备的事件文件里加一条 `wifi` 事件（`text` 是信封，`value` 是 Unix 秒）。电视服务对 HELLO 里有 `"wifimgr": 1` 的固件，
+  在 30 秒内把它作为 `SWITCH {"wifi": …}` 发出，在 CONFIG 里给 `"wifi_key"`，并记下设备 `STATUS {"wifi": …}` 的回答。
+- **存储。** 表 `device_wifi`（`server/tenancy/wifi.py`）：记住的设备公钥、上次报告的 Wi-Fi 名字和正在用的、上一个 seq、
+  等回答的修改、上一次回答。密码从不写进数据库、事件文件或日志，只在中转加密时的内存里。
+- **不在线不排队。** 设备不在线时直接拒绝（`小电视不在线`）；20 秒没回答，页面显示 `小电视没有回应`。
+- **重新配对。** 钥匙变了的设备（刷机清空过）会被拒绝，直到主人点「重新配对」；这段时间里的下一次 HELLO 同时换上新的密钥和 Wi-Fi 钥匙。
+
+部署：`server/wifi_crypto.py`、`server/tenancy/{db,gate,wifi}.py`、`server/tv_server.py`、`server/cast_switch.py`、
+`server/relay/{events,wifi,web,__main__}.py` 和两个页面。中转要能在数据库所在目录里写文件（它本来就在那里写数据库）才能生成 `wifi-key`。
+单用户（旧）模式没有设备钥匙，这个功能不开。
+
 ## 调度、边界与停止
 
 - 服务端时间起点为 CONFIG 写完后 200 ms；音频在 PTS 前 200 ms 发送，视频提前 50 ms。

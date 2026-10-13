@@ -24,6 +24,7 @@ from typing import NamedTuple
 
 from ..protocol import ProtocolError
 from . import files as device_files_module
+from . import wifi as device_wifi
 from .accounts import Accounts
 from .db import sha256
 from .files import DeviceFiles
@@ -111,6 +112,7 @@ class Gate:
         fw = "".join(c for c in fw if 32 <= ord(c) < 127)[:FW_MAX]
         model = hello.get("model") if isinstance(hello.get("model"), str) else ""
         if identified:
+            repaired = False
             row = self.accounts.device(did)
             if row is None:
                 row = self.accounts.register_device(did, model, secret, fw, peer)
@@ -120,8 +122,10 @@ class Gate:
                     self._fail(f"device {did} is {row['status']}", keys)
                 matches = row["secret_sha256"] is not None and hmac.compare_digest(
                     bytes(row["secret_sha256"]), sha256(secret))
+                # 重新配对窗口：刷过机的设备密钥和 Wi-Fi 钥匙都是新的，两样都换成新的。
+                repaired = row["repair_until"] is not None and row["repair_until"] > self.clock()
                 if not matches:
-                    if row["repair_until"] is not None and row["repair_until"] > self.clock():
+                    if repaired:
                         self.accounts.pin_secret(did, secret)
                         self.logger(f"device {did} re-paired: new secret pinned")
                     else:
@@ -130,12 +134,14 @@ class Gate:
                 self.accounts.touch_device(did, fw=fw, model=model, ip=peer)
                 row = self.accounts.device(did)
             if row["status"] == "active":
+                self.wifi_hello(did, hello, repaired)
                 return Admission(did, True, self.files(did))
             if token_ok:
                 legacy = self._legacy(port)
                 if legacy is not None:
                     self.logger(f"device {did} unbound but has the pairing token: "
                                 f"served as {legacy} (adopt it to move its state)")
+                    self.wifi_hello(legacy, hello, repaired)
                     return Admission(legacy, True, self.files(legacy), legacy=True)
             claim = row["claim_code"] or ""
             return Admission(did, False, None, claim=claim, claim_url=self.claim_url(claim))
@@ -147,6 +153,13 @@ class Gate:
             self._fail(f"pairing token on port {port}, which has no legacy device", keys)
         self._fail("no device identity and no valid pairing token", keys)
         raise AssertionError("unreachable")
+
+    def wifi_hello(self, device_id: str, hello: dict, repin: bool = False) -> None:
+        """新固件的 Wi-Fi 管理：公钥（首次信任）、保存的 Wi-Fi 名字、正在用的（server/tenancy/wifi.py）。"""
+        try:
+            device_wifi.hello(self.accounts, device_id, hello, repin=repin, logger=self.logger)
+        except Exception as error:      # noqa: BLE001 —— 记不下来不该挡住播放
+            self.logger(f"device {device_id} wifi state not stored: {type(error).__name__}")
 
     def _legacy(self, port: int) -> str | None:
         row = self.accounts.legacy_device(port)

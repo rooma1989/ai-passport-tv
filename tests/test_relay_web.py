@@ -1102,7 +1102,9 @@ class PageFieldTests(unittest.TestCase):
                   "video", "position", "duration", "paused", "started", "moving",
                   "device", "volume", "brightness", "steps", "pet", "audio_only",
                   "series", "room", "fits", "episode", "devices", "auto", "target",
-                  "episodes", "next", "playing", "cut", "note", "me", "link"}
+                  "episodes", "next", "playing", "cut", "note", "me", "link",
+                  # GET/POST /api/wifi (server/relay/wifi.py, server/tenancy/wifi.py state()).
+                  "supported", "networks", "current", "reported_at", "pending", "key_changed", "seq"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

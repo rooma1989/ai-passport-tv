@@ -520,6 +520,41 @@ Measure the recogniser on the host before promising latency: muse-asr logs
   utterance as a WAV file there, to build a test corpus. Never set it on a
   shared host.
 
+## Managing a device's Wi-Fi (multi-user relay)
+
+Design and threat model: [`2026-10-13-wifi-setup-design.md`](../docs/superpowers/specs/2026-10-13-wifi-setup-design.md).
+
+The owner of a device (or an admin who is a member of it) can list, add,
+remove, reorder and switch its saved networks from the phone remote and the PC
+console (`GET`/`POST /api/wifi`, `server/relay/wifi.py`). Everyone else gets 404.
+
+- **Keys.** At start-up the relay (`--db` only) reads its X25519 private key
+  from `--wifi-key` (default: `wifi-key` next to the database; created 0600 on
+  first start) and writes the public half to DB meta `wifi_pub`. Back the file
+  up with the database: with a new key, devices refuse changes until setup is
+  completed on the device once.
+- **Path.** The relay seals each change for the device's pinned public key
+  (X25519 + HKDF-SHA256 + AES-256-GCM, `server/wifi_crypto.py`) and appends a
+  `wifi` event (`text` = envelope, `value` = Unix seconds) to the device's events
+  file. The media server sends it as `SWITCH {"wifi": …}` to firmware whose HELLO
+  had `"wifimgr": 1` if it is under 30 s old, puts `"wifi_key"` in CONFIG for such
+  firmware, and stores the device's `STATUS {"wifi": …}` answer.
+- **Storage.** Table `device_wifi` (`server/tenancy/wifi.py`): pinned device
+  key, last reported network names and the one in use, last seq, the pending
+  change and the last answer. Passwords are never written to the database, the
+  events file or the log; they exist only in the relay's memory while sealing.
+- **Not online, no queue.** A change for an offline device is refused at once
+  ("the TV is offline"); the page shows "no answer from the TV" after 20 s without an answer.
+- **Re-pair.** A device whose key changed (flash erased) is refused until the
+  owner presses "re-pair"; the next HELLO in that window pins both its secret
+  and its Wi-Fi key.
+
+Deploy: `server/wifi_crypto.py`, `server/tenancy/{db,gate,wifi}.py`,
+`server/tv_server.py`, `server/cast_switch.py`, `server/relay/{events,wifi,web,__main__}.py`
+and the two pages. The relay needs write access to the database directory
+(it already writes the database there) to create `wifi-key`. Legacy (single-user)
+mode has no device keys, so the feature is off there.
+
 ## Scheduling, bounds and shutdown
 
 - Server time origin is CONFIG write completion plus 200 ms. Audio is scheduled

@@ -195,6 +195,18 @@
           padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
   .gate.on { display: flex; }
   a.pclogin { margin-top: 14px; text-decoration: none; }
+  /* 设备保存的 Wi-Fi（主人才有）。 */
+  .wifirow .t small { font: 12px var(--mono); color: var(--amber); margin-left: 6px; }
+  .wifirow button { flex: none; background: none; border: 0; color: var(--dim); font: 14px var(--serif); padding: 0 0 0 10px; }
+  .wifirow button.red { color: var(--red); }
+  .wifirow button:disabled { opacity: .35; }
+  .wifistate { margin: 12px 16px 0; padding: 9px 12px; font: 14px/1.5 var(--serif); background: var(--ink-deep);
+               border-left: 2px solid var(--rule); color: var(--dim); }
+  .wifistate.busy { border-color: var(--amber); color: var(--amber); }
+  .wifistate.ok { border-color: var(--amber); color: var(--paper); }
+  .wifistate.bad { border-color: var(--red); color: var(--paper); }
+  .wifistate[hidden] { display: none; }
+  .wifiform input + input { margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -254,6 +266,26 @@
       <div class="dots"></div>
       <div class="petgrid" id="petgrid"></div>
       <div class="apply"><button id="petapply">正在使用</button><p>换上后电视会让它开心 2 秒，再回到节目</p></div>
+    </section>
+
+    <!-- 设备保存的 Wi-Fi：只有主人能看能改（server/relay/wifi.py）。密码加密后经电视服务发给设备，
+         只有那台设备解得开；这里也从来拿不到已保存的密码。 -->
+    <section class="page" id="wifi">
+      <div class="pethead">
+        <div class="crumb"><button id="wifiback">‹ 订阅 · 我的设备</button><span id="wifidev"></span></div>
+        <h1>Wi-Fi</h1>
+        <p id="wifisum">小电视按这个顺序找能连上的 Wi-Fi，信号太弱的排到最后。</p>
+      </div>
+      <div class="wifistate" id="wifistate" hidden></div>
+      <ol class="rows" id="wifilist"></ol>
+      <div class="h">添加 Wi-Fi</div>
+      <div class="box wifiform">
+        <input id="wifissid" placeholder="Wi-Fi 名字（区分大小写）" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input id="wifipass" type="password" placeholder="密码（没有密码就留空）" autocomplete="new-password" maxlength="64">
+        <button class="go" id="wifiadd">保存到小电视</button>
+      </div>
+      <div class="hint">新加的排在最前面。密码加密后才发出去，只有这台小电视解得开；这里看不到已保存的密码。
+        最多存 10 个。「立即切换」会让小电视断开一下，连不上时它会自己回到原来的 Wi-Fi。</div>
     </section>
 
     <section class="page" id="episodes">
@@ -881,6 +913,9 @@ function renderMine() {
         refresh();
       };
       row.appendChild(rename);
+      const wifi = el("button", "", "Wi-Fi");
+      wifi.onclick = () => openWifi(dv.id, dv.name);
+      row.appendChild(wifi);
       if (!dv.legacy) {
         const unbind = el("button", "red", "解绑");
         unbind.onclick = async () => {
@@ -896,6 +931,144 @@ function renderMine() {
     list.appendChild(li);
   }
 }
+
+// ---------- Wi-Fi（主人） ----------
+// wifi：正在看的那台 { id, name, data }；wifiWait：发出后等设备回答 { seq, op, ssid, from }。
+let wifi = null;
+let wifiWait = null;
+let wifiTimer = 0;
+
+async function openWifi(id, name) {
+  wifi = { id, name, data: null };
+  wifiWait = null;
+  $("wifidev").textContent = name;
+  $("wifistate").hidden = true;
+  $("wifissid").value = "";
+  $("wifipass").value = "";
+  showPage("wifi");
+  await loadWifi();
+}
+
+async function loadWifi() {
+  if (!wifi) return;
+  clearTimeout(wifiTimer);
+  let answer;
+  try { answer = await call("GET", "api/wifi?device=" + encodeURIComponent(wifi.id)); } catch (error) { return; }
+  if (!wifi || !answer.ok) return;
+  wifi.data = answer;
+  renderWifi();
+  // 等回答时每秒看一次；切换后等设备换好网重新上线，再多看一会儿。
+  if (wifiWait) wifiTimer = setTimeout(loadWifi, 1000);
+}
+
+function wifiSay(text, kind) {
+  const box = $("wifistate");
+  box.textContent = text;
+  box.className = "wifistate" + (kind ? " " + kind : "");
+  box.hidden = !text;
+}
+
+function renderWifi() {
+  const d = wifi.data;
+  const list = $("wifilist");
+  list.innerHTML = "";
+  $("wifiadd").disabled = !d.supported || !!wifiWait;
+  if (!d.supported) {
+    list.appendChild(el("li", "empty", "这台小电视的固件还不支持在手机上管理 Wi-Fi，升级后再来。"));
+    wifiSay("");
+    return;
+  }
+  if (d.key_changed) wifiSay("小电视的钥匙变了（刷过机？）：先在「我的设备」里重新配对，再让它重新连一次网。", "bad");
+  const names = d.networks || [];
+  if (!names.length) list.appendChild(el("li", "empty", "还没有保存的 Wi-Fi"));
+  names.forEach((name, i) => {
+    const li = el("li");
+    const row = el("div", "row wifirow");
+    row.appendChild(el("span", "n", pad(i + 1)));
+    const label = el("span", "t", name);
+    const using = d.online && name === d.current;
+    if (using) label.appendChild(el("small", "", "正在用"));
+    row.appendChild(label);
+    const up = el("button", "", "上移");
+    up.disabled = i === 0 || !!wifiWait;
+    up.onclick = () => wifiChange({ op: "up", i, ssid: name }, "「" + name + "」上移");
+    const use = el("button", "", "立即切换");
+    use.disabled = using || !!wifiWait;
+    use.onclick = () => {
+      if (!confirm("让小电视马上换到「" + name + "」？它会断开几秒；连不上时会自己回到原来的 Wi-Fi。")) return;
+      wifiChange({ op: "switch", i, ssid: name }, "切换到「" + name + "」");
+    };
+    const remove = el("button", "red", "删除");
+    remove.disabled = !!wifiWait;
+    remove.onclick = () => {
+      const last = names.length === 1 ? "这是最后一个，删掉后小电视下次开机会进入配网模式。" : "";
+      if (!confirm("从小电视上删掉「" + name + "」？" + last)) return;
+      wifiChange({ op: "remove", i, ssid: name }, "删除「" + name + "」");
+    };
+    row.append(up, use, remove);
+    li.appendChild(row);
+    list.appendChild(li);
+  });
+  followWifi();
+}
+
+// 发出去以后：看设备的回答；「立即切换」还要等它换好网重新上线。
+function followWifi() {
+  const d = wifi.data;
+  if (!wifiWait) return;
+  const p = d.pending;
+  if (!p || p.seq !== wifiWait.seq) return;
+  if (p.state === "sent") { wifiSay(wifiWait.label + "：正在发给小电视…", "busy"); return; }
+  if (p.state === "failed" || p.state === "timeout") {
+    wifiSay(wifiWait.label + "：" + p.error, "bad");
+    wifiWait = null;
+    renderWifi();
+    return;
+  }
+  // saved
+  if (wifiWait.op !== "switch") {
+    wifiSay(wifiWait.label + "：已保存", "ok");
+    wifiWait = null;
+    renderWifi();
+    return;
+  }
+  const elapsed = (Date.now() - wifiWait.sentAt) / 1000;
+  if (d.online && d.current === wifiWait.ssid) {
+    wifiSay("已切换到「" + wifiWait.ssid + "」", "ok");
+    wifiWait = null;
+  } else if (d.online && elapsed > 8 && d.current && d.current !== wifiWait.ssid && d.reported_at * 1000 > wifiWait.sentAt) {
+    wifiSay("没能连上「" + wifiWait.ssid + "」（密码不对或不在范围内），小电视回到了「" + d.current + "」", "bad");
+    wifiWait = null;
+  } else if (elapsed > 90) {
+    wifiSay("小电视还没重新上线。过一会儿刷新看看；连不上时它会自己回到能用的 Wi-Fi。", "bad");
+    wifiWait = null;
+  } else {
+    wifiSay("已保存，小电视正在切换到「" + wifiWait.ssid + "」…", "busy");
+    return;
+  }
+  renderWifi();
+}
+
+async function wifiChange(body, label) {
+  let answer;
+  try { answer = await call("POST", "api/wifi", Object.assign({ device: wifi.id }, body)); }
+  catch (error) { return; }
+  if (!answer.ok) { wifiSay(label + "：" + answer.error, "bad"); return; }
+  if (body.op === "add") $("wifissid").value = "";
+  wifiWait = { seq: answer.seq, op: body.op, ssid: body.ssid, label, sentAt: Date.now() };
+  wifiSay(label + "：正在发给小电视…", "busy");
+  await loadWifi();
+}
+
+$("wifiback").onclick = () => { wifi = null; wifiWait = null; clearTimeout(wifiTimer); showPage("creators"); };
+$("wifiadd").onclick = () => {
+  const ssid = $("wifissid").value;
+  const password = $("wifipass").value;
+  if (!ssid.trim()) { toast("先填 Wi-Fi 名字", true); return; }
+  if (password && password.length < 8) { toast("Wi-Fi 密码至少 8 位；没有密码就留空", true); return; }
+  $("wifipass").value = "";
+  wifiChange({ op: "add", ssid, password }, "保存「" + ssid + "」");
+};
 
 function render() {
   if (!data) return;

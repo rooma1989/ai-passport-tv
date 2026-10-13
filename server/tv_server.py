@@ -6,6 +6,7 @@ import argparse
 import errno
 import hmac
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -42,6 +43,7 @@ from . import episode_info, now_playing, progress, reconnect
 from .cast_switch import SwitchWatcher
 from .voice.session import VoiceService
 from .tenancy import gate as tenancy_gate, unbound as tenancy_unbound
+from .tenancy import wifi as tenancy_wifi
 
 # 替代 --token-file 的环境变量名；只有令牌值需与固件一致，变量名无需一致。
 TOKEN_ENV = "TV_PAIRING_TOKEN"
@@ -94,6 +96,8 @@ RELAY_EVENTS_ENV = "TV_RELAY_EVENTS_FILE"
 NOW_PLAYING_ENV = "TV_NOW_PLAYING_FILE"
 # 中转写的手机遥控地址（大写，二维码用字母数字模式），随 CONFIG 发给设备画在状态页上。
 REMOTE_URL_ENV = "TV_REMOTE_URL_FILE"
+# 中转启动时把 Wi-Fi 加密用的公钥写进数据库的这一项（server/relay/wifi.py），CONFIG 带给设备。
+WIFI_PUB_META = "wifi_pub"
 REMOTE_URL_MAX = 64
 # 设备在 HELLO 里报的上次复位原因（esp_reset_reason_t），日志里写名字。
 _RESET_REASONS = {1: "POWERON", 2: "EXT", 3: "SW", 4: "PANIC", 5: "INT_WDT", 6: "TASK_WDT",
@@ -313,6 +317,10 @@ class AVServer:
         self.progress = progress.Tracker(self._progress_fetch)
         # 只听声音的设备：这次会话不发画面（HELLO 里 "audio_only": 1）。
         self.device_audio_only = False
+        # 会管理保存的 Wi-Fi 的固件（HELLO 里 "wifimgr": 1，只在多用户模式下用）：CONFIG 给中转的公钥，
+        # SWITCH 带加密的修改，STATUS 带回答（server/tenancy/wifi.py）。device_id 是这次会话认出来的设备。
+        self.device_wifimgr = False
+        self.device_id = ""
         # 上次握手时设备报的开机时长；变小说明设备重启过。
         self._device_uptime: int | None = None
         # 推流以外的阶段（起播等待、断流重连、两次会话之间）收到的换台，留到设备下次连上时给它。
@@ -591,9 +599,43 @@ class AVServer:
             return None
         return episode_info.fetch(episode_info.info_url(CHANNELS.get(channel_id)))
 
+    def _wifi_config(self) -> dict:
+        """CONFIG 里的 "wifi_key"：中转的公钥，设备用它（和自己的私钥）解 Wi-Fi 修改。只给会管理 Wi-Fi 的固件。"""
+        if not self.device_wifimgr or self.tenancy is None:
+            return {}
+        key = self.tenancy.accounts.meta(WIFI_PUB_META, "")
+        return {"wifi_key": key} if len(key) == 43 else {}
+
+    def _wifi_send(self, connection: socket.socket, session: int, seq: int, value) -> int:
+        """把中转加密好的 Wi-Fi 修改发给设备（SWITCH {"wifi": 信封}）；过期的、设备不支持的不发。返回下一个序号。"""
+        data, at = value
+        if not self.device_wifimgr:
+            return seq
+        if not tenancy_wifi.fresh(at):
+            self.logger(f"session={session} wifi change expired, not sent")
+            return seq
+        try:
+            envelope = json.loads(data)
+        except ValueError:
+            return seq
+        self.phase = "wifi_send"
+        send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes({"wifi": envelope})))
+        self.logger(f"session={session} wifi change sent")
+        return seq + 1
+
     def _take_status(self, packet: Packet) -> None:
         """设备的音量或亮度变了：记下来给手机看，会话照常。也每 30 秒报一次信号。"""
         report = json_object(packet.payload)
+        if isinstance(report.get("wifi"), dict):
+            # 设备对一次 Wi-Fi 修改的回答（只有名字，没有密码）。
+            if self.tenancy is not None and self.device_id:
+                try:
+                    tenancy_wifi.ack(self.tenancy.accounts, self.device_id, report["wifi"])
+                except Exception as error:      # noqa: BLE001 —— 记不下来不该断掉会话
+                    self.logger(f"wifi ack not stored: {type(error).__name__}")
+                answer = report["wifi"]
+                self.logger(f"device wifi ack={answer.get('ack')} ok={answer.get('ok')} err={answer.get('err')}")
+            return
         rssi = report.get("rssi")
         if isinstance(rssi, int) and not isinstance(rssi, bool) and rssi:
             self.logger(f"device rssi={rssi}")
@@ -657,7 +699,7 @@ class AVServer:
         resumed = any(kind == "resume" for kind, _ in controls)
         # 音量、亮度留到恢复播放后再发。
         self.switch_watcher.requeue([c for c in controls
-                                     if c[0] in ("volume", "brightness", "pet", "audio", "loading")])
+                                     if c[0] in ("volume", "brightness", "pet", "audio", "loading", "wifi")])
         if resumed:
             self.logger("resume")
             return "resume"
@@ -725,6 +767,7 @@ class AVServer:
                                                            channel=channel_id,
                                                            **self._channel_payload(),
                                                            **({"playing": playing} if playing else {}),
+                                                           **self._wifi_config(),
                                                            **self.voice.config()))))
             self.phase = "live_palette"
             # 首帧前必须有调色板，缺失则设备无色可用，画面全黑。
@@ -1020,6 +1063,8 @@ class AVServer:
                     self.phase = "control_send"
                     send_packet(connection, Packet(Kind.SWITCH, session, seq, 0, json_bytes({"pet": value})))
                     seq += 1
+                elif kind == "wifi":
+                    seq = self._wifi_send(connection, session, seq, value)
                 elif kind in ("seek", "next") and self.device_hints:
                     # 手机快进、下一个：设备画提示框，画面要停一两秒是正常的。
                     self.phase = "control_send"
@@ -1291,6 +1336,7 @@ class AVServer:
             tenancy_unbound.serve(self, connection, admission, self.tenancy, CONFIG)
             return True
         tenancy_gate.apply(self, admission.files)
+        self.device_id = admission.device_id
         # 语音命令的中转动作作用在这台设备上（legacy-passport、MAC……）。
         self.voice.bind_device(admission.device_id)
         self.logger(f"device={admission.device_id}{' legacy' if admission.legacy else ''}")
@@ -1323,6 +1369,7 @@ class AVServer:
             # 新固件自己画进度条（"progress": 1）：SWITCH 带 progress。
             self.device_progress = greeting.get("progress") == 1
             self.device_audio_only = greeting.get("audio_only") == 1
+            self.device_wifimgr = self.tenancy is not None and greeting.get("wifimgr") == 1
             self.voice.reset()
             self.device_status = None
             if all(isinstance(greeting.get(k), int) for k in ("volume", "brightness", "brightness_steps")):

@@ -28,6 +28,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--channels-out", type=Path, help="单用户的频道表（不给 --db 时必需）")
     parser.add_argument("--db", type=Path, help="多用户：账号和设备数据库（server/tenancy）")
     parser.add_argument("--devices-dir", type=Path, help="多用户：每台设备的文件目录，默认数据库旁边的 devices/")
+    parser.add_argument("--wifi-key", type=Path,
+                        help="多用户：给设备加密 Wi-Fi 修改的私钥文件（32 字节，0600），默认数据库旁边的 wifi-key，"
+                             "没有就生成；和数据库一起备份")
     parser.add_argument("--key-file", required=True, type=Path)
     parser.add_argument("--events-out", type=Path,
                         help="投屏事件文件，电视服务据此让设备切台")
@@ -116,6 +119,9 @@ def _serve_tenants(args, key: str, youtube) -> int:
                   accounts=accounts, devices_dir=devices_dir,
                   log=lambda message: print(message, flush=True))
     relay.sync_devices(force=True)
+    # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。
+    from . import wifi as wifi_api
+    wifi_api.setup_key(relay, args.wifi_key)
 
     def keep_in_sync() -> None:
         while True:

@@ -105,6 +105,22 @@ CREATE TABLE IF NOT EXISTS source_cache (
     fetched_at REAL NOT NULL,
     PRIMARY KEY (site, source, kind)
 );
+-- 手机/电脑管理设备保存的 Wi-Fi（server/tenancy/wifi.py）。键是中转看到的设备 id。
+-- 只存 Wi-Fi 名字，从不存密码；pub 是设备加密钥匙的公钥（首次信任）。
+CREATE TABLE IF NOT EXISTS device_wifi (
+    device_id TEXT PRIMARY KEY,
+    pub BLOB,
+    pub_mismatch_at REAL NOT NULL DEFAULT 0,
+    networks TEXT NOT NULL DEFAULT '[]',
+    current TEXT NOT NULL DEFAULT '',
+    reported_at REAL NOT NULL DEFAULT 0,
+    last_seq INTEGER NOT NULL DEFAULT 0,
+    pending TEXT NOT NULL DEFAULT '',
+    ack_seq INTEGER NOT NULL DEFAULT 0,
+    ack_ok INTEGER NOT NULL DEFAULT 0,
+    ack_error TEXT NOT NULL DEFAULT '',
+    ack_at REAL NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY,
     at REAL NOT NULL,

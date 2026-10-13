@@ -65,6 +65,10 @@ class SwitchWatcher:
                 # 暂停带的是标题（text），其余带数值。
                 self._controls.append((action, event.text if action == "pause" else event.value))
                 continue
+            if action == "wifi":
+                # 加密好的 Wi-Fi 修改：原样转给设备（只有它解得开），连同写入时刻，过期的不发。
+                self._controls.append(("wifi", (event.text, event.value)))
+                continue
             if action == "loading":
                 # 中转马上要换片源：(台, 设备要画的 {"title", "episode", "total"})；只留最新的。
                 info = episode_info.payload(event.text, event.value or 0, event.total)
