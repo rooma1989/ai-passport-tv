@@ -34,13 +34,8 @@ set(srcs "main.c"
          "av_wifi_crypto.c"
          "av_wifi_ops.c"
          "av_wifimgr.c"
+         "av_soundprov.c"
          "av_soundsetup.c")
-# The sound-provisioning decoder is its own module (av_soundprov.c/.h). It is
-# built when it is in the tree; av_soundsetup.c checks for its header the same
-# way, so a tree without it still builds and simply has no sound page.
-if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/av_soundprov.c")
-    list(APPEND srcs "av_soundprov.c")
-endif()
 list(REMOVE_DUPLICATES srcs)
 
 idf_component_register(
@@ -62,13 +57,13 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ui_font_cjk.bin")
         "main/ui_font_cjk.bin is missing. Regenerate it with:\n"
         "    python3 tools/make_font.py --text-file channels.txt")
 endif()
-# With the decoder present, say so on the command line too: a changed flag makes
-# every file of this component rebuild, so av_soundsetup.c is not left compiled
-# from before the decoder arrived (its __has_include is not a dependency ninja
+# The sound-provisioning decoder (av_soundprov.c/.h) is part of the build.
+# Say so on the command line: av_soundsetup.c refuses to compile its "not
+# available" fallback while this is set, so a missing decoder header is a build
+# error rather than a silently disabled sound page, and a changed flag makes
+# every file of this component rebuild (__has_include is not a dependency ninja
 # can see).
-if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/av_soundprov.c")
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE AV_SOUNDPROV_PRESENT=1)
-endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE AV_SOUNDPROV_PRESENT=1)
 # Release/validation builds must never ingest a developer's private header.
 if(AV_PUBLIC_BUILD)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE AV_PUBLIC_BUILD=1)

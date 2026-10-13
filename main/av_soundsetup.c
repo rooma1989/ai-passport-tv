@@ -7,6 +7,9 @@
 #else
 #define AV_HAVE_SOUNDPROV 0
 #endif
+#if defined(AV_SOUNDPROV_PRESENT) && !AV_HAVE_SOUNDPROV
+#error "AV_SOUNDPROV_PRESENT is set but av_soundprov.h is not found"
+#endif
 
 #if AV_HAVE_SOUNDPROV
 

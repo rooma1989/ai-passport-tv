@@ -257,6 +257,11 @@ class WebTests(unittest.TestCase):
         self.assertNotIn("start_url", json.loads(body))
         self.assertEqual(self.raw("GET", "/icon-180.png")[1][:4], b"\x89PNG")
         self.assertEqual(self.raw("GET", "/pets/cici_mood1.png")[1][:4], b"\x89PNG")
+        # The sound-provisioning page: public, at /tv/wifi (and /TV/W through nginx).
+        for path in ("/wifi", "/tv/wifi", "/TV/W"):
+            answer, body = self.raw("GET", path)
+            self.assertEqual(answer.status, 200)
+            self.assertIn("声波配网".encode(), body)
 
     # ---- remote ----
 
