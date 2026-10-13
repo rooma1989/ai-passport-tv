@@ -359,7 +359,7 @@ Design: [`2026-10-13-wifi-setup-design.md`](../superpowers/specs/2026-10-13-wifi
 - **Server field**: hidden behind an "Advanced" toggle when the build knows its server
   (private header, or `CONFIG_AV_DEFAULT_SERVER` in the build's own sdkconfig).
 - **From the phone**: owners list, add, remove, reorder and switch the saved
-  networks (phone remote: Subscriptions → My devices → Wi-Fi; PC console: Devices → Wi-Fi), multi-user
+  networks (phone remote: Me → My devices → Wi-Fi; PC console: Devices → Wi-Fi), multi-user
   relay only. Passwords are end-to-end encrypted to the device (X25519 +
   AES-256-GCM); the device tries visible networks in that order, weak ones
   (≤ −80 dBm) last.

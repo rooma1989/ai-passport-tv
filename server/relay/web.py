@@ -1643,11 +1643,14 @@ def _manage_handler(relay: Relay):
             caller = self._session_caller(token)
             if caller is not None and not caller.guest:
                 if relay.accounts.member_role(row["id"], caller.user) is None:
-                    self._json({"ok": False, "error": "这台小电视不是你的，不能用你的账号遥控。想当访客遥控它，"
-                                                      "请用浏览器的无痕窗口扫码。"})
+                    # not_mine：遥控页「扫一扫」据此说明这是别人的访客码（而不是码失效了）。
+                    self._json({"ok": False, "not_mine": True,
+                                "error": "这台小电视不是你的，不能用你的账号遥控。想当访客遥控它，"
+                                         "请用浏览器的无痕窗口扫码。"})
                     return
                 relay.set_target(row["id"], caller)
-                self._json({"ok": True, "redirect": f"/tv/?s={token}"})
+                # name：遥控页「扫一扫」切到这台后提示用。
+                self._json({"ok": True, "redirect": f"/tv/?s={token}", "name": row["name"]})
                 return
             if caller is not None and caller.device == row["id"]:
                 self._json({"ok": True, "redirect": f"/tv/?s={token}"})

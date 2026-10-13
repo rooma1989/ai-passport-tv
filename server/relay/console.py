@@ -6,8 +6,8 @@
 
 谁能做什么：
 - 页面、要票据、等结果、扫码落地页：不用登录（票据本身就是凭据）。
-- 让手机登录（反方向，phonelinks.py）：已登录的电脑（成员）要链接、看结果；手机落地页和「登录」不用登录
-  （一次性链接本身就是凭据，GET 不会用掉它）。
+- 让手机登录（反方向，phonelinks.py）：已登录的电脑或手机（成员的会话，手机遥控「我的 → 让另一部手机登录」）
+  要链接、看结果；访客和密钥不行。新手机的落地页和「登录」不用登录（一次性链接本身就是凭据，GET 不会用掉它）。
 - 确认电脑登录、看登录列表、退出别处：已登录的手机或电脑（cookie），访客和密钥都不行。
 - 设备详情、二维码：账号（访客不行，密钥算管理员）。邀请列表：管理员。
 """
@@ -88,12 +88,6 @@ def _member_session(relay, handler) -> dict | None:
     return info if info is not None and info["role"] != "guest" else None
 
 
-def _pc_member_session(relay, handler) -> dict | None:
-    """让手机登录只给已登录的电脑（成员的电脑会话）：手机、访客、密钥都不行。"""
-    info = _member_session(relay, handler)
-    return info if info is not None and info["kind"] == "pc" else None
-
-
 # ---- GET ----
 
 def get(handler, relay, path: str) -> bool:
@@ -121,7 +115,7 @@ def get(handler, relay, path: str) -> bool:
         _phone_link_info(handler, relay)
         return True
     if path == "/api/phone-link/status":
-        info = _pc_member_session(relay, handler)
+        info = _member_session(relay, handler)
         if info is None:
             handler._not_found()
             return True
@@ -185,7 +179,7 @@ def _login_info(handler, relay) -> None:
 
 
 def _phone_link_info(handler, relay) -> None:
-    """手机落地页：谁的账号、哪台电脑。用令牌或 8 位码问；输错按网段和全局限流。不会把链接用掉。"""
+    """手机落地页：谁的账号、哪台电脑或手机发起的。用令牌或 8 位码问；输错按网段和全局限流。不会把链接用掉。"""
     query = handler._query()
     links = relay.phone_links
     ip = handler._ip()
@@ -197,18 +191,19 @@ def _phone_link_info(handler, relay) -> None:
     if found is None:
         if by_code:
             links.missed(ip)
-        handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在电脑上再点一次「让手机登录」"})
+        handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在已登录的电脑或手机上重新生成一个"})
         return
     handler._json({"ok": True, **found})
 
 
 def _new_phone_link(handler, relay) -> None:
-    member = _pc_member_session(relay, handler)
+    """电脑版「让手机登录」和手机遥控「让另一部手机登录」：成员的会话（电脑或手机）才能要；访客、密钥 404。"""
+    member = _member_session(relay, handler)
     if member is None:
         handler._not_found()
         return
     try:
-        made = relay.phone_links.create(member["user_id"], handler._ip(), handler._agent())
+        made = relay.phone_links.create(member["user_id"], handler._ip(), handler._agent(), source=member["kind"])
     except Limited as error:
         handler._json({"ok": False, "error": str(error)}, 429)
         return
@@ -218,7 +213,7 @@ def _new_phone_link(handler, relay) -> None:
 
 
 def _accept_phone_link(handler, relay, body: dict) -> None:
-    """手机点了「在这台手机上登录」：一次性链接换成这个用户普通的手机会话（180 天）。"""
+    """新手机点了「在这台手机上登录」：一次性链接换成这个用户普通的手机会话（180 天）。"""
     token, code = body.get("token"), body.get("code")
     if (token is not None and not isinstance(token, str)) or (code is not None and not isinstance(code, str)) \
             or (token is None) == (code is None):
@@ -233,11 +228,11 @@ def _accept_phone_link(handler, relay, body: dict) -> None:
     if user is None:
         if code is not None:
             links.missed(ip)
-        handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在电脑上再点一次「让手机登录」"})
+        handler._json({"ok": False, "error": "这个登录链接已经用过或过期了，请在已登录的电脑或手机上重新生成一个"})
         return
     session = relay.accounts.new_session(user, "phone", user_agent=handler._agent(), ip=ip)
     relay.accounts.audit("login.phone.link", user, ip, "session", "", describe_agent(handler._agent()))
-    relay.log(f"用户 {user} 用电脑给的链接在手机上登录")
+    relay.log(f"用户 {user} 用一次性链接在新手机上登录")
     # 网址里带着会话：从这一页「添加到主屏幕」，图标记住它（见 web.py 的 _login）；home=1 让遥控提示添加。
     handler._json({"ok": True, "redirect": f"/tv/?s={session}&home=1"},
                   headers={"Set-Cookie": cookie_header(session, "phone")})
@@ -279,11 +274,13 @@ def invites(relay) -> list[dict]:
 # ---- POST ----
 
 def post(handler, relay, path: str) -> bool:
-    if path == "/api/login/ticket":
-        _new_ticket(handler, relay)
-        return True
-    if path == "/api/phone-link":
-        _new_phone_link(handler, relay)
+    if path in ("/api/login/ticket", "/api/phone-link"):
+        # 不看请求体，但要读掉：同一个 keep-alive 连接上剩下的字节会粘到下一个请求前面（「{}GET」→ 501）。
+        handler._body()
+        if path == "/api/login/ticket":
+            _new_ticket(handler, relay)
+        else:
+            _new_phone_link(handler, relay)
         return True
     if path not in ("/api/login/poll", "/api/login/confirm", "/api/logout", "/api/sessions/revoke", "/api/qr",
                     "/api/phone-link/accept"):

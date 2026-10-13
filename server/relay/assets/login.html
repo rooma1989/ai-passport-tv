@@ -110,7 +110,7 @@ function confirmView(info, by) {
   };
   const yes = el("button", "", "确认登录");
   const no = el("button", "plain", "取消");
-  const note = el("p", "dim", "确认后这台电脑以你的身份登录 30 天，随时可以在电脑版「设置」或这里退出。");
+  const note = el("p", "dim", "确认后这台电脑以你的身份登录 30 天，随时可以在电脑版「设置」或遥控「我的 → 已登录的设备」里退出。");
   const answer = async (accept) => {
     yes.disabled = no.disabled = true;
     const result = await api("POST", "api/login/confirm", Object.assign({ accept }, by));
@@ -140,7 +140,7 @@ function loadScan() {
   if (!scanLoading) {
     scanLoading = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = "/tv/scan.js?v=1";
+      script.src = "/tv/scan.js?v=2";
       script.onload = () => (window.TVScan ? resolve(window.TVScan) : reject(new Error("scan")));
       script.onerror = () => { scanLoading = null; reject(new Error("scan")); };
       document.head.appendChild(script);
@@ -174,7 +174,7 @@ async function byTicket(ticket) {
   if (info.signed_in) { confirmView(info, { ticket }); return; }
   show("用遥控确认登录",
     el("p", "", (info.guest ? "访客不能登录电脑版。请用你自己的账号：" : "这个浏览器还没有登录小智电视。请")
-      + "从手机桌面上的「小智电视」图标打开遥控，在「订阅」里点「扫码登录电脑」再扫一次；或者点「输入登录码」，输入："),
+      + "从手机桌面上的「小智电视」图标打开遥控，点右上角的扫一扫（或在「我的」里点「扫码登录电脑」）再扫一次；或者在「我的」里点「输入登录码」，输入："),
     el("div", "code", info.code),
     el("p", "dim", "电脑屏幕上也显示着这个码，2 分钟内有效。还没有账号的话，请先向管理员要一个邀请链接。"));
 }
@@ -184,7 +184,7 @@ async function byCode() {
   const status = await api("GET", "api/login/status");
   if (!status || !status.signed_in || status.me.role === "guest") {
     show("电脑登录", el("p", "", status && status.signed_in
-      ? "访客不能登录电脑版。" : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「订阅」里点「扫码登录电脑」。"));
+      ? "访客不能登录电脑版。" : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「我的」里点「扫码登录电脑」。"));
     return;
   }
   const input = el("input");

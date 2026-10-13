@@ -1117,9 +1117,39 @@ class PageFieldTests(unittest.TestCase):
                   "series", "room", "fits", "episode", "devices", "auto", "target",
                   "episodes", "next", "playing", "cut", "note", "me", "link",
                   # GET/POST /api/wifi (server/relay/wifi.py, server/tenancy/wifi.py state()).
-                  "supported", "networks", "current", "reported_at", "pending", "key_changed", "seq"}
+                  "supported", "networks", "current", "reported_at", "pending", "key_changed", "seq",
+                  # 我的: POST /api/phone-link and /api/qr, GET /api/sessions, POST /api/sessions/revoke
+                  # {others}, POST /api/scan (console.py, web.py _scan).
+                  "svg", "code", "poll", "ttl", "typed", "sessions", "count", "not_mine"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
+
+    def test_tabs_and_where_things_live(self):
+        """Four tabs; 订阅 holds only creators and series; devices, sign-ins and the rest live under 我的."""
+        page = web.PAGE.split("<script>", 1)[0]
+        nav = re.search(r"<nav>(.*?)</nav>", page, re.S).group(1)
+        self.assertEqual(re.findall(r'data-page="(\w+)"', nav), ["remote", "cast", "creators", "mine"])
+        self.assertRegex(nav, r'data-page="creators" class="noguest"')
+        self.assertRegex(nav, r'data-page="mine" class="noguest"')
+
+        def section(name):
+            return re.search(rf'<section class="page[^"]*" id="{name}">(.*?)</section>', page, re.S).group(1)
+
+        subs = section("creators")
+        for field in ("creator", "add", "creatorList", "seriesLink", "seriesName", "addSeries", "seriesList"):
+            self.assertIn(f'id="{field}"', subs, field)
+        mine = section("mine")
+        for field in ("deviceList", "bindopen", "scanpc", "phonelink", "sessionsopen", "adminBox", "invite",
+                      "logout", "newcode"):
+            self.assertNotIn(f'id="{field}"', subs, f"{field} moved out of 订阅")
+            self.assertIn(f'id="{field}"', mine, f"{field} lives under 我的")
+        self.assertIn('href="login"', mine, "输入登录码")
+        self.assertIn('id="claim"', section("bindpage"))
+        self.assertIn('id="sessionList"', section("sessions"))
+        self.assertIn('id="logoutOthers"', section("sessions"))
+        self.assertIn('id="scanany"', section("remote"))
+        script = web.PAGE.split("<script>", 1)[1]
+        self.assertIn("MOVED_TABS", script, "a remembered tab that no longer exists is moved, not ignored")
 
 
 if __name__ == "__main__":

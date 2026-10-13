@@ -28,6 +28,12 @@
 
   .mast { display: flex; justify-content: space-between; align-items: baseline; padding: 16px 16px 10px;
           border-bottom: 1px solid var(--rule); }
+  .mast .tools { display: flex; align-items: center; gap: 18px; align-self: center; }
+  /* 扫一扫：方框四角加一道扫描线，线条和文字同色（没有表情符号）。 */
+  .mast button.icon { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+                      margin: -6px -6px -6px 0; color: var(--paper); }
+  .mast button.icon:active { color: var(--red); }
+  .mast button.icon svg { display: block; }
   .mast h1 { margin: 0; font: 700 22px/1 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
   .mast .tag { font-size: 12px; color: var(--red); letter-spacing: 3px; }
   .mast button { background: none; border: 0; color: var(--dim); font: 13px var(--serif); padding: 0; }
@@ -92,6 +98,8 @@
   .rows .del { position: absolute; top: 0; right: 0; bottom: 0; width: 76px; border: 0; background: var(--red);
                color: #fff4e6; font: 15px var(--serif); }
   .rows li.open .row { transform: translateX(-76px); }
+  /* 行盖住它后面的「删除」：左滑（.open）才露出来。不加的话「删除」是定位元素，会画在行上面。 */
+  .rows li > .row { position: relative; z-index: 1; }
 
   .box { margin: 14px 14px 10px; }
   textarea, input { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule); color: var(--paper);
@@ -117,7 +125,7 @@
                font: 16px var(--serif); letter-spacing: 2px; }
   nav button.on { color: var(--paper-hi); box-shadow: inset 0 2px 0 var(--red); }
 
-  .toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  .toast { position: fixed; z-index: 70; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom)); transform: translateX(-50%);
            background: var(--paper-hi); color: var(--ink); padding: 8px 16px; font: 14px var(--serif);
            opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 86%; text-align: center; }
   .toast.on { opacity: 1; }
@@ -190,8 +198,9 @@
              background: var(--ink-deep); border: 1px solid var(--rule); padding: 8px 10px; user-select: all; }
   [data-tenant] { display: none; }
   body.tenant [data-tenant] { display: block; }
+  body:not(.tenant) .tenantonly { display: none !important; }
   body.guest .noguest { display: none !important; }
-  .gate { position: fixed; inset: 0; background: var(--ink); display: none; align-items: center; justify-content: center;
+  .gate { position: fixed; inset: 0; z-index: 60; background: var(--ink); display: none; align-items: center; justify-content: center;
           padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
   .gate.on { display: flex; }
   .pclogin { margin-top: 14px; }
@@ -215,6 +224,69 @@
   .homehint[hidden] { display: none; }
   .homehint b { color: var(--amber); font-weight: 400; }
   .homehint button { display: block; margin-top: 6px; padding: 0; background: none; border: 0; color: var(--dim); font: 13px var(--serif); }
+
+  /* ---- 我的 ---- */
+  .item { display: flex; align-items: baseline; gap: 10px; width: 100%; margin: 0; padding: 13px 16px; background: none;
+          border: 0; border-bottom: 1px dotted var(--rule); color: var(--paper); font: 16px/1.35 var(--serif);
+          text-align: left; text-decoration: none; }
+  .item:active { background: #231f19; }
+  .item span { flex: none; }
+  .item em { flex: 1; min-width: 0; font: 13px -apple-system, "PingFang SC", sans-serif; font-style: normal; color: var(--faint);
+             text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item i { flex: none; font-style: normal; color: var(--faint); }
+  .item:disabled { opacity: .5; }
+  .item[hidden] { display: none; }
+  .acct { display: flex; align-items: baseline; gap: 10px; padding: 13px 16px; border-bottom: 1px dotted var(--rule); }
+  .acct b { font: 600 19px var(--serif); color: var(--paper-hi); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .acct span { flex: 1; font-size: 12px; color: var(--red); letter-spacing: 2px; white-space: nowrap; }
+  .acct button { flex: none; background: none; border: 0; padding: 0; color: var(--dim); font: 14px var(--serif); }
+  .devs { list-style: none; margin: 0; padding: 0; }
+  .devs li { padding: 12px 16px 10px; border-bottom: 1px dotted var(--rule); }
+  .devs li.empty { padding: 14px 16px; }
+  .dev-top { display: flex; align-items: baseline; gap: 10px; }
+  .dev-top b { flex: 1; min-width: 0; font: 400 17px/1.35 var(--serif); color: var(--paper-hi);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dev-top span { flex: none; font: 12px var(--mono); color: var(--faint); }
+  .dev-top span.on { color: var(--amber); }
+  .dev-sub { margin-top: 2px; font-size: 13px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dev-sub b { font-weight: 400; color: var(--amber-soft); }
+  .dev-act { display: flex; gap: 18px; margin-top: 8px; }
+  .dev-act button { background: none; border: 0; padding: 2px 0; color: var(--paper); font: 14px var(--serif); }
+  .dev-act button.red { color: var(--red); }
+  .dev-act button:active { color: var(--red); }
+  .ghostbtn { display: block; width: 100%; background: none; border: 1px solid var(--rule); color: var(--paper);
+              padding: 10px; font: 16px var(--serif); letter-spacing: 3px; }
+  .ghostbtn:active { border-color: var(--red); color: var(--red); }
+  .ghostbtn.red { color: var(--red); }
+  .steps { margin: 14px 16px 4px; padding-left: 20px; font: 15px/1.7 var(--serif); color: var(--paper); }
+  .steps li + li { margin-top: 6px; }
+  .steps b { font-weight: 400; color: var(--amber); }
+  .sess .t small { display: block; font: 12px var(--mono); color: var(--faint); white-space: normal; }
+  .sess .kind { flex: none; width: 34px; font: 13px var(--serif); color: var(--red); }
+  .sess button { flex: none; background: none; border: 0; padding: 0 0 0 10px; color: var(--red); font: 14px var(--serif); }
+  .sess .here { flex: none; font: 12px var(--mono); color: var(--amber); }
+
+  /* 整屏的一层：访客码、让另一部手机登录、扫一扫认出来的码的说明。 */
+  .sheet { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--ink); }
+  .sheet[hidden] { display: none; }
+  .sheet-top { display: flex; align-items: center; gap: 12px; padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+               border-bottom: 1px solid var(--rule); }
+  .sheet-top button { flex: none; min-width: 64px; background: none; border: 0; padding: 4px 0; color: var(--dim);
+                      font: 15px var(--serif); text-align: left; }
+  .sheet-top b { flex: 1; text-align: center; font: 600 17px var(--serif); letter-spacing: 3px; color: var(--paper-hi);
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sheet-top i { flex: none; min-width: 64px; }
+  .sheet-body { flex: 1; overflow-y: auto; padding: 18px 20px calc(24px + env(safe-area-inset-bottom)); }
+  .sheet-body p { margin: 0 0 12px; font: 16px/1.7 var(--serif); }
+  .sheet-body p.dim { font-size: 14px; color: var(--dim); }
+  .sheet-body p.warn { border-left: 2px solid var(--amber); padding: 4px 0 4px 12px; font-size: 14px; color: var(--paper); }
+  .sheet-body p.live { color: var(--amber); }
+  .sheet-body b { font-weight: 400; color: var(--amber); }
+  .sheet-body .go, .sheet-body .ghostbtn { margin-top: 14px; }
+  .qr { width: min(78vw, 300px); margin: 4px auto 16px; background: var(--paper-hi); }
+  .qr svg { display: block; width: 100%; height: auto; }
+  .pcode { margin: 0 0 12px; padding: 10px; background: var(--ink-deep); border: 1px solid var(--rule); text-align: center;
+           font: 600 26px/1.3 var(--mono); letter-spacing: 5px; color: var(--amber); }
 </style>
 </head>
 <body>
@@ -233,7 +305,16 @@
     <div class="homehint" id="homehint" hidden>已经登录。把遥控放到桌面：iPhone 点 Safari 的<b>「分享」→「添加到主屏幕」</b>，
       安卓在浏览器菜单里选<b>「添加到主屏幕」</b>；以后从「小智电视」图标打开。<button id="homeok">知道了</button></div>
     <section class="page on" id="remote">
-      <div class="mast"><h1>小智电视</h1><button id="adjust" class="noguest">调整分组</button></div>
+      <div class="mast"><h1>小智电视</h1>
+        <div class="tools">
+          <button id="adjust" class="noguest">调整分组</button>
+          <!-- 扫一扫（scan.js 的 mode "any"）：电脑登录、绑定、遥控码……见 handleScan()。访客和单用户没有。 -->
+          <button class="icon noguest tenantonly" id="scanany" aria-label="扫一扫" title="扫一扫">
+            <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M1.5 7V1.5H7M15 1.5h5.5V7M20.5 15v5.5H15M7 20.5H1.5V15M4 11h14"
+              fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square"/></svg>
+          </button>
+        </div>
+      </div>
       <div class="seg" id="devs" hidden></div>
       <div class="screen off" id="screen">
         <div class="top"><span class="ch" id="ch">— —</span><span class="grp" id="grp"></span></div>
@@ -282,7 +363,7 @@
          只有那台设备解得开；这里也从来拿不到已保存的密码。 -->
     <section class="page" id="wifi">
       <div class="pethead">
-        <div class="crumb"><button id="wifiback">‹ 订阅 · 我的设备</button><span id="wifidev"></span></div>
+        <div class="crumb"><button id="wifiback">‹ 我的</button><span id="wifidev"></span></div>
         <h1>Wi-Fi</h1>
         <p id="wifisum">小电视按这个顺序找能连上的 Wi-Fi，信号太弱的排到最后。</p>
       </div>
@@ -339,19 +420,25 @@
       </div>
       <ol class="rows" id="seriesList"></ol>
       <div class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。点一部剧可以选集。番剧只播免费的集；YouTube 每集第一次播要等 20～40 秒。</div>
+    </section>
+
+    <!-- 我的：账号、我的设备、登录其他设备、邀请家人（管理员）、更多。单用户时只有「更多」。访客没有这一页。 -->
+    <section class="page" id="mine">
+      <div class="mast"><h1>我的</h1><span class="tag" id="meRole"></span></div>
       <div data-tenant>
-        <div class="mast"><h1>我的设备</h1><span class="tag" id="meName"></span></div>
-        <ol class="rows" id="deviceList"></ol>
-        <div class="box inline">
-          <input id="claim" placeholder="绑定码（小电视屏幕上的 20 位字母数字）" autocapitalize="characters" autocomplete="off">
-          <button class="go" id="bind">绑定</button>
-        </div>
-        <div class="hint">新的小电视连上网以后，屏幕上会显示绑定码；也可以在小电视状态页（双击按键打开）扫二维码绑定。</div>
-        <!-- 电脑版（多用户阶段 2）：扫电脑屏幕上的二维码（scan.js，点了才加载），或输入 6 位登录码、
-             退出已登录的电脑（login.html）。 -->
-        <button class="petline pclogin" id="scanpc"><span>电脑</span><b>扫码登录电脑</b><i>›</i></button>
-        <a class="petline" href="login"><span class="ghost">电脑</span><b>输入登录码 · 已登录的电脑</b><i>›</i></a>
+        <div class="acct"><b id="meName"></b><span id="meNote"></span><button id="logout">退出登录</button></div>
+        <div class="h">我的设备</div>
+        <ol class="devs" id="deviceList"></ol>
+        <button class="item" id="bindopen"><span>绑定新设备</span><em>输入或扫小电视上的绑定码</em><i>›</i></button>
+        <div class="h">登录其他设备</div>
+        <!-- 电脑版（多用户阶段 2）：扫电脑屏幕上的二维码（scan.js，点了才加载），或输入 6 位登录码（login.html）。
+             让另一部手机登录：一次性链接（console.py 的 /api/phone-link），二维码整屏显示给新手机扫。 -->
+        <button class="item" id="scanpc"><span>扫码登录电脑</span><em>扫电脑屏幕上的二维码</em><i>›</i></button>
+        <a class="item" href="login"><span>输入登录码</span><em>电脑屏幕上的 6 位码</em><i>›</i></a>
+        <button class="item" id="phonelink"><span>让另一部手机登录</span><em>新手机用相机扫</em><i>›</i></button>
+        <button class="item" id="sessionsopen"><span>已登录的设备</span><em id="sessionCount"></em><i>›</i></button>
         <div id="adminBox" hidden>
+          <div class="h">邀请家人</div>
           <div class="box inline">
             <input id="inviteName" placeholder="家人的名字（可不填）" maxlength="20">
             <button class="go" id="invite">邀请</button>
@@ -360,17 +447,56 @@
           <div class="hint">邀请链接 7 天内有效、只能用一次：发给家人，在手机浏览器里打开。</div>
         </div>
       </div>
-      <div class="foot"><a href="/TV/" target="_blank" rel="noreferrer">使用说明</a><button id="newcode">换一个扫码码</button></div>
+      <div class="h">更多</div>
+      <a class="item" href="/TV/" target="_blank" rel="noreferrer"><span>使用说明</span><i>›</i></a>
+      <button class="item" id="newcode"><span>换一个扫码码</span><em id="newcodeNote">旧码作废，要重新扫</em><i>›</i></button>
+    </section>
+
+    <section class="page" id="bindpage">
+      <div class="pethead">
+        <div class="crumb"><button data-back="mine">‹ 我的</button></div>
+        <h1>绑定新设备</h1>
+        <p>绑定后，这台小电视播你订阅的台，只有你和你请来的客人能遥控。</p>
+      </div>
+      <ol class="steps">
+        <li>先给新的小电视配好网。连上网后，它的屏幕上会出现 <b>BIND THIS TV</b> 和一串 20 位的绑定码。</li>
+        <li>双击小电视的按键打开状态页，上面有<b>绑定二维码</b>：点下面的按钮扫它。</li>
+        <li>扫不了的话，把屏幕上的绑定码输进下面的框里。</li>
+      </ol>
+      <div class="box"><button class="ghostbtn" id="bindscan">扫绑定二维码</button></div>
+      <div class="h">输入绑定码</div>
+      <div class="box inline">
+        <input id="claim" placeholder="20 位字母和数字" autocapitalize="characters" autocomplete="off" spellcheck="false">
+        <button class="go" id="bind">绑定</button>
+      </div>
+      <div class="hint">已经被别人绑定的小电视，要主人先在他的「我的」里解绑，屏幕上才会出现新的绑定码。</div>
+    </section>
+
+    <section class="page" id="sessions">
+      <div class="pethead">
+        <div class="crumb"><button data-back="mine">‹ 我的</button></div>
+        <h1>已登录的设备</h1>
+        <p>你的手机、电脑，和你的小电视上的访客。不认识的就退出它。</p>
+      </div>
+      <ol class="rows sess" id="sessionList"></ol>
+      <div class="box"><button class="ghostbtn red" id="logoutOthers">退出其他所有登录</button></div>
+      <div class="hint">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机可以在这里「让另一部手机登录」，电脑要再扫码）；
+        访客不受影响，可以单独退出。</div>
     </section>
   </main>
   <nav>
     <button class="on" data-page="remote">遥控</button>
     <button data-page="cast">投屏</button>
     <button data-page="creators" class="noguest">订阅</button>
+    <button data-page="mine" class="noguest">我的</button>
   </nav>
 </div>
+<div class="sheet" id="sheet" hidden role="dialog" aria-labelledby="sheetTitle">
+  <div class="sheet-top"><button id="sheetClose">‹ 关闭</button><b id="sheetTitle"></b><i></i></div>
+  <div class="sheet-body" id="sheetBody"></div>
+</div>
 <div class="toast" id="toast"></div>
-<div class="gate" id="gate">登录已失效。<br>请用小电视状态页上的二维码重新扫一下。</div>
+<div class="gate" id="gate"><div id="gateText">登录已失效。<br>请用小电视状态页上的二维码重新扫一下。</div></div>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -548,7 +674,7 @@ function renderScreen() {
     $("grp").textContent = "";
     const none = data.me && !(data.devices || []).length;
     $("nm").textContent = none ? "还没有绑定小电视" : devName() + "没在线";
-    $("ti").textContent = none ? "小电视连上网后屏幕上有绑定码，到「订阅 → 我的设备」里输入"
+    $("ti").textContent = none ? "小电视连上网后屏幕上有绑定码：点右上角的扫一扫，或到「我的 → 绑定新设备」里输入"
       : "打开小电视后这里会显示正在播的台";
   }
 }
@@ -906,56 +1032,249 @@ function renderListen() {
     : on ? "只放声音，省流量也省电" : "只放声音，屏幕只显示宠物";
 }
 
-// 多用户：自己的设备（改名、解绑）、绑定新设备、管理员发邀请。单用户时没有 data.me，这一块不显示。
+// ---------- 我的 ----------
+// 多用户：账号、自己的设备（Wi-Fi、访客码、改名、解绑）、绑定新设备、登录其他设备、管理员发邀请。
+// 单用户时没有 data.me，只剩「更多」。设备的型号和正在播什么取自电脑版同一个接口（/api/console/devices），
+// 只在「我的」开着时取；还没取到时先用 /api/state 里的设备列表。
+const MINE_PAGES = ["mine", "wifi", "bindpage", "sessions"];
+let mineDevs = null;       // /api/console/devices 的 devices
+let mineLoading = false;
+
+function onPage(ids) { return ids.some((id) => $(id).classList.contains("on")); }
+
 function renderMine() {
   const me = data.me;
   document.body.classList.toggle("tenant", !!me);
   document.body.classList.toggle("guest", !!me && me.role === "guest");
   if (!me) return;
-  // 访客没有「订阅」页：上次停在那一页（localStorage 记着）就回到遥控。
-  if (me.role === "guest" && $("creators").classList.contains("on")) {
-    document.querySelector('nav button[data-page="remote"]').click();
-  }
-  $("meName").textContent = me.role === "guest" ? "访客" : me.name + (me.role === "admin" ? " · 管理员" : "");
+  // 访客没有「订阅」「我的」：上次停在那里（localStorage 记着）就回到遥控。
+  if (me.role === "guest" && onPage(["creators", "episodes"].concat(MINE_PAGES))) goTab("remote");
+  $("meName").textContent = me.role === "guest" ? "访客" : me.name;
+  $("meRole").textContent = me.role === "admin" ? "管理员" : me.role === "guest" ? "访客" : "家庭成员";
+  $("meNote").textContent = "";
   $("adminBox").hidden = me.role !== "admin";
+  // 多用户时换的是正在遥控的那台的访客码：只有它是自己的才显示。
+  $("newcode").hidden = !(data.devices || []).some((x) => x.target && x.mine);
+  $("newcodeNote").textContent = (data.devices || []).length > 1 ? "「" + devName() + "」的，旧码作废" : "旧码作废，客人要重新扫";
+  renderDeviceList();
+}
+
+function renderDeviceList() {
   const list = $("deviceList");
-  list.innerHTML = "";
-  const rows = data.devices || [];
-  if (!rows.length) list.appendChild(el("li", "empty", "还没有绑定小电视"));
+  list.replaceChildren();
+  const rows = mineDevs || (data.devices || []).map((x) => ({ id: x.id, name: x.name, online: x.online, mine: x.mine,
+                                                             legacy: x.legacy, model_name: "", channel_name: "" }));
+  if (!rows.length) { list.appendChild(el("li", "empty", "还没有绑定小电视")); return; }
   for (const dv of rows) {
     const li = el("li");
-    const row = el("div", "row devrow");
-    const name = el("span", "t", dv.name);
-    name.appendChild(el("small", "", (dv.online ? "在线" : "离线") + (dv.legacy ? " · 旧固件" : "")));
-    row.appendChild(name);
+    const top = el("div", "dev-top");
+    top.append(el("b", "", dv.name), el("span", dv.online ? "on" : "", dv.online ? "● 在线" : "离线"));
+    const sub = el("div", "dev-sub");
+    const bits = [dv.model_name, dv.legacy ? "旧固件" : "", dv.mine ? "" : "家人的设备"].filter(Boolean);
+    sub.textContent = bits.join(" · ");
+    if (dv.online && dv.channel_name) {
+      sub.append(bits.length ? " · 正在播 " : "正在播 ", el("b", "", dv.channel_name));
+    }
+    if (dv.guests) sub.append(" · " + dv.guests + " 位访客");
+    li.append(top, sub);
     if (dv.mine) {
+      const act = el("div", "dev-act");
+      const wifiButton = el("button", "", "Wi-Fi 网络");
+      wifiButton.onclick = () => openWifi(dv.id, dv.name);
+      const guest = el("button", "", "访客码");
+      guest.onclick = () => openGuestCode(dv.id);
       const rename = el("button", "", "改名");
       rename.onclick = async () => {
         const value = prompt("新名字", dv.name);
         if (!value) return;
         const answer = await call("POST", "api/devices/" + dv.id, { name: value });
         if (!answer.ok) toast(answer.error, true);
-        refresh();
+        await refresh();
+        loadMine();
       };
-      row.appendChild(rename);
-      const wifi = el("button", "", "Wi-Fi");
-      wifi.onclick = () => openWifi(dv.id, dv.name);
-      row.appendChild(wifi);
+      act.append(wifiButton, guest, rename);
       if (!dv.legacy) {
         const unbind = el("button", "red", "解绑");
         unbind.onclick = async () => {
           if (!confirm("解绑「" + dv.name + "」？解绑后它会显示新的绑定码，谁绑定就归谁；你的订阅不受影响。")) return;
           const answer = await call("POST", "api/devices/" + dv.id + "/unbind", {});
           if (!answer.ok) toast(answer.error, true); else toast("已解绑");
-          refresh();
+          await refresh();
+          loadMine();
         };
-        row.appendChild(unbind);
+        act.appendChild(unbind);
       }
+      li.appendChild(act);
     }
-    li.appendChild(row);
     list.appendChild(li);
   }
 }
+
+// 「我的」开着时：设备详情（型号、正在播什么、访客数、访客链接）和登录了几处。
+async function loadMine(withSessions) {
+  if (!data || !data.me || data.me.role === "guest" || mineLoading) return;
+  mineLoading = true;
+  try {
+    const answer = await call("GET", "api/console/devices");
+    if (answer.ok) { mineDevs = answer.devices; renderDeviceList(); }
+    if (withSessions) {
+      const list = await call("GET", "api/sessions");
+      if (list.ok) $("sessionCount").textContent = list.sessions.length + " 处";
+    }
+  } catch (error) { /* 登录失效时 call 已经盖上了提示 */ }
+  finally { mineLoading = false; }
+}
+
+// ---------- 整屏的一层 ----------
+let sheetRun = 0;          // 关掉或换内容时加一：让还在等的轮询停下来
+function sheet(title, ...nodes) {
+  sheetRun++;
+  $("sheetTitle").textContent = title;
+  $("sheetBody").replaceChildren(...nodes);
+  $("sheetBody").scrollTop = 0;
+  $("sheet").hidden = false;
+  return sheetRun;
+}
+function closeSheet() { sheetRun++; $("sheet").hidden = true; $("sheetBody").replaceChildren(); }
+$("sheetClose").onclick = closeSheet;
+
+function para(cls, ...parts) {
+  const node = el("p", cls);
+  for (const part of parts) node.append(part);
+  return node;
+}
+
+function qrBox(svg) {
+  const box = el("div", "qr");
+  box.innerHTML = svg;   // 服务器画的二维码（server/relay/qr.py）：只有数字和固定颜色
+  return box;
+}
+
+// 访客码：和小电视状态页上的二维码同一个（/TV/R/<码>），给来家里的客人扫。
+async function openGuestCode(id) {
+  const dv = (mineDevs || []).find((x) => x.id === id);
+  if (!dv || !dv.guest_link) { toast("正在取设备信息，稍等再点", true); loadMine(); return; }
+  const answer = await call("POST", "api/qr", { text: dv.guest_link });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  const again = el("button", "ghostbtn", "换一个访客码");
+  again.onclick = () => busy(again, async () => {
+    if (!confirm("给「" + dv.name + "」换一个访客码后，扫旧码进来的客人都要重新扫；你自己不受影响。确定？")) return;
+    const result = await call("POST", "api/code", { device: dv.id });
+    if (!result.ok) { toast(result.error, true); return; }
+    toast("已换新码，小电视换台后显示新的二维码");
+    mineDevs = null;
+    await loadMine();
+    openGuestCode(dv.id);
+  });
+  sheet("访客码 · " + dv.name, qrBox(answer.svg),
+    para("", "给来家里的客人扫：用手机相机扫这个码，就能遥控「", el("b", "", dv.name), "」——换台、调音量、投屏。"),
+    para("dim", "客人看不到你的订阅和别的设备；你可以在「已登录的设备」里让他退出。小电视状态页（双击按键）上也是这个码。"),
+    again);
+}
+
+// 让另一部手机登录：一次性链接（5 分钟、只能用一次），新手机用相机扫码在浏览器里打开。
+async function openPhoneLink() {
+  const answer = await call("POST", "api/phone-link", {});
+  if (!answer.ok) { toast(answer.error, true); return; }
+  const state = el("p", "dim");
+  const how = [qrBox(answer.svg),
+    para("", "用", el("b", "", "新手机的相机"), "扫这个二维码，在打开的 Safari（或手机浏览器）里点「在这台手机上登录」。"),
+    para("dim", "扫不了的话，在新手机的浏览器里打开 " + answer.typed + "，输入："),
+    el("div", "pcode", answer.code)];
+  const warn = para("warn", "只给你自己的手机用：有这个码的人能以你的身份登录。家里人要用自己的账号，请管理员发邀请。");
+  const run = sheet("让另一部手机登录", ...how, state, warn);
+  followPhoneLink(run, answer.poll, Date.now() + answer.ttl * 1000, how.concat(warn), state);   // 不等：关掉这一层它就停
+}
+
+// 每 2 秒看一次新手机登录了没有，顺便走倒计时。
+async function followPhoneLink(run, poll, until, how, state) {
+  const finish = (text, live) => {
+    for (const node of how) node.remove();
+    state.className = live ? "live" : "";
+    state.textContent = text;
+  };
+  while (run === sheetRun) {
+    const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+    state.textContent = Math.floor(left / 60) + ":" + pad(left % 60) + " 内有效，只能用一次。";
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (run !== sheetRun) return;
+    let status;
+    try { status = await call("GET", "api/phone-link/status?poll=" + encodeURIComponent(poll)); }
+    catch (error) { return; }
+    if (run !== sheetRun) return;
+    if (status.state === "used") {
+      finish("新手机已经登录了（" + status.phone + (status.network ? "，" + status.network : "") + "）。可以关掉这一页。", true);
+      return;
+    }
+    if (status.state === "expired" || Date.now() > until) {
+      finish("过期了。需要的话再点一次「让另一部手机登录」。", false);
+      return;
+    }
+  }
+}
+
+// 已登录的设备：手机、电脑，和自己设备上的访客；退出一个，或退出其他所有。
+const KIND_NAMES = { phone: "手机", pc: "电脑", guest: "访客" };
+function when(at) {
+  const t = new Date(at * 1000);
+  return dateLabel(at) + " " + pad(t.getHours()) + ":" + pad(t.getMinutes());
+}
+
+async function openSessions() {
+  showPage("sessions");
+  document.querySelector("main").scrollTop = 0;
+  const list = $("sessionList");
+  list.replaceChildren(el("li", "empty", "正在取…"));
+  let answer;
+  try { answer = await call("GET", "api/sessions"); } catch (error) { return; }
+  if (!answer.ok) { list.replaceChildren(el("li", "empty", answer.error || "取不到")); return; }
+  list.replaceChildren();
+  $("sessionCount").textContent = answer.sessions.length + " 处";
+  for (const row of answer.sessions) {
+    const li = el("li");
+    const line = el("div", "row");
+    const text = el("span", "t", row.kind === "guest" ? (row.device_name || "小电视") + "的访客" : row.browser);
+    text.appendChild(el("small", "", [row.kind === "guest" ? row.browser : "", row.ip_prefix || "", "最近 " + when(row.last_seen)]
+      .filter(Boolean).join(" · ")));
+    line.append(el("span", "kind", KIND_NAMES[row.kind] || row.kind), text);
+    if (row.current) line.appendChild(el("span", "here", "本机"));
+    else {
+      const out = el("button", "", "退出");
+      out.onclick = () => busy(out, async () => {
+        const result = await call("POST", "api/sessions/revoke", { id: row.id });
+        if (!result.ok) { toast(result.error, true); return; }
+        toast("已退出");
+        openSessions();
+      });
+      line.appendChild(out);
+    }
+    li.appendChild(line);
+    list.appendChild(li);
+  }
+  if (!answer.sessions.length) list.appendChild(el("li", "empty", "没有别的登录"));
+}
+
+$("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
+  if (!confirm("退出你在别的手机和电脑上的登录？它们要重新登录才能用。访客不受影响。")) return;
+  const answer = await call("POST", "api/sessions/revoke", { others: true });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  toast("已退出 " + answer.count + " 处登录");
+  openSessions();
+});
+
+$("logout").onclick = () => busy($("logout"), async () => {
+  if (!confirm("退出登录？这台手机上的遥控就打不开了。要再用，得让已登录的手机或电脑「让手机登录」，或用新的邀请链接。")) return;
+  await call("POST", "api/logout", {});
+  clearTimeout(timer);
+  try { history.replaceState(null, "", location.pathname); } catch (error) {}
+  $("gateText").textContent = "已经退出登录。要再用遥控，请让已登录的手机或电脑「让手机登录」，或向管理员要一个邀请链接。";
+  $("gate").className = "gate on";
+});
+
+$("bindopen").onclick = () => { showPage("bindpage"); document.querySelector("main").scrollTop = 0; };
+$("sessionsopen").onclick = openSessions;
+$("phonelink").onclick = () => busy($("phonelink"), openPhoneLink);
+for (const button of document.querySelectorAll("[data-back]")) button.onclick = () => showPage(button.dataset.back);
 
 // ---------- Wi-Fi（主人） ----------
 // wifi：正在看的那台 { id, name, data }；wifiWait：发出后等设备回答 { seq, op, ssid, from }。
@@ -1085,7 +1404,7 @@ async function wifiChange(body, label) {
   await loadWifi();
 }
 
-$("wifiback").onclick = () => { wifi = null; wifiWait = null; clearTimeout(wifiTimer); showPage("creators"); };
+$("wifiback").onclick = () => { wifi = null; wifiWait = null; clearTimeout(wifiTimer); showPage("mine"); };
 $("wifiadd").onclick = () => {
   const ssid = $("wifissid").value;
   const password = $("wifipass").value;
@@ -1118,6 +1437,7 @@ async function refresh() {
   fetchedAt = Date.now();
   settlePending();
   render();
+  if ($("mine").classList.contains("on")) loadMine(!$("sessionCount").textContent);
 }
 
 // 平时每 5 秒刷新；切换中每秒刷新，好尽快看到小智切过去。
@@ -1130,17 +1450,21 @@ function schedule(delay) {
   }, delay);
 }
 
-for (const button of document.querySelectorAll("nav button")) {
-  button.onclick = () => {
-    for (const other of document.querySelectorAll("nav button")) other.classList.toggle("on", other === button);
-    for (const page of document.querySelectorAll(".page")) page.classList.toggle("on", page.id === button.dataset.page);
-    try { localStorage.setItem("tab", button.dataset.page); } catch (error) {}
-  };
+// 底部四个标签；记住上次停在哪个（每台手机自己记）。
+function goTab(id) {
+  for (const other of document.querySelectorAll("nav button")) other.classList.toggle("on", other.dataset.page === id);
+  showPage(id);
+  try { localStorage.setItem("tab", id); } catch (error) {}
+  if (id === "mine") loadMine(true);
 }
+for (const button of document.querySelectorAll("nav button")) button.onclick = () => goTab(button.dataset.page);
+// 以前记下的、现在不在底部的页：设备、Wi-Fi、电脑登录搬到了「我的」；子页回到它所在的标签。
+const MOVED_TABS = { devices: "mine", wifi: "mine", bindpage: "mine", sessions: "mine", login: "mine",
+                     episodes: "creators", pets: "remote" };
 try {
-  const saved = localStorage.getItem("tab");
-  const button = document.querySelector('nav button[data-page="' + saved + '"]');
-  if (button) button.click();
+  let saved = localStorage.getItem("tab");
+  if (saved && !document.querySelector('nav button[data-page="' + saved + '"]')) saved = MOVED_TABS[saved] || "remote";
+  if (saved) goTab(saved);
 } catch (error) {}
 
 $("listen").onclick = async () => {
@@ -1211,7 +1535,8 @@ $("bind").onclick = () => busy($("bind"), async () => {
   if (!answer.ok) { toast(answer.error, true); return; }
   $("claim").value = "";
   toast("已绑定「" + answer.device.name + "」，小电视几秒后换成你的频道");
-  refresh();
+  await refresh();
+  goTab("mine");      // 回到「我的」，新设备出现在列表里
 });
 
 $("invite").onclick = () => busy($("invite"), async () => {
@@ -1231,7 +1556,7 @@ function loadScan() {
   if (!scanLoading) {
     scanLoading = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = "/tv/scan.js?v=1";
+      script.src = "/tv/scan.js?v=2";
       script.onload = () => (window.TVScan ? resolve(window.TVScan) : reject(new Error("扫码组件没加载上")));
       script.onerror = () => { scanLoading = null; reject(new Error("扫码组件没加载上，请检查网络")); };
       document.head.appendChild(script);
@@ -1244,6 +1569,66 @@ $("scanpc").onclick = () => busy($("scanpc"), async () => {
   const scan = await loadScan();
   scan.open({ onTicket: (ticket) => location.assign("/tv/l/" + ticket), onCode: () => location.assign("/tv/login") });
 });
+
+// 扫一扫：认出我们自己的码就去做对应的事（scan.js 的 classify()）；认不出的扫码层里提示一句，接着扫。
+async function scanAny() {
+  const scan = await loadScan();
+  scan.open({ mode: "any", onFound: (kind, value) => handleScan(kind, value).catch((error) => toast(error.message, true)) });
+}
+$("scanany").onclick = () => busy($("scanany"), scanAny);
+$("bindscan").onclick = () => busy($("bindscan"), scanAny);
+
+function sheetButton(text, cls, action) {
+  const button = el("button", cls, text);
+  button.onclick = action;
+  return button;
+}
+
+async function handleScan(kind, value) {
+  if (kind === "login") { location.assign("/tv/l/" + value); return; }          // 电脑登录：原来的确认页
+  if (kind === "bind") { location.assign("/tv/b/" + value); return; }           // 绑定：原来的确认页（join.html）
+  if (kind === "remote") {
+    // 自己的设备：遥控切到它；别人的：说明这是访客码（用自己的账号遥控不了别人的设备）。
+    const answer = await call("POST", "api/scan", { code: value });
+    if (answer.ok) {
+      goTab("remote");
+      document.querySelector("main").scrollTop = 0;
+      await refresh();
+      toast("已切到「" + (answer.name || devName()) + "」");
+      return;
+    }
+    if (answer.not_mine) {
+      sheet("这是访客码",
+        para("", "这是", el("b", "", "别人的小电视"), "的访客码：给来家里的客人扫，扫了只能遥控那一台。"),
+        para("", "这台小电视不是你的，所以不能用你的账号遥控它。想当客人遥控它，请用浏览器的无痕窗口扫码。"),
+        sheetButton("知道了", "ghostbtn", closeSheet));
+      return;
+    }
+    toast(answer.error, true);
+    return;
+  }
+  if (kind === "phone") {
+    sheet("新手机登录码",
+      para("", "这是给新手机登录用的，请用", el("b", "", "要登录的那部手机"), "的相机扫。"),
+      para("dim", "这台手机已经登录了，不用再扫。"),
+      sheetButton("知道了", "ghostbtn", closeSheet));
+    return;
+  }
+  if (kind === "invite") {
+    sheet("邀请链接",
+      para("", "这是邀请家人的链接：请让家人用", el("b", "", "他自己手机"), "的相机扫，接受后他会有自己的账号。"),
+      para("dim", "你已经登录了，不用接受。"),
+      sheetButton("知道了", "ghostbtn", closeSheet));
+    return;
+  }
+  if (kind === "wifi") {
+    sheet("声波配网",
+      para("", "这是小电视的", el("b", "", "声波配网页"), "：小电视在配网时，用手机把 Wi-Fi 名字和密码播成声音给它听。"),
+      para("dim", "小电视已经连着网、只是想换 Wi-Fi 的话，用「我的 → 我的设备 → Wi-Fi 网络」更省事。"),
+      sheetButton("打开配网页", "go", () => location.assign("/tv/wifi" + value)),
+      sheetButton("不用了", "ghostbtn", closeSheet));
+  }
+}
 
 $("newcode").onclick = async () => {
   const text = data && data.me

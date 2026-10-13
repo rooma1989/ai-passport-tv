@@ -136,11 +136,11 @@ python3.11 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db devices
 - On either device, change channel; the media server logs
   `device=legacy-xingzhi legacy` (or `legacy-passport`).
 - Scan the Xingzhi's status-page QR with a phone that is **not** signed in: it
-  opens the remote as a guest for that device only (no Subscriptions tab).
+  opens the remote as a guest for that device only (only the Remote and Cast tabs).
 
 ## 3. Using it
 
-- **Invite family.** On the admin's phone: Subscriptions → My devices → Invite;
+- **Invite family.** On the admin's phone: Me → Invite family;
   or `python3.11 -m server.tenancy.admin invite --name Mum`. Send the link
   (`https://<site>/tv/i/<code>`, 7 days, single use); opening it and tapping
   Accept signs that phone in as a new user with no devices.
@@ -148,7 +148,7 @@ python3.11 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db devices
   token needed). On connecting it is stored as unclaimed and shows a still
   picture "BIND THIS TV" with its 20-character code, and its status page's QR
   code becomes `HTTPS://<SITE>/TV/B/<code>`. The owner scans it with a signed-in
-  phone and confirms, or types the code under Subscriptions → My devices. The
+  phone (the remote's scan button) and confirms, or types the code under Me → Bind a new device. The
   device reconnects within about two seconds and plays the owner's channels.
 - **A legacy device reflashed with the new firmware** keeps playing as its legacy
   record as long as its build still has the pairing token (it is registered
@@ -316,16 +316,18 @@ device's guest QR code, which is the existing guest link); the admin backend.
 Two later additions, deployed like the rest of phase 2 (copy `server/` and
 `packaging/help/`, restart `tv-relay`):
 
-- **Scan to sign in the PC** from the remote: Subscriptions has a button that
+- **Scan to sign in the PC** from the remote: Me has a button, and the
+  scan button at the top right of the Remote tab reads the same code, that
   opens the phone's camera (`/tv/scan.js`, plus the vendored jsQR
   `/tv/jsqr.js` where the browser has no `BarcodeDetector`, both loaded only on
   the tap) and opens `/tv/l/<ticket>` on the site the remote runs on. Tickets
   are relay-wide, so a remote on the main site confirms a QR code showing the
   `tv.` subdomain and the other way round. No nginx change.
 - **Let a phone sign in** from a signed-in PC (Settings, or the hint on the
-  Remote page): the console shows `https://<site>/TV/P/<token>` as a QR code
+  Remote page) or a signed-in phone (the remote's Me → Let another phone sign
+  in, shown full screen on the phone): the page shows `https://<site>/TV/P/<token>` as a QR code
   and an 8-character code; the phone's camera opens the link, the page shows
-  whose account and which PC, and a tap gives that phone an ordinary member
+  whose account and which PC or phone asked, and a tap gives that phone an ordinary member
   phone session of the same user (180 days; then "Add to Home Screen" from the
   remote, which keeps the session in its address). Opening the page does not
   use the link up (link previews only GET it). The QR code uses `--public-url`
@@ -337,11 +339,11 @@ Two later additions, deployed like the rest of phase 2 (copy `server/` and
 
 | | |
 | --- | --- |
-| Paths | landing `/TV/P/<token>` (relay `/p/<token>`) and `/tv/p`; API `POST /api/phone-link` (PC), `GET /api/phone-link/status?poll=` (PC), `GET /api/phone-link/info?t=` or `?code=`, `POST /api/phone-link/accept` `{token}` or `{code}` |
+| Paths | landing `/TV/P/<token>` (relay `/p/<token>`) and `/tv/p`; API `POST /api/phone-link` (PC or phone), `GET /api/phone-link/status?poll=` (the same session), `GET /api/phone-link/info?t=` or `?code=`, `POST /api/phone-link/accept` `{token}` or `{code}` |
 | Link | 26-character token (130 bits, upper-case base32) only in the QR code, 8-character code (alphabet without I, L, O, 0, 1; about 40 bits) on the screen, a 256-bit poll secret kept by the page; all three stored as SHA-256. Expires in 5 minutes, single use; a new link replaces the user's unused one; a banned user's link stops working |
-| Who creates | a signed-in member's PC session (cookie); not a phone session, not a guest, not the key |
+| Who creates | a signed-in member's PC or phone session (cookie); not a guest, not the key |
 | Limits | 6 links per user and 12 per network per 10 minutes; 10 wrong codes per network and 100 overall per 10 minutes |
-| Audit | `phone_link.create` and `login.phone.link` |
+| Audit | `phone_link.create` (detail starts with `pc` or `phone`, the asking session) and `login.phone.link` |
 
 ## Left for later phases
 

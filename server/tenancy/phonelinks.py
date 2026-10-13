@@ -1,14 +1,16 @@
-"""让手机登录：已登录的电脑版给手机一个一次性的登录链接（和电脑扫码登录反过来）。
+"""让手机登录：已登录的电脑版或手机遥控给一部新手机一个一次性的登录链接（和电脑扫码登录反过来）。
 
-为什么要有：手机上还没有登录过的遥控（没有桌面图标、没有邀请链接），电脑却登录着。
+为什么要有：手机上还没有登录过的遥控（没有桌面图标、没有邀请链接），电脑或另一部手机却登录着
+（比如换了新手机，或家里人想在两部手机上用同一个账号）。
 流程：
-1. 电脑版点「让手机登录」：要一个链接。三样东西——token（26 位，放进二维码
-   HTTPS://<网站>/TV/P/<token>，全大写好让二维码用字母数字模式）、code（8 位，给扫不了码时在
-   <网站>/tv/p 里输入）、poll（只留在电脑页面里，看手机登录了没有）。同一个用户再要一个，旧的作废。
+1. 电脑版点「让手机登录」，或手机遥控「我的」里点「让另一部手机登录」：要一个链接。三样东西——token
+   （26 位，放进二维码 HTTPS://<网站>/TV/P/<token>，全大写好让二维码用字母数字模式）、code（8 位，给扫不了码时在
+   <网站>/tv/p 里输入）、poll（只留在发起的页面里，看新手机登录了没有）。同一个用户再要一个，旧的作废。
 2. 手机（iPhone 相机扫码打开 Safari）看到「以 XX 的身份登录这台手机？」，点按钮（POST）才登录：
    链接预览、聊天软件的抓取只 GET，不会把链接用掉。登录得到的是这个用户普通的手机会话（不是访客）。
-3. 链接 5 分钟过期、只能用一次；库里只存三样东西的 SHA-256。只有已登录的电脑（成员，不是访客、
-   不是密钥）能要；按用户、按网段限流；输错 8 位码按网段和全局限流。创建和使用都记审计。
+3. 链接 5 分钟过期、只能用一次；库里只存三样东西的 SHA-256。只有成员已登录的电脑或手机（不是访客、
+   不是密钥）能要；按用户、按网段限流；输错 8 位码按网段和全局限流。创建和使用都记审计（创建时记下是
+   电脑还是手机发起的）。列名里的 pc_ 是发起的那一端（以前只有电脑能发起）。
 
 票据全中转通用：主站和 tv. 子域名上都能用（各自给自己的网站发 cookie）。
 """
@@ -55,10 +57,11 @@ class PhoneLinks:
         self.guess_limit = RateLimit(*GUESS_LIMIT, clock=self.clock)
         self.guess_all_limit = RateLimit(*GUESS_ALL_LIMIT, clock=self.clock)
 
-    # ---- 电脑 ----
+    # ---- 发起的一端（电脑或手机） ----
 
-    def create(self, user_id: int, ip: str = "", user_agent: str = "") -> dict:
-        """新链接：{token, code, poll, ttl}；这个用户以前没用掉的链接作废。太频繁时 Limited。"""
+    def create(self, user_id: int, ip: str = "", user_agent: str = "", source: str = "pc") -> dict:
+        """新链接：{token, code, poll, ttl}；这个用户以前没用掉的链接作废。太频繁时 Limited。
+        source：发起的会话是 pc 还是 phone，只记进审计。"""
         prefix = db.ip_prefix(ip) or "?"
         if self.create_user_limit.blocked(f"u{user_id}") or not self.create_net_limit.hit(prefix):
             raise Limited("要得太频繁了，请过几分钟再试")
@@ -76,11 +79,12 @@ class PhoneLinks:
                          "expires_at, pc_ip_prefix, pc_user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                          (db.sha256(token), db.sha256(code), db.sha256(poll), user_id, now, now + LINK_S,
                           db.ip_prefix(ip), (user_agent or "")[:160]))
-        accounts.audit("phone_link.create", user_id, ip, "user", str(user_id), describe_agent(user_agent))
+        accounts.audit("phone_link.create", user_id, ip, "user", str(user_id),
+                       f"{source} · {describe_agent(user_agent)}")
         return {"token": token, "code": show_code(code), "poll": poll, "ttl": LINK_S}
 
     def status(self, user_id: int, poll: str | None) -> dict:
-        """电脑看结果：{state: pending/used/expired, phone: 手机的浏览器（用掉了时）}。"""
+        """发起的一端看结果：{state: pending/used/expired, phone: 新手机的浏览器（用掉了时）}。"""
         if not isinstance(poll, str) or not 20 <= len(poll) <= 64:
             return {"state": "expired"}
         row = self.accounts._one("SELECT * FROM phone_link WHERE poll_sha256=? AND user_id=?",
@@ -126,7 +130,7 @@ class PhoneLinks:
         return row if row is not None and row["status"] == "active" else None
 
     def info(self, token: str | None = None, code: str | None = None) -> dict | None:
-        """落地页要显示的：谁的账号、哪台电脑发起的、还剩几秒。无效时 None（不把链接用掉）。"""
+        """落地页要显示的：谁的账号、哪台电脑或手机发起的、还剩几秒。无效时 None（不把链接用掉）。"""
         with self.accounts.lock:
             row = self._live(token, code)
         if row is None:

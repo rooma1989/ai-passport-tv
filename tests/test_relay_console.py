@@ -40,7 +40,8 @@ SECRET = "s" * 43
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "server" / "relay" / "assets"
 NODE = shutil.which("node")
 # Runs the phone's scan.js (TVScan.ticketFrom) and the vendored jsQR in node, without a DOM.
-# job: {"texts": [...]} -> the tickets; {"grids": [{"rows": ["0101..."], "scale": n}]} -> decoded text + ticket.
+# job: {"texts": [...]} -> the tickets; {"classify": [...]} -> TVScan.classify() of each (扫一扫);
+# {"grids": [{"rows": ["0101..."], "scale": n}]} -> decoded text + ticket.
 SCAN_HARNESS = r"""
 const fs = require("fs"), vm = require("vm");
 const [scanPath, jsqrPath, jobPath] = process.argv.slice(2);
@@ -48,7 +49,8 @@ const box = {};
 vm.runInNewContext(fs.readFileSync(scanPath, "utf8"), box);
 vm.runInNewContext(fs.readFileSync(jsqrPath, "utf8"), box);
 const job = JSON.parse(fs.readFileSync(jobPath, "utf8"));
-const out = { tickets: (job.texts || []).map((t) => box.TVScan.ticketFrom(t)), decoded: [] };
+const out = { tickets: (job.texts || []).map((t) => box.TVScan.ticketFrom(t)),
+              kinds: (job.classify || []).map((t) => box.TVScan.classify(t)), decoded: [] };
 for (const g of job.grids || []) {
   const n = g.rows.length, s = g.scale, w = n * s;
   const px = new Uint8ClampedArray(w * w * 4);
@@ -397,14 +399,66 @@ class ConsoleTests(unittest.TestCase):
         self.assertNotIn(token.encode(), b"".join(v if isinstance(v, bytes) else str(v).encode() for v in stored),
                          "only hashes are stored")
 
-    def test_phone_link_only_for_signed_in_pcs(self):
+    def test_phone_link_only_for_signed_in_members(self):
         code = self.accounts.device(ALICE_DEVICE)["remote_code"]
         guest = self.raw("POST", "/api/scan", None, {"code": code})[1]["Set-Cookie"].split(";")[0]
         guest_pc = "tvs=" + self.accounts.new_session(None, "guest", device_id=ALICE_DEVICE)
-        for who in (guest, guest_pc, self.cookies["alice"], "tvs=nonsense", ""):
+        for who in (guest, guest_pc, "tvs=nonsense", ""):
             self.assertEqual(self.call(who, "POST", "/api/phone-link")[0], 404, who)
+            self.assertEqual(self.call(who, "GET", "/api/phone-link/status?poll=" + "x" * 30)[0], 404, who)
         self.assertEqual(self.call("", "POST", "/api/phone-link", headers={"X-Key": KEY})[0], 404, "not with the key")
-        self.assertEqual(self.call(self.cookies["alice"], "GET", "/api/phone-link/status?poll=" + "x" * 30)[0], 404)
+        # A member's PC and a member's phone (the remote's 我的 → 让另一部手机登录) both may.
+        for who in (self.pc_session(), self.cookies["alice"]):
+            self.phone_link(who)
+            self.assertEqual(self.call(who, "GET", "/api/phone-link/status?poll=" + "x" * 30)[1]["state"], "expired")
+
+    def test_body_of_a_post_that_ignores_it_is_still_read(self):
+        """The pages send {} with every POST; left unread it would be glued to the next request on a keep-alive
+        connection ("{}GET ..." → 501) -- the phone's poll right after asking for a link."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.manage.server_address[1], timeout=10)
+        try:
+            headers = {"Cookie": self.cookies["alice"], "Content-Type": "application/json"}
+            for path in ("/api/phone-link", "/api/login/ticket"):
+                conn.request("POST", path, body="{}", headers=headers)
+                answer = conn.getresponse()
+                made = json.loads(answer.read())
+                self.assertEqual(answer.status, 200, path)
+                conn.request("GET", "/api/login/status", headers=headers)
+                after = conn.getresponse()
+                self.assertEqual((after.status, json.loads(after.read())["signed_in"]), (200, True), path)
+            conn.request("GET", "/api/phone-link/status?poll=" + urllib.parse.quote(made.get("poll", "x" * 30)),
+                         headers=headers)
+            self.assertEqual(conn.getresponse().status, 200)
+        finally:
+            conn.close()
+
+    def test_a_signed_in_phone_lets_another_phone_sign_in(self):
+        phone = self.cookies["alice"]       # an ordinary member phone session
+        self.assertEqual(self.accounts.session(phone[4:])["kind"], "phone")
+        answer, token = self.phone_link(phone)
+        self.assertRegex(answer["link"], r"^HTTPS://EXAMPLE\.COM/TV/P/[A-Z2-7]{26}$")
+        self.assertEqual((answer["ttl"], answer["typed"]), (300, "https://example.com/tv/p"))
+        info = json.loads(self.raw("GET", f"/api/phone-link/info?t={token}")[2])
+        self.assertEqual((info["ok"], info["name"]), (True, "Alice"))
+        new_phone = {"User-Agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) "
+                                   "Chrome/129.0 Mobile Safari/537.36"}
+        status, headers, body = self.raw("POST", "/api/phone-link/accept", None, {"token": token}, new_phone)
+        self.assertTrue(json.loads(body)["ok"])
+        made = self.accounts.session(headers["Set-Cookie"].split(";")[0][4:])
+        self.assertEqual((made["user_id"], made["kind"], made["role"]), (self.alice, "phone", "user"))
+        done = self.call(phone, "GET", "/api/phone-link/status?poll=" + answer["poll"])[1]
+        self.assertEqual(done["state"], "used")
+        self.assertIn("Android", done["phone"])
+        self.assertFalse(json.loads(self.raw("POST", "/api/phone-link/accept", None, {"token": token})[2])["ok"],
+                         "still single use")
+        created = [r for r in self.accounts.audit_rows() if r["action"] == "phone_link.create"]
+        self.assertTrue(created[0]["detail"].startswith("phone · "), created[0])   # newest first
+        # The same per-user limit as from a PC: the PC's and the phone's links count together.
+        pc = self.pc_session()
+        for _ in range(5):
+            self.phone_link(pc)
+        self.assertEqual(self.call(phone, "POST", "/api/phone-link")[0], 429)
 
     def test_phone_link_by_code_expiry_and_replacement(self):
         pc = self.pc_session()
@@ -531,8 +585,11 @@ class ScanAssetTests(unittest.TestCase):
         self.assertIn('script.src = "/tv/jsqr.js?v=', scan)
         self.assertIn("BarcodeDetector", scan)
         for needle in ("visibilitychange", "pagehide", "playsinline", "track.stop()", "对准电脑屏幕上的二维码",
-                       "这不是电脑登录码", "输入登录码"):
+                       "这不是电脑登录码", "输入登录码", 'mode === "any"', "扫一扫", "认不出这个二维码"):
             self.assertIn(needle, scan)
+        # The remote's 扫一扫 loads the same script on demand; guests and the single-user relay do not get it.
+        self.assertRegex(web.PAGE, r'class="icon noguest tenantonly" id="scanany"')
+        self.assertIn('mode: "any"', web.PAGE)
         self.assertNotRegex(scan, r"https?://[A-Za-z0-9]", "no external host")
 
     def test_vendored_decoder_keeps_its_license(self):
@@ -567,6 +624,36 @@ class ScanAssetTests(unittest.TestCase):
         }
         tickets = run_scan_js({"texts": list(cases)})["tickets"]
         self.assertEqual(dict(zip(cases, tickets)), cases)
+
+    @unittest.skipUnless(NODE, "node is not installed")
+    def test_scan_anything_recognises_our_codes(self):
+        """The remote's 扫一扫 (scan.js mode "any"): which of our QR codes each text is."""
+        t26 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:24] + "27"
+        t20 = t26[:20]
+        cases = {
+            f"HTTPS://EXAMPLE.COM/TV/L/{t26}": ["login", t26],          # the console's sign-in code
+            f"https://tv.example.com/tv/l/{t26.lower()}": ["login", t26],
+            f"HTTPS://EXAMPLE.COM/TV/B/{t20}": ["bind", t20],           # a new device's status page
+            f"https://example.com/tv/b/{t20.lower()}/": ["bind", t20],
+            f"HTTPS://EXAMPLE.COM/TV/R/{t20}": ["remote", t20],         # a device's remote / guest code
+            f"http://127.0.0.1:8100/r/{t20}": ["remote", t20],
+            f"HTTPS://EXAMPLE.COM/TV/P/{t26}": ["phone", t26],          # a new phone's sign-in link
+            f"https://example.com/tv/i/{t20.lower()}": ["invite", t20],
+            "HTTPS://EXAMPLE.COM/TV/W": ["wifi", ""],                   # the sound setup page
+            "HTTPS://EXAMPLE.COM/TV/W#1Home*-62,Cafe-80": ["wifi", "#1Home*-62,Cafe-80"],
+            "https://example.com/tv/wifi": ["wifi", ""],
+            f"HTTPS://EXAMPLE.COM/TV/R/{t26}": ["", ""],                # wrong length
+            f"HTTPS://EXAMPLE.COM/TV/P/{t20}": ["", ""],
+            f"HTTPS://EXAMPLE.COM/TV/B/{t20}?x=1": ["", ""],
+            f"HTTPS://EXAMPLE.COM/x/TV/R/{t20}": ["", ""],
+            f"javascript://x/TV/R/{t20}": ["", ""],
+            "HTTPS://EXAMPLE.COM/TV/W/../x": ["", ""],
+            "WIFI:S:Home;T:WPA;P:secret;;": ["", ""],                   # a phone's Wi-Fi share code
+            "https://www.bilibili.com/video/BV1xx411c7mD": ["", ""],
+            "": ["", ""],
+        }
+        kinds = run_scan_js({"classify": list(cases)})["kinds"]
+        self.assertEqual({text: [k["kind"], k["value"]] for text, k in zip(cases, kinds)}, cases)
 
 
 class TicketUnitTests(unittest.TestCase):

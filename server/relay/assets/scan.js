@@ -1,5 +1,6 @@
-// 扫码登录电脑：手机遥控（remote.html）和电脑登录页（login.html）点「扫码登录电脑」时才加载。
-// 用后置相机连续认二维码，认出电脑屏幕上的 HTTPS://<网站>/TV/L/<票据> 就关相机、把票据交给页面去确认。
+// 扫码：手机遥控（remote.html）和电脑登录页（login.html）点「扫码登录电脑」或遥控右上角「扫一扫」时才加载。
+// 用后置相机连续认二维码。登录模式（默认）只认电脑屏幕上的 HTTPS://<网站>/TV/L/<票据>；「扫一扫」
+// （mode: "any"）认我们自己的几种码（classify()），认出就关相机、交给页面去处理。
 // 认码：浏览器有 BarcodeDetector 就用它（安卓 Chrome）；没有（iPhone Safari）再加载 /tv/jsqr.js。
 // 相机只在点按钮后打开；关闭、认出、切到后台（visibilitychange）都会立刻释放。
 // tests/test_relay_console.py 在 node 里跑 ticketFrom()，并用 jsqr.js 认中转自己画的登录二维码。
@@ -15,18 +16,42 @@
     return match ? match[1].toUpperCase() : "";
   }
 
-  // 为什么开不了相机：给人看的一句话。
+  // 「扫一扫」认的码，和 ticketFrom 一样只看路径（主站、tv. 子域名、本机都行），大小写都认：
+  // L 电脑登录（26 位）、B 绑定小电视（20 位）、R 小电视的遥控码 / 访客码（20 位）、P 给新手机登录（26 位）、
+  // I 邀请（20 位）、W 声波配网页（# 后面是附近的 Wi-Fi，原样带上）。
+  const KINDS = [
+    ["login", /^https?:\/\/[^\/\s?#]+\/(?:tv\/)?l\/([a-z2-7]{26})\/?$/i],
+    ["bind", /^https?:\/\/[^\/\s?#]+\/(?:tv\/)?b\/([a-z2-7]{20})\/?$/i],
+    ["remote", /^https?:\/\/[^\/\s?#]+\/(?:tv\/)?r\/([a-z2-7]{20})\/?$/i],
+    ["phone", /^https?:\/\/[^\/\s?#]+\/(?:tv\/)?p\/([a-z2-7]{26})\/?$/i],
+    ["invite", /^https?:\/\/[^\/\s?#]+\/(?:tv\/)?i\/([a-z2-7]{20})\/?$/i],
+    ["wifi", /^https?:\/\/[^\/\s?#]+\/(?:tv\/w|tv\/wifi|wifi)\/?(#[\x21-\x7e]*)?$/i],
+  ];
+
+  // → { kind, value }；认不出时 kind 是 ""。value：码（大写），配网页是 # 后面那段（可能是空串）。
+  function classify(text) {
+    const clean = String(text == null ? "" : text).trim();
+    for (const [kind, pattern] of KINDS) {
+      const match = pattern.exec(clean);
+      if (match) return { kind, value: kind === "wifi" ? (match[1] || "") : match[1].toUpperCase() };
+    }
+    return { kind: "", value: "" };
+  }
+
+  // 为什么开不了相机：给人看的一句话。env.any：「扫一扫」，没有登录码可输，改指「我的」里的输入方式。
   function reason(error, env) {
     const wechat = /MicroMessenger/i.test(env.agent || "");
-    if (wechat) return "微信里打不开相机。请从手机桌面上的「小智电视」图标打开遥控再扫，或者输入登录码。";
-    if (!env.secure) return "这个网址不是 https，浏览器不让网页用相机。请输入电脑屏幕上的登录码。";
-    if (!env.media) return "这个浏览器不能在网页里用相机。请输入电脑屏幕上的登录码。";
+    const type = env.any ? "请在「我的」里输入屏幕上的码。" : "请输入电脑屏幕上的登录码。";
+    const also = env.any ? "也可以在「我的」里输入屏幕上的码。" : "也可以输入登录码。";
+    if (wechat) return "微信里打不开相机。请从手机桌面上的「小智电视」图标打开遥控再扫，" + (env.any ? "或者在「我的」里输入屏幕上的码。" : "或者输入登录码。");
+    if (!env.secure) return "这个网址不是 https，浏览器不让网页用相机。" + type;
+    if (!env.media) return "这个浏览器不能在网页里用相机。" + type;
     const name = error && error.name;
     if (name === "NotAllowedError" || name === "SecurityError")
-      return "没有相机权限。请在手机「设置」里允许 Safari（或这个浏览器）使用相机，再点一次；也可以输入登录码。";
-    if (name === "NotFoundError" || name === "OverconstrainedError") return "这台手机上找不到可用的相机。请输入电脑屏幕上的登录码。";
-    if (name === "NotReadableError" || name === "AbortError") return "相机正被别的应用占用。关掉它再试，或者输入登录码。";
-    return "相机打不开。请输入电脑屏幕上的登录码。";
+      return "没有相机权限。请在手机「设置」里允许 Safari（或这个浏览器）使用相机，再点一次；" + also;
+    if (name === "NotFoundError" || name === "OverconstrainedError") return "这台手机上找不到可用的相机。" + type;
+    if (name === "NotReadableError" || name === "AbortError") return "相机正被别的应用占用。关掉它再试，" + (env.any ? "或者在「我的」里输入屏幕上的码。" : "或者输入登录码。");
+    return "相机打不开。" + type;
   }
 
   // 每条都以 .scan 开头并写全按钮的样式：login.html 有全局的 button / p 样式，不能漏进来。
@@ -93,7 +118,8 @@
   }
 
   // 认码器：返回 async (video) => 文本或 ""。
-  async function makeDecoder() {
+  // both：也认反色的（深底浅码，小电视屏幕上可能是这样）；登录模式只认浅底深码，省一半时间。
+  async function makeDecoder(both) {
     const Detector = root.BarcodeDetector;
     if (Detector) {
       try {
@@ -120,8 +146,8 @@
       if (canvas.width !== size) canvas.width = canvas.height = size;
       ctx.drawImage(video, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
       const image = ctx.getImageData(0, 0, size, size);
-      // 电脑版的二维码总是浅底深色，不用再试反色的（省一半时间）。
-      const code = jsQR(image.data, size, size, { inversionAttempts: "dontInvert" });
+      // 电脑版的二维码总是浅底深色，登录模式不用再试反色的（省一半时间）。
+      const code = jsQR(image.data, size, size, { inversionAttempts: both ? "attemptBoth" : "dontInvert" });
       return code ? code.data : "";
     };
   }
@@ -142,12 +168,12 @@
     ui.note.className = "scan-note" + (cls ? " " + cls : "");
   }
 
-  // 开不了相机：说原因，主按钮改成「输入登录码」。
+  // 开不了相机：说原因，主按钮改成「输入登录码」（「扫一扫」没有这个按钮）。
   function fail(text) {
     stopCamera();
     ui.msg.textContent = text;
     ui.msg.hidden = false;
-    ui.hint.textContent = "也可以输入电脑屏幕上的 6 位登录码";
+    ui.hint.textContent = ui.any ? "扫一扫认得：电脑登录码、绑定码、访客码、配网码" : "也可以输入电脑屏幕上的 6 位登录码";
     note("");
     ui.retry.hidden = true;
     ui.code.className = "go";
@@ -159,13 +185,13 @@
     ui.retry.hidden = true;
     ui.code.className = "";
     ui.box.classList.remove("found");
-    ui.hint.textContent = "对准电脑屏幕上的二维码";
+    ui.hint.textContent = ui.any ? HINT_ANY : "对准电脑屏幕上的二维码";
     note("正在打开相机…");
     const media = root.navigator && root.navigator.mediaDevices;
     const env = { agent: root.navigator ? root.navigator.userAgent : "", secure: root.isSecureContext !== false,
-                  media: !!(media && media.getUserMedia) };
+                  media: !!(media && media.getUserMedia), any: ui.any };
     if (!env.secure || !env.media) { fail(reason(null, env)); return; }
-    const decoding = ui.decode ? Promise.resolve(ui.decode) : makeDecoder();   // 和相机权限的弹窗一起准备
+    const decoding = ui.decode ? Promise.resolve(ui.decode) : makeDecoder(ui.any);   // 和相机权限的弹窗一起准备
     decoding.catch(() => {});
     let stream;
     try {
@@ -197,17 +223,17 @@
       try { text = await decode(video); } catch (error) { text = ""; }
       if (!ui || run !== ui.run) return;
       if (text) {
-        const ticket = ticketFrom(text);
-        if (ticket) {
+        const found = ui.any ? classify(text) : { kind: ticketFrom(text) ? "login" : "", value: ticketFrom(text) };
+        if (found.kind) {
           ui.box.classList.add("found");
-          note("认出来了，正在打开确认页…", "warn");
+          note("认出来了…", "warn");
           if (root.navigator.vibrate) root.navigator.vibrate(40);
-          const done = ui.onTicket;
+          const any = ui.any, done = any ? ui.onFound : ui.onTicket;
           close();
-          done(ticket);
+          if (any) done(found.kind, found.value, text); else done(found.value);
           return;
         }
-        if (Date.now() > hintUntil) note("这不是电脑登录码", "warn");
+        if (Date.now() > hintUntil) note(ui.any ? "认不出这个二维码：这里只认小智电视的码" : "这不是电脑登录码", "warn");
         hintUntil = Date.now() + 2000;
       } else if (hintUntil && Date.now() > hintUntil) {
         hintUntil = 0;
@@ -239,8 +265,13 @@
     if (done) done();
   }
 
-  // options: onTicket(ticket) 必需；onCode() 点「输入登录码」；onClose() 关掉时（含认出后）。
+  const HINT_ANY = "对准小电视或电脑屏幕上的二维码";
+
+  // options: onTicket(ticket) 登录模式必需；onCode() 点「输入登录码」；onClose() 关掉时（含认出后）。
+  // 「扫一扫」：mode: "any" 和 onFound(kind, value, text)（见 classify()）；没有「输入登录码」按钮。
   function open(options) {
+    const any = options.mode === "any";
+    const title = any ? "扫一扫" : "扫码登录电脑";
     if (ui) close();
     if (!document.getElementById("scan-css")) {
       const style = el("style");
@@ -250,12 +281,12 @@
     }
     const box = el("div", "scan");
     box.setAttribute("role", "dialog");
-    box.setAttribute("aria-label", "扫码登录电脑");
+    box.setAttribute("aria-label", title);
     const top = el("div", "scan-top");
     const back = el("button", "", "‹ 关闭");
     const torch = el("button", "torch", "开灯");
     torch.hidden = true;
-    top.append(back, el("b", "", "扫码登录电脑"), torch);
+    top.append(back, el("b", "", title), torch);
     const view = el("div", "scan-view");
     const video = el("video");
     video.muted = true;
@@ -269,16 +300,17 @@
     msg.hidden = true;
     view.append(video, frame, msg);
     const foot = el("div", "scan-foot");
-    const hint = el("p", "scan-hint", "对准电脑屏幕上的二维码");
+    const hint = el("p", "scan-hint", any ? HINT_ANY : "对准电脑屏幕上的二维码");
     const noteLine = el("p", "scan-note");
     const retry = el("button", "go", "继续扫码");
     retry.hidden = true;
     const code = el("button", "", "输入登录码");
+    code.hidden = any;
     foot.append(hint, noteLine, retry, code);
     box.append(top, view, foot);
     document.body.appendChild(box);
     ui = { box, video, torch, msg, hint, note: noteLine, retry, code, run: 0, stream: null, track: null, decode: null,
-           onTicket: options.onTicket, onClose: options.onClose };
+           any, onTicket: options.onTicket, onFound: options.onFound, onClose: options.onClose };
     back.onclick = close;
     retry.onclick = start;
     code.onclick = () => { const go = options.onCode; close(); if (go) go(); };
@@ -296,5 +328,5 @@
     start();
   }
 
-  root.TVScan = { ticketFrom, reason, open, close };
+  root.TVScan = { ticketFrom, classify, reason, open, close };
 })(typeof window !== "undefined" ? window : this);

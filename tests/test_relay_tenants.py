@@ -251,12 +251,23 @@ class TenantWebTests(unittest.TestCase):
         self.assertTrue(answer["ok"])
         self.assertIsNone(headers.get("Set-Cookie"))
         self.assertIn(self.cookies["alice"][4:], answer["redirect"])
+        # The remote's 扫一扫 switches to the scanned device and names it.
+        self.assertEqual(answer["name"], self.accounts.device(ALICE_DEVICE)["name"])
+        state = self.call("alice", "GET", "/api/state")[1]
+        self.assertFalse(state["auto"])
+        self.assertEqual([d["id"] for d in state["devices"] if d["target"]], [ALICE_DEVICE])
 
     def test_another_user_scanning_is_told_not_downgraded(self):
         code = self.accounts.device(ALICE_DEVICE)["remote_code"]
         status, headers, body = self.raw("POST", "/api/scan", self.cookies["bob"], {"code": code})
-        self.assertFalse(json.loads(body)["ok"])
+        answer = json.loads(body)
+        self.assertFalse(answer["ok"])
+        self.assertTrue(answer["not_mine"], "the remote explains it is someone else's guest code")
+        self.assertNotIn("name", answer, "and does not say whose")
         self.assertIsNone(headers.get("Set-Cookie"))
+        stale = json.loads(self.raw("POST", "/api/scan", self.cookies["bob"], {"code": "A" * 20})[2])
+        self.assertFalse(stale["ok"])
+        self.assertNotIn("not_mine", stale, "an unknown code is not someone else's")
 
     def test_new_code_rotates_one_device_and_ends_only_its_guests(self):
         guest = self.guest_cookie(ALICE_DEVICE)
