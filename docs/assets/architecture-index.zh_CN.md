@@ -48,10 +48,12 @@
 | [`main/av_channel_policy.c`/`.h`](../../main/av_channel_policy.h) | "这个频道是否出过画面"的记录，以及跳到下一频道的决策。 |
 | [`main/av_adpcm.c`/`.h`](../../main/av_adpcm.h) | 音频包的 IMA ADPCM 块解码（324 字节 → 640 个采样），以及麦克风上行用的编码器；块格式写在头文件和 [`docs/local-tv-prototype.md`](../local-tv-prototype.zh_CN.md) 里。由 `audio_task()` 调用。 |
 | [`main/av_provision.cpp`/`.h`](../../main/av_provision.h) | Wi-Fi station/AP 生命周期（C++，封装 `esp-wifi-connect`）。 |
-| [`main/av_provision_policy.c`/`.h`](../../main/av_provision_policy.h) | 纯启动模式判定（`AV_BOOT_PLAY` vs `AV_BOOT_SETUP`），无 ESP-IDF 依赖。 |
+| [`main/av_provision_policy.c`/`.h`](../../main/av_provision_policy.h) | 纯启动模式判定（`AV_BOOT_PLAY` vs `AV_BOOT_SETUP`）、自动配网和退出、配网页列表、声波页地址 `/TV/W`、声波状态那一行；无 ESP-IDF 依赖。 |
 | [`main/av_settings.c`/`.h`](../../main/av_settings.h) | 亮度/音量的分档表（固定档位而非连续值）。 |
 | [`main/av_store.c`/`.h`](../../main/av_store.h) | 音量/亮度/服务器地址的 NVS 持久化，以及设备密钥。 |
 | [`main/av_identity.c`/`.h`](../../main/av_identity.h) | HELLO 里给多用户服务器的设备身份（`device_id`、`model`、`device_secret`、`fw`）；格式化部分有主机测试。 |
+| [`main/av_wifi_ops.c`/`.h`](../../main/av_wifi_ops.h)、[`main/av_wifi_crypto.c`/`.h`](../../main/av_wifi_crypto.h)、[`main/av_wifimgr.c`/`.h`](../../main/av_wifimgr.h) | 手机管理保存的 Wi-Fi：修改检查和回答 JSON（主机测试）、X25519/HKDF/AES-GCM 信封（对 IDF 自带 mbedTLS 做主机测试）、以及衔接（HELLO `wifimgr`/`wkey`、CONFIG `wifi_key`、SWITCH `wifi`、STATUS 回答）。设计：[`2026-10-13-wifi-setup-design.zh_CN.md`](../superpowers/specs/2026-10-13-wifi-setup-design.zh_CN.md)。 |
+| [`main/av_soundsetup.c`/`.h`](../../main/av_soundsetup.h) | 配网模式里的声波配网：麦克风任务喂解码器 `av_soundprov`、给屏幕的进度、像网页表单那样试连并保存；没有解码器时编译成「不可用」。 |
 | [`main/av_server_addr.c`/`.h`](../../main/av_server_addr.h) | 解析配网页填的 "host[:port]" 文本。 |
 | [`main/ui_menu.c`/`.h`](../../main/ui_menu.h) | 频道列表/状态页/亮度叠加层的状态机，以及频道列表面板里的语音子状态——纯逻辑，无 LVGL。 |
 | [`main/av_voice_policy.c`/`.h`](../../main/av_voice_policy.h) | 按住说话：每种语音状态下每个按键做什么、按住与短按的区分、各种超时——纯逻辑，有主机测试。 |
@@ -87,6 +89,7 @@
 | [`server/progress.py`](../../server/progress.py) | 给 `"progress": 1` 的固件的进度条锚点：中转 `/info/<台>` 的 `duration`/`offset`，每个片源开始时的 SWITCH `progress`，断流或暂停时的 `stop`。设备侧：`main/ui_menu.c` 的 `ui_progress_*`，由 `ui_overlay_progress_*` 画。 |
 | [`server/voice/`](../../server/voice/session.py) | 设备的语音命令：VOICE_CTL/VOICE 包和结果队列（`session.py`）、到 muse-asr 的 Unix 套接字桥（`asr.py`）、规则优先的意图引擎（`intent.py`、`match.py`、`numbers.py`、由 `tools/make_pinyin_table.py` 生成的 `pinyin_table.py`）、带明确设备的中转调用（`relay_client.py`）。运维说明见 [`server/README.zh_CN.md`](../../server/README.zh_CN.md#语音控制)。 |
 | [`server/relay/voice.py`](../../server/relay/voice.py) | 给媒体服务的 `GET /api/voice/catalog`。`device` 字段本身在 `web.py` 的 `Relay.find_device()`/`_pick()`（单用户时也认名字；有 `--db` 时带密钥点名设备的请求按那台设备的访客处理，`_DEVICE_SCOPED`）。 |
+| [`server/relay/wifi.py`](../../server/relay/wifi.py)、[`server/tenancy/wifi.py`](../../server/tenancy/wifi.py)、[`server/wifi_crypto.py`](../../server/wifi_crypto.py) | 手机/电脑管理设备保存的 Wi-Fi（只有主人）：`GET`/`POST /api/wifi`、为设备加密、表 `device_wifi`（记住的公钥、名字、等回答的修改、回答）。 |
 | [`server/fault.py`](../../server/fault.py) | 面向受控设备实验（B02-R）的故障注入工具；不在正式发布的服务端路径里。 |
 
 ## 4. 做需求时真正会用到的工具

@@ -110,3 +110,25 @@ covers the picture the C3 does not decode it. Not yet verified on the device:
 the capture level in a room with the TV just muted, and the frame rate and key
 latency during and after voice in a busy scene.
 
+## Wi-Fi setup
+
+Design: [`2026-10-13-wifi-setup-design.md`](../superpowers/specs/2026-10-13-wifi-setup-design.md).
+
+- **Sound** (first setup page, when the build links the decoder
+  `main/av_soundprov.c`): a code for `<SITE>/TV/W`; the phone page plays the
+  network as sound, the screen shows "receiving… 60%", and the device joins and
+  restarts. The hotspot pages follow as the fallback.
+- **Automatic setup**: with networks saved but none answering for 60 s after
+  boot, setup opens by itself, and closes again when a saved network shows up.
+- **Server field**: hidden behind an "Advanced" toggle when the build knows its server
+  (private header, or `CONFIG_AV_DEFAULT_SERVER` in the build's own sdkconfig).
+- **From the phone**: owners list, add, remove, reorder and switch the saved
+  networks (phone remote: Subscriptions → My devices → Wi-Fi; PC console: Devices → Wi-Fi), multi-user
+  relay only. Passwords are end-to-end encrypted to the device (X25519 +
+  AES-256-GCM); the device tries visible networks in that order, weak ones
+  (≤ −80 dBm) last.
+- Passport specifics: the microphone is the ES8311's, read from the I2S0
+  receive channel that setup opens at 16 kHz for its hiss; the hiss keeps
+  playing beside it (to be checked on the device). The key pair for the
+  encrypted messages and the pinned relay key live in `avsettings`, which the
+  Muse firmware does not touch.

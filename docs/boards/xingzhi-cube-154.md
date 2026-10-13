@@ -341,6 +341,27 @@ uses on this board. **It has not been verified on this board:** the first device
 test checks the `av_voice: capture done: blocks=… peak=…` line (a peak near 0
 means no signal or the wrong slot; near 32767 means the shift is too small).
 
+## Wi-Fi setup
+
+Design: [`2026-10-13-wifi-setup-design.md`](../superpowers/specs/2026-10-13-wifi-setup-design.md).
+
+- **Sound** (first setup page, when the build links the decoder
+  `main/av_soundprov.c`): a code for `<SITE>/TV/W`; the phone page plays the
+  network as sound, the screen shows "receiving… 60%", and the device joins and
+  restarts. The hotspot pages follow as the fallback.
+- **Automatic setup**: with networks saved but none answering for 60 s after
+  boot, setup opens by itself, and closes again when a saved network shows up.
+- **Server field**: hidden behind an "Advanced" toggle when the build knows its server
+  (private header, or `CONFIG_AV_DEFAULT_SERVER` in the build's own sdkconfig).
+- **From the phone**: owners list, add, remove, reorder and switch the saved
+  networks (phone remote: Subscriptions → My devices → Wi-Fi; PC console: Devices → Wi-Fi), multi-user
+  relay only. Passwords are end-to-end encrypted to the device (X25519 +
+  AES-256-GCM); the device tries visible networks in that order, weak ones
+  (≤ −80 dBm) last.
+- Xingzhi specifics: the microphone is the board's own I2S1 (pins 4/5/6); its
+  format is still unverified on this board, so check the `progress=… peak=…`
+  log lines during the first sound setup.
+
 ## Board-specific fixes, all measured on one device
 
 - **Wi-Fi transmit power is capped at 11 dBm.** At 20 dBm this board's supply
