@@ -194,7 +194,9 @@
   .gate { position: fixed; inset: 0; background: var(--ink); display: none; align-items: center; justify-content: center;
           padding: 32px; text-align: center; font: 17px/1.7 var(--serif); }
   .gate.on { display: flex; }
-  a.pclogin { margin-top: 14px; text-decoration: none; }
+  .pclogin { margin-top: 14px; }
+  a.petline { text-decoration: none; }
+  .petline .ghost { visibility: hidden; }
   /* 设备保存的 Wi-Fi（主人才有）。 */
   .wifirow .t small { font: 12px var(--mono); color: var(--amber); margin-left: 6px; }
   .wifirow button { flex: none; background: none; border: 0; color: var(--dim); font: 14px var(--serif); padding: 0 0 0 10px; }
@@ -337,8 +339,10 @@
           <button class="go" id="bind">绑定</button>
         </div>
         <div class="hint">新的小电视连上网以后，屏幕上会显示绑定码；也可以在小电视状态页（双击按键打开）扫二维码绑定。</div>
-        <!-- 电脑版（多用户阶段 2）：输入电脑屏幕上的 6 位登录码、退出已登录的电脑，页面是 login.html。 -->
-        <a class="petline pclogin" href="login"><span>电脑</span><b>登录电脑版：输入电脑屏幕上的 6 位码</b><i>›</i></a>
+        <!-- 电脑版（多用户阶段 2）：扫电脑屏幕上的二维码（scan.js，点了才加载），或输入 6 位登录码、
+             退出已登录的电脑（login.html）。 -->
+        <button class="petline pclogin" id="scanpc"><span>电脑</span><b>扫码登录电脑</b><i>›</i></button>
+        <a class="petline" href="login"><span class="ghost">电脑</span><b>输入登录码 · 已登录的电脑</b><i>›</i></a>
         <div id="adminBox" hidden>
           <div class="box inline">
             <input id="inviteName" placeholder="家人的名字（可不填）" maxlength="20">
@@ -1196,6 +1200,28 @@ $("invite").onclick = () => busy($("invite"), async () => {
   $("inviteLink").hidden = false;
   $("inviteLink").textContent = answer.link;
   try { await navigator.clipboard.writeText(answer.link); toast("邀请链接已复制"); } catch (error) { toast("长按复制邀请链接"); }
+});
+
+// 扫码登录电脑：点了才加载 /tv/scan.js（iPhone 上它再加载 jsQR）。认出电脑屏幕上的二维码就去确认页
+// （/tv/l/<票据>，和扫码落地页同一页）；主站和 tv. 子域名的票据通用，所以留在这个网站上确认。
+let scanLoading = null;
+function loadScan() {
+  if (window.TVScan) return Promise.resolve(window.TVScan);
+  if (!scanLoading) {
+    scanLoading = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "/tv/scan.js?v=1";
+      script.onload = () => (window.TVScan ? resolve(window.TVScan) : reject(new Error("扫码组件没加载上")));
+      script.onerror = () => { scanLoading = null; reject(new Error("扫码组件没加载上，请检查网络")); };
+      document.head.appendChild(script);
+    });
+  }
+  return scanLoading;
+}
+
+$("scanpc").onclick = () => busy($("scanpc"), async () => {
+  const scan = await loadScan();
+  scan.open({ onTicket: (ticket) => location.assign("/tv/l/" + ticket), onCode: () => location.assign("/tv/login") });
 });
 
 $("newcode").onclick = async () => {

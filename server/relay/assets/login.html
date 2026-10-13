@@ -33,6 +33,7 @@
   button { display: block; width: 100%; margin-top: 12px; background: var(--red); color: #fff4e6; border: 0;
            padding: 12px; font: 17px var(--serif); letter-spacing: 4px; }
   button.plain { background: none; border: 1px solid var(--rule); color: var(--dim); }
+  .or { margin: 22px 0 8px; color: var(--dim); font: 14px var(--serif); }
   button:disabled { opacity: .5; }
   a { color: var(--amber); }
   .h { margin: 28px 0 0; padding-bottom: 6px; font: 16px var(--serif); color: var(--paper-hi); border-bottom: 1px solid var(--rule); }
@@ -54,7 +55,8 @@
 </main>
 <script>
 "use strict";
-// 两种进来的方式：扫电脑屏幕上的二维码（/TV/L/<票据>），或从遥控的「电脑登录」进来输入 6 位码（/tv/login）。
+// 三种进来的方式：用相机或微信扫电脑屏幕上的二维码（/TV/L/<票据>）；在遥控里点「扫码登录电脑」
+// （遥控页认出票据后打开 /tv/l/<票据>）；或从遥控进来输入 6 位码（/tv/login，这里也能点「扫码登录电脑」）。
 // 接口都在 /tv/ 下：登录的 cookie 只在那个路径下发送。
 const parts = location.pathname.split("/").filter(Boolean);
 const ticket = parts.length >= 2 && parts[parts.length - 2].toLowerCase() === "l" ? parts[parts.length - 1].toUpperCase() : "";
@@ -131,14 +133,48 @@ function confirmView(info, by) {
   show("在电脑上登录？", dl, left, yes, no, note);
 }
 
-// 扫的二维码：这个浏览器登录过就直接确认；没登录（相机、微信打开的）就告诉他去桌面图标里输入登录码。
-async function byTicket() {
+// 扫码登录电脑：点了才加载 /tv/scan.js（iPhone 上它再加载 jsQR）。
+let scanLoading = null;
+function loadScan() {
+  if (window.TVScan) return Promise.resolve(window.TVScan);
+  if (!scanLoading) {
+    scanLoading = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "/tv/scan.js?v=1";
+      script.onload = () => (window.TVScan ? resolve(window.TVScan) : reject(new Error("scan")));
+      script.onerror = () => { scanLoading = null; reject(new Error("scan")); };
+      document.head.appendChild(script);
+    });
+  }
+  return scanLoading;
+}
+
+// onCode：开不了相机或不想扫时点「输入登录码」。
+function scanButton(note, onCode) {
+  const button = el("button", "", "扫码登录电脑");
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const scan = await loadScan();
+      scan.open({ onTicket: (found) => { clearInterval(timer); byTicket(found).catch(offline); }, onCode });
+    } catch (error) {
+      note.className = "bad";
+      note.textContent = "扫码组件没加载上，请检查网络，或者输入登录码。";
+    } finally { button.disabled = false; }
+  };
+  return button;
+}
+
+function offline() { show("打不开", el("p", "", "网络不通，请稍后再试。")); }
+
+// 扫的二维码：这个浏览器登录过就直接确认；没登录（相机、微信打开的）就告诉他去桌面图标里扫或输入登录码。
+async function byTicket(ticket) {
   const info = await api("GET", "api/login/info?t=" + encodeURIComponent(ticket));
   if (!info || !info.ok) { show("二维码过期了", el("p", "", "请在电脑上刷新二维码，再扫一次。")); return; }
   if (info.signed_in) { confirmView(info, { ticket }); return; }
   show("用遥控确认登录",
-    el("p", "", info.guest ? "访客不能登录电脑版。请用你自己的账号：从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 电脑登录」里输入："
-      : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 电脑登录」里输入："),
+    el("p", "", (info.guest ? "访客不能登录电脑版。请用你自己的账号：" : "这个浏览器还没有登录小智电视。请")
+      + "从手机桌面上的「小智电视」图标打开遥控，在「订阅」里点「扫码登录电脑」再扫一次；或者点「输入登录码」，输入："),
     el("div", "code", info.code),
     el("p", "dim", "电脑屏幕上也显示着这个码，2 分钟内有效。还没有账号的话，请先向管理员要一个邀请链接。"));
 }
@@ -148,7 +184,7 @@ async function byCode() {
   const status = await api("GET", "api/login/status");
   if (!status || !status.signed_in || status.me.role === "guest") {
     show("电脑登录", el("p", "", status && status.signed_in
-      ? "访客不能登录电脑版。" : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 电脑登录」里进来。"));
+      ? "访客不能登录电脑版。" : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「订阅」里点「扫码登录电脑」。"));
     return;
   }
   const input = el("input");
@@ -156,8 +192,9 @@ async function byCode() {
   input.maxLength = 7;
   input.autocomplete = "off";
   input.setAttribute("autocapitalize", "characters");
-  const next = el("button", "", "下一步");
+  const next = el("button", "plain", "下一步");
   const note = el("p", "dim", "在电脑上打开小智电视网站的 /tv/console，屏幕上有二维码和 6 位登录码。");
+  const scan = scanButton(note, () => input.focus());
   const go = async () => {
     const code = input.value.replace(/[\s-]/g, "").toUpperCase();
     if (code.length !== 6) { note.className = "bad"; note.textContent = "登录码是 6 位字母和数字"; return; }
@@ -169,8 +206,7 @@ async function byCode() {
   };
   next.onclick = go;
   input.onkeydown = (event) => { if (event.key === "Enter") go(); };
-  show("电脑登录", input, next, note);
-  input.focus();
+  show("电脑登录", scan, el("p", "or", "或者输入电脑屏幕上的 6 位登录码："), input, next, note);
   loadSessions();
 }
 
@@ -199,7 +235,7 @@ async function loadSessions() {
   box.append(el("div", "h", "已登录的电脑"), list);
 }
 
-(ticket ? byTicket : byCode)().catch(() => show("打不开", el("p", "", "网络不通，请稍后再试。")));
+(ticket ? byTicket(ticket) : byCode()).catch(offline);
 </script>
 </body>
 </html>

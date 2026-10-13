@@ -10,7 +10,10 @@ cross-site POST is refused.
 """
 
 import json
+import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -33,6 +36,54 @@ from test_relay_web import KEY, FakeClient, FakeYouTube
 ALICE_DEVICE = "aaaaaaaaaaa1"
 BOB_DEVICE = "bbbbbbbbbbb2"
 SECRET = "s" * 43
+ASSETS_DIR = Path(__file__).resolve().parents[1] / "server" / "relay" / "assets"
+NODE = shutil.which("node")
+# Runs the phone's scan.js (TVScan.ticketFrom) and the vendored jsQR in node, without a DOM.
+# job: {"texts": [...]} -> the tickets; {"grids": [{"rows": ["0101..."], "scale": n}]} -> decoded text + ticket.
+SCAN_HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+const [scanPath, jsqrPath, jobPath] = process.argv.slice(2);
+const box = {};
+vm.runInNewContext(fs.readFileSync(scanPath, "utf8"), box);
+vm.runInNewContext(fs.readFileSync(jsqrPath, "utf8"), box);
+const job = JSON.parse(fs.readFileSync(jobPath, "utf8"));
+const out = { tickets: (job.texts || []).map((t) => box.TVScan.ticketFrom(t)), decoded: [] };
+for (const g of job.grids || []) {
+  const n = g.rows.length, s = g.scale, w = n * s;
+  const px = new Uint8ClampedArray(w * w * 4);
+  for (let y = 0; y < w; y++) for (let x = 0; x < w; x++) {
+    const dark = g.rows[Math.floor(y / s)][Math.floor(x / s)] === "1";
+    const i = (y * w + x) * 4;      // the console's colours: #1c1915 on #efe5d0
+    px.set(dark ? [0x1c, 0x19, 0x15, 255] : [0xef, 0xe5, 0xd0, 255], i);
+  }
+  const code = box.jsQR(px, w, w, { inversionAttempts: "dontInvert" });
+  out.decoded.push(code ? [code.data, box.TVScan.ticketFrom(code.data)] : null);
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def run_scan_js(job: dict) -> dict:
+    with tempfile.TemporaryDirectory() as tmp:
+        harness, job_file = Path(tmp) / "harness.js", Path(tmp) / "job.json"
+        harness.write_text(SCAN_HARNESS, encoding="utf-8")
+        job_file.write_text(json.dumps(job), encoding="utf-8")
+        done = subprocess.run([NODE, str(harness), str(ASSETS_DIR / "scan.js"), str(ASSETS_DIR / "jsqr.js"),
+                               str(job_file)], capture_output=True, text=True, encoding="utf-8",
+                               timeout=60, check=True)
+    return json.loads(done.stdout)
+
+
+def svg_grid(svg: str) -> list[str]:
+    """The modules of qr.svg()'s picture (border included), as rows of '0'/'1'."""
+    side = int(re.search(r'viewBox="0 0 (\d+) \1"', svg).group(1))
+    rows = [[0] * side for _ in range(side)]
+    for x, y, width in re.findall(r"M(\d+) (\d+)h(\d+)v1h-\d+z", svg):
+        for dx in range(int(width)):
+            rows[int(y)][int(x) + dx] = 1
+    return ["".join(map(str, row)) for row in rows]
+
+
 CHROME_MAC = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/129.0 Safari/537.36")
 
@@ -252,6 +303,38 @@ class ConsoleTests(unittest.TestCase):
         status = json.loads(self.raw("GET", "/api/login/status", pc)[2])
         self.assertFalse(status["signed_in"])
 
+    @unittest.skipUnless(NODE, "node is not installed")
+    def test_the_phones_scanner_reads_the_consoles_qr_code(self):
+        """Scan to sign in the PC: the QR picture the console shows -> jsQR -> TVScan.ticketFrom -> confirm."""
+        answer = json.loads(self.raw("POST", "/api/login/ticket")[2])
+        grid = svg_grid(answer["svg"])
+        result = run_scan_js({"grids": [{"rows": grid, "scale": 3}, {"rows": grid, "scale": 8}]})
+        for decoded in result["decoded"]:
+            self.assertIsNotNone(decoded, "jsQR found no QR code")
+            text, ticket = decoded
+            self.assertRegex(text, r"^HTTPS://EXAMPLE\.COM/TV/L/[A-Z2-7]{26}$")
+            self.assertEqual(ticket, text.rsplit("/", 1)[1])
+        ticket = result["decoded"][0][1]
+        # What the phone does next: the confirm page /tv/l/<ticket>, then 确认登录.
+        self.assertEqual(self.raw("GET", f"/tv/l/{ticket}")[0], 200)
+        info = self.call("alice", "GET", f"/api/login/info?t={ticket}")[1]
+        self.assertEqual((info["ok"], info["signed_in"], info["code"]), (True, True, answer["code"]))
+        self.assertTrue(self.call("alice", "POST", "/api/login/confirm", {"ticket": ticket})[1]["ok"])
+        self.assertEqual(self.poll(answer["poll"])[0]["state"], "ok")
+
+    def test_scanner_scripts_are_served_on_demand(self):
+        for path in ("/scan.js", "/tv/scan.js", "/jsqr.js", "/tv/jsqr.js?v=1"):
+            status, headers, body = self.raw("GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(headers["Content-Type"], "text/javascript; charset=utf-8")
+            self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(headers.get_all("Cache-Control"), ["public, max-age=86400"], "cacheable")
+            self.assertGreater(len(body), 1000)
+        # The confirm page may load them (script-src 'self'), and nothing from anywhere else.
+        csp = self.raw("GET", "/login")[1]["Content-Security-Policy"]
+        self.assertIn("script-src 'self' 'unsafe-inline';", csp)
+        self.assertNotRegex(csp, r"https?:|\*")
+
     # ---- the console's pages and endpoints ----
 
     def test_console_page_and_login_page(self):
@@ -324,6 +407,58 @@ class ConsoleTests(unittest.TestCase):
         finally:
             manage.shutdown()
             manage.server_close()
+
+
+class ScanAssetTests(unittest.TestCase):
+    """The phone's 扫码登录电脑: what is loaded when, and the link it accepts."""
+
+    def test_scripts_load_only_when_the_button_is_tapped(self):
+        login = console.LOGIN_PAGE.decode("utf-8")
+        for name, page in (("remote.html", web.PAGE), ("login.html", login)):
+            self.assertIn("扫码登录电脑", page, name)
+            self.assertIn('script.src = "/tv/scan.js?v=', page, name)
+            self.assertNotRegex(page, r"<script[^>]+src", f"{name}: no script tag loads at page view")
+            self.assertNotIn("jsqr.js", page.lower(), f"{name}: jsQR is scan.js's business")
+        scan = (ASSETS_DIR / "scan.js").read_text(encoding="utf-8")
+        self.assertIn('script.src = "/tv/jsqr.js?v=', scan)
+        self.assertIn("BarcodeDetector", scan)
+        for needle in ("visibilitychange", "pagehide", "playsinline", "track.stop()", "对准电脑屏幕上的二维码",
+                       "这不是电脑登录码", "输入登录码"):
+            self.assertIn(needle, scan)
+        self.assertNotRegex(scan, r"https?://[A-Za-z0-9]", "no external host")
+
+    def test_vendored_decoder_keeps_its_license(self):
+        jsqr = (ASSETS_DIR / "jsqr.js").read_text(encoding="utf-8")
+        self.assertTrue(jsqr.startswith("/*! jsQR 1.4.0"))
+        self.assertIn("Apache License, Version 2.0", jsqr.split("*/", 1)[0])
+        self.assertIn("Modified for ai-passport-tv", jsqr.split("*/", 1)[0])
+        self.assertIn("Apache License", (ASSETS_DIR / "LICENSE.jsqr.txt").read_text(encoding="utf-8"))
+        self.assertLess(len(jsqr), 100_000, "keep the on-demand decoder small")
+        for needle in ("XMLHttpRequest", "fetch(", "importScripts", "eval("):
+            self.assertNotIn(needle, jsqr)
+
+    @unittest.skipUnless(NODE, "node is not installed")
+    def test_ticket_from_scanned_text(self):
+        t = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:24] + "27"
+        cases = {
+            f"HTTPS://EXAMPLE.COM/TV/L/{t}": t,                  # what the console draws
+            f"https://tv.example.com/tv/l/{t.lower()}": t,       # the other host, lower case
+            f"https://example.com/l/{t}": t,                     # the relay's own path
+            f"http://127.0.0.1:8100/TV/L/{t}/": t,               # local relay, trailing slash
+            f"  HTTPS://EXAMPLE.COM/TV/L/{t}\n": t,
+            f"HTTPS://EXAMPLE.COM/TV/R/{t}": "",                 # a device's guest link
+            f"HTTPS://EXAMPLE.COM/TV/B/{t}": "",                 # a binding code
+            f"HTTPS://EXAMPLE.COM/TV/L/{t}?x=1": "",
+            f"HTTPS://EXAMPLE.COM/TV/L/{t[:-1]}": "",            # 25 characters
+            f"HTTPS://EXAMPLE.COM/TV/L/{t[:-1]}1": "",           # not base32
+            f"HTTPS://EXAMPLE.COM/x/TV/L/{t}": "",
+            f"javascript://x/TV/L/{t}": "",
+            f"TV/L/{t}": "",
+            "K7P-4QX": "",
+            "": "",
+        }
+        tickets = run_scan_js({"texts": list(cases)})["tickets"]
+        self.assertEqual(dict(zip(cases, tickets)), cases)
 
 
 class TicketUnitTests(unittest.TestCase):

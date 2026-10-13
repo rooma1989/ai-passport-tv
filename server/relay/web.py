@@ -1491,7 +1491,9 @@ def _manage_handler(relay: Relay):
             self.send_response(code)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            # 默认不缓存；静态文件（ASSETS）自己给 Cache-Control，不能再叠一个 no-store（叠了就一直不缓存）。
+            if "Cache-Control" not in (headers or {}):
+                self.send_header("Cache-Control", "no-store")
             # 网址里可能带着密钥或扫码码，不能经 Referer 带到别处。
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -1870,6 +1872,10 @@ ASSETS = {
     "/wifi": ("text/html; charset=utf-8", (_ASSET_DIR / "wifi.html").read_bytes()),
 }
 ASSETS["/TV/W"] = ASSETS["/wifi"]  # 二维码用的短地址；nginx 也把它转到 /wifi
+# 扫码登录电脑：手机点「扫码登录电脑」时才加载（页面里写的是 /tv/scan.js?v=…，改了脚本就改版本号）。
+# jsqr.js 是 jsQR 1.4.0（Apache-2.0，见 LICENSE.jsqr.txt），只在浏览器没有 BarcodeDetector 时加载。
+ASSETS.update({f"/{name}": ("text/javascript; charset=utf-8", (_ASSET_DIR / name).read_bytes())
+               for name in ("scan.js", "jsqr.js")})
 # 宠物图（设计稿导出的 3 倍图），手机遥控页的「我的宠物」用。
 ASSETS.update({f"/pets/{p.name}": ("image/png", p.read_bytes())
                for p in sorted((_ASSET_DIR / "pets").glob("*.png"))})
