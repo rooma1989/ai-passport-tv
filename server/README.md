@@ -16,16 +16,10 @@ This is an opt-in, single-device **LAN player for live channels, video files and
 synthetic media**. It is not an Internet proxy or a production authentication
 service. Python 3.11+ and its standard library serve the media; ffmpeg is needed
 to prepare files and to transcode the `live` subcommand, so that host needs it
-installed. `numpy` is an **optional** pip dependency, but install it on any host that serves
-devices: with it, a live frame that does not fit its byte target gives detail up perceptually
-(`server/perceptual.py`); without it, or with `TV_DEGRADE=ladder`, the server steps through
-the colour ladder, which visibly shifts colours from frame to frame (blue/yellow flicker was
-seen on a device). Without numpy and without an explicit `TV_DEGRADE`, `live` logs one line
-at start-up beginning `WARNING: numpy is not installed`. On Alibaba Cloud Linux 3 the
-`python3.11` package has no pip: `dnf install python3.11-pip`, then
-`python3.11 -m pip install "numpy<3"` (as root, so the service user can import it).
-No device access or global configuration changes are required. Start commands below from
-the repository root.
+installed. `numpy` is an **optional** pip dependency, needed only to compare the older
+`TV_DEGRADE` modes `perceptual`, `perceptual_2d` and `mosaic` (see
+[When a frame does not fit](#when-a-frame-does-not-fit-tv_degrade)). No device access
+or global configuration changes are required. Start commands below from the repository root.
 
 Channel addresses live in a fixed allowlist in `server/live.py`. They come from a
 community IPTV playlist, so their availability and rights status are not verified;
@@ -92,6 +86,35 @@ failed transcode ends that one session and the service keeps listening.
 The channel table is read once, at start-up. `run.sh` and `run.bat` watch
 `channels.txt` and restart the server when it changes; running the command above
 directly means restarting it yourself to pick up an edit.
+
+### When a frame does not fit (`TV_DEGRADE`)
+
+Every live frame is fitted into a byte target (`TV_RATE_START` / fps, for example
+200000 / 12 ≈ 16.7 KB), sending only the 12-row stripes that changed against what the
+device already shows (`server/degrade.py`). A frame that fits goes out exactly as
+ffmpeg made it. One that does not is handled by `TV_DEGRADE`:
+
+| `TV_DEGRADE` | What it does when a frame is over its target | numpy |
+|---|---|---|
+| `steady` (default) | Sends the most-changed stripes and leaves the least-changed ones as they are for at most 2 frames. Only when the changed stripes stay more than 25 % over the target for 3 frames does it step to a coarser level, one level at a time, and it tries to step back after 1 s; levels merge rows (and at the end columns) by averaging colours, so they soften but never tint or streak | no |
+| `ladder` | Coarser colour steps for the whole frame, chosen anew every frame (old default without numpy) | no |
+| `perceptual` | Reuses the shown or left pixel when close in colour (old default with numpy) | yes |
+| `perceptual_2d`, `mosaic` | Variants of `perceptual` | yes |
+
+`steady`'s settings, for tuning only: `TV_STEADY_DEFER` (0.25: overshoot absorbed by
+leaving stripes for the next frame), `TV_STEADY_CLIMB` (3 frames over before stepping
+coarser), `TV_STEADY_MAX_WAIT` (2 frames a changed stripe may wait), `TV_STEADY_DWELL`
+(12 frames before trying a finer level), `TV_STEADY_DOWN` (1.1: the finer level's changed
+stripes must fit 1.1 x the target) and `TV_STEADY_LEVELS` (`rowsh,rows,rows+cols,rows4+cols`).
+`TV_ENCODE=fill` (default) also spends the bytes left over on stripes below the change
+tolerance and, in `steady`, on redrawing stripes a coarser level drew; `TV_ENCODE=delta`
+does not.
+
+`tools/degrade_lab.py` compares the modes offline on clips cut from local videos
+(`capture`) or generated (`synth`), and writes a table (bytes against the target, tint,
+tint flicker, streaks, stale stripes, PSNR/SSIM, encode time) and contact sheets; the
+measurements behind the default are in
+[`2026-10-13-picture-degrade-design.md`](../docs/superpowers/specs/2026-10-13-picture-degrade-design.md).
 
 Old 320x240 JPEGs/manifests must be regenerated in a new directory. The device
 requires 160x120 input and uses x2 nearest-neighbor output to 320x240; this does

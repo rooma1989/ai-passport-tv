@@ -1,8 +1,8 @@
-"""Without numpy the live server must say so once at start-up.
+"""The live server warns once at start-up when the colour ladder is in use.
 
-The colour ladder it falls back to shifts colours from frame to frame, and the
-server otherwise runs normally, so a host missing numpy looked like a picture
-fault (blue/yellow flicker) rather than a missing dependency.
+The ladder shifts colours from frame to frame (blue/yellow flicker was seen on a
+device); the default, steady, needs no numpy and does not, so a ladder left in a
+production unit is almost always a forgotten stopgap.
 """
 import io
 import os
@@ -16,27 +16,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server import live, tv_server
 
 
-def env_without_degrade():
-    return {k: v for k, v in os.environ.items() if k != "TV_DEGRADE"}
-
-
 class DegradeWarning(unittest.TestCase):
-    def test_missing_numpy_without_a_choice_warns(self):
-        with mock.patch.object(live.perceptual, "AVAILABLE", False), \
-                mock.patch.dict(os.environ, env_without_degrade(), clear=True):
+    def test_ladder_warns_in_one_line(self):
+        with mock.patch.object(live, "DEGRADE", "ladder"):
             message = live.degrade_warning()
         self.assertIsNotNone(message)
-        self.assertTrue(message.startswith("WARNING: numpy is not installed"))
+        self.assertTrue(message.startswith("WARNING: TV_DEGRADE=ladder"))
         self.assertNotIn("\n", message)
 
-    def test_numpy_present_is_silent(self):
-        with mock.patch.object(live.perceptual, "AVAILABLE", True), \
-                mock.patch.dict(os.environ, env_without_degrade(), clear=True):
-            self.assertIsNone(live.degrade_warning())
-
-    def test_explicit_ladder_is_silent(self):
-        with mock.patch.object(live.perceptual, "AVAILABLE", False), \
-                mock.patch.dict(os.environ, {"TV_DEGRADE": "ladder"}):
+    def test_default_is_silent_even_without_numpy(self):
+        with mock.patch.object(live, "DEGRADE", "steady"), \
+                mock.patch.object(live.perceptual, "AVAILABLE", False):
             self.assertIsNone(live.degrade_warning())
 
     def test_main_prints_it_once_before_serving(self):
@@ -48,8 +38,7 @@ class DegradeWarning(unittest.TestCase):
                 pass
         raw = io.BytesIO()
         out = io.TextIOWrapper(raw, encoding="utf-8")
-        with mock.patch.object(live.perceptual, "AVAILABLE", False), \
-                mock.patch.dict(os.environ, env_without_degrade(), clear=True), \
+        with mock.patch.object(live, "DEGRADE", "ladder"), \
                 mock.patch.object(tv_server, "AVServer", FakeServer), \
                 mock.patch.object(tv_server, "print_where_to_connect"), \
                 mock.patch.object(tv_server.signal, "signal"), \
@@ -58,7 +47,7 @@ class DegradeWarning(unittest.TestCase):
             self.assertEqual(tv_server.main(["live", "--channel", "ch000"]), 0)
             out.flush()
         lines = raw.getvalue().decode("utf-8").splitlines()
-        self.assertEqual(sum(line.startswith("WARNING: numpy") for line in lines), 1, lines)
+        self.assertEqual(sum(line.startswith("WARNING: TV_DEGRADE=ladder") for line in lines), 1)
 
 
 if __name__ == "__main__":

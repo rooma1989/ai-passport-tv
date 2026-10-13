@@ -49,9 +49,9 @@
 国内主机：
 
 - `python3.11`（`dnf install python3.11`，和系统自带的 Python 并存）。
-- **numpy**，媒体服务要用。没有它，超出字节目标的帧走颜色阶梯，颜色逐帧跳动，看得出来（设备上见过蓝黄闪烁）；
-  有它时按感知取舍细节（`server/perceptual.py`）。缺 numpy 时媒体服务启动时记一行以
-  `WARNING: numpy is not installed` 开头的警告。阿里云 Linux 3 的 `python3.11` 不带 pip：
+- **numpy**（可选）。默认的画面降质方式 `steady`（`server/degrade.py`）不需要它；只有用来对比的旧模式
+  `perceptual`、`perceptual_2d`、`mosaic` 需要。生产上不要用 `TV_DEGRADE=ladder`：颜色会逐帧跳动（设备上见过蓝黄闪烁），
+  设了它媒体服务启动时会记一行以 `WARNING: TV_DEGRADE=ladder` 开头的警告。仍想装 numpy：阿里云 Linux 3 的 `python3.11` 不带 pip：
 
   ```sh
   dnf install python3.11-pip
@@ -103,7 +103,7 @@ systemctl restart muse-asr tv-relay tv-xingzhi tv-passport   # 按这个顺序
 
 检查：`systemctl cat <unit>` 列出基础 unit 和每个 drop-in；每个媒体服务记一行
 `voice: on, relay on, transcripts not logged`（多用户时是 `relay per device`），并且没有
-`WARNING: numpy is not installed`；`systemctl list-timers muse-asr-warm.timer` 显示下一次运行。
+`WARNING: TV_DEGRADE=ladder`；`systemctl list-timers muse-asr-warm.timer` 显示下一次运行。
 
 ## 主机和模板的差别
 

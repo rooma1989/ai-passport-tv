@@ -57,12 +57,12 @@ Passport: the base `tv-relay.service` names it in `--extra-device`.
 Mainland host:
 
 - `python3.11` (`dnf install python3.11`; it installs beside the system Python).
-- **numpy**, for the media servers. Without it a frame over its byte target is
-  fitted with the colour ladder, which visibly shifts colours from frame to frame
-  (blue/yellow flicker was seen on a device); with it the server gives detail up
-  perceptually (`server/perceptual.py`). The media server logs one line starting
-  `WARNING: numpy is not installed` at start-up when it is missing. Alibaba Cloud
-  Linux 3's `python3.11` has no pip:
+- **numpy** (optional). The default picture degrade, `steady` (`server/degrade.py`),
+  does not need it; only the older comparison modes `perceptual`, `perceptual_2d`
+  and `mosaic` do. Do not run production on `TV_DEGRADE=ladder`: it shifts colours
+  from frame to frame (blue/yellow flicker was seen on a device), and the media
+  server logs one line starting `WARNING: TV_DEGRADE=ladder` at start-up when it is
+  set. To install numpy anyway: Alibaba Cloud Linux 3's `python3.11` has no pip:
 
   ```sh
   dnf install python3.11-pip
@@ -122,7 +122,7 @@ systemctl restart muse-asr tv-relay tv-xingzhi tv-passport   # this order
 
 Check: `systemctl cat <unit>` shows the base unit and each drop-in; each media
 server logs `voice: on, relay on, transcripts not logged` (multi-user:
-`relay per device`) and no `WARNING: numpy is not installed`; `systemctl list-timers muse-asr-warm.timer`
+`relay per device`) and no `WARNING: TV_DEGRADE=ladder`; `systemctl list-timers muse-asr-warm.timer`
 shows the next run.
 
 ## Where the host differs from the templates
