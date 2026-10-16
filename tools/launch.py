@@ -594,13 +594,62 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
 
+# The self-hosted server needs tomllib, which arrived in Python 3.11.
+SELFHOST_MIN_PYTHON = (3, 11)
+
+
+def run_selfhost(data: Path | None) -> int:
+    """./run.sh --selfhost: the self-hosted server (server/selfhost), for a Mac or
+    Linux machine without Docker.
+
+    Only the checks that differ from the LAN server live here; everything after
+    them is the same supervisor the Docker image runs, so this replaces itself
+    with it rather than wrapping it. Its own signal handling then applies: a
+    second layer here would be one more thing to keep in step.
+
+    ffmpeg is never fetched for this path. The fetched build is the fully static
+    one, which failed to resolve host names on the cloud host
+    (docs/boards/xingzhi-cube-154.md); a self-hosted server pulls every channel by
+    name, so it uses the system's package instead.
+
+    The data folder defaults to a per-user location and never to the checkout:
+    it holds the database and the generated secrets, which must not end up next
+    to the code where a careless `git add` would take them.
+    """
+    if datadir.is_frozen():
+        print("打包版不支持 --selfhost：请从源代码运行（./run.sh --selfhost），或用 Docker。", file=sys.stderr)
+        return 1
+    if sys.version_info < SELFHOST_MIN_PYTHON:
+        running = ".".join(str(part) for part in sys.version_info[:3])
+        print(f"自建服务器需要 Python 3.11 或更新的版本，现在是 {running}。", file=sys.stderr)
+        print("Mac 上：brew install python@3.12，然后用 python3.12 运行。", file=sys.stderr)
+        return 1
+    ffmpeg = find_ffmpeg()
+    if ffmpeg is None:
+        report_missing_ffmpeg()
+        return 1
+    data = (data or datadir.user_data_dir() / "selfhost").expanduser().resolve()
+    print(f"数据目录：{data}", flush=True)
+    os.chdir(CODE_ROOT)
+    command = [sys.executable, "-m", "server.selfhost", "--data", str(data), "--ffmpeg", ffmpeg]
+    os.execv(sys.executable, command)
+    return 0    # not reached
+
+
 def _main(argv: list[str] | None = None) -> int:
     parser = _Parser(description="启动媒体服务器和频道配置页。")
     parser.add_argument("--channel", default=None,
                         help="开机先打开哪个频道（默认用媒体服务器自带的频道）")
     parser.add_argument("--no-config-page", action="store_true",
                         help="只运行媒体服务器，不启动配置页")
+    parser.add_argument("--selfhost", action="store_true",
+                        help="自建服务器（多用户、手机遥控、总后台），见 docs/selfhost/README.zh_CN.md")
+    parser.add_argument("--data", type=Path, default=None,
+                        help="和 --selfhost 一起用：数据目录（默认在用户目录下）")
     args = parser.parse_args(argv)
+
+    if args.selfhost:
+        return run_selfhost(args.data)
 
     # Before any child exists, so there is no window in which one could be
     # started and then abandoned by a signal that arrived first.

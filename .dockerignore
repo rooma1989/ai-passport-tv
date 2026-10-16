@@ -1,0 +1,35 @@
+# Build context of the self-hosted image (packaging/docker/Dockerfile): an
+# allow-list. Only what the image needs goes in; everything else stays out.
+#
+# The image ships no content (docs/superpowers/specs/2026-10-15-self-hosting-design.md,
+# sections 4.2 and 8.1): no channel list, no built-in channels, no playlist
+# address, no cookies, no keys. tools/selfhost_content_check.py checks the built
+# image in CI, and tests/test_selfhost_image.py checks these rules on every run.
+*
+!LICENSE
+!server/
+!packaging/help/
+!packaging/docker/NOTICE
+
+# Inside the allow-list, still never:
+server/builtin_channels.py
+**/channels.txt
+**/channels.txt.*
+**/*.m3u
+**/*.m3u8
+**/__pycache__
+**/*.pyc
+**/.local
+**/.DS_Store
+**/*.pem
+**/*.key
+**/token
+**/relay-key
+**/wifi-key
+**/setup-code
+**/cookies*.txt
+**/cstone.json
+**/youtube-node.json
+**/*.db
+**/*.db-*
+**/av_private_config.h

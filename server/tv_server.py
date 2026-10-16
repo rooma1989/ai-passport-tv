@@ -39,7 +39,7 @@ from .media import (AUDIO_CHUNK_MS, AUDIO_LEAD_MS, DURATION_MS, FPS,
 from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packet,
                        ProtocolError, json_bytes, json_object, receive_packet,
                        send_packet, _write_slice)
-from . import episode_info, now_playing, overlay, progress, reconnect
+from . import episode_info, no_channels, now_playing, overlay, progress, reconnect
 from .listen import ListenService
 from .cast_switch import SwitchWatcher
 from .voice.session import VoiceService
@@ -1587,6 +1587,10 @@ class AVServer:
                     self.logger(f"cast switch at connect {channel_id} -> {self.pending_switch}")
                     channel_id = self.pending_switch
             self.pending_switch = ""
+            # 自建模式的空表：一个能放的台都没有时给「还没有频道」的静止画面（server/no_channels.py）。
+            if live.empty_allowed() and (channel_id not in CHANNELS or no_channels.nothing_to_play()):
+                no_channels.serve(self, connection, CONFIG, channel_id if channel_id in CHANNELS else "")
+                return
             self._live_session(connection, channel_id)
             return
 
@@ -1658,7 +1662,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     live_parser = commands.add_parser("live", help="transcode one allowlisted public channel in real time")
-    live_parser.add_argument("--channel", required=True, choices=sorted(CHANNELS))
+    # 自建模式（TV_NO_BUILTIN_CHANNELS=1）的频道表一开始是空的，没有台可以指定：可以不给。
+    live_parser.add_argument("--channel", required=not live.empty_allowed(), default="",
+                             choices=sorted(CHANNELS) or None)
     live_parser.add_argument("--ffmpeg", default="ffmpeg")
     # 仅诊断用：关闭一路以判断是画面还是声音的问题。
     live_parser.add_argument("--media", choices=("both", "audio", "video"),
@@ -1683,7 +1689,9 @@ def main(argv: list[str] | None = None) -> int:
         if degrade_warning:
             print(degrade_warning, flush=True)
         # 每个设备连接启动独立转码进程；ffmpeg 退出只结束该会话，接入循环无需重启。
-        print_where_to_connect(args.bind, args.port, token)
+        # 自建模式（TV_NO_BUILTIN_CHANNELS=1）：监督进程的横幅已经说了设备上填什么，这里不再打印。
+        if not live.empty_allowed():
+            print_where_to_connect(args.bind, args.port, token)
         server.serve()
         # 仅在出现异常时打印计数；握手期放弃的连接不计，换频道每次都会产生一个。
         if server.failed or server.rejected or server.dropped_video:

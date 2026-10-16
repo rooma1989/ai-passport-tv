@@ -1,0 +1,170 @@
+name: Build self-hosted image
+
+# The self-hosted server image (packaging/docker/Dockerfile), phase S1 of
+# docs/superpowers/specs/2026-10-15-self-hosting-design.md.
+#
+# Every run builds both architectures and checks the amd64 image for content
+# (no channel list, built-in channels, playlist address, cookies or keys). Only
+# a manual run with "publish" ticked pushes anything: publishing an image is a
+# separate decision from merging code (AGENTS.md, "Publishing requires separate
+# permission"), so no push or tag does it by itself.
+
+on:
+  pull_request:
+    paths:
+      - "server/**"
+      - "packaging/docker/**"
+      - "packaging/help/**"
+      - ".dockerignore"
+      - "tools/selfhost_content_check.py"
+      - ".github/workflows/build-image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "packaging/docker/**"
+      - ".dockerignore"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Push the image to GHCR (and the mainland mirror if configured), tag 0 and the version below"
+        type: boolean
+        default: false
+      version:
+        description: "Version tag to publish, e.g. 0.1.0"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/xiaozhi-tv
+
+jobs:
+  check:
+    name: Build amd64 and check content
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # The rules first, without Docker: what .dockerignore lets into the build.
+      - name: Check the build context
+        run: python3 tools/selfhost_content_check.py --context
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build (amd64, loaded locally)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: xiaozhi-tv:check
+
+      # The built image itself: everything under /app, and no channel table or
+      # secret file anywhere a user could mistake for shipped content.
+      - name: Check the image content
+        run: |
+          docker run --rm --entrypoint sh xiaozhi-tv:check -c \
+            'find / -xdev \( -name channels.txt -o -name relay-key -o -name "cookies*.txt" -o -name builtin_channels.py \) -print' \
+            | tee found.txt
+          test ! -s found.txt
+          docker create --name content xiaozhi-tv:check
+          docker cp content:/app ./image-app
+          docker rm content
+          python3 tools/selfhost_content_check.py ./image-app
+
+      # A smoke test: the supervisor starts, makes its data folder and answers
+      # /healthz. A few seconds, no media.
+      - name: Smoke test
+        run: |
+          mkdir -p data && sudo chown 1000:1000 data
+          docker run -d --name tv -v "$PWD/data:/data" -p 18080:8080 --read-only --tmpfs /tmp --cap-drop ALL xiaozhi-tv:check
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
+            sleep 1
+          done
+          docker logs tv 2>&1 | grep -v "设置码" | tail -40
+          curl -fsS http://127.0.0.1:18080/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/tv/setup)" = 200
+          docker exec tv ffmpeg -hide_banner -version | head -1
+          docker stop tv
+
+  multiarch:
+    name: Build amd64 + arm64
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: tags
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          tags="$IMAGE:0,$IMAGE:edge"
+          if [ -n "$VERSION" ]; then tags="$tags,$IMAGE:$VERSION"; fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Build (and push when publishing)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+          tags: ${{ steps.tags.outputs.tags }}
+
+      # Offline archives for NAS users whose registry access fails (Q4 of the
+      # design): one `docker save` per architecture, as workflow artifacts.
+      - name: Offline archives
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        run: |
+          for arch in amd64 arm64; do
+            docker pull --platform "linux/$arch" "$IMAGE:0"
+            docker save "$IMAGE:0" | gzip > "xiaozhi-tv-linux-$arch.tar.gz"
+          done
+
+      - name: Upload offline archives
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: xiaozhi-tv-offline
+          path: xiaozhi-tv-linux-*.tar.gz
+          if-no-files-found: error
+
+      # The mainland mirror (Alibaba Cloud Container Registry personal edition),
+      # only when the repository has its secrets: ALIYUN_REGISTRY (for example
+      # registry.cn-hangzhou.aliyuncs.com/<namespace>), ALIYUN_USERNAME,
+      # ALIYUN_PASSWORD.
+      - name: Mirror to the mainland registry
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          ALIYUN_REGISTRY: ${{ secrets.ALIYUN_REGISTRY }}
+          ALIYUN_USERNAME: ${{ secrets.ALIYUN_USERNAME }}
+          ALIYUN_PASSWORD: ${{ secrets.ALIYUN_PASSWORD }}
+        run: |
+          if [ -z "$ALIYUN_REGISTRY" ]; then echo "no mainland registry configured; skipped"; exit 0; fi
+          echo "$ALIYUN_PASSWORD" | docker login --username "$ALIYUN_USERNAME" --password-stdin "${ALIYUN_REGISTRY%%/*}"
+          docker buildx imagetools create --tag "$ALIYUN_REGISTRY/xiaozhi-tv:0" "$IMAGE:0"

@@ -60,22 +60,31 @@ def same_origin(headers) -> bool:
     return origin != "null" and host is not None and urllib.parse.urlsplit(origin).hostname == host
 
 
-def cookie_header(token: str, kind: str) -> str:
-    return (f"{COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/tv/; "
+def _https(handler) -> bool:
+    """请求是不是经 HTTPS 来的（web.py 的 _https；没有这个方法的处理类当作是）。"""
+    check = getattr(handler, "_https", None)
+    return check() if check is not None else True
+
+
+def cookie_header(token: str, kind: str, secure: bool = True) -> str:
+    """secure：自建模式的明文 HTTP 局域网上不带 Secure，浏览器才会保存（web.py 的 _https）。"""
+    flag = "Secure; " if secure else ""
+    return (f"{COOKIE}={token}; HttpOnly; {flag}SameSite=Lax; Path=/tv/; "
             f"Max-Age={SESSION_S[kind]}")
 
 
-def _clear_cookie() -> str:
-    return f"{COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/tv/; Max-Age=0"
+def _clear_cookie(secure: bool = True) -> str:
+    flag = "Secure; " if secure else ""
+    return f"{COOKIE}=; HttpOnly; {flag}SameSite=Lax; Path=/tv/; Max-Age=0"
 
 
 def _base(relay, handler) -> str:
-    """网站地址（二维码用）：--public-url；没配时按请求的 Host 猜。"""
+    """网站地址（二维码用）：--public-url；没配时按请求的 Host 猜（自建的明文 HTTP 局域网上是 http://）。"""
     if relay.public_url:
         return relay.public_url
     host = handler.headers.get("Host") or "localhost"
     local = host.startswith(("127.", "localhost", "[::1]"))
-    return ("http://" if local else "https://") + host
+    return ("http://" if local or not _https(handler) else "https://") + host
 
 
 def _session(relay, handler) -> dict | None:
@@ -259,7 +268,7 @@ def _accept_phone_link(handler, relay, body: dict) -> None:
     relay.log(f"用户 {user} 用{source}给的链接在手机上登录")
     # 网址里带着会话：从这一页「添加到主屏幕」，图标记住它（见 web.py 的 _login）；home=1 让遥控提示添加。
     handler._json({"ok": True, "redirect": f"/tv/?s={session}&home=1"},
-                  headers={"Set-Cookie": cookie_header(session, "phone")})
+                  headers={"Set-Cookie": cookie_header(session, "phone", _https(handler))})
 
 
 def devices(relay, caller, base: str) -> list[dict]:
@@ -322,7 +331,7 @@ def post(handler, relay, path: str) -> bool:
         token = handler._cookie()
         if token and relay.accounts.revoke_session(token):
             relay.log("退出登录")
-        handler._json({"ok": True}, headers={"Set-Cookie": _clear_cookie()})
+        handler._json({"ok": True}, headers={"Set-Cookie": _clear_cookie(_https(handler))})
     elif path == "/api/sessions/revoke":
         _revoke(handler, relay, body)
     elif path == "/api/phone-link/accept":
@@ -357,7 +366,7 @@ def _poll(handler, relay, body: dict) -> None:
     token = relay.accounts.new_session(user, "pc", user_agent=handler._agent(), ip=handler._ip())
     relay.accounts.audit("login.pc", user, handler._ip(), "session", "", describe_agent(handler._agent()))
     relay.log(f"用户 {user} 在电脑上登录")
-    handler._json({"ok": True, "state": "ok"}, headers={"Set-Cookie": cookie_header(token, "pc")})
+    handler._json({"ok": True, "state": "ok"}, headers={"Set-Cookie": cookie_header(token, "pc", _https(handler))})
 
 
 def _confirm(handler, relay, body: dict) -> None:

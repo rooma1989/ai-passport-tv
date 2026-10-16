@@ -52,6 +52,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="「用手机听」令牌的密钥文件；不给就由 --key-file 派生（电视服务读同一个文件，见 server/listen.py）")
     parser.add_argument("--stream-port", type=int, default=8099)
     parser.add_argument("--manage-port", type=int, default=8100)
+    # 自建（server/selfhost 的监督进程给）：没有管理员也启动、等 /tv/setup；明文 HTTP 的 cookie；见 setup.py。
+    parser.add_argument("--selfhost", action="store_true", help="自建模式（只和 --db 一起用）")
+    parser.add_argument("--setup-code-file", type=Path, help="自建：一次性设置码文件（还没有管理员时）")
+    parser.add_argument("--device-address", default="", help="自建：设备该连的地址（不带端口）；空的话用设置时记下的")
     args = parser.parse_args(argv)
 
     key = args.key_file.read_text(encoding="utf-8").strip()
@@ -65,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     args.listen_secret = listen_secret
     if args.db is None and (args.state is None or args.channels_out is None):
         print("要么给 --db（多用户），要么给 --state 和 --channels-out（单用户）", file=sys.stderr)
+        return 2
+    if args.selfhost and args.db is None:
+        print("--selfhost 要和 --db 一起用", file=sys.stderr)
         return 2
     extra = []
     for spec in args.extra_device:
@@ -116,7 +123,14 @@ SYNC_S = 10
 def _serve_tenants(args, key: str, youtube) -> int:
     from ..tenancy.accounts import Accounts
     accounts = Accounts(args.db)
-    if accounts.admin_id() is None:
+    selfhost = None
+    if args.selfhost:
+        from .setup import SelfHost
+        selfhost = SelfHost(setup_code_file=args.setup_code_file, device_address=args.device_address)
+        if accounts.admin_id() is None:
+            # 自建：不拒绝启动，等第一个管理员在 /tv/setup 用设置码建出来。
+            print("还没有管理员：等待在 /tv/setup 设置", flush=True)
+    elif accounts.admin_id() is None:
         print(f"{args.db}：还没有管理员。先运行 python3 -m server.tenancy.migrate（见运维手册）。",
               file=sys.stderr)
         return 2
@@ -127,7 +141,7 @@ def _serve_tenants(args, key: str, youtube) -> int:
     relay = Relay(None, Bilibili(), None, args.ffmpeg, key, youtube=youtube,
                   main_channels=args.main_channels, public_url=args.public_url,
                   accounts=accounts, devices_dir=devices_dir, listen_secret=args.listen_secret,
-                  log=lambda message: print(message, flush=True))
+                  log=lambda message: print(message, flush=True), selfhost=selfhost)
     relay.sync_devices(force=True)
     # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。
     from . import wifi as wifi_api
