@@ -109,6 +109,10 @@ Non-goals:
 - Hardware video decoding (VAAPI, V4L2) in the first release; it is listed as
   a later optimisation.
 
+## Decisions (2026-10-16)
+
+The owner accepted every recommendation (Q1–Q12 as recommended). The 0.x beta comes first: S1 + S3 + a short S4, one device per model at a time (Q1 option A); the 1.0 release adds S2, the gate-lite (Q1 option C). No performance-heavy work such as load tests for now; the estimated figures in section 13 get measured later on real hardware.
+
 ## 3. Questions for you to decide
 
 Each has options and a recommendation; the rest of the document assumes the
