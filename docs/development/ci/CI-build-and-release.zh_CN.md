@@ -17,25 +17,34 @@
 
 ## 流水线做了什么
 
-1. **ccache 缓存恢复**：使用 `actions/cache` 缓存编译中间产物（`.ccache`），二次编译大幅提速。缓存 key 含 ref 与 commit SHA；缓存保留时间以仓库的 GitHub Actions 设置为准。
-2. **编译与验证**（ESP-IDF 5.5.3 / esp32c3）：运行与本地相同的 `./tools/validate.sh --firmware`。脚本使用 `sdkconfig.defaults` 和 `partitions.csv` 构建固件，再执行 `idf.py merge-bin`。
-3. **验证完整固件**：脚本逐字节确认 bootloader、partition-table 和 app 位于 `0x0`、`0x8000` 和 `0x10000`，确认 `flash_args` 使用 8 MB Flash，并完整检查受保护的 Flash 布局，最后输出 `build/FoloToy-AI-Passport-full.bin`。
-4. **上传 artifact**：每次成功构建都上传 `FoloToy-AI-Passport-full.bin`。普通分支只有从该分支手动运行 `workflow_dispatch` 才会构建；普通 push 不触发。
-5. **发布 tag**：tag 构建完成后，独立 release job 下载上述 artifact，并创建 GitHub Release。
+工作流有三个 job：
 
-构建 job 只有 `contents: read` 权限；仅 release job 在 tag 发布时获得 `contents: write`。所有 Action 均固定到完整 commit SHA，行尾注释保留对应发布版本，升级时需同时核对 SHA 与版本。
+- **build**，每个设备一个（矩阵：`ai-passport` 用 `./tools/validate.sh --prototype` 编 ESP32-C3，`xingzhi-cube-154` 用 `./tools/validate.sh --xingzhi` 编 ESP32-S3），都在 ESP-IDF 5.5.3 容器里，各自一份 ccache。两个都是**公开版**（`AV_PUBLIC_BUILD=ON`）：`validate.sh` 核对合并镜像的布局（`tools/verify_firmware.py`：引导程序在 `0x0`、分区表在 `0x8000`、应用在 `0x10000`、8 MB Flash、受保护的 `cardid`），并核对它确实是公开版（`tools/firmware_manifest.py check-public`：`AV_PUBLIC_BUILD` 传到了编译器，所以没有私有头文件、令牌和帮助页地址；sdkconfig 里没有默认服务器和网站）。版本号是完整检出后的 `git describe --tags`，作为 `AV_FW_VERSION`（→ `PROJECT_VER`）传进去，设备在 HELLO 的 `fw` 里报它。然后 `tools/firmware_manifest.py make` 再读一遍镜像（芯片号、`0x10000` 处是本项目的应用、版本号对得上、Passport 在 `0x356000` 之前结束），按发布用的文件名复制一份，写出 `manifest-<设备>.json`。
+- **package** 把两份合成 `manifest.json`，写 `SHA256SUMS`（每个镜像按清单重新算哈希；版本号不一致的两次编译会被拒绝），按刷机页的规矩再查一遍，并打包 `xiaozhi-tv-flasher.zip`：网页刷机（`packaging/flash/`）加旁边的 `firmware/`，放到 `/flash/` 下就能用。手动触发时也会跑，打 tag 之前就能看到整套文件。
+- **release**（只在 tag 上，`contents: write`，和服务端工作流共用 release 并发组）确认每个文件都在，然后发布。
+
+所有 Action 都固定到完整 commit SHA。build 和 package job 只有 `contents: read`。
 
 ## 产物
 
-- `FoloToy-AI-Passport-full.bin`：合并后的完整固件，可直接烧录（唯一产物）。
+| 文件 | 是什么 | 怎么刷 |
+| --- | --- | --- |
+| `FoloToy-AI-Passport-tv.bin` | AI Passport（ESP32-C3）合并镜像 | 从 `0x0` 写，**绝不擦除**（出厂身份信息在 `0x356000`） |
+| `Xingzhi-Cube-154-tv-public.bin` | 星智 Cube 1.54（ESP32-S3）合并镜像 | 替换小智 AI 固件时先整片擦除一次，再从 `0x0` 写 |
+| `manifest.json` | 两个设备的设备名、芯片、版本、偏移、大小、SHA-256、擦除规矩、写入上限、保护区 | 网页刷机读它 |
+| `manifest-<设备>.json` | 同上，单个设备 | |
+| `SHA256SUMS` | 镜像和清单的校验值 | 刷机页也会核对 |
+| `xiaozhi-tv-flasher.zip` | `flash/`：页面、esptool-js、`firmware/` | 解压到任意 HTTPS 网站下 |
 
 ## 在线烧录
 
-使用浏览器在本机完成写入与校验，固件不会上传服务器。打开 **在线刷机工具**：
+网页刷机是 `packaging/flash/`（静态 HTML 和 JavaScript，esptool-js 0.6.1 连同许可证放在仓库里）。它从自己所在的网站取 `firmware/manifest.json`、`firmware/SHA256SUMS` 和镜像：GitHub Release 的下载不带 CORS 头，网页没法直接从 Release 取（见 `docs/flash/index.html`）。所以要把固件放在页面旁边：
 
-`https://ai-passport.folotoy.cn/tools/web-flasher/`
+- **静态网站**（`<静态网站>/flash/`，必须 HTTPS，网页串口要求）：把 `xiaozhi-tv-flasher.zip` 解压到网站根目录，或运行 `python3 tools/firmware_manifest.py bundle <放发布文件的目录> --out <网站>/flash`。
+- **家庭服务器**：把同一个目录放在 `/flash/`；在插着设备的那台电脑上用 `http://localhost:8080/flash/` 打开，网页串口就能用。自托管包带上 `packaging/flash/` 的页面和这次发布的固件文件（放在它的 `firmware/` 里），并给 relay 设 `TV_FIRMWARE_MANIFEST`（那份 `manifest.json`）和 `TV_FLASHER_URL=/flash/`，总后台的设备页就能标出哪些设备的固件旧了。
+- **手动**：`esptool.py --chip esp32c3 write_flash 0x0 FoloToy-AI-Passport-tv.bin`（Passport 绝不能 `erase_flash`）；星智见[它的板子文档](../../boards/xingzhi-cube-154.zh_CN.md#刷机)。
 
-步骤：连接设备（USB JTAG/serial debug unit）→ 选择本 Release 的合并固件 `FoloToy-AI-Passport-full.bin` → 选择波特率（如 460800）→ 开始写入。目标是 8MB Flash 板卡，无需其它参数。
+原来那个只支持 Passport 的 `docs/flash/index.html`（GitHub Pages，固件提交在 `docs/firmware/`）不变。
 
 ## Release 标题
 

@@ -56,6 +56,31 @@ Don't flash this build's bootloader, partition table or `ota_data_initial.bin`.
 `tools/verify_firmware.py` assumes the player's own layout (factory at
 0x10000) and does not apply to this one.
 
+## Web flasher and published images
+
+The web flasher ([`packaging/flash/`](../../packaging/flash/index.html)) writes
+only the standalone Passport image, from `0x0`. Before writing it reads
+`0x10000`; finding Muse's partition table there, it stops and points here,
+because a full image would overwrite Muse's table, NVS (pairing) and app. When
+it cannot read the flash it asks the user to confirm the Passport has no Muse
+before writing. Use the manual steps above for this layout.
+
+Releases do not include a signed `ota_1` image (self-hosting design, Q9).
+Finding (2026-10-16): the key above is `esp32/dev_signing_key.pem` in the public
+facebookincubator/muse-gadget-sdk repository (Apache-2.0). Its own
+`sdkconfig.defaults` calls it a shared development key, checked in on purpose,
+to be replaced by a secret release key (kept out of git, injected in CI) before
+shipping; `CONFIG_HOMEHUB_DEV_BUILD` defaults to on, so Muse built from the SDK
+accepts images signed with it, while Muse built with a release key would refuse
+them. CI could therefore sign without holding any secret, by fetching that file
+from upstream at a pinned commit. It is not done, because the only Muse that can
+switch to a TV in `ota_1` is one built from source with `CONFIG_MUSE_TV_SLOT`
+(this project's Muse fork), whose owner already builds and signs the TV image
+the same way; publishing an image signed with a key its authors say must not
+ship would need their agreement; and a third flasher mode writing `ota_1` only
+is more risk than this small audience needs. Revisit if the TV slot is
+accepted upstream.
+
 ## Server
 
 The geometry is fixed per server process and one device is served at a time,

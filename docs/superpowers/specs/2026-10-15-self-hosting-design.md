@@ -1051,6 +1051,38 @@ Parallel: S2a and S2b against an agreed hand-off interface.
 
 Can run in parallel with S1 and S2.
 
+**Status (2026-10-16): built, not yet tried on a device or run in CI.**
+
+- S3a: `.github/workflows/build-firmware.yml` builds both public images in a
+  matrix (`--prototype` for the Passport, `--xingzhi`), versioned from
+  `git describe --tags` (`AV_FW_VERSION` → `PROJECT_VER`), and publishes them
+  with `manifest.json`, `manifest-<board>.json`, `SHA256SUMS` and
+  `xiaozhi-tv-flasher.zip`. `tools/firmware_manifest.py` writes and checks the
+  manifests; `check-public`, run by `validate.sh`, refuses a build without
+  `AV_PUBLIC_BUILD` or with a default server or site (Q11).
+- S3b: the flasher is `packaging/flash/` (chosen over `docs/flash/`, which stays
+  the old Passport-only GitHub Pages page). It reads `firmware/manifest.json` and
+  `firmware/SHA256SUMS` from its own origin, because release downloads have no
+  CORS header. The board rules (erase, write limit, protected range) are
+  repeated in the page's own table and win over the manifest. Detection reads
+  `0x8000` and `0x10000`: a Xingzhi already running this firmware is offered an
+  update without erase (9.5), anything else is erased after a tick; a Passport
+  is never erased, and one carrying the Muse dual setup is refused. Files are
+  checked against both the manifest and `SHA256SUMS`, the write is verified by
+  MD5 read-back. esptool-js 0.6.1 is vendored with its licence.
+  **For S1's front:** serve `packaging/flash/` at `/flash/` with the release's
+  `manifest.json`, `SHA256SUMS` and images in `/flash/firmware/` (the layout
+  `tools/firmware_manifest.py bundle` produces), and set
+  `TV_FIRMWARE_MANIFEST=<that manifest.json>` and `TV_FLASHER_URL=/flash/` for
+  the relay. The static site (S4) unzips `xiaozhi-tv-flasher.zip` at its root.
+- S3c: the admin Devices page tags devices whose `fw` differs from the
+  release's version for their model and explains how to update, linking
+  `TV_FLASHER_URL` when set.
+- Q9, Muse dual in CI: the signing key is Muse's public, shared development
+  key (`esp32/dev_signing_key.pem` in facebookincubator/muse-gadget-sdk, which
+  says to replace it before shipping), so CI could sign without a secret; not
+  done, see [`passport-muse-dual.md`](../../boards/passport-muse-dual.md#web-flasher-and-published-images).
+
 ### Phase S4 — static website and tutorial (2.5–3.5 days)
 
 Chinese first, English beside it: the pages of section 11, disclaimer,

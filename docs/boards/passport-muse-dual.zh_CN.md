@@ -47,6 +47,22 @@ python -m esptool --chip esp32c3 -p PORT write-flash 0x400000 build-muse-dual/tv
 不要刷这次编译出来的引导程序、分区表和 `ota_data_initial.bin`。
 `tools/verify_firmware.py` 按播放器自己的布局检查（factory 在 0x10000），不适用于这种布局。
 
+## 网页刷机和发布的镜像
+
+网页刷机（[`packaging/flash/`](../../packaging/flash/index.html)）只写独立版 Passport 镜像，从 `0x0`
+开始写。写之前先读 `0x10000`：读到 Muse 的分区表就停下并指到这里，因为整块镜像会盖掉 Muse
+的分区表、NVS（配对）和程序。读不出 flash 时，要用户先确认这台 Passport 没装 Muse 才写。
+这种布局请用上面的手动步骤。
+
+发布里没有签好名的 `ota_1` 镜像（自托管设计 Q9）。调查结果（2026-10-16）：上面用的密钥是公开仓库
+facebookincubator/muse-gadget-sdk（Apache-2.0）里的 `esp32/dev_signing_key.pem`。那个仓库自己的
+`sdkconfig.defaults` 说它是故意提交的共享开发密钥，正式发货前要换成不进 git、由 CI 注入的私有发布
+密钥；`CONFIG_HOMEHUB_DEV_BUILD` 默认打开，所以从 SDK 编出来的 Muse 接受用它签名的镜像，用发布
+密钥编的 Muse 则会拒绝。所以 CI 不需要保管任何机密，从上游按固定提交取这个文件就能签名。现在不做，
+因为：能切到 `ota_1` 电视的 Muse 只有自己从源码带 `CONFIG_MUSE_TV_SLOT` 编出来的（本项目的 Muse
+分支），这些人本来就会用同样的方法编、签电视镜像；用作者明说「不能拿去发货」的密钥签名公开发布，需要
+他们同意；给刷机页再加一种只写 `ota_1` 的模式，风险大于这点用户的需要。等电视槽位被上游接受后再看。
+
 ## 服务器
 
 画面尺寸是每个服务器进程固定的，而且一次只服务一台设备，所以 Passport 在星智那台旁边有自己的实例：

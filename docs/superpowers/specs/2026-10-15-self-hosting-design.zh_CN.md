@@ -835,6 +835,29 @@ HTTP 从家庭服务器取镜像，并用编进固件的项目公钥在应用层
 
 可与 S1、S2 并行。
 
+**进展（2026-10-16）：已做完，还没在设备上试过，也还没在 CI 上跑过。**
+
+- S3a：`.github/workflows/build-firmware.yml` 用矩阵编两个公开版镜像（Passport 用 `--prototype`，
+  星智用 `--xingzhi`），版本号取 `git describe --tags`（`AV_FW_VERSION` → `PROJECT_VER`），连同
+  `manifest.json`、`manifest-<设备>.json`、`SHA256SUMS` 和 `xiaozhi-tv-flasher.zip` 一起发布。
+  `tools/firmware_manifest.py` 写清单、查清单；`validate.sh` 会跑它的 `check-public`，没带
+  `AV_PUBLIC_BUILD` 或带了默认服务器、网站的编译都会被拒绝（Q11）。
+- S3b：刷机页放在 `packaging/flash/`（没用 `docs/flash/`，那个仍是原来只支持 Passport 的 GitHub Pages
+  页面）。它从自己所在的网站取 `firmware/manifest.json` 和 `firmware/SHA256SUMS`，因为 Release 的下载
+  不带 CORS 头。设备的规矩（擦不擦、写到哪为止、保护区）在页面自己的表里再写一遍，和清单冲突时以页面
+  为准。识别时读 `0x8000` 和 `0x10000`：已经是本固件的星智默认只更新、不擦除（9.5），别的固件打勾
+  同意后先擦除；Passport 从不擦除，装着 Muse 双系统的直接拒绝。写之前按清单和 `SHA256SUMS` 两头核对
+  文件，写完用 MD5 读回核对。esptool-js 0.6.1 连同许可证放在仓库里。
+  **S1 的前端要做的**：把 `packaging/flash/` 放在 `/flash/`，这次发布的 `manifest.json`、`SHA256SUMS`
+  和镜像放在 `/flash/firmware/`（就是 `tools/firmware_manifest.py bundle` 产出的布局），并给 relay 设
+  `TV_FIRMWARE_MANIFEST=<那份 manifest.json>` 和 `TV_FLASHER_URL=/flash/`。静态网站（S4）把
+  `xiaozhi-tv-flasher.zip` 解压到网站根目录即可。
+- S3c：总后台设备页里，`fw` 和这次发布里同型号版本不一样的设备标「可更新到 …」，下面写怎么更新，设了
+  `TV_FLASHER_URL` 就链过去。
+- Q9，Muse 双系统进 CI：签名用的是 Muse 公开的共享开发密钥（facebookincubator/muse-gadget-sdk 里的
+  `esp32/dev_signing_key.pem`，那边写明发货前要换掉），所以 CI 不需要保管机密也能签；没有做，原因见
+  [`passport-muse-dual.zh_CN.md`](../../boards/passport-muse-dual.zh_CN.md#网页刷机和发布的镜像)。
+
 ### 阶段 S4 —— 静态网站和教程（2.5–3.5 天）
 
 中文优先，英文并列：第 11 节的页面、免责声明、截图、NAS 和 Windows 的步骤（按官方文档写，实际试过之前标为未验证）。

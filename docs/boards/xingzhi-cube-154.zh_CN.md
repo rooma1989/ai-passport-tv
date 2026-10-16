@@ -30,11 +30,22 @@
 ./tools/validate.sh --xingzhi
 ```
 
-镜像输出到 `build/Xingzhi-Cube-154-tv-public.bin`。
+镜像输出到 `build/Xingzhi-Cube-154-tv-public.bin`。这是公开版：没有私有头文件、没有配对令牌、
+没有默认服务器和网站（不是的话 `tools/firmware_manifest.py check-public` 会拒绝）。设
+`AV_FW_VERSION` 可以写进版本号（发布工作流用 git tag），设备在 HELLO 的 `fw` 里报它。
+
+每次发布 tag，CI 也会编这个镜像，以 `Xingzhi-Cube-154-tv-public.bin` 连同 `manifest.json`、
+`SHA256SUMS` 一起发布（[`CI-build-and-release.zh_CN.md`](../development/ci/CI-build-and-release.zh_CN.md)）。
 
 ## 刷机
 
-板子不响应时先进下载模式：按住 **BOOT**（从上往下第三个键），再短按最下面的键。
+**用浏览器**（电脑上的 Chrome 或 Edge）：网页刷机
+[`packaging/flash/`](../../packaging/flash/index.html)，由静态网站或家庭服务器放在 `/flash/`（插着板子的
+那台电脑上是 `http://localhost:8080/flash/`）。板子里还是小智 AI 固件时，页面先说明会替换掉它，打勾
+同意后先整片擦除再写；已经是本固件时，可选「更新固件」（不擦除，Wi-Fi、服务器和绑定都保留）或
+「清空后重装」。写之前核对镜像的芯片号和 SHA-256，写完读回核对。写完不会替你重启：按一下最下面的键。
+
+**手动刷。** 板子不响应时先进下载模式：按住 **BOOT**（从上往下第三个键），再短按最下面的键。
 第一次刷之前先整片擦除，因为小智固件的 NVS 落在本固件的 NVS 范围里：
 
 ```bash
@@ -244,6 +255,8 @@ Google 小号在无痕窗口里导出的 cookies 文件：试过的所有客户�
 
 ## 未验证
 
+- 网页刷机（`packaging/flash/`）在真板子上的表现：识别芯片、读出已装固件、擦除、写入和 MD5 读回核对
+  （esptool-js 0.6.1 走 S3 自带的 USB），macOS 和 Windows 上的 Chrome、Edge。
 - 电池分压比（按 1:2 推测），因此 `bsp_battery_mv()` 未经核实；充电时百分比偏高。
 - 超过约十分钟的长时间稳定性，以及在其他 Wi-Fi 网络下的表现。
 - 4G 模组在飞行模式下的耗电，以及是否应改为让它保持复位。

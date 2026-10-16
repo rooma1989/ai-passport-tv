@@ -31,11 +31,29 @@ With ESP-IDF 5.5.3 activated:
 ./tools/validate.sh --xingzhi
 ```
 
-The image is written to `build/Xingzhi-Cube-154-tv-public.bin`.
+The image is written to `build/Xingzhi-Cube-154-tv-public.bin`. It is a public
+build: no private header, no pairing token, no default server or site
+(`tools/firmware_manifest.py check-public` refuses it otherwise). Set
+`AV_FW_VERSION` to stamp a version (the release workflow uses the git tag); the
+device reports it in HELLO `fw`.
+
+Every release tag also publishes this image, built by CI, as
+`Xingzhi-Cube-154-tv-public.bin` with `manifest.json` and `SHA256SUMS`
+([`CI-build-and-release.md`](../development/ci/CI-build-and-release.md)).
 
 ## Flash
 
-Enter download mode if the board does not answer: hold **BOOT** (third key from
+**From the browser** (Chrome or Edge on a computer): the web flasher
+[`packaging/flash/`](../../packaging/flash/index.html), served as `/flash/` by the
+static site or by the household server (`http://localhost:8080/flash/` on the
+machine the board is plugged into). On a board still running the Xiaozhi AI
+firmware it explains that the firmware is replaced, asks for a tick and erases
+the chip first; on a board already running this firmware it offers "update"
+(no erase: Wi-Fi, server and binding stay) or "erase and reinstall". It checks
+the image's chip id and SHA-256 before writing and reads the write back. It does
+not reset the board afterwards: tap the bottom key.
+
+**By hand.** Enter download mode if the board does not answer: hold **BOOT** (third key from
 the top) and tap the bottom key. On the very first flash, erase the chip first,
 because the Xiaozhi firmware's NVS sits inside this firmware's NVS range:
 
@@ -384,6 +402,9 @@ Design: [`2026-10-13-wifi-setup-design.md`](../superpowers/specs/2026-10-13-wifi
 
 ## Not verified
 
+- The web flasher (`packaging/flash/`) on a real board: chip detection, the
+  installed-firmware read, the erase, the write and its MD5 read-back over the
+  S3's built-in USB with esptool-js 0.6.1, in Chrome and Edge on macOS and Windows.
 - The battery divider ratio (assumed 1:2) and therefore `bsp_battery_mv()`; the
   percentage reads high while charging.
 - Long-term stability beyond about ten minutes of play, and behaviour on other
