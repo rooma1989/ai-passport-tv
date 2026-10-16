@@ -50,6 +50,8 @@
         border-bottom: 1px solid var(--rule); font: 17px var(--serif); color: var(--paper-hi); flex-wrap: wrap; }
   .h3 small { font: 12px var(--mono); color: var(--faint); }
   .hint { color: var(--faint); font-size: 12px; margin: 8px 0 0; }
+  .hint a { color: var(--amber-soft); }
+  .hint b { color: var(--dim); font-weight: 600; }
   .empty { padding: 18px 0; color: var(--faint); font: 15px var(--serif); }
   .block { margin-bottom: 32px; }
   .linkbtn { background: none; border: 0; padding: 0; color: var(--dim); font: 14px var(--serif); }
@@ -260,6 +262,9 @@
         <p class="hint">「重连」让设备断开再马上连上（新固件才认这个命令），封禁、解绑之后会自动做一次。
           「重新配对」：设备擦过 flash、密钥变了时，10 分钟内它用新密钥连上来就会被记住。
           旧固件的设备（legacy-…）不能解绑，先刷新固件再在命令行 adopt。</p>
+        <p class="hint" id="devUpdate"><b>怎么更新固件：</b>在插着设备的那台电脑上，用 Chrome 或 Edge 打开<span id="devFlasher">项目网站的「刷机」页</span>，
+          连上设备后选「更新固件」：只写固件，Wi-Fi、服务器地址和绑定都保留，设备不用重新配对。
+          网页串口只能在 https 页面或本机的 localhost 上用；设备插在家庭服务器那台电脑上时，在那台电脑上打开 http://localhost:8080/flash/。</p>
       </div>
     </section>
 
@@ -852,6 +857,8 @@ async function loadDevices() {
   let data;
   try { data = await call("GET", "api/admin/devices"); } catch (error) { failed(error); return; }
   deviceList = data.devices;
+  const firmware = data.firmware || { latest: {}, flasher: "" };
+  renderFlasherLink(firmware.flasher);
   const live = deviceList.filter((d) => d.status !== "retired");
   $("devCount").textContent = live.length + " 台" + (live.length !== deviceList.length ? "（另有 " + (deviceList.length - live.length) + " 条退役的旧记录）" : "");
   const body = $("devRows");
@@ -866,6 +873,8 @@ async function loadDevices() {
     if (d.owner_banned) owner.appendChild(el("span", "tag red", "主人已封禁"));
     const model = td("", d.model_name);
     model.appendChild(el("span", "sub", d.fw || "固件版本未知"));
+    const latest = (firmware.latest || {})[d.model];
+    if (latest && d.fw && d.fw !== latest) model.appendChild(el("span", "tag amber", "可更新到 " + latest));
     const status = td(d.status === "banned" ? "bad" : d.online ? "live" : "", (STATUS[d.status] || d.status) +
                       (d.online ? " · 在线" : "") + (d.repair ? " · 等新密钥" : ""));
     if (d.online && (d.channel_name || d.channel)) status.appendChild(el("span", "sub", d.channel_name || d.channel));
@@ -885,6 +894,16 @@ async function loadDevices() {
     tr.append(name, owner, model, status, seen, actions);
     body.appendChild(tr);
   }
+}
+// 「怎么更新」里的刷机页：服务器知道地址（自托管包的 /flash/）就做成链接，否则只说去项目网站。
+function renderFlasherLink(url) {
+  const slot = $("devFlasher");
+  if (!url) { slot.textContent = "项目网站的「刷机」页"; return; }
+  const a = el("a", "", "刷机页");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  slot.replaceChildren(a, document.createTextNode("（" + url + "）"));
 }
 async function renameDevice(d) {
   const name = await askText("给设备改名", d.id + " 的新名字（最多 20 个字）。", d.name);

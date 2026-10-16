@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -315,6 +316,30 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(actions, ["device.reconnect", "device.banned", "device.active", "device.unbind"])
         self.assertFalse(self.call("admin", "POST", f"/api/admin/devices/{ALICE_DEVICE}/reconnect")[1]["ok"])
         self.assertEqual(self.call("admin", "POST", "/api/admin/devices/zzzzzzzzzzzz/ban")[0], 404)
+
+    def test_devices_carry_the_firmware_version_and_the_release_s(self):
+        self.accounts.touch_device(ALICE_DEVICE, fw="v0.1.0")
+        manifest = self.root / "manifest.json"
+        manifest.write_text(json.dumps({"schema": 1, "version": "v0.2.0", "builds": [
+            {"board": "xingzhi-cube-154", "version": "v0.2.0"}, {"board": "ai-passport", "version": "v0.2.0"}]}))
+        env = {admin.FIRMWARE_MANIFEST_ENV: str(manifest), admin.FLASHER_URL_ENV: "/flash/"}
+        with unittest.mock.patch.dict(admin.os.environ, env):
+            answer = self.call("admin", "GET", "/api/admin/devices")[1]
+        row = next(d for d in answer["devices"] if d["id"] == ALICE_DEVICE)
+        self.assertEqual((row["model"], row["fw"]), ("xingzhi-cube-154", "v0.1.0"))
+        self.assertEqual(answer["firmware"], {"latest": {"xingzhi-cube-154": "v0.2.0", "ai-passport": "v0.2.0"},
+                                              "version": "v0.2.0", "flasher": "/flash/"})
+        # The owner's cloud host has neither: versions only, and the page says
+        # where the flasher is in words.
+        with unittest.mock.patch.dict(admin.os.environ, {}, clear=True):
+            self.assertEqual(self.call("admin", "GET", "/api/admin/devices")[1]["firmware"],
+                             {"latest": {}, "version": "", "flasher": ""})
+        for bad in ("javascript:alert(1)", "//evil.example/", '/flash/"><b>'):
+            self.assertEqual(admin.firmware_info({admin.FLASHER_URL_ENV: bad})["flasher"], "", bad)
+        self.assertEqual(admin.firmware_info({admin.FIRMWARE_MANIFEST_ENV: str(self.root / "missing.json")})["latest"], {})
+        page = admin.ADMIN_PAGE.decode()
+        self.assertIn('id="devUpdate"', page)
+        self.assertIn("可更新到", page)
 
     def test_devices_and_overview_show_metrics(self):
         files = device_files.device_files(self.devices_dir, ALICE_DEVICE)

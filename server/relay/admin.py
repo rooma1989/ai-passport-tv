@@ -108,7 +108,7 @@ def get(handler, relay, path: str) -> bool:
     elif path == "/api/admin/users":
         handler._json({"ok": True, "users": _ops(relay).users(), "invites": console.invites(relay), "me": caller.user})
     elif path == "/api/admin/devices":
-        handler._json({"ok": True, "devices": devices(relay)})
+        handler._json({"ok": True, "devices": devices(relay), "firmware": firmware_info()})
     elif path == "/api/admin/audit":
         _audit(handler, relay, query)
     elif path == "/api/admin/system":
@@ -197,6 +197,35 @@ def _device_rows(relay) -> list[dict]:
 def devices(relay) -> list[dict]:
     """设备页：在用的、未绑定的、封禁的在前，退役的旧记录放最后。"""
     return sorted(_device_rows(relay), key=lambda row: row["status"] == "retired")
+
+
+# 固件版本：设备在 HELLO 里报 fw（gate.py 记进 device.fw）。家庭服务器带着网页刷机页和固件时
+# （自托管包，设计文档 9.5），TV_FIRMWARE_MANIFEST 指向那套固件的 manifest.json，设备页拿每台
+# 设备的 fw 和这次发布的版本比；TV_FLASHER_URL 是刷机页的地址（自托管包里是 /flash/）。
+# 都没设（云主机）就只显示设备报的版本和怎么更新的说明。
+FIRMWARE_MANIFEST_ENV = "TV_FIRMWARE_MANIFEST"
+FLASHER_URL_ENV = "TV_FLASHER_URL"
+_FLASHER_URL = re.compile(r"^(/(?!/)[A-Za-z0-9._~/-]*|https?://[A-Za-z0-9.:\[\]-]+(/[A-Za-z0-9._~/-]*)?)$")
+
+
+def firmware_info(environ=None) -> dict:
+    environ = os.environ if environ is None else environ
+    url = environ.get(FLASHER_URL_ENV, "").strip()
+    info = {"latest": {}, "version": "", "flasher": url if _FLASHER_URL.match(url) else ""}
+    path = environ.get(FIRMWARE_MANIFEST_ENV, "").strip()
+    if not path:
+        return info
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return info
+    if isinstance(data, dict) and isinstance(data.get("version"), str):
+        info["version"] = data["version"][:32]
+    for build in data.get("builds", []) if isinstance(data, dict) else []:
+        if (isinstance(build, dict) and isinstance(build.get("board"), str)
+                and isinstance(build.get("version"), str)):
+            info["latest"][build["board"][:32]] = build["version"][:32]
+    return info
 
 
 def overview(relay, history: bool = False) -> dict:
