@@ -1,0 +1,18 @@
+esptool-js 0.6.1 (Espressif Systems), Apache License 2.0 -- see LICENSE.
+
+Copied unmodified from the npm package:
+  https://registry.npmjs.org/esptool-js/-/esptool-js-0.6.1.tgz
+  integrity sha512-WNgQTfaEIgHyEiT56pI5v7Tq6Pzjc2XaibLxAtWY4v3zE2Ofk5ImkJY5foEUr0JrdkfHWf6rNizAewN4/kSpHw==
+Files: package/bundle.js, package/LICENSE
+  bundle.js  sha256 ef7d5a237d3f273ecf546bcee65dddad90bd82cf02f22a980d1537e0cd79a152
+  LICENSE    sha256 1c25f29242785d63e9adb0be7fdc137551dfbbc0756b622fcd26d9cd7de3a4f3
+
+bundle.js includes pako 2.1.0 (MIT AND Zlib), as its own header says, and the
+flasher stubs for every chip. It makes no network request of its own.
+
+Vendored rather than loaded from a CDN so the flasher makes no third-party
+request (the static site's rule) and works from the household server's
+localhost copy without internet access. Version chosen to match the page
+upstream already ran on this hardware (docs/flash/index.html, 0.6.1).
+To update: replace both files from the new package, update this note and the
+import path in ../../flasher.js; tests/test_flasher.py checks the hash below.

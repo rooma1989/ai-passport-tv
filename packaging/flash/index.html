@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#1c1915">
+<!-- Same origin only: the page, its scripts and the firmware all come from
+     where the page came from (the static site, or the household server's
+     localhost copy). Nothing is fetched from a third party. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>小智电视 · 刷机</title>
+<style>
+  /* 和网站首页（packaging/site/index.html）同一套颜色和字体。 */
+  :root {
+    --ink: #1c1915; --ink-deep: #0f0d0b; --side: #161310; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
+    --dim: #a09482; --faint: #8a7f6e; --red: #d2553f; --red-hi: #e0664f; --amber: #ffb547; --amber-soft: #f3dfb4;
+    --green: #8fbf7a; --hover: #231f19;
+    --serif: "Songti SC", "STSong", "Noto Serif SC", "Source Han Serif SC", serif;
+    --mono: "Menlo", "SF Mono", ui-monospace, "Consolas", monospace;
+    --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    --gutter: 16px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--ink); color: var(--paper); font: 15px/1.75 var(--sans); }
+  a { color: var(--amber-soft); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 var(--gutter); }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+  html[lang="en"] [data-lang="zh"], html[lang="zh-CN"] [data-lang="en"] { display: none !important; }
+
+  .bar { border-bottom: 1px solid var(--rule); background: var(--side); }
+  .bar .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 56px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; text-decoration: none; }
+  .brand b { font: 700 20px/1 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
+  .brand span { font: 11px var(--mono); letter-spacing: 2px; color: var(--red); }
+  .lang { background: none; border: 1px solid var(--rule); color: var(--dim); font: 13px var(--mono); padding: 4px 10px; cursor: pointer; }
+  .lang:hover { color: var(--paper-hi); border-color: var(--dim); }
+
+  h1 { margin: 34px 0 6px; font: 700 34px/1.2 var(--serif); letter-spacing: 6px; color: var(--paper-hi); }
+  .lede { margin: 0 0 8px; color: var(--paper); }
+  .ver { font: 12px var(--mono); color: var(--faint); }
+  section { padding: 26px 0; border-bottom: 1px solid var(--rule); }
+  .head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  .head b { font: 12px var(--mono); font-weight: 400; letter-spacing: 2px; color: var(--red); }
+  .head h2 { margin: 0; font: 600 22px/1.3 var(--serif); letter-spacing: 3px; color: var(--paper-hi); }
+  p { margin: 0 0 10px; }
+  ol, ul { margin: 6px 0 12px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  .muted { color: var(--dim); }
+  code { font: 13px var(--mono); color: var(--amber-soft); }
+  details { margin: 10px 0; border-top: 1px dotted var(--rule); padding-top: 8px; }
+  summary { cursor: pointer; font: 16px var(--serif); color: var(--paper-hi); }
+
+  .btn { display: inline-block; padding: 11px 26px; font: 17px/1.2 var(--serif); letter-spacing: 4px; cursor: pointer;
+         border: 1px solid var(--red); background: var(--red); color: #fff4e6; }
+  .btn:hover:not(:disabled) { background: var(--red-hi); border-color: var(--red-hi); }
+  .btn.line { background: none; color: var(--paper-hi); border-color: var(--rule); }
+  .btn.line:hover:not(:disabled) { border-color: var(--dim); background: var(--hover); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 14px; }
+
+  /* 提示框：左边一条色线，不用圆角卡片 */
+  .note { margin: 14px 0; padding: 10px 14px; border-left: 3px solid var(--amber); background: var(--side); }
+  .note.stop { border-left-color: var(--red); }
+  .note.ok { border-left-color: var(--green); }
+  .note h3 { margin: 0 0 4px; font: 600 17px/1.4 var(--serif); color: var(--paper-hi); }
+  .note p:last-child, .note ul:last-child, .note ol:last-child { margin-bottom: 0; }
+  .hidden { display: none !important; }
+
+  dl.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 10px 0; }
+  dl.facts dt { color: var(--faint); font-size: 13px; }
+  dl.facts dd { margin: 0; font: 14px var(--mono); color: var(--paper); overflow-wrap: anywhere; }
+
+  .choice { display: block; margin: 8px 0; padding: 8px 10px; border: 1px dotted var(--rule); cursor: pointer; }
+  .choice input { margin-right: 8px; accent-color: var(--red); }
+  .choice small { display: block; margin-left: 24px; color: var(--dim); }
+  label.agree { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; cursor: pointer; color: var(--paper-hi); }
+  label.agree input { margin-top: 6px; accent-color: var(--red); }
+
+  .progress { margin-top: 16px; }
+  .stage { font: 15px var(--serif); color: var(--paper-hi); }
+  .meter { height: 6px; margin-top: 8px; background: var(--rule); overflow: hidden; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--amber); transition: width .2s; }
+  .meter.busy > i { width: 30%; animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(340%); } }
+  #log { margin-top: 12px; padding: 10px 12px; background: var(--ink-deep); border: 1px solid var(--rule);
+         font: 12.5px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
+  #log:empty { display: none; }
+  footer { padding: 26px 0 48px; font-size: 13px; color: var(--faint); }
+  @media (min-width: 640px) { h1 { font-size: 40px; } }
+  html[lang="en"] h1, html[lang="en"] .head h2, html[lang="en"] .btn, html[lang="en"] .brand b { letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="../"><b>小智电视</b><span>FLASH</span></a>
+    <button class="lang" id="langToggle" type="button" aria-label="Switch language">English</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1><span data-lang="zh">给设备刷固件</span><span data-lang="en">Flash a device</span></h1>
+  <p class="lede" data-lang="zh">把小智电视的固件写进 <b>星智 Cube 1.54</b>（小智 AI 4G 款）或 <b>FoloToy AI Passport</b>。在浏览器里完成，不用装软件，固件不会上传到任何地方。</p>
+  <p class="lede" data-lang="en">Writes the Xiaozhi TV firmware to a <b>Xingzhi Cube 1.54</b> (Xiaozhi AI 4G) or a <b>FoloToy AI Passport</b>, from the browser. Nothing to install; the firmware is not uploaded anywhere.</p>
+  <p class="ver" id="version"></p>
+
+  <!-- 浏览器不行时，整页只剩这一块有用 -->
+  <div class="note stop hidden" id="unsupported" role="alert">
+    <h3 data-lang="zh">这个浏览器不能刷机</h3>
+    <h3 data-lang="en">This browser cannot flash</h3>
+    <p id="unsupportedWhy"></p>
+    <p data-lang="zh">请在<b>电脑</b>上用 <b>Chrome</b> 或 <b>Edge</b>（桌面版）打开这个页面。手机、平板、Safari、Firefox 都没有网页串口功能。</p>
+    <p data-lang="en">Open this page on a <b>computer</b> in desktop <b>Chrome</b> or <b>Edge</b>. Phones, tablets, Safari and Firefox have no Web Serial.</p>
+  </div>
+
+  <section>
+    <div class="head"><b>01</b><h2><span data-lang="zh">准备</span><span data-lang="en">Before you start</span></h2></div>
+    <ol data-lang="zh">
+      <li>电脑上用 <b>Chrome</b> 或 <b>Edge</b> 打开本页。</li>
+      <li>用<b>能传数据</b>的 USB 线把设备接到电脑（有的线只能充电，换一根试）。</li>
+      <li>设备保持开机。</li>
+    </ol>
+    <ol data-lang="en">
+      <li>Use desktop <b>Chrome</b> or <b>Edge</b>.</li>
+      <li>Connect the device with a USB <b>data</b> cable (some cables only charge).</li>
+      <li>Keep the device switched on.</li>
+    </ol>
+    <details>
+      <summary><span data-lang="zh">连不上？让设备进入下载模式</span><span data-lang="en">Not found? Put the device in download mode</span></summary>
+      <p data-lang="zh"><b>星智 Cube 1.54</b>（右侧四个键）：按住从上往下第三个键（BOOT），再按一下最下面的键（复位），然后松开 BOOT。屏幕会黑，这是正常的。再点「连接设备」。</p>
+      <p data-lang="en"><b>Xingzhi Cube 1.54</b> (four keys on the right): hold the third key from the top (BOOT), tap the bottom key (reset), release BOOT. The screen goes dark; that is expected. Then press Connect again.</p>
+      <p data-lang="zh"><b>AI Passport</b>：按住电源键约 2 秒关机，再按约 0.5 秒开机，然后再点「连接设备」。它有电池，拔线不会让它重启。</p>
+      <p data-lang="en"><b>AI Passport</b>: hold the power button about 2 s to switch off, press about 0.5 s to switch on, then press Connect again. It has a battery, so unplugging does not restart it.</p>
+      <p class="muted" data-lang="zh">弹出的串口列表里一个都没有：换数据线、换 USB 口；Windows 上看看设备管理器里有没有新出现的 COM 口。</p>
+      <p class="muted" data-lang="en">The port list is empty: try another cable or USB port; on Windows, check Device Manager for a new COM port.</p>
+    </details>
+  </section>
+
+  <section>
+    <div class="head"><b>02</b><h2><span data-lang="zh">连接设备</span><span data-lang="en">Connect</span></h2></div>
+    <p data-lang="zh">点下面的按钮，在弹出的窗口里选中设备（常见名字：<code>USB JTAG/serial debug unit</code>），页面会认出芯片、看看设备里现在装的是什么。这一步只读，不写任何东西。</p>
+    <p data-lang="en">Press the button and pick the device in the browser's list (usually <code>USB JTAG/serial debug unit</code>). The page identifies the chip and reads what is installed. Nothing is written in this step.</p>
+    <div class="row">
+      <button class="btn" id="connect" type="button" disabled><span data-lang="zh">连接设备</span><span data-lang="en">Connect</span></button>
+    </div>
+    <div id="device" class="hidden">
+      <dl class="facts" id="facts"></dl>
+    </div>
+    <div class="note stop hidden" id="refuse" role="alert"></div>
+  </section>
+
+  <section id="planSection" class="hidden">
+    <div class="head"><b>03</b><h2><span data-lang="zh">确认要做什么</span><span data-lang="en">Confirm</span></h2></div>
+
+    <!-- 星智：第一次装（替换小智 AI 固件），必须擦除 -->
+    <div id="planReplace" class="note stop hidden">
+      <h3 data-lang="zh">会先擦除整块芯片</h3>
+      <h3 data-lang="en">The whole chip will be erased first</h3>
+      <p data-lang="zh">这台设备里现在不是小智电视的固件（多半是原来的<b>小智 AI</b> 固件）。刷小智电视要先把芯片整个擦掉：小智 AI 固件和它的设置都会删掉，之后这台设备就是一台小电视，不再是 AI 对话玩具。</p>
+      <p data-lang="en">This device is not running the Xiaozhi TV firmware (most likely the original <b>Xiaozhi AI</b> firmware). The chip is erased completely first: the Xiaozhi AI firmware and its settings are deleted, and the device becomes a small TV instead of an AI chat toy.</p>
+      <p data-lang="zh">想换回去：按小智官方（<a href="https://github.com/78/xiaozhi-esp32" rel="noopener noreferrer">xiaozhi-esp32</a> 项目）的方法重新刷小智 AI 固件，板型是 <code>xingzhi-cube-1.54tft-ml307</code>，这块板是 8 MB flash。</p>
+      <p data-lang="en">To go back, re-flash the Xiaozhi AI firmware the way the <a href="https://github.com/78/xiaozhi-esp32" rel="noopener noreferrer">xiaozhi-esp32</a> project describes; the board is <code>xingzhi-cube-1.54tft-ml307</code> with 8 MB of flash.</p>
+    </div>
+
+    <!-- 星智：已经是小智电视，更新或清空重装 -->
+    <div id="planChoose" class="hidden">
+      <label class="choice"><input type="radio" name="mode" value="update" checked>
+        <span data-lang="zh">更新固件（推荐）</span><span data-lang="en">Update (recommended)</span>
+        <small data-lang="zh">只写固件，Wi-Fi、服务器地址、绑定和设置都保留。</small>
+        <small data-lang="en">Writes the firmware only; Wi-Fi, server address, binding and settings stay.</small></label>
+      <label class="choice"><input type="radio" name="mode" value="clean">
+        <span data-lang="zh">清空后重装</span><span data-lang="en">Erase and reinstall</span>
+        <small data-lang="zh">先擦除整块芯片。Wi-Fi、服务器地址要重新设置；设备的密钥会换新，家庭服务器的管理后台要对它点「重新配对」或解绑后重新绑定。</small>
+        <small data-lang="en">Erases the chip first. Wi-Fi and server address must be set again; the device gets a new secret, so in the household server's admin use "re-pair" or unbind and bind it again.</small></label>
+    </div>
+
+    <!-- Passport：从不擦除 -->
+    <div id="planPassport" class="note ok hidden">
+      <h3 data-lang="zh">不擦除，只写固件那一段</h3>
+      <h3 data-lang="en">No erase; only the firmware range is written</h3>
+      <p data-lang="zh">从地址 0 写到固件结束，远在 <code>0x356000</code> 的出厂身份信息之前，不会碰到它。页面写之前会再核对一次范围，越界就不写。</p>
+      <p data-lang="en">Written from address 0 to the end of the firmware, well before the factory identity at <code>0x356000</code>, which is never touched. The range is checked again before writing.</p>
+    </div>
+
+    <div class="note hidden" id="planUnknownLayout">
+      <h3 data-lang="zh">没读出设备里现在装的是什么</h3>
+      <h3 data-lang="en">Could not read what is installed</h3>
+      <p data-lang="zh">如果这台 Passport 装的是 <b>Muse 双系统</b>（Muse 和电视两个固件并存），不要在这里刷：整块写入会删掉 Muse 和它的配对。那种情况按项目文档里「Passport 与 Muse 并存」一节手动刷。</p>
+      <p data-lang="en">If this Passport carries the <b>Muse dual setup</b> (Muse beside the TV), do not flash here: a full write deletes Muse and its pairing. Follow the "Passport beside Muse" board document instead.</p>
+    </div>
+
+    <label class="agree hidden" id="agreeRow"><input type="checkbox" id="agree">
+      <span id="agreeText"></span></label>
+
+    <div class="row">
+      <button class="btn" id="flash" type="button" disabled><span data-lang="zh">开始刷机</span><span data-lang="en">Flash</span></button>
+      <button class="btn line" id="disconnect" type="button"><span data-lang="zh">断开</span><span data-lang="en">Disconnect</span></button>
+    </div>
+    <div class="progress hidden" id="progress" aria-live="polite">
+      <div class="stage" id="stage"></div>
+      <div class="meter" id="meter"><i id="fill"></i></div>
+    </div>
+  </section>
+
+  <div id="log" aria-live="polite"></div>
+
+  <section id="doneSection" class="hidden">
+    <div class="head"><b>04</b><h2><span data-lang="zh">刷完之后</span><span data-lang="en">After flashing</span></h2></div>
+    <div class="note ok">
+      <h3 data-lang="zh">先重启设备</h3>
+      <h3 data-lang="en">Restart the device first</h3>
+      <p data-lang="zh" id="restartZh"></p>
+      <p data-lang="en" id="restartEn"></p>
+    </div>
+    <p data-lang="zh">重启后屏幕进入「设置」，等你告诉它连哪个 Wi-Fi、找哪台服务器：</p>
+    <p data-lang="en">After the restart the device opens its setup screens and waits for a Wi-Fi network and a server:</p>
+    <ol data-lang="zh">
+      <li><b>声音配网（推荐）</b>：手机连上家里的 Wi-Fi，打开家庭服务器的 <code>http://&lt;服务器地址&gt;:8080/tv/wifi</code>（首次设置页里的「设置一台电视」会带你过去），填 Wi-Fi 名和密码，「服务器」一栏填家庭服务器的地址（<b>不用加端口</b>），把手机靠近设备点「发送」。设备听到后会自己连网、重启。</li>
+      <li><b>热点配网（备用）</b>：在设备的设置页里翻到热点那一页，手机用相机扫码连上设备的热点，浏览器打开 <code>192.168.4.1</code>，填 Wi-Fi 和服务器地址。</li>
+      <li><b>绑定</b>：连上服务器后，屏幕显示「绑定这台电视」和一个二维码。用已经登录家庭服务器的手机扫它（或输入屏幕上的码），设备就归你了，开始播你的频道。</li>
+    </ol>
+    <ol data-lang="en">
+      <li><b>Sound setup (recommended)</b>: with the phone on your home Wi-Fi, open the household server's <code>http://&lt;server address&gt;:8080/tv/wifi</code> ("Set up a TV" on the first-run page leads there), enter the Wi-Fi name and password, put the household server's address in "Server" (<b>no port needed</b>), hold the phone near the device and press Send. The device joins and restarts.</li>
+      <li><b>Hotspot (fallback)</b>: on the device's setup screens, find the hotspot page, join it by scanning with the phone's camera, open <code>192.168.4.1</code> and enter Wi-Fi and server address.</li>
+      <li><b>Bind</b>: once connected, the screen shows "bind this TV" with a QR code. Scan it with a phone signed in to the household server (or type the code) and the device is yours; it starts playing your channels.</li>
+    </ol>
+    <p class="muted" data-lang="zh">以后更新固件：回到这个页面再刷一次，选「更新固件」，设置和绑定都保留。</p>
+    <p class="muted" data-lang="en">To update later, flash again here and choose Update; settings and binding stay.</p>
+  </section>
+
+  <footer>
+    <p data-lang="zh">固件是公开版：里面没有任何服务器地址，也不会连向项目作者的服务器；连哪台服务器由你在配网时填写。刷写由 <a href="vendor/esptool-js-0.6.1/LICENSE">esptool-js 0.6.1</a>（Espressif，Apache-2.0）完成，在你的浏览器里运行。</p>
+    <p data-lang="en">These are the public builds: they contain no server address and never contact the project author's server; you enter your own during setup. Flashing is done in your browser by <a href="vendor/esptool-js-0.6.1/LICENSE">esptool-js 0.6.1</a> (Espressif, Apache-2.0).</p>
+  </footer>
+</main>
+
+<script type="module" src="flasher.js"></script>
+</body>
+</html>
