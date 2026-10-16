@@ -263,14 +263,28 @@ run_firmware_checks() (
     validation_build_dir="$(mktemp -d /tmp/ai-passport-firmware.XXXXXX)"
     trap 'case "${validation_build_dir}" in /tmp/ai-passport-firmware.*) rm -rf -- "${validation_build_dir}" ;; esac' EXIT
 
+    # The version the device reports in HELLO ("fw") and the release manifest
+    # records. Without it ESP-IDF runs `git describe` itself, which in the CI
+    # container can fail (a shallow checkout, or one git refuses as owned by
+    # another user) and fall back to "1" -- every release would then claim the
+    # same version, and the admin page could not tell old firmware from new.
+    local version_args=()
+    if [[ -n "${AV_FW_VERSION:-}" ]]; then
+        version_args=(-D "PROJECT_VER=${AV_FW_VERSION}")
+    fi
+
     SDKCONFIG_DEFAULTS="${defaults}" \
         idf.py -B "${validation_build_dir}" \
         -D "IDF_TARGET=${target}" \
         -D AV_PUBLIC_BUILD=ON \
+        ${version_args[@]+"${version_args[@]}"} \
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     python3 tools/verify_firmware.py "${validation_build_dir}"
+    # A public build must not know any particular server: no default server,
+    # no public site, no private header (self-hosting design, Q11).
+    python3 tools/firmware_manifest.py check-public "${validation_build_dir}"
     mkdir -p "${repo_root}/build"
     install -m 0644 \
         "${validation_build_dir}/FoloToy-AI-Passport-full.bin" \

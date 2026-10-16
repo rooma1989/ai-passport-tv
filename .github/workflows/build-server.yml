@@ -117,7 +117,14 @@ jobs:
 
             先看你要做什么。
 
-            **给设备刷固件** —— 下载 `FoloToy-AI-Passport-tv.bin`。这是完整镜像，包含引导程序、分区表和应用程序，从地址 0 一次写完。
+            **给设备刷固件** —— 按你的设备下载。都是完整镜像，包含引导程序、分区表和应用程序，从地址 0 一次写完；都是公开版，不带任何服务器地址，配网时填你自己的。
+
+            | 设备 | 下载 |
+            | --- | --- |
+            | FoloToy AI Passport（ESP32-C3） | `FoloToy-AI-Passport-tv.bin`（**不要擦除**） |
+            | 星智 Cube 1.54 / 小智 AI 4G 款（ESP32-S3） | `Xingzhi-Cube-154-tv-public.bin`（第一次刷先整片擦除，替换掉小智 AI 固件） |
+
+            `manifest.json`、`SHA256SUMS` 是给网页刷机用的清单和校验值；`xiaozhi-tv-flasher.zip` 是刷机网页加固件的整套文件，放到任何 https 网站的 `/flash/` 下就能用。
 
             **让电脑提供电视信号** —— 按你的系统下载：
 

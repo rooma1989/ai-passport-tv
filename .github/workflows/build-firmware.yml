@@ -15,29 +15,14 @@ concurrency:
 
 jobs:
   build:
+    name: Build ${{ matrix.board }}
     runs-on: ubuntu-latest
-    outputs:
-      artifact_name: ${{ steps.artifact_name.outputs.name }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - name: Restore ccache
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: .ccache
-          key: ccache-${{ github.ref_type }}-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ github.ref_type }}-${{ github.ref_name }}-
-            ccache-
-
-      - name: Build firmware (ESP-IDF 5.5.3 / esp32c3)
-        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
-        with:
-          esp_idf_version: v5.5.3
-          target: esp32c3
-          extra_docker_args: >-
-            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
-            -e IDF_CCACHE_ENABLE=1
+    # One job per board: the two images share nothing at build time, and one
+    # failing says nothing about the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
           # --prototype, not --firmware. The two build different programs:
           # --firmware uses sdkconfig.defaults alone and produces the upstream
           # BSP demo, while --prototype adds sdkconfig.av-prototype and produces
@@ -47,22 +32,119 @@ jobs:
           # television. Found by downloading the released image and reading the
           # strings inside it: 26 segments and "FoloToy AI Passport BSP demo",
           # against 40 segments and no demo code in the correct one.
-          command: ./tools/validate.sh --prototype
+          - board: ai-passport
+            target: esp32c3
+            mode: --prototype
+            built: FoloToy-AI-Passport-prototype-public.bin
+          # The Xingzhi Cube 1.54 (ESP32-S3), first-class for self-hosting
+          # (design Q9). Same application, its own board settings.
+          - board: xingzhi-cube-154
+            target: esp32s3
+            mode: --xingzhi
+            built: Xingzhi-Cube-154-tv-public.bin
+    steps:
+      # Full history so `git describe` finds the tags: the version below is what
+      # the device reports in HELLO and what the admin page compares against.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
 
-      - name: Set artifact name
-        id: artifact_name
-        run: echo "name=passport-${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+      - name: Firmware version
+        id: version
+        run: |
+          # Printable and shell-safe: it travels into the build container's
+          # arguments and into esp_app_desc_t (32 bytes).
+          version="$(git describe --tags --always --dirty | tr -cd 'A-Za-z0-9._+-')"
+          version="${version:0:32}"
+          echo "Firmware version: ${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .ccache
+          key: ccache-${{ matrix.board }}-${{ github.ref_type }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.board }}-${{ github.ref_type }}-${{ github.ref_name }}-
+            ccache-${{ matrix.board }}-
+
+      # A public build (AV_PUBLIC_BUILD=ON inside validate.sh): no private
+      # header, no pairing token, no default server, no site. validate.sh
+      # refuses to finish otherwise (tools/firmware_manifest.py check-public),
+      # so a public release can never point at anyone's server (design Q11).
+      - name: Build firmware (ESP-IDF 5.5.3 / ${{ matrix.target }})
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v5.5.3
+          target: ${{ matrix.target }}
+          extra_docker_args: >-
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
+            -e IDF_CCACHE_ENABLE=1
+            -e AV_FW_VERSION=${{ steps.version.outputs.version }}
+          command: ./tools/validate.sh ${{ matrix.mode }}
+
+      # The image under the name the documentation and the flasher use, beside
+      # its manifest. The manifest step re-reads the image: chip id, this
+      # project's application at 0x10000, the version just built, and for the
+      # Passport an end before the identity region at 0x356000.
+      - name: Manifest
+        env:
+          BOARD: ${{ matrix.board }}
+          BUILT: ${{ matrix.built }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 tools/firmware_manifest.py make --board "$BOARD" \
+            --image "build/$BUILT" --version "$VERSION" --out-dir dist
+          ls -la dist/
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ steps.artifact_name.outputs.name }}
-          path: build/FoloToy-AI-Passport-prototype-public.bin
+          name: firmware-${{ matrix.board }}
+          path: dist/
+          if-no-files-found: error
+
+  # Both boards' manifests into the one the web flasher reads, checksums, and a
+  # ready-to-serve flasher folder. Runs for manual builds too, so a dispatch
+  # shows the whole set before anything is tagged.
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: firmware-*
+          path: release
+          merge-multiple: true
+
+      # merge re-hashes every image against its manifest and refuses builds of
+      # different versions; check re-reads the result the way the flasher will.
+      # The bundle is the folder a static site or the household server serves
+      # as /flash/: the page, esptool-js, and firmware/ beside it. The page
+      # fetches the images from its own origin because GitHub's release
+      # downloads send no CORS header (see docs/flash/index.html).
+      - name: Manifest, checksums and flasher bundle
+        run: |
+          python3 tools/firmware_manifest.py merge release
+          python3 tools/firmware_manifest.py check release
+          python3 tools/firmware_manifest.py bundle release --out flasher/flash
+          (cd flasher && zip -qr ../release/xiaozhi-tv-flasher.zip flash)
+          cat release/SHA256SUMS
+          ls -la release/
+
+      - name: Upload release set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: firmware-release-${{ github.ref_type }}-${{ github.run_number }}
+          path: release/
           if-no-files-found: error
 
   release:
     if: github.ref_type == 'tag'
-    needs: build
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,23 +158,25 @@ jobs:
       group: release-${{ github.ref_name }}
       cancel-in-progress: false
     steps:
-      - name: Download firmware artifact
+      - name: Download release set
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: ${{ needs.build.outputs.artifact_name }}
+          name: firmware-release-${{ github.ref_type }}-${{ github.run_number }}
           path: release
 
-      # Renamed to the name the documentation tells people to download. The
-      # build calls it FoloToy-AI-Passport-prototype-public.bin, which describes
-      # how it was built rather than what it is; the README, the manual flashing
-      # command and the browser flashing page all say
-      # FoloToy-AI-Passport-tv.bin. Publishing under the build's name would send
-      # readers looking for a file that is not on the page -- and the page tells
-      # them to verify it by name.
-      - name: Rename for release
+      # Named as the documentation tells people to download them: the Passport
+      # image is FoloToy-AI-Passport-tv.bin (the README, the manual flashing
+      # command and both flashing pages say so), the Xingzhi image
+      # Xingzhi-Cube-154-tv-public.bin (its board document). The build job
+      # already copied them under these names; listed here so a missing one
+      # fails the release instead of publishing half a set.
+      - name: List release files
         run: |
-          mv release/FoloToy-AI-Passport-prototype-public.bin \
-             release/FoloToy-AI-Passport-tv.bin
+          for f in FoloToy-AI-Passport-tv.bin Xingzhi-Cube-154-tv-public.bin \
+                   manifest.json manifest-ai-passport.json manifest-xingzhi-cube-154.json \
+                   SHA256SUMS xiaozhi-tv-flasher.zip; do
+            test -f "release/$f" || { echo "missing release/$f"; exit 1; }
+          done
           ls -la release/
 
       # The page a user lands on when they click the release. Without a body it
@@ -117,7 +201,14 @@ jobs:
 
             先看你要做什么。
 
-            **给设备刷固件** —— 下载 `FoloToy-AI-Passport-tv.bin`。这是完整镜像，包含引导程序、分区表和应用程序，从地址 0 一次写完。
+            **给设备刷固件** —— 按你的设备下载。都是完整镜像，包含引导程序、分区表和应用程序，从地址 0 一次写完；都是公开版，不带任何服务器地址，配网时填你自己的。
+
+            | 设备 | 下载 |
+            | --- | --- |
+            | FoloToy AI Passport（ESP32-C3） | `FoloToy-AI-Passport-tv.bin`（**不要擦除**） |
+            | 星智 Cube 1.54 / 小智 AI 4G 款（ESP32-S3） | `Xingzhi-Cube-154-tv-public.bin`（第一次刷先整片擦除，替换掉小智 AI 固件） |
+
+            `manifest.json`、`SHA256SUMS` 是给网页刷机用的清单和校验值；`xiaozhi-tv-flasher.zip` 是刷机网页加固件的整套文件，放到任何 https 网站的 `/flash/` 下就能用。
 
             **让电脑提供电视信号** —— 按你的系统下载：
 
@@ -191,5 +282,10 @@ jobs:
             **没有验证的**：Linux 上没有人真的用过（CI 里构建和测试都通过，但那是服务器环境不是桌面）；Intel 芯片的 Mac 没有现成文件，构建机器只有 M 系列芯片。
 
             **已知会遇到的**：公开的直播源会失效，这是常态不是故障，用配置页的"检测失效"剔掉即可。
-          files: release/FoloToy-AI-Passport-tv.bin
+          files: |
+            release/FoloToy-AI-Passport-tv.bin
+            release/Xingzhi-Cube-154-tv-public.bin
+            release/manifest*.json
+            release/SHA256SUMS
+            release/xiaozhi-tv-flasher.zip
           fail_on_unmatched_files: true
