@@ -713,6 +713,28 @@ and the two pages. The relay needs write access to the database directory
 (it already writes the database there) to create `wifi-key`. Legacy (single-user)
 mode has no device keys, so the feature is off there.
 
+## Self-hosted mode (server/selfhost)
+
+`python3 -m server.selfhost --data <folder>` (or `./run.sh --selfhost`, or the
+Docker image in `packaging/docker/`) runs this same code for one household:
+the relay with `--db --selfhost`, one media server per board model with
+`TV_NO_BUILTIN_CHANNELS=1`, and the web front `server/front.py` in place of
+nginx. The quick start is [`docs/selfhost/README.md`](../docs/selfhost/README.md);
+the design is
+[`2026-10-15-self-hosting-design.md`](../docs/superpowers/specs/2026-10-15-self-hosting-design.md).
+What the two switches change, and nothing else:
+
+- Relay `--selfhost` (`server/relay/setup.py`): starts with no admin and points
+  every page to `/tv/setup` until the one-time setup code makes one; the
+  session cookie is `Secure` only when the front reports HTTPS
+  (`X-Forwarded-Proto` from loopback); the sound-setup page gets the recorded
+  device address; the admin Channels page gets playlist import and probe
+  (`server/relay/playlist.py`).
+- `TV_NO_BUILTIN_CHANNELS=1` (`server/live.py`): no built-in channels and no
+  `channels.txt` looked up next to the code; an empty table is allowed, and a
+  bound device with nothing to play gets a still "no channels yet" frame
+  (`server/no_channels.py`). `--channel` becomes optional.
+
 ## Scheduling, bounds and shutdown
 
 - Server time origin is CONFIG write completion plus 200 ms. Audio is scheduled

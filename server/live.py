@@ -79,16 +79,21 @@ CHANNELS_ENV = "TV_CHANNELS_FILE"
 RELAY_CHANNELS_ENV = "TV_RELAY_CHANNELS_FILE"
 # 手机上调整过的频道分组（server/channel_groups.py），每次下发频道列表时读取。
 GROUPS_ENV = "TV_CHANNEL_GROUPS_FILE"
-# 内置兜底频道，取电视台自有的公开流。
-BUILTIN_CHANNELS = {
-    "cgtn": ("CGTN", "https://english-livebkali.cgtn.com/live/encgtn.m3u8"),
-    "france24": ("France 24",
-                 "https://live.france24.com/hls/live/2037218/F24_EN_HI_HLS/master_500.m3u8"),
-    "dw": ("DW English",
-           "https://dwamdstream102.akamaized.net/hls/live/2015525/dwstream102/master.m3u8"),
-    "tagesschau": ("Tagesschau24",
-                   "https://tagesschau.akamaized.net/hls/live/2020115/tagesschau/tagesschau_1/master.m3u8"),
-}
+# 内置兜底频道（电视台自有的公开流）在 builtin_channels.py 里。那个文件不进自建镜像（.dockerignore），
+# 镜像里不带任何频道地址；缺了它就是空的。
+try:
+    from .builtin_channels import BUILTIN_CHANNELS
+except ImportError:
+    BUILTIN_CHANNELS: dict[str, tuple[str, str]] = {}
+# 自建（server/selfhost 设为 1）：不用内置频道、不在工作目录和代码旁边找 channels.txt，
+# 只读 TV_CHANNELS_FILE；一个台都没有也照常启动（电视服务给绑定的设备画「还没有频道」）。
+NO_BUILTIN_ENV = "TV_NO_BUILTIN_CHANNELS"
+
+
+def empty_allowed() -> bool:
+    """自建模式：频道表可以是空的。"""
+    return os.environ.get(NO_BUILTIN_ENV) == "1"
+
 
 # 由 load_channels() 填充；服务端与 CONFIG 载荷直接读取这些模块级名称。
 CHANNELS: dict[str, str] = {}
@@ -98,11 +103,11 @@ CHANNEL_AGENTS: dict[str, str] = {}
 DEFAULT_CHANNEL = ""
 
 
-def parse_channels(text: str) -> tuple[dict[str, str], dict[str, str]]:
+def parse_channels(text: str, allow_empty: bool = False) -> tuple[dict[str, str], dict[str, str]]:
     """解析频道表，拒绝设备会丢弃的条目。
 
     固件跳过空、不可打印或超长的 id，并只读取有限个频道（TV_CHANNEL_ID_MAX、TV_CHANNEL_MAX）；
-    在此报错，避免频道在设备端悄悄消失。
+    在此报错，避免频道在设备端悄悄消失。allow_empty：自建模式，一个台都没有不算错。
     """
     channels: dict[str, str] = {}
     labels: dict[str, str] = {}
@@ -143,7 +148,7 @@ def parse_channels(text: str) -> tuple[dict[str, str], dict[str, str]]:
             agents[key] = agent
         elif url.startswith(("http://", "https://")):
             agents[key] = frames.DEFAULT_USER_AGENT
-    if not channels:
+    if not channels and not allow_empty:
         raise ValueError("channel table contains no channels")
     # 数量合规但列表超过 CONFIG 包上限时，设备收不到任何频道（JSON 转义后每个汉字占 6 字节）；
     # 与数量超限一样只告警，不拒绝启动。
@@ -199,11 +204,14 @@ def load_channels(path: Path | None = None, relay_path: Path | None = None) -> N
     导入时调用一次；main() 收到 --channels-file 时再调用；之后由 reload_channels_if_changed() 按需重读。
     """
     global CHANNELS, CHANNEL_LABELS, CHANNEL_AGENTS, DEFAULT_CHANNEL
+    empty_ok = empty_allowed()
     source = path
     if source is None:
         environment = os.environ.get(CHANNELS_ENV)
         if environment:
             source = Path(environment)
+        elif empty_ok:
+            source = None       # 自建：不在工作目录和代码旁边找
         elif Path(CHANNELS_FILE).is_file():
             source = Path(CHANNELS_FILE)
         elif (Path(__file__).resolve().parent.parent / CHANNELS_FILE).is_file():
@@ -212,16 +220,19 @@ def load_channels(path: Path | None = None, relay_path: Path | None = None) -> N
     if relay is None and os.environ.get(RELAY_CHANNELS_ENV):
         relay = Path(os.environ[RELAY_CHANNELS_ENV])
     stamps = (_stamp(source), _stamp(relay))
-    if source is None:
+    if source is None and empty_ok:
+        main_text = ""
+    elif source is None:
         main_text = "".join(f"{key} | {label} | {url}\n"
                             for key, (label, url) in BUILTIN_CHANNELS.items())
     else:
-        if not source.is_file():
+        if not source.is_file() and not empty_ok:
             raise ValueError(f"channel file not found: {source}")
-        main_text = _channel_text(source)
+        # 自建：文件被删了也当作空表（管理员在总后台加了台就会重新写出来）。
+        main_text = _channel_text(source) if source.is_file() else ""
     relay_text = _channel_text(relay) if relay is not None and relay.is_file() else ""
-    channels, labels, agents = parse_channels(relay_text + "\n" + main_text)
-    if source is None:
+    channels, labels, agents = parse_channels(relay_text + "\n" + main_text, allow_empty=empty_ok)
+    if source is None and not empty_ok:
         # 内置频道不带 User-Agent，保持原有行为。
         for key in BUILTIN_CHANNELS:
             agents.pop(key, None)
@@ -234,7 +245,7 @@ def load_channels(path: Path | None = None, relay_path: Path | None = None) -> N
     CHANNEL_AGENTS.update(agents)
     # 原默认频道仍在表中则保留，否则取表首项；默认频道不在表内会使未指定频道的连接全部失败。
     if DEFAULT_CHANNEL not in channels:
-        DEFAULT_CHANNEL = next(iter(channels))
+        DEFAULT_CHANNEL = next(iter(channels), "")
 
 
 

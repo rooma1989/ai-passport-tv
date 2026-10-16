@@ -128,6 +128,13 @@
               font: 14px/1.7 var(--serif); color: var(--paper); }
   .problems.ok { border-color: var(--amber); }
   .addrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr) auto; gap: 8px; }
+  /* 自建模式的「导入播放列表」 */
+  .improw { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+  label.ghost { cursor: pointer; display: inline-flex; align-items: center; }
+  .implist { max-height: 380px; overflow-y: auto; border: 1px solid var(--rule); }
+  .chtab td.st { font: 12px var(--mono); color: var(--dim); white-space: nowrap; }
+  .chtab td.st.ok { color: var(--amber); }
+  .chtab td.st.dead { color: var(--red); }
 
   /* ---- 系统 ---- */
   dl.kv { display: grid; grid-template-columns: 200px minmax(0, 1fr); margin: 0; }
@@ -284,6 +291,31 @@
             <tbody id="chRows"></tbody>
           </table></div>
         </div>
+        <div class="block" id="importBlock" hidden>
+          <div class="h3">导入播放列表 <small>你自己的 M3U：粘贴地址或选文件，勾选要的台，加到表里，再点下面的「保存」</small></div>
+          <div class="improw">
+            <input type="text" id="impUrl" placeholder="播放列表地址 http(s)://…（.m3u）">
+            <button class="ghost" id="impFetch">读取</button>
+            <label class="ghost" for="impFile">选文件</label>
+            <input type="file" id="impFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl" hidden>
+          </div>
+          <div id="impList" hidden>
+            <div class="inline" style="margin: 10px 0">
+              <input type="text" id="impFilter" placeholder="找台：输入名字的一部分" style="max-width: 260px">
+              <button class="ghost" id="impAll">全选</button>
+              <button class="ghost" id="impNone">全不选</button>
+              <button class="ghost" id="impProbe">试一下选中的能不能放</button>
+              <span class="hint" id="impCount" style="margin: 0"></span>
+            </div>
+            <div class="implist"><table class="chtab">
+              <thead><tr><th></th><th>名字</th><th>地址</th><th>能不能放</th></tr></thead>
+              <tbody id="impRows"></tbody>
+            </table></div>
+            <p><button class="go" id="impAdd">把选中的加到频道表</button></p>
+          </div>
+          <p class="hint">地址只在点「读取」时取一次，不会保存。本软件不带、也不推荐任何播放列表：请只添加你有权观看的来源。
+            小电视最多收 128 个台，挑常看的就好。</p>
+        </div>
         <div class="block">
           <div class="h3">加一个台 <small>加在最后，再用 ↑ 挪到想要的位置</small></div>
           <div class="addrow">
@@ -366,6 +398,7 @@ const ACTIONS = {
   "session.revoke": "退出一个登录", "session.revoke_others": "退出别处的登录",
   "admin.session.revoke": "管理员退出他的一个登录", "admin.session.revoke_all": "管理员退出他的全部登录",
   "legacy_token.on": "打开共享配对令牌", "legacy_token.off": "关闭共享配对令牌", "channels.save": "保存频道表",
+  "channels.import": "导入播放列表", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
   "wifi.add": "给设备加 Wi-Fi", "wifi.remove": "删设备的 Wi-Fi", "wifi.up": "调 Wi-Fi 顺序", "wifi.switch": "让设备换 Wi-Fi",
   "login.pc.confirm": "手机确认电脑登录", "login.pc.deny": "手机拒绝电脑登录", "migrate": "从单用户迁移",
 };
@@ -949,6 +982,7 @@ async function loadChannels(keepMessage) {
   $("chOff").hidden = chData.configured;
   $("chOn").hidden = !chData.configured;
   if (!chData.configured) return;
+  $("importBlock").hidden = !chData.import;
   chRows = chData.rows.map((r) => ({ id: r.id, name: r.name, url: r.url, agent: r.agent, group: r.group, orig: r }));
   if (!keepMessage) $("chProblems").hidden = true;
   if (chData.bad.length) showProblems(["文件里第 " + chData.bad.join("、") + " 行看不懂：为了不把它们弄丢，这里不能保存。请先在服务器上改好文件。"]);
@@ -1098,6 +1132,89 @@ $("chSave").onclick = () => busy($("chSave"), async () => {
   loadChannels(true);
 });
 
+// ---------- 导入播放列表（自建模式） ----------
+// 服务端读 M3U、列出台；这里勾选、试播，再加进上面那张表（chRows），和手加的台一样要点「保存」。
+
+let impRows = [];     // {name, url, agent, on, state}
+async function impRead(body) {
+  const answer = await call("POST", "api/admin/channels/import", body);
+  if (!answer.ok) { toast(answer.error || "没读出来", true); return; }
+  const known = new Set(chRows.map((r) => r.url));
+  impRows = answer.entries.map((e) => ({ ...e, on: false, state: known.has(e.url) ? "已在表里" : "" }));
+  $("impFilter").value = "";
+  $("impList").hidden = false;
+  renderImport();
+  toast("读到 " + answer.total + " 个台" + (answer.skipped ? "（另有 " + answer.skipped + " 个地址不合格，没列出）" : ""));
+}
+function impVisible() {
+  const filter = $("impFilter").value.trim().toLowerCase();
+  return impRows.filter((r) => !filter || r.name.toLowerCase().includes(filter));
+}
+function renderImport() {
+  const body = $("impRows");
+  body.replaceChildren();
+  for (const r of impVisible().slice(0, 500)) {
+    const tr = el("tr");
+    const box = el("input");
+    box.type = "checkbox"; box.checked = r.on;
+    box.onchange = () => { r.on = box.checked; impCount(); };
+    const cells = [td(""), td("", r.name), td("st", r.url), td("st " + (r.state === "能放" ? "ok" : r.state === "放不了" ? "dead" : ""), r.state)];
+    cells[0].appendChild(box);
+    cells[2].title = r.url;
+    tr.append(...cells);
+    body.appendChild(tr);
+  }
+  if (!body.children.length) body.appendChild(emptyRow("没有名字里带这几个字的台", 4));
+  impCount();
+}
+function impCount() {
+  const chosen = impRows.filter((r) => r.on).length;
+  $("impCount").textContent = "共 " + impRows.length + " 个，选了 " + chosen + " 个" + (impVisible().length > 500 ? "（只显示前 500 个，用「找台」缩小）" : "");
+}
+$("impFetch").onclick = () => busy($("impFetch"), async () => {
+  const url = $("impUrl").value.trim();
+  if (!/^https?:\/\//.test(url)) { toast("地址要以 http:// 或 https:// 开头", true); return; }
+  await impRead({ url });
+});
+$("impFile").onchange = async () => {
+  const file = $("impFile").files[0];
+  $("impFile").value = "";
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { toast("文件太大（超过 2 MB）", true); return; }
+  try { await impRead({ text: await file.text() }); } catch (error) { failed(error); }
+};
+$("impFilter").oninput = renderImport;
+$("impAll").onclick = () => { impVisible().forEach((r) => { r.on = true; }); renderImport(); };
+$("impNone").onclick = () => { impVisible().forEach((r) => { r.on = false; }); renderImport(); };
+$("impProbe").onclick = () => busy($("impProbe"), async () => {
+  const chosen = impRows.filter((r) => r.on);
+  if (!chosen.length) { toast("先勾选要试的台", true); return; }
+  // 两个两个地试（服务端每个开一个 ffmpeg 取一帧，慢的源要十几秒）。
+  let next = 0;
+  async function worker() {
+    while (next < chosen.length) {
+      const r = chosen[next++];
+      r.state = "正在试…"; renderImport();
+      try {
+        const answer = await call("POST", "api/admin/channels/probe", { url: r.url, agent: r.agent });
+        r.state = !answer.ok ? (answer.error || "没试成") : answer.state === "ok" ? "能放" : answer.state === "slow" ? "能放，但慢（" + answer.seconds + " 秒）" : "放不了";
+      } catch (error) { r.state = "没试成"; }
+      renderImport();
+    }
+  }
+  await Promise.all([worker(), worker()]);
+});
+$("impAdd").onclick = () => {
+  const known = new Set(chRows.map((r) => r.url));
+  const chosen = impRows.filter((r) => r.on && !known.has(r.url) && r.state !== "放不了");
+  if (!chosen.length) { toast("没有可加的台：先勾选（已在表里的、试过放不了的不加）", true); return; }
+  for (const r of chosen) { chRows.push({ name: r.name, url: r.url, agent: r.agent, group: "" }); r.state = "已加入"; r.on = false; }
+  $("chFilter").value = "";
+  renderChannels();
+  renderImport();
+  toast("加了 " + chosen.length + " 个台，记得点「保存」");
+};
+
 // ---------- 操作记录 ----------
 
 let auNext = null;
@@ -1176,7 +1293,8 @@ async function loadSystem() {
     if (await confirmBox((s.legacy_token ? "关闭" : "打开") + "共享配对令牌", lines, s.legacy_token ? "关闭" : "打开") &&
         await act("api/admin/system/legacy-token", { on: !s.legacy_token }, "已" + (s.legacy_token ? "关闭" : "打开"))) loadSystem();
   });
-  item("共享配对令牌", s.legacy_token ? "开着" : "关着", "旧固件只会用它；新固件每台有自己的密钥。电视服务下一次连接生效。", toggle);
+  // 自建：没有旧设备、没有共享令牌，不给这个开关。
+  if (!s.selfhost) item("共享配对令牌", s.legacy_token ? "开着" : "关着", "旧固件只会用它；新固件每台有自己的密钥。电视服务下一次连接生效。", toggle);
   item("同时服务几台", "每个型号一个电视服务，一次服务一台", "按设备排队和总数上限要等阶段 4（网关）。");
   item("网站地址", s.public_url || "（没配置 --public-url：二维码按浏览器的地址生成）");
   item("YouTube", s.youtube ? "已配置节点" : "没配置（只支持 B 站）");

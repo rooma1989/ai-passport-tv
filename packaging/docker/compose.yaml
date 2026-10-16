@@ -1,0 +1,60 @@
+# 小智电视自建服务器（0.x 测试版）。教程：docs/selfhost/README.zh_CN.md
+#
+#   mkdir data                 # 和这个文件放在同一个文件夹
+#   docker compose up -d       # 启动
+#   docker compose logs tv     # 第一次启动后在这里找「设置码」
+#
+# 说明：这个文件是照 Docker 的文档写的，作者的电脑上没有 Docker，还没有实际跑过（未验证）。
+# 镜像还没有发布：在源代码目录里第一次 `docker compose up` 会自己构建（下面的 build）。
+
+services:
+  tv:
+    image: ghcr.io/rooma1989/xiaozhi-tv:0
+    build:
+      context: ../..
+      dockerfile: packaging/docker/Dockerfile
+    restart: unless-stopped
+    # 8080：手机和电脑打开的网页；8098：星智 Cube；8097：AI Passport。
+    # 某个端口被 NAS 的别的应用占了：改左边的数字（例如 "18080:8080"）。
+    ports:
+      - "8080:8080"
+      - "8097:8097"
+      - "8098:8098"
+    volumes:
+      - ./data:/data
+    # 用这个编号的用户运行：NAS 上改成 data 文件夹主人的编号（ssh 里 `id` 能看到），
+    # 或者在同一目录的 .env 文件里写 PUID=…、PGID=…。
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=Asia/Shanghai
+    # 除了 /data 和 /tmp，容器里什么都不能写；不要任何特权。
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # Linux 上想让启动横幅直接打出局域网地址，可以改用主机网络（这时上面的 ports 不起作用）：
+    # network_mode: host
+
+  # 可选：Cloudflare Tunnel，把网页（不含总后台和第一次设置）开放到你自己的域名上。
+  # 先在 data/config.toml 里写 public_port = 8081，再：
+  #   TUNNEL_TOKEN=<你在 Cloudflare 里建的隧道的令牌> docker compose --profile tunnel up -d
+  # 隧道里的服务地址填 http://tv:8081。未验证。
+  tunnel:
+    image: cloudflare/cloudflared:2024.12.2
+    profiles: [tunnel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      - tv
+
+  # 语音识别容器（xiaozhi-tv-asr）在以后的版本里（阶段 S5），现在还没有。

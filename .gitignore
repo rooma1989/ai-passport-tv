@@ -70,3 +70,8 @@ main/av_protocol.h.profile-*
 server/*.bak*
 tools/*.bak*
 
+
+# The self-hosted server's data folder when compose is run from
+# packaging/docker/ in a checkout: the database, generated keys and the
+# household's own channel list. Never part of the repository.
+packaging/docker/data/

@@ -440,6 +440,20 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
 `server/relay/{events,wifi,web,__main__}.py` 和两个页面。中转要能在数据库所在目录里写文件（它本来就在那里写数据库）才能生成 `wifi-key`。
 单用户（旧）模式没有设备钥匙，这个功能不开。
 
+## 自建模式（server/selfhost）
+
+`python3 -m server.selfhost --data <文件夹>`（或 `./run.sh --selfhost`，或 `packaging/docker/` 的 Docker 镜像）给一个家庭
+跑同一套代码：带 `--db --selfhost` 的中转、每个型号一个带 `TV_NO_BUILTIN_CHANNELS=1` 的电视服务、代替 nginx 的网页前端
+`server/front.py`。快速上手见 [`docs/selfhost/README.zh_CN.md`](../docs/selfhost/README.zh_CN.md)，设计见
+[`2026-10-15-self-hosting-design.zh_CN.md`](../docs/superpowers/specs/2026-10-15-self-hosting-design.zh_CN.md)。
+两个开关改的就是下面这些：
+
+- 中转的 `--selfhost`（`server/relay/setup.py`）：没有管理员也启动，一次性设置码建出管理员之前，每个页面都指向
+  `/tv/setup`；只有前端报告是 HTTPS（本机转来的 `X-Forwarded-Proto`）时会话 cookie 才带 `Secure`；声波配网页拿到记下的
+  设备地址；总后台的「频道表」多了导入播放列表和试播（`server/relay/playlist.py`）。
+- `TV_NO_BUILTIN_CHANNELS=1`（`server/live.py`）：不用内置频道，不在代码旁边找 `channels.txt`；频道表可以是空的，
+  已绑定的设备没东西可放时给一张「还没有频道」的静止画面（`server/no_channels.py`）。`--channel` 可以不给。
+
 ## 调度、边界与停止
 
 - 服务端时间起点为 CONFIG 写完后 200 ms；音频在 PTS 前 200 ms 发送，视频提前 50 ms。

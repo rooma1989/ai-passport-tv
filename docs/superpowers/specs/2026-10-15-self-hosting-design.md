@@ -4,8 +4,8 @@
 
 # Self-hosting package ("Xiaozhi TV at home") — design
 
-Status: draft for decision, 2026-10-15. Design only; nothing here is
-implemented. Follows
+Status: draft 2026-10-15, decided 2026-10-16 ("Decisions" below). Phase S1
+is implemented (section 15); the rest is design. Follows
 [`2026-10-12-multi-tenant-design.md`](2026-10-12-multi-tenant-design.md)
 (accounts, binding, console, admin backend: phases 1–3 done; phase 4, the media
 gate, not built),
@@ -1027,6 +1027,36 @@ playlist import, LAN pages over HTTP. Suitable for a 0.x beta.
   check, `run.sh --selfhost`. (1–1.5 days)
 
 Parallel: S1a and S1c are independent; S1b needs S1a's config shape only.
+
+**S1 status (2026-10-16): implemented**, one device per model (Q1 option A); the
+quick start is [`docs/selfhost/README.md`](../../selfhost/README.md). Verified on
+a Mac through the plain-Python path (`./run.sh --selfhost`, bound to
+127.0.0.1): banner and setup code, first admin through `/tv/setup`, the cookie
+without `Secure` over plain HTTP, playlist import and probe, saving the table,
+`/healthz`, the unbound frame and the empty-table frame with a simulated
+device, clean stop. Written and checked by reading only: the Dockerfile,
+compose file and CI workflow (no Docker on the development machine), the NAS
+and Windows steps. Every self-host behaviour is behind the relay's
+`--selfhost` flag or `TV_NO_BUILTIN_CHANNELS=1`, which only the supervisor
+sets; the cloud units run as before. Where it differs from the text above:
+
+- Docker files are in `packaging/docker/`; `.dockerignore` is at the repository
+  root and is an allow-list. The built-in channels moved to
+  `server/builtin_channels.py`, which the image leaves out; the image has no
+  `tools/` (so no `DEFAULT_SOURCE` either).
+- `PUID`/`PGID` become compose's `user:` rather than a root entry point that
+  drops privileges, so the container keeps `cap_drop: ALL`.
+- The plain-Python data folder is `<per-user data dir>/selfhost` (never the
+  checkout, where `tools/datadir.py` would put it when writable).
+- The relay ports (8099, 8100) and listen ports (8198, 8199) are fixed; the
+  config file adds `[server] bind` and `[devices] xingzhi_port` /
+  `passport_port`. `max_streams`, `update_check`, `[youtube] proxy` and local
+  YouTube mode are accepted but do nothing yet.
+- The image is pushed only by a manual run of the workflow with "publish"
+  ticked; Debian's ffmpeg is not pinned to a version yet.
+- Left for later: the System page's config view and backup download, the
+  select-and-copy fallback, "Xingzhi TV 1" device names, the update check,
+  refusing unbound devices from public addresses when `allow_internet`.
 
 ### Phase S2 — several devices at once (gate-lite) (3–4.5 days)
 

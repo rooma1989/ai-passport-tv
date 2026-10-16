@@ -26,7 +26,7 @@ from ..tenancy import files as tenancy_files
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
-from . import admin, console, events, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
+from . import admin, console, events, setup, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
@@ -109,8 +109,11 @@ class Relay:
                  device_name: str = "小智", extra_devices=(),
                  log=print, clock=time.time, monotonic=time.monotonic,
                  starter=stream.start, pumper=stream.pump,
-                 accounts=None, devices_dir: Path | None = None, listen_secret: bytes | None = None):
+                 accounts=None, devices_dir: Path | None = None, listen_secret: bytes | None = None,
+                 selfhost: "setup.SelfHost | None" = None):
         self.state = state
+        # 自建模式（server/selfhost，中转带 --selfhost）：第一个管理员、明文 HTTP 的 cookie 等，见 setup.py。
+        self.selfhost = selfhost
         # 多用户：账号库（server/tenancy/accounts.py）和每台设备的文件目录。
         self.accounts = accounts
         self.devices_dir = Path(devices_dir) if devices_dir is not None else None
@@ -1547,8 +1550,18 @@ def _manage_handler(relay: Relay):
                 return relay.state.session_ok(token, relay.clock())
             return self._session_caller(token) is not None
 
+        def _https(self) -> bool:
+            """这个请求是不是经 HTTPS 来的。云端（nginx 后面）一律当作是；自建模式看前端（server/front.py）
+            给的 X-Forwarded-Proto，而且只信本机转来的，和 X-Real-IP 一样。"""
+            if relay.selfhost is None:
+                return True
+            proto = (self.headers.get("X-Forwarded-Proto") or "").strip().lower()
+            return self.client_address[0] in ("127.0.0.1", "::1") and proto == "https"
+
         def _cookie_header(self, token: str) -> str:
-            return (f"{COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/tv/; "
+            # 明文 HTTP 的局域网地址上，浏览器不保存带 Secure 的 cookie：自建时只有 HTTPS 才带。
+            secure = "Secure; " if self._https() else ""
+            return (f"{COOKIE}={token}; HttpOnly; {secure}SameSite=Lax; Path=/tv/; "
                     f"Max-Age={SESSION_S}")
 
         def _send(self, code: int, body: bytes, kind: str, headers: dict | None = None) -> None:
@@ -1631,7 +1644,14 @@ def _manage_handler(relay: Relay):
             path = self._path()
             if path in ASSETS:
                 kind, data = ASSETS[path]
+                if relay.selfhost is not None and data is ASSETS["/wifi"][1]:
+                    # 自建：服务器栏填设备该连的地址（setup.wifi_page），不缓存，地址可能刚记下。
+                    self._send(200, setup.wifi_page(relay, data), kind)
+                    return
                 self._send(200, data, kind, {"Cache-Control": "public, max-age=86400"})
+                return
+            # 自建模式：第一个管理员（/tv/setup）；还没设置时别的页面都指向它（setup.py）。
+            if setup.get(self, relay, path):
                 return
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
             if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)):
@@ -1768,6 +1788,8 @@ def _manage_handler(relay: Relay):
 
         def _post(self):
             path = self._path()
+            if setup.post(self, relay, path):
+                return
             if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)):
                 return
             if relay.tenant and path in ("/api/scan", "/api/invite/accept", "/api/bind/register"):
@@ -1929,6 +1951,9 @@ def _manage_handler(relay: Relay):
             self._not_found()
 
         def _delete(self):
+            if setup.pending(relay):
+                self._not_found()
+                return
             caller = self._caller()
             if caller is None:
                 self._not_found()

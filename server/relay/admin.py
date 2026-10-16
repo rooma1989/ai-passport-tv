@@ -27,13 +27,15 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, console, events, qr, table
+from . import channeltable, console, events, playlist, qr, table
 from .ytnode import MAX_STREAMS
 
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 ADMIN_PAGE = (_ASSET_DIR / "admin.html").read_bytes()
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
 BODY_MAX = 8000
+# 自建模式的「导入播放列表」可以直接上传 M3U 文件的内容（playlist.py）；云端没有这个接口。
+IMPORT_PATH = "/api/admin/channels/import"
 _USER = re.compile(r"^/api/admin/users/(\d{1,9})(?:/(rename|ban|unban|reviewed|login-link|delete|export|"
                    r"sessions|sessions/revoke))?$")
 _DEVICE = re.compile(r"^/api/admin/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/"
@@ -66,7 +68,7 @@ def _admin(handler):
     return caller
 
 
-def _read_body(handler) -> dict | None:
+def _read_body(handler, limit: int = BODY_MAX) -> dict | None:
     """读掉请求体（不管是谁都要读掉，keep-alive 上剩下的字节会粘到下一个请求前面）。"""
     try:
         length = int(handler.headers.get("Content-Length") or 0)
@@ -75,7 +77,7 @@ def _read_body(handler) -> dict | None:
         return None
     if length <= 0:
         return {}
-    if length > BODY_MAX:
+    if length > limit:
         # 太大的不读：连接随后关掉，免得剩下的字节被当成下一个请求。
         handler.close_connection = True
         return None
@@ -266,6 +268,7 @@ def system(relay) -> dict:
     backups = sorted(p.name for p in main.parent.glob(main.name + ".bak-*")) if main is not None else []
     stats = getattr(relay, "host_stats", None)
     return {"ok": True, "legacy_token": accounts.meta(LEGACY_TOKEN_KEY, "1") != "0",
+            "selfhost": relay.selfhost is not None,
             "public_url": relay.public_url, "signup_limits": {"net": signup.NET_LIMIT[0], "all": signup.ALL_LIMIT[0]},
             "recover_limit": phonelinks.DEVICE_LIMIT[0], "sessions_days": {k: v // 86400 for k, v in SESSION_S.items()},
             "db": {"name": path.name, "bytes": size, **counts},
@@ -312,7 +315,8 @@ def channels(relay) -> dict:
     return {"ok": True, "configured": True, "version": current["version"], "rows": rows, "bad": current["bad"],
             "groups": list(channel_groups.GROUPS[2:]), "limits": {"channels": channel_groups.CHANNEL_MAX,
                                                                   "bytes": channel_groups.CONFIG_MAX},
-            "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:]}
+            "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:],
+            "import": relay.selfhost is not None}
 
 
 def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
@@ -383,7 +387,8 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
 def post(handler, relay, path: str) -> bool:
     if not path.startswith("/api/admin/"):
         return False
-    body = _read_body(handler)
+    selfhost = relay.selfhost is not None
+    body = _read_body(handler, playlist.IMPORT_BODY_MAX if selfhost and path == IMPORT_PATH else BODY_MAX)
     caller = _admin(handler)
     if caller is None:
         handler._not_found()
@@ -394,6 +399,17 @@ def post(handler, relay, path: str) -> bool:
     ip = handler._ip()
     if path == "/api/admin/channels":
         handler._json(save_channels(relay, body, caller, ip))
+        return True
+    if selfhost and path == IMPORT_PATH:
+        # 自建：读一份 M3U（地址或上传的内容），列出里面的台给页面勾选；不存地址、不改频道表。
+        answer = playlist.read(body)
+        if answer.get("ok"):
+            relay.accounts.audit("channels.import", caller.user, ip, "channels", "", f"{len(answer['entries'])} 个台")
+        handler._json(answer)
+        return True
+    if selfhost and path == "/api/admin/channels/probe":
+        # 自建：试一个地址能不能出画面（用 ffmpeg 取一帧）。
+        handler._json(playlist.probe(body, relay.ffmpeg))
         return True
     if path == "/api/admin/invites":
         name = body.get("name") if isinstance(body.get("name"), str) else ""

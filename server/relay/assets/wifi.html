@@ -273,7 +273,11 @@ function forget(key) { try { localStorage.removeItem(key); } catch (e) { /* 无�
 
 // 服务器地址默认是打开这个页面的网站（不写端口：电视按自己那一型补上，见
 // main/av_server_addr.h）。本机地址不算：电视连不到手机自己。
+// 自建服务器把设备该连的局域网地址写在名为 tv-device-address 的 meta 标签里（server/relay/setup.py）：
+// 经隧道打开这一页时，页面自己的主机名是隧道的名字，设备连不到，所以先用它。
 function siteHost() {
+  const given = document.querySelector('meta[name="tv-device-address"]');
+  if (given && given.content) return given.content.toLowerCase();
   const host = (location.hostname || "").toLowerCase();
   if (!host || host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host)) return "";
   return host;

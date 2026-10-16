@@ -41,6 +41,9 @@ if str(_BOOTSTRAP_ROOT) not in sys.path:
 from tools import datadir  # noqa: E402  (resolves only after the path above)
 from tools.certs import use_system_ca  # noqa: E402
 from tools.console import use_utf8  # noqa: E402
+# The playlist parser is shared with the admin backend's playlist import
+# (server/relay/admin.py), so one copy decides what counts as a channel.
+from server.m3u import parse_playlist  # noqa: E402,F401
 
 # This page's messages are Chinese too, and on Windows the console's default
 # encoding cannot represent them. See tools/console.py.
@@ -76,9 +79,6 @@ TV_CONTROL_MAX = 7168
 FOLLOW_TIMEOUT_S = 20
 MAX_PLAYLIST_BYTES = 4 * 1024 * 1024
 DEFAULT_USER_AGENT = "AptvPlayer-UA"
-# `http-user-agent="..."` on an #EXTINF line or `#EXTVLCOPT:http-user-agent=...`.
-USER_AGENT_RE = re.compile(r"""http-user-agent\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
-EXTVLCOPT_UA_RE = re.compile(r"""#EXTVLCOPT:http-user-agent\s*=\s*([^\r\n]*)""", re.IGNORECASE)
 # Where ffmpeg lives, and the two do-not-wait-past times used when checking a
 # channel.
 #
@@ -103,42 +103,6 @@ def is_private(address: str) -> bool:
         return ipaddress.ip_address(address).is_private
     except ValueError:
         return address in ("localhost",)
-
-
-def parse_playlist(text: str) -> list[dict]:
-    """Pull (name, url) pairs out of an M3U playlist.
-
-    Names come after the last comma of #EXTINF; the address is the next line
-    that looks like a URL. Duplicate names are kept apart by the caller, which
-    assigns ids, because a playlist legitimately lists one channel twice.
-    """
-    channels: list[dict] = []
-    pending: str | None = None
-    pending_agent: str = ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("#EXTINF"):
-            _, _, tail = line.partition(",")
-            name = tail.strip() or "unnamed"
-            pending = name
-            match = USER_AGENT_RE.search(line)
-            pending_agent = match.group(1) if match else ""
-            continue
-        if line.startswith("#EXTVLCOPT:http-user-agent"):
-            match = EXTVLCOPT_UA_RE.search(line)
-            if match:
-                pending_agent = match.group(1).strip()
-            continue
-        if line.startswith("#"):
-            continue
-        if line.startswith(("http://", "https://")):
-            name = pending if pending else line.rsplit("/", 1)[-1]
-            channels.append({"name": name, "url": line, "agent": pending_agent})
-            pending = None
-            pending_agent = ""
-    return channels
 
 
 def slug(index: int) -> str:

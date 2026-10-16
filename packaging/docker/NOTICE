@@ -1,0 +1,20 @@
+Xiaozhi TV self-hosted server image (xiaozhi-tv)
+
+This image contains:
+
+- This project's server code (server/), MIT licence: /app/LICENSE.
+- jsQR 1.4.0 (server/relay/assets/jsqr.js), Apache License 2.0:
+  /app/server/relay/assets/LICENSE.jsqr.txt.
+- The QR code encoder in server/relay/qr.py follows Project Nayuki's QR Code
+  generator library, MIT licence (notice in that file).
+- Python (python:3.12-slim base image), Python Software Foundation License.
+- FFmpeg from Debian's "ffmpeg" package and its libraries, under the GNU GPL /
+  LGPL as built by Debian. The corresponding source is available from Debian:
+  https://packages.debian.org/source/bookworm/ffmpeg (apt-get source ffmpeg).
+  The exact package versions in this image are listed in
+  /usr/share/doc/*/copyright and by `dpkg -l` inside the container.
+- tini and tzdata from Debian, under their own licences
+  (/usr/share/doc/tini/copyright, /usr/share/doc/tzdata/copyright).
+
+The image ships no content: no channel list, no stream address, no playlist,
+no cookies, no keys. Everything it plays is added by the person who runs it.

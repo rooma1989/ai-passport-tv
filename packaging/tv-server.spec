@@ -39,6 +39,11 @@ hiddenimports = [
     "server.frames",
     "server.tv_server",
     "server.live",
+    # The built-in fallback channels live in their own module (the self-host
+    # image leaves it out); live.py imports it inside a try.
+    "server.builtin_channels",
+    # The playlist parser, shared with the admin backend's playlist import.
+    "server.m3u",
     "server.media",
     "server.netident",
     "server.protocol",

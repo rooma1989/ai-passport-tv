@@ -4,7 +4,7 @@
 
 # 自建服务包（「小智电视」在家里跑）—— 设计
 
-状态：2026-10-15 草案，待决定。只做设计，这里写的都还没有实现。承接
+状态：2026-10-15 草案，2026-10-16 已决定（见下面「决定」）。阶段 S1 已实现（第 15 节），其余仍是设计。承接
 [`2026-10-12-multi-tenant-design.zh_CN.md`](2026-10-12-multi-tenant-design.zh_CN.md)
 （账号、绑定、PC 控制台、总后台：阶段 1–3 已完成；阶段 4 媒体网关没做）、
 [`2026-10-12-phone-audio-design.zh_CN.md`](2026-10-12-phone-audio-design.zh_CN.md)、
@@ -815,6 +815,24 @@ HTTP 从家庭服务器取镜像，并用编进固件的项目公钥在应用层
 - S1d. Dockerfile、compose、`.dockerignore`、CI 多架构构建和内容检查、`run.sh --selfhost`。（1–1.5 天）
 
 并行：S1a 和 S1c 互不相关；S1b 只需要 S1a 的配置形状。
+
+**S1 现状（2026-10-16）：已实现**，每个型号一台（Q1 选项 A）；快速上手见
+[`docs/selfhost/README.zh_CN.md`](../../selfhost/README.zh_CN.md)。已在一台 Mac 上用纯 Python 方式
+（`./run.sh --selfhost`，只听 127.0.0.1）验证：横幅和设置码、经 `/tv/setup` 建第一个管理员、明文 HTTP 下不带
+`Secure` 的 cookie、导入播放列表和试播、保存频道表、`/healthz`、用模拟设备看未绑定画面和空表画面、正常停止。只写了、
+读过、没跑过：Dockerfile、compose 文件和 CI 工作流（开发机上没有 Docker），NAS 和 Windows 的步骤。所有自建的行为都在
+中转的 `--selfhost` 开关或 `TV_NO_BUILTIN_CHANNELS=1` 后面，只有监督进程会设；云端的单元照旧。和上文不同的地方：
+
+- Docker 的文件在 `packaging/docker/`；`.dockerignore` 在仓库根目录，是白名单。内置频道挪到了
+  `server/builtin_channels.py`，镜像不带它；镜像里没有 `tools/`（所以也没有 `DEFAULT_SOURCE`）。
+- `PUID`/`PGID` 变成 compose 的 `user:`，而不是用 root 入口再降权，所以容器可以 `cap_drop: ALL`。
+- 纯 Python 方式的数据文件夹是「每用户数据目录」下的 `selfhost`（绝不是代码目录；`tools/datadir.py` 在代码目录可写时会选它）。
+- 中转的端口（8099、8100）和「用手机听」的端口（8198、8199）是固定的；设置文件多了 `[server] bind` 和
+  `[devices] xingzhi_port` / `passport_port`。`max_streams`、`update_check`、`[youtube] proxy` 和本机 YouTube 模式
+  能写、但还不起作用。
+- 镜像只有手动运行工作流并勾选「publish」时才推送；Debian 的 ffmpeg 还没有固定版本。
+- 留到以后：「系统」页显示设置和下载备份、选中复制的后备、「小智电视 1」这样的设备名、更新检查、`allow_internet`
+  时拒绝公网地址的未绑定设备。
 
 ### 阶段 S2 —— 多台同时（轻网关）（3–4.5 天）
 

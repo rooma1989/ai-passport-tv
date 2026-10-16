@@ -125,6 +125,7 @@ Repository documentation is organized by function area. `authoritative` document
 - [`docs/contribution/`](contribution/README.md) — collaboration, documentation, and commit/PR conventions.
 - [`docs/hardware-design/`](hardware-design/README.md) — board facts, constraints, acceptance matrix, and troubleshooting.
 - [`docs/reference/`](reference/README.md) — reference material: reusable development experience and archived application playbooks, grouped by contributor (`reference/<username>/`).
+- [`docs/selfhost/`](selfhost/README.md) — running the server at home (0.x beta): Docker, NAS or plain Python, first-run setup code, adding your own channels.
 - [`docs/brand/`](brand/README.md) — public brand and product language (`brand-and-product.md`) and the official product visual references.
 - [`docs/`](README.md) top-level — [`CHANGELOG.md`](CHANGELOG.md), [`brand-and-product.md`](brand/brand-and-product.md), and [`fork-guide.md`](fork-guide.md).
 
