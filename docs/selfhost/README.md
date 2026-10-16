@@ -1,0 +1,272 @@
+<p align="right">
+  <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
+# Running the Xiaozhi TV server at home (0.x beta)
+
+The Xiaozhi TV server can run on a computer, NAS or mini PC at home that stays
+on; the TVs on the same home network connect to it. No cloud server, no
+bandwidth bill, and the best picture. This page is the quick start; the design
+and its trade-offs are in
+[`2026-10-15-self-hosting-design.md`](../superpowers/specs/2026-10-15-self-hosting-design.md).
+
+**This software ships no channels, streams, playlists, accounts or cookies.**
+The channel table is empty on first start; you add what to play yourself.
+Please read the [disclaimer](#disclaimer) at the end first.
+
+## Limits of the beta
+
+- **One TV per board model at a time.** With two Xingzhi Cubes at home, the
+  second shows "server did not answer" (in Chinese) and retries until the first
+  is switched off or disconnects. One Xingzhi and one AI Passport can watch at
+  the same time. Several at once comes with version 1.0.
+- No voice container and no local YouTube mode yet (later versions).
+- Steps marked "unverified" are written from the official documentation and
+  have not been tried by the author; so far only the plain-Python path has run,
+  on one Apple-silicon Mac.
+
+## What you need
+
+- A Xiaozhi TV: a Xingzhi Cube 1.54 (Xiaozhi AI case) or a FoloToy AI Passport,
+  with the Xiaozhi TV public firmware.
+- A machine that stays on (table below), on the home network, ideally with a
+  fixed IP from the router ("DHCP reservation").
+- A USB cable that carries data, and a computer with Chrome or Edge (once, for
+  flashing).
+- 2.4 GHz Wi-Fi at home.
+
+### How strong a machine
+
+The beta plays one stream per board model at a time, so almost any 64-bit
+machine that runs Docker is enough: at least 2 GB of RAM. The figures below are
+for later, when several TVs watch at once. Everything not marked "measured" is
+**estimated** (scaled by single-core performance, not measured on that machine).
+
+| Quantity | Value |
+| --- | --- |
+| CPU per video stream | Measured (M1 Pro): about 0.15 of a core (720p source; 0.07–0.09 at 360p, about 0.18 at 1080p) |
+| RAM per video stream | Measured: 50–70 MB |
+| Server at idle | Relay measured about 22 MB; the other processes expected under 100 MB together |
+| LAN bandwidth per stream | Measured: about 1.7 Mbit/s Xingzhi, 1.0–1.2 Mbit/s AI Passport |
+| Internet download per stream | The source's own bitrate, typically 1–6 Mbit/s |
+
+| Machine | Streams at once (estimated) | Notes |
+| --- | --- | --- |
+| Intel N100 / N97 mini PC, 8 GB | about 10 | Recommended: 6–10 W idle |
+| Old laptop, Core i5 4th gen or newer, 4 GB+ | 3–4 (dual core) to 6+ (quad core) | Must not sleep with the lid closed |
+| Mac, Apple silicon | M1 Pro about 30 (saturation not measured yet) | Must not sleep |
+| Synology / QNAP x86 NAS (J4125, R1600) | about 4–6 | |
+| UGREEN DXP (N100) | about 10 | |
+| Raspberry Pi 5, 4–8 GB, 64-bit OS | about 6 | Experimental, not measured |
+| Raspberry Pi 4, 4 GB+, 64-bit OS | about 2 | Experimental, not measured |
+| ARM NAS (Realtek RTD1296/1619B) | 0–1 | Not recommended |
+| Raspberry Pi 3, Zero 2, 32-bit OS, routers | — | Not supported |
+
+## Step 1: install the server
+
+The server uses these ports: **8080** (the pages phones and computers open),
+**8098** (Xingzhi Cube), **8097** (AI Passport).
+
+### A. Mac or Linux without Docker
+
+Verified on the author's Mac (Apple silicon, Python 3.12, Homebrew's ffmpeg).
+Needs Python 3.11 or newer and ffmpeg:
+
+```bash
+brew install python@3.12 ffmpeg          # Mac; Debian/Ubuntu: sudo apt install python3 ffmpeg git
+git clone https://github.com/rooma1989/ai-passport-tv.git
+cd ai-passport-tv
+./run.sh --selfhost
+```
+
+The data (database, keys, your channel table) goes to
+`~/Library/Application Support/ai-passport-tv/selfhost` on a Mac and
+`~/.local/share/ai-passport-tv/selfhost` on Linux; add `--data <folder>` to put
+it elsewhere. Closing the terminal window (or Ctrl+C) stops the server.
+
+On a Mac, the first start asks whether Python may accept incoming network
+connections: choose **Allow**, or the TVs and phones cannot connect. The Mac
+must not sleep while anyone watches: System Settings → Battery (or Energy) →
+prevent automatic sleeping on power adapter.
+
+### B. Docker (Linux mini PC, old laptop) — unverified
+
+Needs Docker and Docker Compose (`docker compose version` prints a version). The
+image is not published yet, so the first start builds it on your machine, which
+takes a few minutes:
+
+```bash
+git clone https://github.com/rooma1989/ai-passport-tv.git
+cd ai-passport-tv/packaging/docker
+mkdir data                    # create it first so the container can write to it
+docker compose up -d
+docker compose logs tv        # the setup code is in here
+```
+
+All data is in `packaging/docker/data/`. The container runs as user id 1000;
+when it cannot read or write `data` the log says so. Put `PUID=…` and `PGID=…`
+in a `.env` file next to `compose.yaml` (the `id` command shows yours) and run
+`docker compose up -d` again.
+
+Inside the container the server cannot see your LAN address, so the log says
+"this computer's address" (in Chinese): use the IP of the machine running Docker
+(for example `192.168.1.20`).
+
+### C. NAS (Synology, UGREEN, QNAP) — unverified
+
+1. In the NAS file manager, create a folder such as `docker/xiaozhi-tv/data`.
+2. Synology DSM 7.2+: Container Manager → Project → Create, path
+   `docker/xiaozhi-tv`, contents from `packaging/docker/compose.yaml` (until
+   the image is published a NAS cannot build it: wait for the image, or build
+   on a computer and import it with `docker save`). UGREEN UGOS Pro's Docker app
+   and QNAP Container Station take the same compose file.
+3. Set PUID/PGID to the owner of that folder; if another NAS app uses 8080,
+   change `"8080:8080"` in the compose file to `"18080:8080"` and open the pages
+   on 18080.
+4. Find the setup code in the NAS's container log.
+
+### Windows — unverified
+
+Use Docker Desktop (needs WSL 2, one restart after installing), then follow B
+above. The first published port brings up a Windows firewall prompt: choose
+"Private networks". The computer must not sleep either.
+
+## Step 2: first run (the setup code)
+
+On start the server prints this to its log (or terminal), in Chinese:
+
+```
+Xiaozhi TV server is running.
+  Open on a phone or computer on your home network:  http://192.168.1.20:8080/tv/setup
+  Setup code: K7P4Q-X2M9A   (one use; makes the administrator)
+  Or scan this with a phone (the code is filled in): …
+  On the TVs, enter this server address: 192.168.1.20 (no port needed)
+```
+
+1. Open that address on a phone on the home Wi-Fi (or scan the terminal's QR
+   code, which fills the code in).
+2. Enter the setup code and your name, and tap the button. The first person to
+   do this is the administrator.
+3. Follow the page to add the phone remote to the home screen.
+
+The setup code works once; until the administrator exists, every restart makes
+a new one. The setup page opens only on the home network (not on the tunnel
+port). Five wrong codes from one network in 10 minutes means a wait.
+
+## Step 3: add channels (your own)
+
+The server ships no channels. The administrator opens
+`http://<address>:8080/tv/admin` on a computer → **Channels**:
+
+- **Import a playlist**: paste the address of your own M3U playlist and press
+  "Read", or upload a `.m3u` file; tick the channels you want, optionally
+  "check which play", then add them to the table and press **Save** at the
+  bottom. The address is fetched once, when you press "Read", and not stored.
+- **Add one channel**: a name and a live stream address (`http(s)://…`).
+- A TV takes at most 128 channels; pick the ones you watch.
+
+Bilibili creators and series can be added in the phone remote's Subscriptions
+tab (per person). The YouTube setting is for households that already run their
+own YouTube node (`[youtube]` in `config.toml` and
+`secrets/youtube-node.json`); this project does not provide a way to reach
+YouTube.
+
+With no channel at all, a bound TV shows "NO CHANNELS YET / ADD SOME / ON YOUR
+PHONE" and reconnects by itself once something is added.
+
+## Step 4: flash, connect and bind a TV
+
+1. **Flash**: open the web flasher in Chrome or Edge on a computer (phase S3
+   provides it, planned at `docs/selfhost/flash.html`; this becomes a link once
+   it exists. Until then the AI Passport can use the existing
+   [`docs/flash/`](../flash/) page). The Xingzhi Cube is erased first, which
+   removes the original Xiaozhi AI firmware; the AI Passport must **never** be
+   erased.
+2. **Wi-Fi by sound**: when the TV shows its setup page, open
+   `http://<address>:8080/tv/wifi` on the phone (the setup page links to it),
+   enter the Wi-Fi name and password; the server address is filled in with the
+   address from the banner (no port). Press "Send" with the phone near the TV.
+   **Hotspot** (fallback): join the TV's hotspot with the phone, open
+   `192.168.4.1`, and enter the Wi-Fi and the server address.
+3. **Bind**: once connected, the TV shows "BIND THIS TV" and a code. With the
+   signed-in phone, scan the QR code on the TV's status page with the phone's
+   camera, or use Me → Bind a new device in the remote to scan or type the
+   code. The TV then plays your channels.
+
+The server's address must not change: a fixed IP from the router is the most
+reliable. A name like `computer.local` may work too, but has not been verified
+on the TVs.
+
+## Family and guests
+
+As on the cloud host: Me → let another phone sign in (same account, the
+simplest), invites (separate accounts), and guests scanning the TV's QR code.
+One shared account per household and the guest code for visitors is the
+recommendation.
+
+## Backups and updates
+
+- The data folder is everything you have (except `run/`, which needs no
+  backup). The server backs up the database every night after 3 a.m. into
+  `backups/` and keeps 14 days (`backup_keep_days` in `config.toml`).
+  **`secrets/` holds keys**: keep backups like a password and do not share them.
+- Restore: stop the server, replace the data folder with the backup, start.
+- Update: without Docker, `git pull` and restart; with Docker, `git pull` and
+  `docker compose up -d --build` (once the image is published:
+  `docker compose pull && docker compose up -d`).
+
+## The settings file
+
+The first start writes a commented `config.toml` into the data folder; changes
+take effect on restart. The common keys:
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `[server] lan_port` | 8080 | Port of the pages |
+| `[server] device_address` | empty | What the TVs dial; empty = the address the browser used at first setup |
+| `[server] public_port` | 0 | A port for a tunnel (Cloudflare Tunnel, Tailscale serve), e.g. 8081; it has no admin backend, setup page or key sign-in |
+| `[devices] allow_internet` | false | Accept TVs from public addresses (only for port forwarding) |
+| `[accounts] signup_via_device` | "lan" | Self-registration by scanning an unbound TV: home network only / tunnel too / off |
+
+## Common problems
+
+- **The pages do not open**: is the phone on the same Wi-Fi as the server? Was
+  the Mac's firewall prompt allowed? If the port is taken, change `lan_port`.
+- **The TV says "server did not answer"**: is the server address right (LAN IP,
+  no port)? Is another TV of the same model watching (one at a time in the
+  beta)?
+- **Sign-in does not stick**: open `http://<LAN IP>:8080`; `localhost`, the IP,
+  a `.local` name and a tunnel address each have their own sign-in.
+- **The in-page scanner cannot open the camera**: browsers allow the camera
+  only over HTTPS; scan with the phone's own camera app, or type the code.
+- **A copy button does nothing**: the same plain-HTTP limit; select and copy by
+  hand.
+
+## Not verified yet
+
+- Every step on Docker, Docker Desktop (Mac, Windows), Synology Container
+  Manager, UGREEN and QNAP, and `PUID`/`PGID`.
+- The image itself (built in CI; the author's computer has no Docker), and
+  Debian's ffmpeg on arm64.
+- The TVs resolving `.local` names; lock-screen media controls over plain HTTP
+  on an iPhone.
+- Every figure marked "estimated" in section 13 of the design.
+
+## Disclaimer
+
+This wording is a suggestion to be reviewed by someone qualified; it is not
+legal advice.
+
+> This project is open-source software for private, non-commercial use in
+> your own home. It does not include, host, sell or recommend any channel,
+> stream, video, account or proxy. Everything it plays is fetched by your own
+> server from sources you add yourself, and you are responsible for having the
+> right to access them and for following the terms of the services you use and
+> the laws where you live. Do not use it to redistribute content to others. The
+> software is provided "as is", without warranty of any kind (MIT licence).
+
+- Add only sources you are entitled to watch, for your own household. Do not
+  share your server or its streams with people outside it, and do not make it
+  public.
+- Video sites' terms apply to you when the server fetches their content on your
+  behalf; cookies are your own account's and stay on your machine.
