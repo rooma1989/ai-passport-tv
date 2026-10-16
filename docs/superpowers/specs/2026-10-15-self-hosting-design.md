@@ -34,9 +34,9 @@ Cloud Always Free is the only notable free VM, and it is overseas.
 Names used below: **the household server** is the machine at home running the
 package; `<your-host>` is its LAN address or name; `<static-site>` is the
 project's static website; `<owner>` is the project's GitHub or registry
-namespace. Every figure marked **TBD from load test** waits for the load-test
-work running in parallel; figures marked **expectation** are this document's
-guesses and nothing more.
+namespace. The figures in section 13 come from the 2026-10-16 load test on an M1 Pro
+(per-stream cost measured; the saturation sweep was stopped part-way); figures
+marked **estimated** or **expectation** are not measured yet.
 
 ## 1. Starting point: what assumes the cloud host today
 
@@ -432,7 +432,7 @@ model; not planned.
 - **Synology** (DSM 7.2+, Container Manager), x86 models (Celeron J4125, AMD
   Ryzen R1600/V1500B): a "Project" from the compose file, with the data folder
   created in File Station first. ARM "j"/"value" models (Realtek RTD1296/1619B)
-  are arm64 but weak: expectation one stream at most, TBD from load test.
+  are arm64 but weak: estimated one stream at most.
 - **UGREEN** (UGOS Pro, DXP series, Intel N100/i5): Docker app, compose
   supported; same as Synology.
 - **QNAP** (Container Station) x86: same compose.
@@ -947,32 +947,33 @@ one Xingzhi stream about 12 % of one core on the 2-core host.
 
 | Quantity | Value |
 | --- | --- |
-| CPU per video stream, x86-64 (ffmpeg + Python) | **TBD from load test**; expectation 0.2–0.4 of a modern core (cloud estimate 0.3–0.5 vCPU) |
-| CPU per video stream, arm64 (Raspberry Pi 4/5) | **TBD from load test**; expectation 0.5–1.0 of a core |
-| CPU per audio-only stream | **TBD from load test**; today it still decodes video (multi-tenant design 7.6) |
-| RAM per active worker | **TBD from load test**; expectation 150–300 MB (cloud cap 600 MB per process) |
-| RAM, idle base (supervisor, front, relay, gate) | **TBD from load test**; expectation 150–250 MB |
+| CPU per video stream | **Measured (M1 Pro): about 0.15 of a core** on a 720p source (0.07–0.09 on 360p or low motion, about 0.18 on 1080p). Two thirds is ffmpeg decoding the source; the Python sender is 0.04–0.07 regardless. A modern x86 core is estimated similar; a 2-vCPU cloud VM 0.2–0.3 vCPU |
+| CPU per video stream, arm64 (Raspberry Pi 4/5) | **Estimated**: Pi 5 about 0.4 of a core, Pi 4 about 0.8–1 (scaled by single-core performance, not measured) |
+| Extra cost of a listening phone | **Measured**: about 0.02 core and 20 MB more per stream (a small AAC ffmpeg). An audio-only session still decodes video today (multi-tenant design 7.6), so it costs the same as video |
+| RAM per active worker | **Measured 50–70 MB** (Python 24–26 MB + ffmpeg 15–45 MB, more for higher source resolution); a media server with no device about 23 MB |
+| RAM, idle base (supervisor, front, relay, gate) | relay **measured** about 22 MB and near-zero CPU; supervisor, front and gate **expected** under 100 MB together |
 | RAM, voice container | about 550 MB (measured for `muse-asr`) |
 | RAM, local YouTube node | about 330 MB peak for yt-dlp with deno (measured on the node) plus ffmpeg per YouTube stream |
 | LAN bandwidth per stream | 1.7 Mbit/s Xingzhi, 1.0–1.2 Passport (measured); the device's 2.4 GHz Wi-Fi is the real limit |
-| Internet download per stream | **TBD from load test**: the source's own bitrate (live HLS can be several Mbit/s) |
+| Internet download per stream | The source's own bitrate, typically 1–6 Mbit/s (HLS 360p–1080p). Two devices on the same channel each pull a copy (a gate could share it later) |
 | Worker start-up (gate-lite) | **TBD**, measured in phase S2; must stay well under 2 s |
 | Disk | Image: expectation 250–350 MB. Data: under 50 MB plus backups |
 
 ### 13.2 Devices per machine
 
-All rows **TBD from load test**; the numbers are expectations only.
+Per-stream cost was measured on an M1 Pro; the saturation sweep was stopped part-way, so every row except the Mac is **estimated** by single-core performance ratio, and the Mac row awaits the saturation run. Phase S0 adds one real run each on a Raspberry Pi and an N100.
 
-| Machine | Concurrent video streams (expectation) | Notes |
+| Machine | Concurrent video streams (estimated) | Notes |
 | --- | --- | --- |
-| Intel N100 / N97 mini PC, 8 GB | 4–8 | **Recommended**: 6–10 W idle, x86-64 |
-| Old laptop, Core i5 4th gen or newer, 4 GB+ | 3–6 | Lid closed without sleeping; Linux or Windows + Docker Desktop |
-| Mac, Apple silicon | 6+ | Docker Desktop or plain Python; must not sleep |
-| Synology / QNAP x86 NAS (J4125, R1600) | 2–4 | Container Manager / Container Station |
-| UGREEN DXP (N100) | 4–8 | Docker app |
-| Raspberry Pi 5, 4–8 GB, 64-bit OS | 2–3 | Experimental until measured |
-| Raspberry Pi 4, 4 GB+, 64-bit OS | 1–2 | Experimental until measured |
+| Intel N100 / N97 mini PC, 8 GB | about 10 | **Recommended**: 6–10 W idle, x86-64 |
+| Old laptop, Core i5 4th gen or newer, 4 GB+ | 3–4 (dual core) to 6+ (quad core) | Lid closed without sleeping; Linux or Windows + Docker Desktop |
+| Mac, Apple silicon | M1 Pro about 30 (awaiting saturation run) | Docker Desktop or plain Python; must not sleep |
+| Synology / QNAP x86 NAS (J4125, R1600) | about 4–6 | Container Manager / Container Station |
+| UGREEN DXP (N100) | about 10 | Docker app |
+| Raspberry Pi 5, 4–8 GB, 64-bit OS | about 6 | Experimental until measured |
+| Raspberry Pi 4, 4 GB+, 64-bit OS | about 2 | Experimental until measured |
 | ARM NAS (Realtek RTD1296/1619B) | 0–1 | Not recommended |
+| 2-vCPU cloud VM (reference) | 2–3 | Bandwidth usually runs out first (1.7 Mbit/s outbound per stream) |
 | Raspberry Pi 3, Zero 2, 32-bit OS, routers | — | Not supported |
 
 Voice adds 1 GB of RAM to the minimum; the minimum without voice is 2 GB.
@@ -1004,8 +1005,8 @@ on-device checks.
 
 ### Phase S0 — decisions and numbers (0.5 day)
 
-Answer Q1–Q12. Fill the **TBD from load test** cells (from the parallel load
-test); add a Raspberry Pi 4 and an N100 run if the load test did not cover them.
+Answer Q1–Q12. Finish the M1 Pro saturation sweep and run once each on a
+Raspberry Pi and an N100 to replace the **estimated** figures in section 13.
 
 ### Phase S1 — a household server that works, one device per model (5–7 days)
 
@@ -1092,7 +1093,7 @@ pieces on top.
 
 ## 17. Not verified
 
-- Every figure marked **TBD from load test** or **expectation**.
+- Every figure marked **estimated** or **expectation**.
 - That the device resolves `.local` names (lwIP one-shot mDNS query, default
   on in ESP-IDF 5.5) on either board.
 - Browser behaviour on plain HTTP: that Safari also drops a `Secure` cookie
