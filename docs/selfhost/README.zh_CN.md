@@ -140,8 +140,16 @@ docker compose logs tv        # 在这里找「设置码」
 
 ## 第四步：给小电视刷固件、配网、绑定
 
-1. **刷固件**：用电脑的 Chrome 或 Edge 打开网页刷机页（阶段 S3 提供，计划放在 `docs/selfhost/flash.html`，做好后这里换成
-   链接；在那之前，AI Passport 可以用现有的 [`docs/flash/`](../flash/) 页面）。星智 Cube 要先整片擦除（会去掉小智 AI 原来的固件）；AI Passport **绝不能擦除**。
+1. **刷固件**：小电视用 USB 线插在**服务器那台电脑**上，在那台电脑上用 Chrome 或 Edge 打开
+   **`http://localhost:8080/flash/`**（端口改过就用你的端口）。浏览器只在 `https://` 或 `localhost` 的页面上允许网页
+   串口，所以**用局域网 IP（`http://192.168.x.x:8080/flash/`）打开是刷不了的**，页面会这样提示。页面自己认芯片：星智 Cube
+   第一次刷要先整片擦除（会去掉小智 AI 原来的固件，要你打勾同意），以后再刷只更新、不擦除；AI Passport **绝不擦除**。
+   - 服务器的刷机页要有固件文件：不用 Docker 时运行 `./run.sh --fetch-firmware`（下载最新发布的
+     `xiaozhi-tv-flasher.zip`，校验后放进数据文件夹的 `firmware/`），或者自己下载这个 zip 解压进 `firmware/`，然后重启服务器；
+     Docker 镜像构建时已经带了最新发布的固件，数据文件夹的 `firmware/` 里有的话优先用它。
+   - 服务器在 NAS 上、或小电视插在另一台电脑上：把 `xiaozhi-tv-flasher.zip` 解压后放到任何 **https** 网站的 `/flash/` 下
+     （项目网站上的刷机页由阶段 S4 发布，地址公布后写在这里），在插着小电视的电脑上打开。
+   - 总后台「设备」页会标出可以更新固件的小电视，并链到 `/flash/`。
 2. **配网（声波）**：小电视开机进入配网页后，用手机打开 `http://<地址>:8080/tv/wifi`（设置完成页上也有链接），填 Wi-Fi 名称和
    密码，服务器地址会自动填成上面横幅里的地址（不用写端口），点「发送」，把手机靠近小电视。
    **热点配网**（备用）：手机连上小电视的热点，打开 `192.168.4.1`，填 Wi-Fi 和服务器地址。
@@ -187,6 +195,7 @@ docker compose logs tv        # 在这里找「设置码」
 
 - Docker、Docker Desktop（Mac、Windows）、群晖 Container Manager、绿联、威联通上的任何步骤，`PUID`/`PGID`。
 - 镜像本身（在 CI 里构建，作者的电脑上没有 Docker）、arm64 上 Debian 的 ffmpeg。
+- 网页刷机还没在真的小电视上刷过；`./run.sh --fetch-firmware` 还没对真的发布跑过（还没有发布）。
 - 小电视解析 `.local` 名字；iPhone 上明文 HTTP 的锁屏播放控制。
 - 第 13 节标「估计」的所有数字。
 

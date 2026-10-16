@@ -52,3 +52,14 @@ def lines(address: str, lan_port: int, code: str, device_address: str, in_contai
     shown = device_address or (address if address and not address.startswith("127.") else THIS_COMPUTER)
     out += [f"  小电视上的服务器地址填：{shown}（不用写端口）", ""]
     return out
+
+
+def flash_lines(lan_port: int, firmware, in_container: bool) -> list[str]:
+    """网页刷机：网页串口只在安全的页面（https 或 localhost）上能用，所以要在服务器那台电脑上用 localhost 打开。"""
+    port = "" if lan_port == 80 else f":{lan_port}"
+    out = [f"  刷固件：在这台电脑上用 Chrome 或 Edge 打开 http://localhost{port}/flash/",
+           "          （网页串口只在 localhost 或 https 网址上能用；用局域网 IP 打开不行，小电视的 USB 线也要插在这台电脑上）"]
+    if firmware is None:
+        where = "数据文件夹的 firmware/" if in_container else "数据文件夹的 firmware/，或运行 ./run.sh --fetch-firmware"
+        out.append(f"          还没有固件文件：把发布里的 xiaozhi-tv-flasher.zip 解压进{where}")
+    return out + [""]

@@ -4,7 +4,7 @@
 
 # 自建服务包（「小智电视」在家里跑）—— 设计
 
-状态：2026-10-15 草案，2026-10-16 已决定（见下面「决定」）。阶段 S1 已实现（第 15 节），其余仍是设计。承接
+状态：2026-10-15 草案，2026-10-16 已决定（见下面「决定」）。阶段 S1 和 S3 已实现，就是 0.x 测试版的代码（第 15 节，写明了哪些验证过、哪些没有）；S2、S4–S6 仍是设计。承接
 [`2026-10-12-multi-tenant-design.zh_CN.md`](2026-10-12-multi-tenant-design.zh_CN.md)
 （账号、绑定、PC 控制台、总后台：阶段 1–3 已完成；阶段 4 媒体网关没做）、
 [`2026-10-12-phone-audio-design.zh_CN.md`](2026-10-12-phone-audio-design.zh_CN.md)、
@@ -831,6 +831,12 @@ HTTP 从家庭服务器取镜像，并用编进固件的项目公钥在应用层
   `[devices] xingzhi_port` / `passport_port`。`max_streams`、`update_check`、`[youtube] proxy` 和本机 YouTube 模式
   能写、但还不起作用。
 - 镜像只有手动运行工作流并勾选「publish」时才推送；Debian 的 ffmpeg 还没有固定版本。
+- 和 S3 接上（2026-10-16）：前端在 `/flash/` 提供 `packaging/flash/`，在 `/flash/firmware/` 提供选中的那套固件，两个端口都给
+  （静态文件，不改任何东西）。固件先用数据文件夹的 `firmware/`（`./run.sh --fetch-firmware` 用
+  `tools/firmware_manifest.py install` 装好最新发布的 `xiaozhi-tv-flasher.zip`，或自己把这个 zip 解压进去），没有再用镜像工作流
+  拷进镜像的那一套。中转拿到 `TV_FIRMWARE_MANIFEST` 和 `TV_FLASHER_URL=/flash/`。网页串口要安全的页面，所以横幅和教程都让人在
+  服务器那台电脑上打开 `http://localhost:<lan_port>/flash/`；用局域网地址刷不了。已在 Mac 上看过：刷机页从纯 Python 的服务器能打开，
+  总后台「设备」页用一份示例清单显示了固件一栏。
 - 留到以后：「系统」页显示设置和下载备份、选中复制的后备、「小智电视 1」这样的设备名、更新检查、`allow_internet`
   时拒绝公网地址的未绑定设备。
 
@@ -866,7 +872,7 @@ HTTP 从家庭服务器取镜像，并用编进固件的项目公钥在应用层
   为准。识别时读 `0x8000` 和 `0x10000`：已经是本固件的星智默认只更新、不擦除（9.5），别的固件打勾
   同意后先擦除；Passport 从不擦除，装着 Muse 双系统的直接拒绝。写之前按清单和 `SHA256SUMS` 两头核对
   文件，写完用 MD5 读回核对。esptool-js 0.6.1 连同许可证放在仓库里。
-  **S1 的前端要做的**：把 `packaging/flash/` 放在 `/flash/`，这次发布的 `manifest.json`、`SHA256SUMS`
+  **S1 的前端要做的**（已做，见 S1 的现状）：把 `packaging/flash/` 放在 `/flash/`，这次发布的 `manifest.json`、`SHA256SUMS`
   和镜像放在 `/flash/firmware/`（就是 `tools/firmware_manifest.py bundle` 产出的布局），并给 relay 设
   `TV_FIRMWARE_MANIFEST=<那份 manifest.json>` 和 `TV_FLASHER_URL=/flash/`。静态网站（S4）把
   `xiaozhi-tv-flasher.zip` 解压到网站根目录即可。

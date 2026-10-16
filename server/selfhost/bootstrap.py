@@ -6,6 +6,7 @@
   config.toml   secrets/（0700：relay-key、wifi-key、setup-code、youtube-node.json）
   tv.db         devices/<id>/   channels.txt（一开始是空的）
   backups/      exports/        run/（状态文件、套接字；不用备份）   youtube/
+  firmware/     网页刷机用的固件（manifest.json、SHA256SUMS、镜像；./run.sh --fetch-firmware 放进来）
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from ..tenancy import db
 from ..tenancy.accounts import Accounts
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 
-DIRS = ("secrets", "devices", "backups", "exports", "run", "youtube")
+DIRS = ("secrets", "devices", "backups", "exports", "run", "youtube", "firmware")
 SETUP_CODE_LENGTH = 10
 CHANNELS_HEADER = ("# 直播频道表：在总后台（/tv/admin）的「频道表」里添加或导入你自己的播放列表。\n"
                    "# 每行： id | 显示名 | 地址 | User-Agent（可选）\n")
@@ -51,6 +52,21 @@ class Layout:
         self.backups = self.root / "backups"
         self.run = self.root / "run"
         self.status = self.run / "status.json"
+        self.firmware = self.root / "firmware"
+
+
+# 镜像里带的那套固件（构建镜像时从最新的固件发布拷进来，packaging/docker/firmware/）。
+IMAGE_FIRMWARE_ENV = "XIAOZHI_TV_FIRMWARE_DIR"
+
+
+def firmware_dir(layout: Layout, image_copy: Path | None = None) -> Path | None:
+    """网页刷机用哪一套固件：数据文件夹里的（用户自己放的、--fetch-firmware 下的）优先，
+    也认把整个 xiaozhi-tv-flasher.zip 解压进去的样子（firmware/flash/firmware/），再是镜像里带的。
+    有 manifest.json 才算；都没有时 None（刷机页会说没有固件）。"""
+    candidates = [layout.firmware, layout.firmware / "flash" / "firmware"]
+    if image_copy is not None:
+        candidates.append(Path(image_copy))
+    return next((c for c in candidates if (c / "manifest.json").is_file()), None)
 
 
 def prepare(layout: Layout) -> None:

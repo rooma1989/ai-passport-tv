@@ -15,6 +15,7 @@ on:
       - "server/**"
       - "packaging/docker/**"
       - "packaging/help/**"
+      - "packaging/flash/**"
       - ".dockerignore"
       - "tools/selfhost_content_check.py"
       - ".github/workflows/build-image.yml"
@@ -51,6 +52,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # The firmware the household server's /flash/ writes: the latest firmware
+      # release's bundle (build-firmware.yml), checked and unpacked into
+      # packaging/docker/firmware/. No release yet: the image has none and its
+      # flasher says so.
+      - name: Firmware from the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release download --repo "$GITHUB_REPOSITORY" --pattern xiaozhi-tv-flasher.zip --dir "$RUNNER_TEMP/fw"; then
+            python3 tools/firmware_manifest.py install "$RUNNER_TEMP/fw/xiaozhi-tv-flasher.zip" packaging/docker/firmware
+          else
+            echo "no firmware release yet; the image ships the flasher without firmware"
+          fi
 
       # The rules first, without Docker: what .dockerignore lets into the build.
       - name: Check the build context
@@ -93,6 +108,7 @@ jobs:
           docker logs tv 2>&1 | grep -v "设置码" | tail -40
           curl -fsS http://127.0.0.1:18080/healthz
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/tv/setup)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/flash/)" = 200
           docker exec tv ffmpeg -hide_banner -version | head -1
           docker stop tv
 
@@ -105,6 +121,14 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Firmware from the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release download --repo "$GITHUB_REPOSITORY" --pattern xiaozhi-tv-flasher.zip --dir "$RUNNER_TEMP/fw"; then
+            python3 tools/firmware_manifest.py install "$RUNNER_TEMP/fw/xiaozhi-tv-flasher.zip" packaging/docker/firmware
+          fi
 
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 

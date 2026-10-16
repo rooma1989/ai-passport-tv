@@ -176,12 +176,26 @@ PHONE" and reconnects by itself once something is added.
 
 ## Step 4: flash, connect and bind a TV
 
-1. **Flash**: open the web flasher in Chrome or Edge on a computer (phase S3
-   provides it, planned at `docs/selfhost/flash.html`; this becomes a link once
-   it exists. Until then the AI Passport can use the existing
-   [`docs/flash/`](../flash/) page). The Xingzhi Cube is erased first, which
-   removes the original Xiaozhi AI firmware; the AI Passport must **never** be
-   erased.
+1. **Flash**: plug the TV into the **server machine** with the USB cable and,
+   on that machine, open **`http://localhost:8080/flash/`** in Chrome or Edge
+   (your port if you changed it). Browsers allow Web Serial only on `https://`
+   or `localhost` pages, so **the LAN address
+   (`http://192.168.x.x:8080/flash/`) cannot flash**, and the page says so. The
+   page detects the chip: a Xingzhi Cube is erased on its first install, which
+   removes the original Xiaozhi AI firmware and needs your tick, and later
+   flashes update without erasing; the AI Passport is **never** erased.
+   - The server's flasher needs the firmware files: without Docker, run
+     `./run.sh --fetch-firmware` (downloads the latest release's
+     `xiaozhi-tv-flasher.zip`, checks it and puts it into the data folder's
+     `firmware/`), or download that zip yourself and unpack it into
+     `firmware/`, then restart the server. The Docker image is built with the
+     latest released firmware; a set in the data folder's `firmware/` wins.
+   - Server on a NAS, or the TV plugged into another computer: unpack
+     `xiaozhi-tv-flasher.zip` under `/flash/` on any **https** site (the
+     project website's copy comes with phase S4; its address goes here once
+     published) and open it on the computer the TV is plugged into.
+   - The admin backend's Devices page marks TVs whose firmware can be updated
+     and links to `/flash/`.
 2. **Wi-Fi by sound**: when the TV shows its setup page, open
    `http://<address>:8080/tv/wifi` on the phone (the setup page links to it),
    enter the Wi-Fi name and password; the server address is filled in with the
@@ -248,6 +262,9 @@ take effect on restart. The common keys:
   Manager, UGREEN and QNAP, and `PUID`/`PGID`.
 - The image itself (built in CI; the author's computer has no Docker), and
   Debian's ffmpeg on arm64.
+- The web flasher on a real TV (it has not been run against a device yet),
+  and `./run.sh --fetch-firmware` against a real release (none is published
+  yet).
 - The TVs resolving `.local` names; lock-screen media controls over plain HTTP
   on an iPhone.
 - Every figure marked "estimated" in section 13 of the design.

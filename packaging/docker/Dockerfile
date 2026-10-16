@@ -30,6 +30,13 @@ COPY packaging/docker/NOTICE /app/NOTICE
 COPY server /app/server
 # The device's help QR code opens /TV/ on the household server (server/front.py).
 COPY packaging/help /app/packaging/help
+# The web flasher at /flash/, and the firmware it writes at /flash/firmware/: the
+# latest firmware release's files, put into packaging/docker/firmware/ by the
+# image workflow (tools/firmware_manifest.py install). A local build without
+# them has a flasher that says there is no firmware; the data folder's
+# firmware/ (./run.sh --fetch-firmware, or the release zip unpacked) wins anyway.
+COPY packaging/flash /app/packaging/flash
+COPY packaging/docker/firmware /app/firmware
 # Byte-compiled now, because the root filesystem is read-only at run time.
 RUN python3 -m compileall -q /app/server
 
@@ -39,6 +46,7 @@ RUN python3 -m compileall -q /app/server
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     XIAOZHI_TV_CONTAINER=1 \
+    XIAOZHI_TV_FIRMWARE_DIR=/app/firmware \
     HOME=/tmp \
     TZ=Asia/Shanghai
 

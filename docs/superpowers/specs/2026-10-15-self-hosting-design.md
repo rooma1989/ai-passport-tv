@@ -4,8 +4,9 @@
 
 # Self-hosting package ("Xiaozhi TV at home") — design
 
-Status: draft 2026-10-15, decided 2026-10-16 ("Decisions" below). Phase S1
-is implemented (section 15); the rest is design. Follows
+Status: draft 2026-10-15, decided 2026-10-16 ("Decisions" below). Phases S1
+and S3 are implemented, the 0.x beta's code (section 15, with what is verified
+and what is not); S2 and S4–S6 are design. Follows
 [`2026-10-12-multi-tenant-design.md`](2026-10-12-multi-tenant-design.md)
 (accounts, binding, console, admin backend: phases 1–3 done; phase 4, the media
 gate, not built),
@@ -1054,6 +1055,18 @@ sets; the cloud units run as before. Where it differs from the text above:
   YouTube mode are accepted but do nothing yet.
 - The image is pushed only by a manual run of the workflow with "publish"
   ticked; Debian's ffmpeg is not pinned to a version yet.
+- Integrated with S3 (2026-10-16): the front serves `packaging/flash/` at
+  `/flash/` and the chosen firmware at `/flash/firmware/`, on both ports (static
+  files that change nothing). The firmware is the data folder's `firmware/`
+  (filled by `./run.sh --fetch-firmware`, which installs the latest release's
+  `xiaozhi-tv-flasher.zip` through `tools/firmware_manifest.py install`, or by
+  unpacking that zip there), else the copy the image workflow puts into the
+  image. The relay gets `TV_FIRMWARE_MANIFEST` and `TV_FLASHER_URL=/flash/`.
+  Web Serial needs a secure context, so the banner and the tutorial send people
+  to `http://localhost:<lan_port>/flash/` on the server machine itself; the LAN
+  address cannot flash. Checked on a Mac: the page loads from the plain-Python
+  server, and the admin Devices page shows the firmware column with a sample
+  manifest.
 - Left for later: the System page's config view and backup download, the
   select-and-copy fallback, "Xingzhi TV 1" device names, the update check,
   refusing unbound devices from public addresses when `allow_internet`.
@@ -1100,7 +1113,7 @@ Can run in parallel with S1 and S2.
   is never erased, and one carrying the Muse dual setup is refused. Files are
   checked against both the manifest and `SHA256SUMS`, the write is verified by
   MD5 read-back. esptool-js 0.6.1 is vendored with its licence.
-  **For S1's front:** serve `packaging/flash/` at `/flash/` with the release's
+  **For S1's front** (done, see S1's status): serve `packaging/flash/` at `/flash/` with the release's
   `manifest.json`, `SHA256SUMS` and images in `/flash/firmware/` (the layout
   `tools/firmware_manifest.py bundle` produces), and set
   `TV_FIRMWARE_MANIFEST=<that manifest.json>` and `TV_FLASHER_URL=/flash/` for

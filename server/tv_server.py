@@ -955,11 +955,13 @@ class AVServer:
             if failed:
                 wire = reconnect.WireState(seq=2, audio_pts=0)
                 now = time.monotonic()
-                channel = reconnect.hold(self, connection, session, channel, wire,
-                                         now + AUDIO_LEAD_MS / 1000, now,
-                                         restart_reason=failed)
-                if channel is None:
+                held = reconnect.hold(self, connection, session, channel, wire,
+                                      now + AUDIO_LEAD_MS / 1000, now,
+                                      restart_reason=failed)
+                # 设备在重连等待中离开：hold 返回 None。不能把 channel 换成 None，下面的 finally 还要关它。
+                if held is None:
                     return
+                channel = held
                 self.live_channel = channel
                 resume = wire
             self.set_session_state(SessionState.PLAYING, session, reason="session_started")

@@ -62,7 +62,8 @@ def _addresses(config, accounts, in_container: bool) -> tuple[str, str, str]:
 
 
 def build_children(layout, config, ffmpeg: str, device_address: str, public_url: str, log,
-                   in_container: bool = False) -> list:
+                   in_container: bool = False, firmware: Path | None = None) -> list:
+    """firmware：网页刷机用的固件文件夹（bootstrap.firmware_dir），没有时 None。"""
     from .supervisor import Child, python_command
     root = Path(__file__).resolve().parents[2]
     base_env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
@@ -78,7 +79,11 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         relay += ["--device-address", config.device_address or device_address]
     if config.youtube_mode == "node" and layout.youtube_node.is_file():
         relay += ["--cstone", str(layout.youtube_node)]
-    children = [Child("relay", relay, base_env, log)]
+    # 总后台「设备」页的固件一栏：这次带的固件版本、刷机页的地址（server/relay/admin.py 的 firmware_info）。
+    relay_env = dict(base_env, TV_FLASHER_URL="/flash/")
+    if firmware is not None:
+        relay_env["TV_FIRMWARE_MANIFEST"] = str(firmware / "manifest.json")
+    children = [Child("relay", relay, relay_env, log)]
     for name, port_attr, geometry, fps, rate, listen_port in MODELS:
         env = dict(base_env, TV_GEOMETRY=geometry, TV_FPS=str(fps), TV_RATE_START=str(rate),
                    TV_DB=str(layout.db), TV_DEVICES_DIR=str(layout.devices), TV_CHANNELS_FILE=str(layout.channels),
@@ -102,6 +107,11 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
                   "--public-bind", "0.0.0.0" if in_container else "127.0.0.1"]
     if config.admin_over_tunnel:
         front += ["--admin-over-tunnel"]
+    flasher = root / "packaging" / "flash"
+    if flasher.is_dir():
+        front += ["--flasher-dir", str(flasher)]
+    if firmware is not None:
+        front += ["--firmware-dir", str(firmware)]
     children.append(Child("front", front, base_env, log))
     return children
 
@@ -168,10 +178,14 @@ def main(argv: list[str] | None = None) -> int:
     code = bootstrap.setup_code(layout, accounts)
     detected, device_address, public_url = _addresses(config, accounts, in_container)
     accounts.close()
+    image_copy = os.environ.get(bootstrap.IMAGE_FIRMWARE_ENV) or None
+    firmware = bootstrap.firmware_dir(layout, Path(image_copy) if image_copy else None)
     for line in banner.lines(detected or ("127.0.0.1" if config.bind == "127.0.0.1" else ""), config.lan_port,
                              code, device_address, in_container):
         log(line)
-    children = build_children(layout, config, ffmpeg, device_address, public_url, log, in_container)
+    for line in banner.flash_lines(config.lan_port, firmware, in_container):
+        log(line)
+    children = build_children(layout, config, ffmpeg, device_address, public_url, log, in_container, firmware)
     return Supervisor(layout, children, config.backup_keep_days, log).run()
 
 

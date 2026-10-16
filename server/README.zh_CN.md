@@ -454,6 +454,9 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
 - `TV_NO_BUILTIN_CHANNELS=1`（`server/live.py`）：不用内置频道，不在代码旁边找 `channels.txt`；频道表可以是空的，
   已绑定的设备没东西可放时给一张「还没有频道」的静止画面（`server/no_channels.py`）。`--channel` 可以不给。
 
+前端还在 `/flash/` 提供网页刷机页（`packaging/flash/`），在 `/flash/firmware/` 提供监督进程找到的固件（`<数据>/firmware/`，由
+`./run.sh --fetch-firmware` 放进去，没有就用镜像里带的）；中转拿到 `TV_FIRMWARE_MANIFEST` 和 `TV_FLASHER_URL=/flash/`，给总后台「设备」页用。
+
 ## 调度、边界与停止
 
 - 服务端时间起点为 CONFIG 写完后 200 ms；音频在 PTS 前 200 ms 发送，视频提前 50 ms。

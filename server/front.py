@@ -9,6 +9,10 @@ tv-listen.conf 一样：
   /TV/R/ /TV/B/ /TV/L/ /TV/P/ → 中转的 /r/ /b/ /l/ /p/（设备二维码）
   /TV/W                    → 中转的 /wifi（声波配网）
   /TV/                     → 使用说明（packaging/help/index.html，设备上的帮助二维码）
+  /flash/                  → 网页刷机（packaging/flash/）；/flash/firmware/ 是固件（manifest.json、SHA256SUMS、
+                             镜像），来自数据文件夹的 firmware/ 或镜像里带的那套（监督进程选好给 --firmware-dir）。
+                             网页串口只在安全的页面上能用：在服务器那台电脑上用 http://localhost:<端口>/flash/ 打开，
+                             或经隧道的 https；用局域网 IP 打开时页面会说明。两个端口都给（静态文件，不改任何东西）。
   /                        → 跳到 /tv/
   /healthz                 → 中转和各个子进程是否在跑（Docker 的 HEALTHCHECK、NAS 的状态灯）
 
@@ -63,6 +67,8 @@ class Options(NamedTuple):
     admin_over_tunnel: bool = False
     signup: str = "lan"
     status_file: Path | None = None
+    flasher_dir: Path | None = None     # 刷机页（packaging/flash/）
+    firmware_dir: Path | None = None    # 固件：manifest.json、SHA256SUMS、镜像
 
 
 class Route(NamedTuple):
@@ -79,6 +85,12 @@ def route(path: str, query: str, public: bool, options: Options) -> Route:
         return Route("redirect", path="/tv/")
     if path in ("/TV", "/TV/"):
         return Route("help")
+    if path == "/flash":
+        return Route("redirect", path="/flash/")
+    if path.startswith("/flash/firmware/"):
+        return Route("firmware", path=path[len("/flash/firmware/"):])
+    if path.startswith("/flash/"):
+        return Route("flasher", path=path[len("/flash/"):] or "index.html")
     if path == "/TV/W":
         return _relay("/wifi", query, public, options)
     for prefix, target in _SHORT:
@@ -108,6 +120,33 @@ def _relay(path: str, query: str, public: bool, options: Options) -> Route:
             if keyed or check.startswith(("/admin", "/api/admin")):
                 return Route("refuse")
     return Route("proxy", options.relay_port, path)
+
+
+# 刷机页和固件的类型；SHA256SUMS、LICENSE 这类没有后缀的是文字。
+_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+          ".json": "application/json", ".txt": "text/plain; charset=utf-8", ".bin": "application/octet-stream",
+          ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml"}
+STATIC_MAX = 16 * 1024 * 1024
+
+
+def static_file(base: Path | None, relative: str, nested: bool = True) -> Path | None:
+    """base 下的一个文件；跳出 base、带点开头的名字、太大的，一律当作没有。nested=False 只认 base 里直接的文件。"""
+    if base is None or not relative:
+        return None
+    parts = urllib.parse.unquote(relative).split("/")
+    if any(not part or part.startswith(".") for part in parts) or (not nested and len(parts) > 1):
+        return None
+    try:
+        root = Path(base).resolve()
+        path = root.joinpath(*parts).resolve()
+        path.relative_to(root)
+        return path if path.is_file() and path.stat().st_size <= STATIC_MAX else None
+    except (OSError, ValueError):
+        return None
+
+
+def content_type(path: Path) -> str:
+    return _TYPES.get(path.suffix.lower(), "text/plain; charset=utf-8" if not path.suffix else "application/octet-stream")
 
 
 def caller_address(headers, peer: str, public: bool) -> str:
@@ -185,6 +224,10 @@ def _handler(options: Options, public: bool):
             elif where.kind == "help" and HELP_PAGE.is_file():
                 self._reply(200, HELP_PAGE.read_bytes(), "text/html; charset=utf-8",
                             {"Cache-Control": "public, max-age=3600"})
+            elif where.kind in ("flasher", "firmware") and \
+                    (found := static_file(options.flasher_dir if where.kind == "flasher" else options.firmware_dir,
+                                          where.path, nested=where.kind == "flasher")) is not None:
+                self._reply(200, found.read_bytes(), content_type(found), {"Cache-Control": "no-cache"})
             else:
                 # 不许的和不存在的一样回答：外面看不出这里有没有这个页面。
                 self._drain()
@@ -316,9 +359,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--signup", choices=SIGNUP_POLICIES, default="lan",
                         help="扫未绑定设备的码自己注册：lan 只在局域网端口，anywhere 两个端口都行，off 都不行")
     parser.add_argument("--status-file", type=Path, help="监督进程写的子进程状态（/healthz 用）")
+    parser.add_argument("--flasher-dir", type=Path, help="网页刷机页的文件夹（packaging/flash/），在 /flash/ 下")
+    parser.add_argument("--firmware-dir", type=Path, help="固件文件夹（manifest.json 等），在 /flash/firmware/ 下")
     args = parser.parse_args(argv)
     options = Options(relay_port=args.relay_port, listen=_pairs(args.listen, "--listen"),
-                      admin_over_tunnel=args.admin_over_tunnel, signup=args.signup, status_file=args.status_file)
+                      admin_over_tunnel=args.admin_over_tunnel, signup=args.signup, status_file=args.status_file,
+                      flasher_dir=args.flasher_dir, firmware_dir=args.firmware_dir)
     servers = [make_server(args.bind, args.lan_port, options)]
     if args.public_port:
         servers.append(make_server(args.public_bind, args.public_port, options, public=True))

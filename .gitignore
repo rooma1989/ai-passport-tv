@@ -75,3 +75,7 @@ tools/*.bak*
 # packaging/docker/ in a checkout: the database, generated keys and the
 # household's own channel list. Never part of the repository.
 packaging/docker/data/
+# The firmware the image workflow copies in from the latest release (manifest,
+# checksums, images); only the placeholder that keeps the folder is tracked.
+packaging/docker/firmware/*
+!packaging/docker/firmware/.keep

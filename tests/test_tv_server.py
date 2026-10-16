@@ -534,6 +534,60 @@ class LiveServerTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg optional for offline preparation only")
+class ReconnectLeaveTests(unittest.TestCase):
+    """The device leaves while the server holds it on the reconnect notice.
+
+    reconnect.hold() answers None then. The session used to put that None in
+    place of its channel, and the cleanup that always runs afterwards called
+    failure() and close() on it: an AttributeError in the log ("channel close
+    failed: 'NoneType' object has no attribute 'close'") and the session
+    counted as failed, on every device that left during a reconnect.
+    """
+
+    class FailingChannel:
+        """A source whose start fails, so the session goes straight to the reconnect hold."""
+
+        def __init__(self, *_args, **_kwargs):
+            self.palette = bytes(768)
+            self.closed = False
+
+        def build_palette(self):
+            return self.palette
+
+        def start(self):
+            from server.live import LiveError
+            raise LiveError("no source")
+
+        def failure(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    def test_device_leaving_during_reconnect_closes_the_channel_cleanly(self):
+        # The names the server module itself uses: other tests reload server.live, so
+        # server.live.CHANNELS is not always the dict server.tv_server imported.
+        from server import tv_server
+        logs = []
+        server = AVServer(None, "127.0.0.1", 0, logger=logs.append)
+        made = []
+
+        def factory(*args, **kwargs):
+            made.append(self.FailingChannel(*args, **kwargs))
+            return made[-1]
+
+        server.channel_factory = factory
+        with socket_pair() as (left, right), \
+                patch.dict(tv_server.CHANNELS, {"ch": "http://127.0.0.1:9/x"}, clear=True), \
+                patch.object(tv_server.reconnect, "hold", return_value=None):
+            server._live_session(left, "ch")
+            self.assertEqual(receive_packet(right, 1).kind, Kind.CONFIG)
+        self.assertEqual(len(made), 1)
+        self.assertTrue(made[0].closed, "the session's own channel is still closed")
+        self.assertFalse([line for line in logs if "WARNING" in line], logs)
+        self.assertIsNone(server.live_channel)
+
+
 class PreparationTests(unittest.TestCase):
     def test_generate_ten_second_shared_timeline_and_reload(self):
         with tempfile.TemporaryDirectory() as temporary:

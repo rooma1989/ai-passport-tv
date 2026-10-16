@@ -42,6 +42,10 @@ class RouteTests(unittest.TestCase):
             "/": ("redirect", 0, "/tv/"),
             "/tv": ("redirect", 0, "/tv/"),
             "/TV/": ("help", 0, ""),
+            "/flash": ("redirect", 0, "/flash/"),
+            "/flash/": ("flasher", 0, "index.html"),
+            "/flash/vendor/esptool-js-0.6.1/bundle.js": ("flasher", 0, "vendor/esptool-js-0.6.1/bundle.js"),
+            "/flash/firmware/manifest.json": ("firmware", 0, "manifest.json"),
             "/healthz": ("health", 0, ""),
             "/tv/listen/other/x": ("missing", 0, ""),
             "/etc/passwd": ("missing", 0, ""),
@@ -86,6 +90,62 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(front.forwarded_proto({}, public=True), "https")
         self.assertEqual(front.forwarded_proto({"X-Forwarded-Proto": "http"}, public=True), "http")
         self.assertEqual(front.forwarded_proto({"X-Forwarded-Proto": "gopher"}, public=True), "https")
+
+
+class FlasherFilesTests(unittest.TestCase):
+    """/flash/ is the web flasher (packaging/flash/) and /flash/firmware/ the firmware the supervisor chose."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.page, self.firmware = root / "flash", root / "data" / "firmware"
+        (self.page / "vendor").mkdir(parents=True)
+        self.firmware.mkdir(parents=True)
+        (self.page / "index.html").write_text("<!doctype html>刷机", encoding="utf-8")
+        (self.page / "vendor" / "bundle.js").write_text("// esptool", encoding="utf-8")
+        (self.firmware / "manifest.json").write_text("{}", encoding="utf-8")
+        (self.firmware / "SHA256SUMS").write_text("x  a.bin\n", encoding="utf-8")
+        (self.firmware / "a.bin").write_bytes(b"\xe9" * 64)
+        (root / "data" / "secret.txt").write_text("no", encoding="utf-8")
+        options = front.Options(relay_port=1, listen={}, flasher_dir=self.page, firmware_dir=self.firmware)
+        self.servers = [front.make_server("127.0.0.1", 0, options),
+                        front.make_server("127.0.0.1", 0, options, public=True)]
+        for server in self.servers:
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+
+    def tearDown(self):
+        for server in self.servers:
+            server.shutdown()
+            server.server_close()
+        self.tmp.cleanup()
+
+    def get(self, path, server=0):
+        connection = http.client.HTTPConnection("127.0.0.1", self.servers[server].server_address[1], timeout=5)
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read()
+        connection.close()
+        return response.status, response.getheader("Content-Type"), body
+
+    def test_page_scripts_and_firmware(self):
+        for server in (0, 1):
+            status, kind, body = self.get("/flash/", server)
+            self.assertEqual((status, kind), (200, "text/html; charset=utf-8"))
+            self.assertIn("刷机".encode(), body)
+        self.assertEqual(self.get("/flash/vendor/bundle.js")[1], "text/javascript; charset=utf-8")
+        self.assertEqual(self.get("/flash/firmware/manifest.json")[:2], (200, "application/json"))
+        self.assertEqual(self.get("/flash/firmware/SHA256SUMS")[1], "text/plain; charset=utf-8")
+        self.assertEqual(self.get("/flash/firmware/a.bin")[:2], (200, "application/octet-stream"))
+
+    def test_nothing_outside_the_two_folders(self):
+        for path in ("/flash/../data/secret.txt", "/flash/%2e%2e/data/secret.txt", "/flash/firmware/../secret.txt",
+                     "/flash/firmware/%2e%2e%2fsecret.txt", "/flash/.hidden", "/flash/missing.js",
+                     "/flash/firmware/sub/a.bin"):
+            self.assertEqual(self.get(path)[0], 404, path)
+
+    def test_without_firmware_the_page_still_loads(self):
+        self.assertIsNone(front.static_file(None, "manifest.json"))
+        self.assertEqual(front.content_type(Path("x.bin")), "application/octet-stream")
 
 
 class _Echo(BaseHTTPRequestHandler):

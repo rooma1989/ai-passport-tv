@@ -594,6 +594,65 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
 
+# The release asset the web flasher is published in (.github/workflows/build-firmware.yml):
+# the page plus flash/firmware/{manifest.json,SHA256SUMS,images}.
+FIRMWARE_BUNDLE_URL = ("https://github.com/rooma1989/ai-passport-tv/releases/latest/download/"
+                       "xiaozhi-tv-flasher.zip")
+FIRMWARE_BUNDLE_MAX = 64 * 1024 * 1024
+
+
+def selfhost_data(data: Path | None) -> Path:
+    """The self-hosted server's data folder: the one given, or a per-user location, never the checkout."""
+    return (data or datadir.user_data_dir() / "selfhost").expanduser().resolve()
+
+
+def fetch_firmware(data: Path | None, url: str = FIRMWARE_BUNDLE_URL) -> int:
+    """./run.sh --fetch-firmware: the latest release's firmware into <data>/firmware/.
+
+    The household server's /flash/ page writes what is in that folder, so it is
+    filled only with a set that passes the flasher's own check (manifest,
+    SHA256SUMS, sizes, hashes; tools/firmware_manifest.py install). A download
+    that fails or does not check out leaves the folder as it was. The server
+    picks the new set up on its next start.
+    """
+    import tempfile
+    import urllib.error
+    import urllib.request
+    if datadir.is_frozen():
+        print("打包版不支持 --fetch-firmware：请从源代码运行（./run.sh --fetch-firmware）。", file=sys.stderr)
+        return 1
+    from tools import firmware_manifest
+    target = selfhost_data(data) / "firmware"
+    print(f"正在下载最新的固件：{url}", flush=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / "xiaozhi-tv-flasher.zip"
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "xiaozhi-tv-selfhost/1"})
+            with urllib.request.urlopen(request, timeout=60) as response, archive.open("wb") as out:
+                total = 0
+                while chunk := response.read(1 << 16):
+                    total += len(chunk)
+                    if total > FIRMWARE_BUNDLE_MAX:
+                        raise OSError("the download is larger than a firmware bundle can be")
+                    out.write(chunk)
+        except (urllib.error.URLError, OSError, ValueError) as error:
+            print(f"下载失败：{getattr(error, 'reason', error)}。也可以在浏览器里下载 xiaozhi-tv-flasher.zip，"
+                  f"解压进 {target}。", file=sys.stderr)
+            return 1
+        try:
+            manifest = firmware_manifest.install_bundle(archive, target)
+        except (firmware_manifest.ManifestError, OSError, ValueError) as error:
+            print(f"这个文件不对，没有改动原来的固件：{error}", file=sys.stderr)
+            return 1
+        except Exception as error:      # noqa: BLE001 —— zipfile.BadZipFile 等
+            print(f"这个文件不对，没有改动原来的固件：{type(error).__name__}", file=sys.stderr)
+            return 1
+    boards = "、".join(b["board"] for b in manifest["builds"])
+    print(f"固件 {manifest['version']}（{boards}）已放到 {target}。重启服务器后，"
+          "在服务器那台电脑上打开 http://localhost:8080/flash/ 刷机。", flush=True)
+    return 0
+
+
 # The self-hosted server needs tomllib, which arrived in Python 3.11.
 SELFHOST_MIN_PYTHON = (3, 11)
 
@@ -628,7 +687,7 @@ def run_selfhost(data: Path | None) -> int:
     if ffmpeg is None:
         report_missing_ffmpeg()
         return 1
-    data = (data or datadir.user_data_dir() / "selfhost").expanduser().resolve()
+    data = selfhost_data(data)
     print(f"数据目录：{data}", flush=True)
     os.chdir(CODE_ROOT)
     command = [sys.executable, "-m", "server.selfhost", "--data", str(data), "--ffmpeg", ffmpeg]
@@ -646,8 +705,13 @@ def _main(argv: list[str] | None = None) -> int:
                         help="自建服务器（多用户、手机遥控、总后台），见 docs/selfhost/README.zh_CN.md")
     parser.add_argument("--data", type=Path, default=None,
                         help="和 --selfhost 一起用：数据目录（默认在用户目录下）")
+    parser.add_argument("--fetch-firmware", action="store_true",
+                        help="下载最新发布的小电视固件到自建服务器的数据目录（网页刷机用）")
+    parser.add_argument("--firmware-url", default=FIRMWARE_BUNDLE_URL, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
+    if args.fetch_firmware:
+        return fetch_firmware(args.data, args.firmware_url)
     if args.selfhost:
         return run_selfhost(args.data)
 

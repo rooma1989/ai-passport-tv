@@ -20,6 +20,9 @@ Sub-commands:
                 as ``/flash/``.
   check-public  a build directory: the public build's switches really were on
                 (no private header, no default server, no public site).
+  install       the firmware out of a release's xiaozhi-tv-flasher.zip into a
+                folder the household server serves at /flash/firmware/ (the
+                self-hosted image's build, and ./run.sh --fetch-firmware).
 
 Board facts live in BOARDS below and, for the browser, in
 packaging/flash/flasher-core.js (BOARD_POLICY). tests/test_flasher.py fails when
@@ -36,6 +39,7 @@ import re
 import shutil
 import struct
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -326,6 +330,56 @@ def cmd_bundle(args) -> int:
     return 0
 
 
+# The release zip holds flash/ (the page) and flash/firmware/ (what is installed).
+BUNDLE_FIRMWARE = "flash/firmware/"
+INSTALL_MAX = 64 * MB
+
+
+def install_bundle(zip_path: Path, target: Path) -> dict:
+    """Unpack the firmware of a flasher bundle into target, checked before it replaces anything.
+
+    Only plain file names directly under flash/firmware/ are taken, never a
+    path, so a bundle cannot write outside target. The unpacked set must pass
+    the same check the flasher makes (manifest, SHA256SUMS, sizes, hashes);
+    then it replaces target as a whole, so a failed install leaves the old
+    firmware in place.
+    """
+    import tempfile
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=target.parent, prefix=".firmware-") as tmp:
+        staging = Path(tmp) / "firmware"
+        staging.mkdir()
+        total = 0
+        with zipfile.ZipFile(zip_path) as bundle:
+            for info in bundle.infolist():
+                name = info.filename
+                if info.is_dir() or not name.startswith(BUNDLE_FIRMWARE):
+                    continue
+                base = name[len(BUNDLE_FIRMWARE):]
+                if not base or "/" in base or "\\" in base or base.startswith("."):
+                    continue
+                total += info.file_size
+                if total > INSTALL_MAX:
+                    raise ManifestError("the bundle's firmware is larger than expected")
+                (staging / base).write_bytes(bundle.read(info))
+        if not (staging / "manifest.json").is_file():
+            raise ManifestError(f"{zip_path}: no {BUNDLE_FIRMWARE}manifest.json; is this xiaozhi-tv-flasher.zip?")
+        manifest = load_checked(staging)
+        old = Path(tmp) / "old"
+        if target.exists():
+            target.rename(old)
+        staging.rename(target)
+    return manifest
+
+
+def cmd_install(args) -> int:
+    manifest = install_bundle(Path(args.zip), Path(args.target))
+    print(f"firmware {manifest['version']} installed in {args.target} "
+          f"({', '.join(b['board'] for b in manifest['builds'])})")
+    return 0
+
+
 def _sdkconfig(path: Path) -> dict[str, str]:
     values = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -398,10 +452,14 @@ def main(argv: list[str] | None = None) -> int:
     public = sub.add_parser("check-public", help="a build directory is a public build")
     public.add_argument("build_dir")
     public.set_defaults(func=cmd_check_public)
+    install = sub.add_parser("install", help="xiaozhi-tv-flasher.zip -> a firmware folder served at /flash/firmware/")
+    install.add_argument("zip")
+    install.add_argument("target")
+    install.set_defaults(func=cmd_install)
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (ManifestError, OSError, json.JSONDecodeError) as error:
+    except (ManifestError, OSError, ValueError, zipfile.BadZipFile) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 

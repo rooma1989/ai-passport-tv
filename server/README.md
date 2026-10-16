@@ -735,6 +735,11 @@ What the two switches change, and nothing else:
   bound device with nothing to play gets a still "no channels yet" frame
   (`server/no_channels.py`). `--channel` becomes optional.
 
+The front also serves the web flasher (`packaging/flash/`) at `/flash/` and the
+firmware the supervisor found at `/flash/firmware/` (`<data>/firmware/`, filled
+by `./run.sh --fetch-firmware`, else the image's copy); the relay gets
+`TV_FIRMWARE_MANIFEST` and `TV_FLASHER_URL=/flash/` for the admin Devices page.
+
 ## Scheduling, bounds and shutdown
 
 - Server time origin is CONFIG write completion plus 200 ms. Audio is scheduled

@@ -9,7 +9,9 @@
 !LICENSE
 !server/
 !packaging/help/
+!packaging/flash/
 !packaging/docker/NOTICE
+!packaging/docker/firmware/
 
 # Inside the allow-list, still never:
 server/builtin_channels.py

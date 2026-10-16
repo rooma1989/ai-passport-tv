@@ -154,6 +154,44 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse(bootstrap.nightly_due(self.layout, clock=lambda: early), "not before 3 o'clock")
 
 
+class FirmwareTests(unittest.TestCase):
+    def test_data_folder_first_then_the_unzipped_bundle_then_the_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = bootstrap.Layout(Path(tmp) / "data")
+            bootstrap.prepare(layout)
+            image = Path(tmp) / "image-firmware"
+            image.mkdir()
+            self.assertIsNone(bootstrap.firmware_dir(layout, image), "a folder without manifest.json is no firmware")
+            (image / "manifest.json").write_text("{}")
+            self.assertEqual(bootstrap.firmware_dir(layout, image), image)
+            unzipped = layout.firmware / "flash" / "firmware"
+            unzipped.mkdir(parents=True)
+            (unzipped / "manifest.json").write_text("{}")
+            self.assertEqual(bootstrap.firmware_dir(layout, image), unzipped)
+            (layout.firmware / "manifest.json").write_text("{}")
+            self.assertEqual(bootstrap.firmware_dir(layout, image), layout.firmware)
+
+    def test_relay_and_front_get_the_firmware(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = bootstrap.Layout(Path(tmp))
+            children = {c.name: c for c in build_children(layout, config.Config(), "ffmpeg", "", "", lambda _m: None,
+                                                          firmware=layout.firmware)}
+            bare = {c.name: c for c in build_children(layout, config.Config(), "ffmpeg", "", "", lambda _m: None)}
+        self.assertEqual(children["relay"].env["TV_FIRMWARE_MANIFEST"], str(layout.firmware / "manifest.json"))
+        self.assertEqual(children["relay"].env["TV_FLASHER_URL"], "/flash/")
+        front = children["front"].argv
+        self.assertEqual(front[front.index("--firmware-dir") + 1], str(layout.firmware))
+        self.assertTrue(Path(front[front.index("--flasher-dir") + 1], "index.html").is_file())
+        self.assertNotIn("TV_FIRMWARE_MANIFEST", bare["relay"].env)
+        self.assertNotIn("--firmware-dir", bare["front"].argv)
+
+    def test_banner_says_localhost_for_web_serial(self):
+        text = "\n".join(banner.flash_lines(8080, None, in_container=False))
+        self.assertIn("http://localhost:8080/flash/", text)
+        self.assertIn("--fetch-firmware", text)
+        self.assertNotIn("fetch-firmware", "\n".join(banner.flash_lines(8080, Path("/x"), in_container=False)))
+
+
 class BannerTests(unittest.TestCase):
     def test_setup_banner_has_the_address_code_and_qr(self):
         lines = banner.lines("192.168.1.20", 8080, "K7P4QX2M9A", "192.168.1.20", in_container=False)

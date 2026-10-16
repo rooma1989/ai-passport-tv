@@ -17,7 +17,9 @@ Three things are checked here, because each fails silently in the field:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import importlib.util
 import json
 import re
@@ -153,6 +155,67 @@ class ManifestToolTests(unittest.TestCase):
                      "firmware/Xingzhi-Cube-154-tv-public.bin", "firmware/FoloToy-AI-Passport-tv.bin"):
             self.assertTrue((site / name).is_file(), name)
         self.assertEqual(FM.main(["check", str(site / "firmware")]), 0)
+
+
+    def release_zip(self, extra: dict | None = None) -> Path:
+        """A release's xiaozhi-tv-flasher.zip, the way build-firmware.yml makes it."""
+        import zipfile
+        self.make("xingzhi-cube-154", fake_image(9))
+        self.make("ai-passport", fake_image(5))
+        FM.main(["merge", str(self.out)])
+        site = self.tmp / "zipped" / "flash"
+        FM.main(["bundle", str(self.out), "--out", str(site)])
+        archive = self.tmp / "xiaozhi-tv-flasher.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            for path in sorted(site.rglob("*")):
+                if path.is_file():
+                    bundle.write(path, path.relative_to(site.parent).as_posix())
+            for name, data in (extra or {}).items():
+                bundle.writestr(name, data)
+        return archive
+
+    def test_install_takes_only_the_checked_firmware(self) -> None:
+        archive = self.release_zip({"flash/firmware/../../evil.txt": b"x", "flash/firmware/.hidden": b"x"})
+        target = self.tmp / "data" / "firmware"
+        self.assertEqual(FM.main(["install", str(archive), str(target)]), 0)
+        self.assertEqual(sorted(p.name for p in target.iterdir()),
+                         sorted(["FoloToy-AI-Passport-tv.bin", "SHA256SUMS", "Xingzhi-Cube-154-tv-public.bin",
+                                 "manifest.json"]))
+        self.assertFalse((self.tmp / "evil.txt").exists())
+        self.assertEqual(FM.main(["check", str(target)]), 0)
+
+    def test_a_broken_bundle_keeps_the_old_firmware(self) -> None:
+        import zipfile
+        archive = self.release_zip()
+        target = self.tmp / "data" / "firmware"
+        FM.main(["install", str(archive), str(target)])
+        before = (target / "manifest.json").read_bytes()
+        broken = self.tmp / "broken.zip"
+        with zipfile.ZipFile(archive) as good, zipfile.ZipFile(broken, "w") as bad:
+            for info in good.infolist():
+                data = good.read(info)
+                if info.filename.endswith("Xingzhi-Cube-154-tv-public.bin"):
+                    data = data[:-1] + b"\0"
+                bad.writestr(info, data)
+        self.assertEqual(FM.main(["install", str(broken), str(target)]), 1)
+        self.assertEqual((target / "manifest.json").read_bytes(), before)
+        not_a_zip = self.tmp / "nope.zip"
+        not_a_zip.write_bytes(b"not a zip")
+        self.assertEqual(FM.main(["install", str(not_a_zip), str(target)]), 1)
+        self.assertEqual(sorted(p.name for p in target.parent.iterdir()), ["firmware"], "no staging left behind")
+
+
+    def test_run_sh_fetch_firmware_installs_into_the_data_folder(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from tools import launch
+        archive = self.release_zip()
+        data = self.tmp / "data"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(launch.fetch_firmware(data, archive.resolve().as_uri()), 0)
+        self.assertEqual(FM.main(["check", str(data / "firmware")]), 0)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(launch.fetch_firmware(data, (self.tmp / "missing.zip").resolve().as_uri()), 1)
+        self.assertTrue((data / "firmware" / "manifest.json").is_file(), "a failed download changes nothing")
 
 
 class PublicBuildCheckTests(unittest.TestCase):

@@ -33,7 +33,8 @@ FORBIDDEN_NAMES = re.compile(r"^(channels\.txt(\..*)?|relay-key|wifi-key|setup-c
                              r"cstone\.json|youtube-node\.json|av_private_config\.h|builtin_channels\.py|"
                              r".*\.pem|.*\.key|.*\.db|.*\.m3u8?)$")
 # What the Dockerfile copies, relative to the build context.
-COPIED = ("LICENSE", "packaging/docker/NOTICE", "server", "packaging/help")
+COPIED = ("LICENSE", "packaging/docker/NOTICE", "server", "packaging/help", "packaging/flash",
+          "packaging/docker/firmware")
 URL_RE = re.compile(r"https?://[^\s\"'|]+")
 SCAN_LIMIT = 8 * 1024 * 1024
 
