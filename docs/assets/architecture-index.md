@@ -154,6 +154,7 @@ first, since it is what a flashed device cannot renegotiate):
 | Creator channels, video sites, the phone page | `server/relay/`, `packaging/systemd/tv-relay.service`, `packaging/nginx/tv-relay.conf` |
 | Product website (static page, screen pictures) | `packaging/site/`, `tools/render_ui/site_shots.py`, `packaging/nginx/tv-site.conf`, [`docs/development/host-setup.md`](../development/host-setup.md#product-website) |
 | Production host: systemd units and drop-ins, install order, backups | [`docs/development/host-setup.md`](../development/host-setup.md), `packaging/systemd/` |
+| Self-hosting package: running the server at home (Docker image, NAS, first-run admin, several devices at once, web flasher) -- design only, not built | [`2026-10-15-self-hosting-design.md`](../superpowers/specs/2026-10-15-self-hosting-design.md) |
 | Phone remote, sign-in, groups, the device's channel list levels | `server/relay/web.py` + `assets/remote.html`, `server/channel_groups.py`, `main/ui_menu.c` |
 | Users, invites, device binding, guests, who may control which device | `server/tenancy/`, `server/relay/tenants.py`, `assets/join.html`, `docs/superpowers/specs/2026-10-12-multi-tenant-design.md` |
 | PC console, scan-to-sign-in, letting a phone sign in, sessions list | `server/relay/console.py`, `assets/console.html`, `assets/login.html`, `assets/scan.js`, `assets/phone.html`, `server/tenancy/phonelinks.py`, `server/tenancy/tickets.py` (+ `tests/test_relay_console.py`) |

@@ -139,6 +139,7 @@
 | UP 主频道、视频网站、手机网页 | `server/relay/`、`packaging/systemd/tv-relay.service`、`packaging/nginx/tv-relay.conf` |
 | 产品网站（静态页、屏幕图） | `packaging/site/`、`tools/render_ui/site_shots.py`、`packaging/nginx/tv-site.conf`、[`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md#产品网站) |
 | 生产主机：systemd unit 和 drop-in、安装顺序、备份 | [`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md)、`packaging/systemd/` |
+| 自建服务包：在家里跑服务器（Docker 镜像、NAS、首次运行建管理员、多台同时看、网页刷机）——只有设计，尚未实现 | [`2026-10-15-self-hosting-design.zh_CN.md`](../superpowers/specs/2026-10-15-self-hosting-design.zh_CN.md) |
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
 | 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
 | 电脑版、扫码登录、让手机登录、登录列表 | `server/relay/console.py`、`assets/console.html`、`assets/login.html`、`assets/scan.js`、`assets/phone.html`、`server/tenancy/phonelinks.py`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`） |
