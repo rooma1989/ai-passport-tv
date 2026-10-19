@@ -4,15 +4,27 @@ name: Build desktop client
 # 5.2 and phase P2c): the tray plus the core in a macOS .app/DMG (Apple silicon
 # and Intel), a Windows Inno Setup installer and portable zip, and a Linux
 # tarball. The core is built here from packaging/desktop/xiaozhi-tv-core.spec
-# (tools/build_core.py; its own checks are build-desktop-core.yml), with the
-# latest released firmware for the /flash/ page when a release has one. These
-# are unsigned test builds, not a release.
+# (tools/build_core.py; its own checks are build-desktop-core.yml), with firmware
+# for its /flash/ page.
+#
+# Pushes to desktop-* branches and manual runs build, test and package the
+# release set (an artifact) and publish nothing: a dry run of the release. A tag
+# push does the same with the tag's own firmware and version, then publishes the
+# installers and SHA256SUMS-desktop into the tag's GitHub release, beside the
+# firmware (build-firmware.yml) and the single-user server (build-server.yml).
 
 on:
   push:
     branches:
       - "desktop-*"
+    tags:
+      - "**"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Run on a tag only: publish to that tag's release. Off (default): dry run, nothing is published"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,8 +34,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The core's /flash/ page offers the firmware bundled with it. A tag build
+  # takes the same release's firmware, which build-firmware.yml is building at
+  # the same moment: this job waits for that release's xiaozhi-tv-flasher.zip
+  # (and its version) instead of shipping a client whose flasher offers other
+  # firmware than its release page. Elsewhere it takes the latest release's,
+  # best effort. One download for the four platforms.
+  firmware:
+    name: Firmware for the flasher page
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch and check the firmware bundle
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          if [ -n "$TAG" ]; then
+            python packaging/desktop/fetch_firmware.py --required --wait 3600 --expect-version "$TAG" \
+              --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/xiaozhi-tv-flasher.zip"
+          else
+            python packaging/desktop/fetch_firmware.py
+          fi
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-firmware
+          path: packaging/desktop/firmware/
+          if-no-files-found: ignore
+          retention-days: 7
+
   build:
     name: ${{ matrix.label }}
+    needs: firmware
     strategy:
       # One platform failing is a fact about that platform; the others still
       # answer whether the same change works there.
@@ -63,16 +112,35 @@ jobs:
       - name: Unit tests (desktop/)
         run: python packaging/desktop/unit_tests.py
 
-      # Best effort: a release may lack xiaozhi-tv-flasher.zip, and the client
-      # works without it (the data folder's firmware/ is used).
+      # The version the files are named after (desktop/__init__.py). On a tag it
+      # must be the tag without its "v", and the core is stamped with it (a
+      # checkout's core says "<version>.dev").
+      - name: Version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          if [ -n "$TAG" ]; then
+            python packaging/desktop/release.py version --tag "$TAG" --stamp
+          else
+            python packaging/desktop/release.py version
+          fi
+
+      # Absent when no release has a flasher bundle (not on a tag: the firmware
+      # job requires it there). The client works without it; the data folder's
+      # firmware/ is used.
       - name: Firmware for the flasher page
-        run: python packaging/desktop/fetch_firmware.py
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        continue-on-error: ${{ github.ref_type != 'tag' }}
+        with:
+          name: desktop-firmware
+          path: packaging/desktop/firmware
 
       - name: Build the core
         run: python tools/build_core.py
 
       - name: Build
-        run: python packaging/desktop/build.py --core-dir build-core/dist/xiaozhi-tv-core
+        run: python packaging/desktop/build.py --release --core-dir build-core/dist/xiaozhi-tv-core
 
       - name: Smoke test (bundle)
         run: python packaging/desktop/smoke.py
@@ -89,13 +157,22 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # The vendored Chinese wizard texts (packaging/desktop/ChineseSimplified.isl)
+          # are those of Inno Setup 6.7.1, the version on the runner image; a
+          # different one still compiles (missing texts fall back to English) but
+          # should get the matching file.
+          $pinned = "6.7.1"
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          if (-not (Test-Path $iscc)) { choco install innosetup --version=$pinned -y --no-progress | Out-Null }
           if (-not (Test-Path $iscc)) { Write-Output "::error::Inno Setup is not available on this runner"; exit 1 }
-          # Chinese wizard texts only if this Inno Setup ships them (see the .iss);
-          # nothing is downloaded for it. Say which languages there are.
-          $languages = (Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\Languages" -Filter *.isl | ForEach-Object { $_.BaseName }) -join ", "
-          Write-Output "::notice::Inno Setup $((Get-Item $iscc).VersionInfo.ProductVersion) languages: $languages"
+          $keys = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1",
+                  "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1"
+          $installed = (Get-ItemProperty $keys -ErrorAction SilentlyContinue | Select-Object -First 1).DisplayVersion
+          if ($installed -ne $pinned) {
+            Write-Output "::warning::Inno Setup '$installed' on this runner; ChineseSimplified.isl is pinned to $pinned (packaging/desktop/ChineseSimplified-SOURCE.txt)"
+          } else {
+            Write-Output "::notice::Inno Setup $installed; wizard in Simplified Chinese (default) and English"
+          }
           $version = python -c "import desktop; print(desktop.__version__)"
           $stage = Join-Path $PWD "build-desktop\stage\Xiaozhi TV"
           $out = Join-Path $PWD "build-desktop"
@@ -147,3 +224,82 @@ jobs:
             build-desktop/SHA256SUMS
           if-no-files-found: warn
           retention-days: 7
+
+  # Every platform's files, checked against the SHA256SUMS each was built with,
+  # with one SHA256SUMS-desktop: the release set. Made on every run so a branch
+  # push or a manual run shows exactly what a tag would publish.
+  release-set:
+    name: Release set
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # Not merged: every platform's artifact has its own SHA256SUMS.
+      - name: Download the platform builds
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: desktop-*
+          path: parts
+
+      - name: Check and collect
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          version="$(python3 packaging/desktop/release.py version ${TAG:+--tag "$TAG"})" || { echo "$version"; exit 1; }
+          python3 packaging/desktop/release.py collect parts --out release --version "$version"
+          ls -la release/
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::notice::dry run: release set for $version checked (see the desktop-release artifact); nothing published"
+          fi
+
+      - name: Upload the release set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    # A tag push, or a manual run on a tag with "publish" ticked. Only after
+    # every platform built and the set was checked: half a set of installers
+    # would look complete and not be.
+    if: github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)
+    needs: release-set
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # The firmware and server workflows publish to the same release for the
+    # same tag. A release is updated by reading it and writing it back, so two
+    # jobs doing that at once lose one side's files; concurrency groups are
+    # repository-wide, so the same group name makes them queue. cancel-in-progress
+    # must stay false: cancelling a release job halfway is how a published
+    # release ends up missing an asset.
+    concurrency:
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      # Only for the release text, which the three workflows share.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: packaging/release
+
+      - name: Download the release set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: desktop-release
+          path: release
+
+      - name: List what will be published
+        run: ls -la release/
+
+      - name: Publish to the tag's release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          name: "${{ github.ref_name }}"
+          # The page a user lands on. One file read by the firmware, server and
+          # desktop workflows, so whichever publishes last writes the same text.
+          body_path: packaging/release/release-body.txt
+          files: release/*
+          fail_on_unmatched_files: true

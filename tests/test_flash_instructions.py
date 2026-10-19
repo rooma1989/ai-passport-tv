@@ -259,15 +259,14 @@ class MacGatekeeperTests(unittest.TestCase):
     offers exactly one prominent button -- the one that throws the download
     away. Reported by a user who hit it.
 
-    Both READMEs and both release bodies, because the same paragraph is written
-    four times and they have to agree.
+    Both READMEs and the release text, because the same paragraph is written
+    in each and they have to agree.
     """
 
     PLACES = (
         "README.zh_CN.md",
         "README.md",
-        ".github/workflows/build-server.yml",
-        ".github/workflows/build-firmware.yml",
+        "packaging/release/release-body.txt",
     )
 
     # The step that was missing, and the one that sends the reader the wrong way.
@@ -306,24 +305,32 @@ class MacGatekeeperTests(unittest.TestCase):
                     'right-click the file, choose "Open"', text,
                     f"{place} still carries the right-click instruction")
 
-    def test_the_two_release_bodies_are_identical(self):
-        """Both workflows publish the same release; whichever runs second wins.
+    RELEASE_WORKFLOWS = (
+        ".github/workflows/build-server.yml",
+        ".github/workflows/build-firmware.yml",
+        ".github/workflows/build-desktop.yml",
+    )
 
-        They must therefore say the same thing, and the way they drift is one
-        being edited and the other not -- which is what nearly happened here.
+    def test_every_release_job_publishes_the_one_release_text(self):
+        """Three workflows publish into the same release; whichever runs last wins.
+
+        They used to carry two inline copies of the text, kept equal by a test;
+        now they read one file. The way that goes wrong is a release job without
+        a checkout: the action cannot read the file and publishes an empty page
+        (it happened once), so each job has to check the repository out too.
         """
         import re as _re
-
-        def body_of(name: str) -> str:
+        for name in self.RELEASE_WORKFLOWS:
             text = (ROOT / name).read_text(encoding="utf-8")
-            match = _re.search(r"^\s*body: \|\n(.*?)^\s*files:", text, _re.S | _re.M)
-            return _re.sub(r"^ {12}", "", match.group(1), flags=_re.M).rstrip()
-
-        self.assertEqual(
-            body_of(".github/workflows/build-server.yml"),
-            body_of(".github/workflows/build-firmware.yml"),
-            "the two release bodies differ; the job that runs second rewrites the "
-            "release, so one of them is wrong and nobody would know which")
+            with self.subTest(workflow=name):
+                job = text[text.index("  release:\n"):]
+                self.assertIn("body_path: packaging/release/release-body.txt", job)
+                self.assertNotRegex(job, r"(?m)^\s*body: ", "an inline body would differ from the file")
+                checkout = job.index("actions/checkout@")
+                self.assertLess(checkout, job.index("softprops/action-gh-release@"),
+                                "the release job must check out the text before publishing it")
+                self.assertTrue(_re.search(r"group: release-\$\{\{ github.ref_name \}\}", job))
+        self.assertTrue((ROOT / "packaging/release/release-body.txt").is_file())
 
 
 if __name__ == "__main__":

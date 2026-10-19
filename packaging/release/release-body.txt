@@ -1,0 +1,129 @@
+**简体中文** · [English](#xiaozhi-tv-start-with-the-pc-client)
+
+## 小智电视：先装电脑客户端
+
+把家里一台常开的 Windows 电脑或 Mac 变成小智电视的「电视台」：电脑在后台取片源、转码，经家里的 Wi-Fi 送到小电视；手机在家里用浏览器遥控。视频只在你家里的网络里走，不经过任何云服务器。
+
+| 你的电脑 | 下载 |
+| --- | --- |
+| Windows 10/11（64 位） | `XiaozhiTV-…-windows-x64-setup.exe`（安装包，推荐）；`XiaozhiTV-…-windows-x64.zip`（免安装版） |
+| Mac，Apple 芯片（M1、M2、M3、M4…） | `XiaozhiTV-…-macos-arm64.dmg` |
+| Mac，Intel 芯片 | `XiaozhiTV-…-macos-x86_64.dmg` |
+| Linux x86_64（附带支持，未验证） | `xiaozhi-tv-…-linux-x86_64.tar.gz`（看压缩包里的 `README-linux.txt`） |
+
+`SHA256SUMS-desktop` 是这几个文件的校验值。图文教程：<https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.zh_CN.md>
+
+装好以后：托盘（Windows 任务栏右下角）或菜单栏（Mac 屏幕顶端）出现一个小电视图标；第一次运行会自动下载视频组件 ffmpeg，浏览器自动打开设置页（设置码已经填好）。然后图标菜单 →「连接手机…」扫码登录手机遥控，→「设置一台电视…」给插在电脑上的小电视刷固件。
+
+**这个软件不带任何频道、直播流、播放列表、账号或 cookies**，要播什么由你自己添加。
+
+### 测试版没有签名：第一次打开时系统会拦一下
+
+本项目还没有购买代码签名证书，系统认不出发布者。不是文件坏了；担心的话先用 `SHA256SUMS-desktop` 核对下载。
+
+**Windows**（SmartScreen「Windows 已保护你的电脑」）：点「**更多信息**」，再点「**仍要运行**」；「用户账户控制」点「是」。安装包只给「专用网络」加防火墙规则：家里的 Wi-Fi 在 Windows 里被标成「公用网络」时小电视连不进来，托盘菜单会提醒你怎么改。
+
+**Mac**（「未打开"Xiaozhi TV"」）：
+
+1. 先把「Xiaozhi TV」从 DMG 窗口**拖进「应用程序」**，再从「应用程序」里打开。
+2. 被拦下时点 **完成**。**不要点「移到废纸篓」**，那是把程序删掉。
+3. 打开 **系统设置 → 隐私与安全性**，往下滑，找到「已阻止"Xiaozhi TV"以保护 Mac」，点 **仍要打开**，再确认一次并输入密码。
+4. 问能不能查找本地网络上的设备时，点「允许」。
+
+## 给小电视刷固件
+
+电脑客户端里已经带着这个版本的固件：图标菜单 →「设置一台电视…」用 **Chrome 或 Edge** 打开本机的网页刷机，页面自己认芯片。也可以下载镜像手动刷：
+
+| 设备 | 下载 |
+| --- | --- |
+| FoloToy AI Passport（ESP32-C3） | `FoloToy-AI-Passport-tv.bin`（**不要擦除**） |
+| 星智 Cube 1.54 / 小智 AI 4G 款（ESP32-S3） | `Xingzhi-Cube-154-tv-public.bin`（第一次刷先整片擦除，替换掉小智 AI 固件） |
+
+都是完整镜像（引导程序、分区表和应用程序），从地址 0 一次写完；都是公开版，不带任何服务器地址。
+
+```
+esptool.py --chip esp32c3 --port <你的串口> write_flash 0x0 FoloToy-AI-Passport-tv.bin
+```
+
+> AI Passport **不要使用 `erase-flash`**：那会擦掉设备里出厂写入的身份信息，擦掉找不回来。刷完后按住电源键约 2 秒关机，再按住约 0.5 秒开机（设备有电池，拔线不会重启它）。
+
+`manifest.json`、`manifest-*.json`、`SHA256SUMS` 是网页刷机用的清单和固件的校验值；`xiaozhi-tv-flasher.zip` 是刷机网页加固件的整套文件，解压后放到任何 https 网站的 `/flash/` 下就能用。
+
+## 进阶：NAS、Docker、命令行
+
+没有常开的电脑、家里有 NAS 或迷你主机的，可以用同一个核心的「家用服务器」跑法（Docker、群晖等的容器、直接用 Python），没有托盘，第一次设置要在日志里找设置码：<https://github.com/rooma1989/ai-passport-tv/blob/main/docs/selfhost/README.zh_CN.md>
+
+`tv-server-*` 是以前的单机版服务端（一个程序只服务一台设备，没有账号和手机登录），留给已经在用的人；新装请用上面的电脑客户端。
+
+## 这个测试版
+
+- 每个型号一次只服务一台小电视（一台星智 Cube 加一台 AI Passport 可以同时看）。
+- 只能在家里遥控（手机和电脑连同一个 Wi-Fi）；出门在外遥控是下一个测试版。
+- 笔记本带出门时：客户端只在你确认过的家庭网络上对外开放端口，别的网络上只对这台电脑开放。
+- 有小电视在看、或手机在「用手机听」时，客户端阻止电脑闲置睡眠；合上笔记本盖子仍然会睡。
+- 还没有在真的 Windows 电脑和 Intel Mac 上手动走过一遍（CI 里构建、启动、Windows 静默安装和卸载都通过了）。遇到问题请在 GitHub 上报告，托盘菜单里的「导出诊断信息…」可以附上（里面没有密码和令牌）。
+
+本项目开源（MIT 许可），仅供在您自己家中私人、非商业使用；不包含、不托管、不推荐任何频道、直播流、视频、账号或代理。
+
+---
+
+## Xiaozhi TV: start with the PC client
+
+Turns a Windows PC or Mac that stays on at home into the TV station for your Xiaozhi TVs: the computer fetches and transcodes the sources and sends them over the home Wi-Fi; phones at home are the remote. Video stays on your home network and never passes through a cloud server.
+
+| Your computer | Download |
+| --- | --- |
+| Windows 10/11 (64-bit) | `XiaozhiTV-…-windows-x64-setup.exe` (installer, recommended); `XiaozhiTV-…-windows-x64.zip` (portable) |
+| Mac with Apple silicon (M1, M2, M3, M4…) | `XiaozhiTV-…-macos-arm64.dmg` |
+| Mac with an Intel processor | `XiaozhiTV-…-macos-x86_64.dmg` |
+| Linux x86_64 (bonus, not verified) | `xiaozhi-tv-…-linux-x86_64.tar.gz` (see `README-linux.txt` inside) |
+
+`SHA256SUMS-desktop` has their checksums. Tutorial: <https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.md>
+
+After installing, a small TV icon appears in the notification area (Windows) or the menu bar (Mac). The first run downloads the video component ffmpeg and opens the setup page in the browser with the one-time code filled in. Then use the icon's menu: "连接手机…" (connect a phone) signs a phone in to the remote, "设置一台电视…" (set up a TV) flashes a device plugged into the computer.
+
+**The program ships no channels, streams, playlists, accounts or cookies**; you add what it plays.
+
+### Unsigned beta: the system stops it the first time
+
+The project has no code-signing certificate yet, so the system cannot name the publisher. The file is not damaged; to be sure, check it against `SHA256SUMS-desktop` first.
+
+**Windows** (SmartScreen, "Windows protected your PC"): click **More info**, then **Run anyway**; answer Yes to User Account Control. The installer opens the firewall on the **Private** profile only: if Windows marked your home Wi-Fi Public, devices cannot connect, and the tray menu says how to change it.
+
+**Mac** ("Xiaozhi TV" Not Opened):
+
+1. Drag "Xiaozhi TV" from the DMG window **into Applications** first, and open it from there.
+2. When it is blocked, click **Done**. **Do not click Move to Trash**, which deletes the program.
+3. Open **System Settings → Privacy & Security**, scroll down to "Xiaozhi TV was blocked to protect your Mac", click **Open Anyway**, confirm and enter your password.
+4. When asked whether it may find devices on your local network, click Allow.
+
+## Flashing the devices
+
+The PC client carries this release's firmware: its menu item "设置一台电视…" opens the local web flasher (**Chrome or Edge**), which recognises the chip. Or download an image and flash it by hand:
+
+| Device | Download |
+| --- | --- |
+| FoloToy AI Passport (ESP32-C3) | `FoloToy-AI-Passport-tv.bin` (**never erase**) |
+| Xingzhi Cube 1.54 / Xiaozhi AI 4G (ESP32-S3) | `Xingzhi-Cube-154-tv-public.bin` (erase the whole chip the first time, replacing the Xiaozhi AI firmware) |
+
+Both are complete images (bootloader, partition table, application) written at address 0, public builds with no server address in them.
+
+> **Never use `erase-flash` on an AI Passport**: it wipes the identity written at the factory, which cannot be recovered. After flashing, hold the power button about 2 s to switch it off, then about 0.5 s to switch it on (it has a battery; unplugging does not restart it).
+
+`manifest.json`, `manifest-*.json` and `SHA256SUMS` are the web flasher's manifests and the firmware checksums; `xiaozhi-tv-flasher.zip` is the flasher page with the firmware, ready to unpack under `/flash/` on any https site.
+
+## Advanced: NAS, Docker, command line
+
+Without a computer that stays on, the same core runs as a household server on a NAS or mini PC (Docker, NAS containers, plain Python), without a tray; the first setup takes the code from the log: <https://github.com/rooma1989/ai-passport-tv/blob/main/docs/selfhost/README.md>
+
+`tv-server-*` are the earlier single-user servers (one program serves one device, no accounts or phone sign-in), kept for people already using them; new installs should use the PC client above.
+
+## About this beta
+
+- One device per model at a time (a Xingzhi Cube and an AI Passport can watch together).
+- Phone remote at home only (phone and computer on the same Wi-Fi); control from outside the home is the next beta.
+- On a laptop away from home the client opens its ports only on the home network you confirmed; elsewhere they are open to this computer only.
+- While a device watches or a phone listens, the client keeps the computer from idle sleep; closing a laptop lid still sleeps.
+- Not yet tried by hand on a real Windows PC or an Intel Mac (CI builds, starts, and silently installs and uninstalls on Windows). Please report problems on GitHub; the tray's "导出诊断信息…" (export diagnostics) makes a zip you may attach (no passwords or tokens in it).
+
+Open source (MIT licence), for private, non-commercial use in your own home; it contains, hosts and recommends no channels, streams, videos, accounts or proxies.

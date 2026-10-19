@@ -62,6 +62,8 @@ FoloToy-AI-Passport*.bin
 build-server/
 build-server-work/
 build-core/
+# A local build of the PC client kept for trying it (docs/desktop/developer.md).
+dist-desktop/
 packaging/desktop/firmware/
 *_runs/
 *.bak*
