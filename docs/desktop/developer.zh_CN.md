@@ -78,14 +78,15 @@ zip 和给 Inno Setup 的 `stage/Xiaozhi TV/`，Linux 的 `xiaozhi-tv-<版本>-l
 
 ## CI
 
-`build-desktop.yml`：macos-14（arm64）、macos-15-intel、windows-latest、ubuntu-22.04。每个平台：托盘的单元测试、构建
-（替身核心）、冒烟测试（中文加空格的数据目录）、托盘图标检查（允许失败，Linux 跳过）；Windows 再编译安装包、静默安装、
+`build-desktop.yml`：macos-14（arm64）、macos-15-intel、windows-latest、ubuntu-22.04。每个平台：托盘的单元测试、取最新
+发布的固件给核心的刷机页（尽力而为；现在还没有哪次发布带这个包）、构建核心（`tools/build_core.py`，从 `desktop-core`
+合进来的）、构建客户端、冒烟测试（中文加空格的数据目录）、托盘图标检查（允许失败，Linux 跳过）；Windows 再编译安装包、静默安装、
 检查防火墙规则（只有专用网络、指向核心程序）、对装好的副本做冒烟测试、卸载并确认规则和文件都没了。失败原因都打成
-`::error::` 注解（看日志要登录，注解不用）。产物名字里带 `stub-core`，只保留 7 天。
+`::error::` 注解（看日志要登录，注解不用）。产物是未签名的测试构建，名字是 `desktop-<平台>`，保留 7 天。
 
 ## 还要做的
 
-- 合并 `desktop-core` 后把 CI 的 `--stub-core` 换成核心的构建（`--core-dir`），冒烟测试就会跑真核心。
+- 发布：打标签时把安装包和 `SHA256SUMS`（以后加 Ed25519 签名，P8）发到 GitHub Releases，核心里的固件取同一次发布的。
 - 在 CI 里从源码编 PyInstaller 引导程序（减少杀毒误报，5.12）；中文安装向导（Inno Setup 自带的语言里没有简体中文时
   要另外带一个 `ChineseSimplified.isl`）；Windows 程序的版本信息。
 - 真机：Windows 10/11 上的托盘和菜单、SmartScreen、Defender；Intel Mac；macOS 15 的「本地网络」询问。

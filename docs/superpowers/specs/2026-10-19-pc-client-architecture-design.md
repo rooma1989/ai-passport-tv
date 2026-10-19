@@ -1148,8 +1148,8 @@ keeps a URL fragment in a home-screen bookmark.
   with smoke tests, NOTICE. (1.5–2)
 
 **Status (2026-10-19): implemented on branch `desktop-tray`**, against the P1c
-contract of 5.13 and, until `desktop-core` is merged, a stand-in core
-(`desktop/devcore.py`). Code map, decisions and what is still open:
+contract of 5.13, with `desktop-core` merged in (CI builds the installers around
+the real core; `desktop/devcore.py` is a stand-in core for the tray's tests). Code map, decisions and what is still open:
 [`docs/desktop/developer.md`](../../desktop/developer.md). The tray holds the
 sleep assertion and registers the login item; trusted networks (5.11) wait for
 the core (the tray side and a proposed `network` status block are ready); the

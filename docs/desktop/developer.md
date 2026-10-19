@@ -99,19 +99,22 @@ Decided on the tray's side:
 ## CI
 
 `build-desktop.yml`: macos-14 (arm64), macos-15-intel, windows-latest,
-ubuntu-22.04. On each: the tray's unit tests, the build (stand-in core), the
+ubuntu-22.04. On each: the tray's unit tests, the latest released firmware for
+the core's flasher page (best effort; no release has the bundle yet), the core
+(`tools/build_core.py`, merged from `desktop-core`), the client build, the
 smoke test (a data folder with Chinese characters and a space), the tray icon
 check (allowed to fail; skipped on Linux); on Windows also compiling the
 installer, a silent install, the firewall rule (Private only, for the core
 program), a smoke test of the installed copy, and uninstalling with a check
 that the rule and the files are gone. Failures are `::error::` annotations
-(logs need a login, annotations do not). Artifacts carry `stub-core` in their
-name and are kept 7 days.
+(logs need a login, annotations do not). The artifacts are unsigned test
+builds named `desktop-<platform>`, kept 7 days.
 
 ## Still to do
 
-- After merging `desktop-core`, replace `--stub-core` in CI with the core's
-  build (`--core-dir`) so the smoke test runs the real core.
+- Release packaging: a tag-triggered job that publishes the installers with
+  `SHA256SUMS` (and later its Ed25519 signature, P8) and fills the core's
+  firmware from the same release.
 - Build the PyInstaller bootloader from source in CI (fewer antivirus false
   positives, 5.12); a Chinese installer wizard (a `ChineseSimplified.isl` must
   be shipped when Inno Setup has none); version information in the Windows

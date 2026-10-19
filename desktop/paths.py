@@ -111,8 +111,14 @@ def bundled_core(executable: Path | None = None, os_name: str | None = None) -> 
 
 
 def core_command(data: Path, env: dict | None = None) -> list[str]:
-    """The command line that starts the core for this data folder (design 5.1)."""
+    """The command line that starts the core (design 5.13, "Starting the core").
+
+    `--data` only when the folder was chosen explicitly (`--data` on the tray,
+    XIAOZHI_TV_DATA): the core then keeps its logs inside it, as the tray does.
+    Otherwise both use the per-OS folders of design 5.5 on their own.
+    """
     env = os.environ if env is None else env
+    data_args = ["--data", str(data)] if env.get(DATA_ENV) else []
     override = env.get(CORE_ENV, "").strip()
     if override:
         base = [override] if Path(override).exists() else override.split()
@@ -120,9 +126,8 @@ def core_command(data: Path, env: dict | None = None) -> list[str]:
         base = [str(bundled_core())]
     else:
         # From a checkout: the core is the selfhost supervisor in desktop mode.
-        base = [sys.executable, "-u", "-m", "server.selfhost"]
-        return base + ["--data", str(data), "--desktop"]
-    return base + ["selfhost", "--data", str(data), "--desktop"]
+        return [sys.executable, "-u", "-m", "server.selfhost", "--desktop"] + data_args
+    return base + ["selfhost", "--desktop"] + data_args
 
 
 def translocated(executable: Path | None = None) -> bool:

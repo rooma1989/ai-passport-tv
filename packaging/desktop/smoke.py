@@ -110,6 +110,8 @@ def tray_only(tray: Path, tmp: Path) -> None:
     print_log(data)
     if result.returncode != 0:
         error(f"--tray-check failed (exit {result.returncode})")
+    else:
+        say("::notice::tray icon check: PASS (pystray inside the frozen app, menu drawn from the core's status)")
 
 
 def check_mac(tray_check: bool) -> None:
@@ -190,7 +192,8 @@ def main() -> int:
     if errors:
         say(f"desktop smoke: FAIL ({len(errors)} problem(s))")
         return 1
-    say("desktop smoke: PASS")
+    what = "tray icon" if TRAY_CHECK_ONLY else "layout, --smoke-test (core, control API, console link, single instance, stop)"
+    say(f"::notice::desktop smoke on {sys.platform}: PASS ({what})")
     return 0
 
 

@@ -898,8 +898,8 @@ Windows 上 `socket.share` 交接；典型家庭的 `/api/state` 有多大；iOS
 - P2b. 阻止睡眠、自启动、网络类型检查、受信任网络。（1–1.5）
 - P2c. `.app` + DMG（arm64、x86_64）、Inno Setup、Linux 压缩包、带冒烟测试的 CI 流程、NOTICE。（1.5–2）
 
-**状态（2026-10-19）：在分支 `desktop-tray` 上实现**，按 5.13 节的 P1c 约定；`desktop-core` 合进来之前用替身核心
-（`desktop/devcore.py`）。代码在哪、定下的事和还没做的：[`docs/desktop/developer.zh_CN.md`](../../desktop/developer.zh_CN.md)。
+**状态（2026-10-19）：在分支 `desktop-tray` 上实现**，按 5.13 节的 P1c 约定，已合入 `desktop-core`（CI 用真核心构建
+安装包；`desktop/devcore.py` 是给托盘测试用的替身核心）。代码在哪、定下的事和还没做的：[`docs/desktop/developer.zh_CN.md`](../../desktop/developer.zh_CN.md)。
 睡眠断言由托盘拿，登录启动项由托盘注册；受信任的网络（5.11）要等核心（托盘这边和提议的 `network` 状态字段已经准备好）；
 核心和托盘是两个 onedir（macOS 上核心放在 `Contents/Resources/core/` 而不是 `Contents/MacOS/`，为了代码签名）。
 

@@ -3,10 +3,10 @@ name: Build desktop client
 # The PC client (design docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md,
 # 5.2 and phase P2c): the tray plus the core in a macOS .app/DMG (Apple silicon
 # and Intel), a Windows Inno Setup installer and portable zip, and a Linux
-# tarball. Until branch desktop-core (P1) is merged, the bundled core is the
-# stand-in of desktop/devcore.py (--stub-core): these builds exercise the tray,
-# the bundle layout and the installers, and must not be given to users -- the
-# artifacts say "stub-core" in their name.
+# tarball. The core is built here from packaging/desktop/xiaozhi-tv-core.spec
+# (tools/build_core.py; its own checks are build-desktop-core.yml), with the
+# latest released firmware for the /flash/ page when a release has one. These
+# are unsigned test builds, not a release.
 
 on:
   push:
@@ -45,6 +45,7 @@ jobs:
             label: Linux x86_64
             slug: linux-x86_64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     env:
       PYTHONUTF8: "1"
     steps:
@@ -62,8 +63,16 @@ jobs:
       - name: Unit tests (desktop/)
         run: python packaging/desktop/unit_tests.py
 
+      # Best effort: no release has xiaozhi-tv-flasher.zip yet, and the client
+      # works without it (the data folder's firmware/ is used).
+      - name: Firmware for the flasher page
+        run: python packaging/desktop/fetch_firmware.py
+
+      - name: Build the core
+        run: python tools/build_core.py
+
       - name: Build
-        run: python packaging/desktop/build.py --stub-core
+        run: python packaging/desktop/build.py --core-dir build-core/dist/xiaozhi-tv-core
 
       - name: Smoke test (bundle)
         run: python packaging/desktop/smoke.py
@@ -125,11 +134,11 @@ jobs:
           # the last native exit code as the step's.
           exit 0
 
-      - name: Upload (stub core, not for users)
+      - name: Upload (unsigned test build)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: desktop-${{ matrix.slug }}-stub-core
+          name: desktop-${{ matrix.slug }}
           path: |
             build-desktop/*.dmg
             build-desktop/*.zip

@@ -639,10 +639,13 @@ class PathsTest(unittest.TestCase):
 
     def test_core_command(self):
         data = Path("/d")
-        command = paths.core_command(data, env={})
-        self.assertEqual(command[-5:], ["-m", "server.selfhost", "--data", str(data), "--desktop"])
-        self.assertEqual(paths.core_command(data, env={paths.CORE_ENV: "my-core --flag"}),
-                         ["my-core", "--flag", "selfhost", "--data", str(data), "--desktop"])
+        # The default folder: the core finds the same one itself (and keeps its logs per OS).
+        self.assertEqual(paths.core_command(data, env={})[-3:], ["-m", "server.selfhost", "--desktop"])
+        explicit = {paths.DATA_ENV: str(data)}
+        self.assertEqual(paths.core_command(data, env=explicit)[-5:],
+                         ["-m", "server.selfhost", "--desktop", "--data", str(data)])
+        self.assertEqual(paths.core_command(data, env=dict(explicit, **{paths.CORE_ENV: "my-core --flag"})),
+                         ["my-core", "--flag", "selfhost", "--desktop", "--data", str(data)])
 
 
 # ----------------------------------------------------------------------------- core process

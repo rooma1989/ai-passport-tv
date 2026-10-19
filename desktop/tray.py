@@ -620,7 +620,14 @@ def build_app(args, data: Path, logs_dir: Path, opener=open_url) -> App:
     else:
         def command():
             return paths.core_command(data)
-    core = CoreProcess(command, log=log)
+    env = None
+    if not paths.is_frozen():
+        # From a checkout `-m server.selfhost` / `-m desktop.devcore` need the
+        # repository on the path whatever folder the tray was started from.
+        root = str(Path(__file__).resolve().parents[1])
+        env = dict(os.environ, PYTHONPATH=root + (os.pathsep + os.environ["PYTHONPATH"]
+                                                  if os.environ.get("PYTHONPATH") else ""))
+    core = CoreProcess(command, env=env, log=log)
     # A check run (CI, --tray-check) changes nothing on the machine: no sleep
     # assertion, no login item, no PowerShell.
     check = args.smoke_test or bool(args.tray_check)
@@ -658,10 +665,15 @@ def smoke_test(app: App, timeout: float, data: Path) -> int:
     items = menu.build(app.state)
     if not {menu.OPEN_CONSOLE, menu.QUIT, menu.RESTART} <= menu.actions_in(items):
         return fail("menu incomplete")
-    try:
-        link = app.client.console_link()
-    except (ControlError, ControlUnavailable) as error:
-        return fail(f"console-link: {error}")
+    # The core answers 503 not_ready until its web front is up: ask until the deadline.
+    while True:
+        try:
+            link = app.client.console_link()
+            break
+        except (ControlError, ControlUnavailable) as error:
+            if time.monotonic() > deadline:
+                return fail(f"console-link: {error}")
+            time.sleep(1.0)
     if not link.startswith("http://"):
         return fail("console-link is not a local http URL")
     log("smoke test: console-link ok")
