@@ -63,7 +63,7 @@ jobs:
       - name: Unit tests (desktop/)
         run: python packaging/desktop/unit_tests.py
 
-      # Best effort: no release has xiaozhi-tv-flasher.zip yet, and the client
+      # Best effort: a release may lack xiaozhi-tv-flasher.zip, and the client
       # works without it (the data folder's firmware/ is used).
       - name: Firmware for the flasher page
         run: python packaging/desktop/fetch_firmware.py

@@ -100,7 +100,7 @@ Decided on the tray's side:
 
 `build-desktop.yml`: macos-14 (arm64), macos-15-intel, windows-latest,
 ubuntu-22.04. On each: the tray's unit tests, the latest released firmware for
-the core's flasher page (best effort; no release has the bundle yet), the core
+the core's flasher page (best effort; v0.1.0-beta's bundle today), the core
 (`tools/build_core.py`, merged from `desktop-core`), the client build, the
 smoke test (a data folder with Chinese characters and a space), the tray icon
 check (allowed to fail; skipped on Linux); on Windows also compiling the

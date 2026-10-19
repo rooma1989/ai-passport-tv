@@ -9,7 +9,7 @@ SHA256SUMS, sizes, hashes) before it replaces anything.
 
     python3 packaging/desktop/fetch_firmware.py [--url <xiaozhi-tv-flasher.zip URL>]
 
-Exit 0 with a notice when no release has the bundle yet: the client then shows
+Exit 0 with a notice when the download fails or no release has the bundle: the client then shows
 "no firmware" on its flasher page and the data folder's firmware/ still works.
 """
 
