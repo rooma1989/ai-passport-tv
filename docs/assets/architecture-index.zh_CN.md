@@ -141,6 +141,7 @@
 | 生产主机：systemd unit 和 drop-in、安装顺序、备份 | [`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md)、`packaging/systemd/` |
 | 自建服务包：在家里跑服务器（Docker 镜像、NAS、首次运行建管理员、多台同时看、网页刷机）——只有设计，尚未实现 | [`2026-10-15-self-hosting-design.zh_CN.md`](../superpowers/specs/2026-10-15-self-hosting-design.zh_CN.md) |
 | 电脑客户端（Windows/macOS 托盘程序，包着自建核心）、给在外面的手机用的云端遥控通道（中继）、带有效期和限额的可选服务器账号——只有设计，取代自建服务包的方向 | [`2026-10-19-pc-client-architecture-design.zh_CN.md`](../superpowers/specs/2026-10-19-pc-client-architecture-design.zh_CN.md) |
+| 电脑客户端的托盘和安装包：托盘菜单、第一次运行、只开一个、阻止睡眠、登录时启动、DMG / Inno Setup / Linux 压缩包（阶段 P2） | `desktop/`（+ `tests/test_desktop_tray.py`）、`packaging/desktop/`、`.github/workflows/build-desktop.yml`、[`docs/desktop/developer.zh_CN.md`](../desktop/developer.zh_CN.md) |
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
 | 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
 | 电脑版、扫码登录、让手机登录、登录列表 | `server/relay/console.py`、`assets/console.html`、`assets/login.html`、`assets/scan.js`、`assets/phone.html`、`server/tenancy/phonelinks.py`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`） |

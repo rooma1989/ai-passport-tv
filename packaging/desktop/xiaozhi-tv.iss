@@ -50,7 +50,11 @@ CloseApplications=yes
 RestartApplications=no
 
 [Languages]
-#ifexist "ChineseSimplified.isl"
+; Chinese wizard texts when this Inno Setup has them (its Languages folder), or
+; when a ChineseSimplified.isl was put beside this script; English otherwise.
+#if FileExists(AddBackslash(CompilerPath) + "Languages\ChineseSimplified.isl")
+Name: "zh"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+#elif FileExists(AddBackslash(SourcePath) + "ChineseSimplified.isl")
 Name: "zh"; MessagesFile: "ChineseSimplified.isl"
 #endif
 Name: "en"; MessagesFile: "compiler:Default.isl"

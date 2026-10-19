@@ -83,22 +83,14 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
           if (-not (Test-Path $iscc)) { Write-Output "::error::Inno Setup is not available on this runner"; exit 1 }
-          # Chinese wizard texts: Inno Setup's unofficial translation. Best effort;
-          # without it the wizard is in English.
-          try {
-            Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl" -OutFile packaging\desktop\ChineseSimplified.isl
-          } catch {
-            Write-Output "::warning::Chinese installer texts not downloaded: $($_.Exception.Message)"
-          }
+          # Chinese wizard texts only if this Inno Setup ships them (see the .iss);
+          # nothing is downloaded for it. Say which languages there are.
+          $languages = (Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\Languages" -Filter *.isl | ForEach-Object { $_.BaseName }) -join ", "
+          Write-Output "::notice::Inno Setup $((Get-Item $iscc).VersionInfo.ProductVersion) languages: $languages"
           $version = python -c "import desktop; print(desktop.__version__)"
           $stage = Join-Path $PWD "build-desktop\stage\Xiaozhi TV"
           $out = Join-Path $PWD "build-desktop"
           & $iscc "/DSourceDir=$stage" "/DAppVersion=$version" "/DOutputDir=$out" /Qp packaging\desktop\xiaozhi-tv.iss
-          if ($LASTEXITCODE -ne 0 -and (Test-Path packaging\desktop\ChineseSimplified.isl)) {
-            Write-Output "::warning::compiling with the Chinese texts failed; retrying in English"
-            Remove-Item packaging\desktop\ChineseSimplified.isl
-            & $iscc "/DSourceDir=$stage" "/DAppVersion=$version" "/DOutputDir=$out" /Qp packaging\desktop\xiaozhi-tv.iss
-          }
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::ISCC failed with exit code $LASTEXITCODE"; exit 1 }
           $setup = Get-ChildItem build-desktop\XiaozhiTV-*-windows-x64-setup.exe | Select-Object -First 1
           $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
@@ -128,7 +120,10 @@ jobs:
           if (Test-Path "$dir\XiaozhiTV.exe") { Write-Output "::error::uninstall left $dir\XiaozhiTV.exe (exit $($u.ExitCode))"; exit 1 }
           $after = netsh advfirewall firewall show rule name="Xiaozhi TV" | Out-String
           if ($after -match "Profiles:") { Write-Output "::error::uninstall left the firewall rule"; exit 1 }
-          Write-Output "install / smoke / uninstall: PASS"
+          Write-Output "::notice::Windows installer: install, firewall rule (Private only), smoke test of the installed copy, uninstall: PASS"
+          # netsh's "no rule matches" above exits 1, and the runner would take
+          # the last native exit code as the step's.
+          exit 0
 
       - name: Upload (stub core, not for users)
         if: always()

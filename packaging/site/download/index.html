@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1915">
+<meta name="color-scheme" content="dark">
+<title>下载电脑客户端 · 小智电视</title>
+<meta name="description" content="小智电视电脑客户端：装在家里的 Windows 电脑或 Mac 上，把视频送到家里的小电视。测试版，免费，开源。">
+<link rel="icon" type="image/png" href="../assets/icon-180.png">
+<style>
+  /* 和首页（../index.html）同一套颜色和字体。 */
+  :root {
+    --ink: #1c1915; --side: #161310; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
+    --dim: #a09482; --faint: #8a7f6e; --red: #d2553f; --red-hi: #e0664f; --amber: #ffb547; --amber-soft: #f3dfb4;
+    --hover: #231f19;
+    --serif: "Songti SC", "STSong", "Noto Serif SC", "Source Han Serif SC", serif;
+    --mono: "Menlo", "SF Mono", ui-monospace, "Consolas", monospace;
+    --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    --gutter: 16px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--ink); color: var(--paper); font: 15px/1.7 var(--sans); }
+  a { color: inherit; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 var(--gutter); }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+  .bar { border-bottom: 1px solid var(--rule); background: var(--side); }
+  .bar .wrap { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+  .brand { display: flex; align-items: baseline; gap: 10px; text-decoration: none; }
+  .brand b { font: 700 20px/1 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
+  .brand span { font: 11px var(--mono); letter-spacing: 2px; color: var(--red); }
+  .bar nav a { text-decoration: none; color: var(--dim); font: 15px var(--serif); margin-left: 18px; }
+  .bar nav a:hover { color: var(--paper-hi); }
+  h1 { margin: 34px 0 6px; font: 700 34px/1.25 var(--serif); letter-spacing: 6px; color: var(--paper-hi); }
+  .pitch { margin: 0; font: 18px/1.6 var(--serif); color: var(--amber-soft); }
+  .beta { margin: 18px 0 0; padding: 12px 14px; border: 1px solid var(--rule); border-left: 3px solid var(--amber);
+          font-size: 14px; color: var(--paper); background: var(--hover); }
+  section { padding: 34px 0; border-bottom: 1px solid var(--rule); }
+  h2 { margin: 0 0 18px; font: 600 24px/1.3 var(--serif); letter-spacing: 3px; color: var(--paper-hi); }
+  h3 { margin: 0 0 6px; font: 600 18px/1.4 var(--serif); color: var(--paper-hi); }
+  .grid { display: grid; gap: 14px; }
+  .os { border: 1px solid var(--rule); padding: 18px; }
+  .os.mine { border-color: var(--red); }
+  .os .tag { display: none; font: 12px var(--mono); letter-spacing: 2px; color: var(--red); }
+  .os.mine .tag { display: inline; }
+  .os p { margin: 6px 0; font-size: 14px; color: var(--dim); }
+  .btn { display: inline-block; margin: 8px 8px 0 0; padding: 9px 18px; font: 16px/1.2 var(--serif); letter-spacing: 2px;
+         text-decoration: none; border: 1px solid var(--red); background: var(--red); color: #fff4e6; }
+  .btn:hover { background: var(--red-hi); border-color: var(--red-hi); }
+  .btn.line { background: none; color: var(--paper-hi); border-color: var(--rule); }
+  .btn.line:hover { border-color: var(--dim); background: var(--hover); }
+  code { font: 13px var(--mono); color: var(--amber); word-break: break-all; }
+  ol { margin: 0; padding-left: 1.4em; }
+  ol li { margin: 6px 0; }
+  .todo { color: var(--faint); font-size: 13px; }
+  footer { padding: 28px 0 calc(36px + env(safe-area-inset-bottom)); background: var(--side); font-size: 13px; color: var(--faint); }
+  footer a { color: var(--dim); }
+  @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } h1 { font-size: 40px; } }
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="wrap">
+    <a class="brand" href="../"><b>小智电视</b><span>XIAOZHI TV</span></a>
+    <nav aria-label="主导航"><a href="../">首页</a><a href="#tutorial">教程</a></nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>电脑客户端</h1>
+  <p class="pitch">装在家里一台常开的电脑上，小电视的节目就从这台电脑来。</p>
+  <p class="beta"><b>0.2.0 测试版。</b>每个型号一次放一台小电视，在家里用手机遥控。安装包没有签名，第一次打开时 Windows 和 Mac
+    都会警告，下面写了怎么点。软件不带任何频道、直播源或账号，要看什么由你自己添加。</p>
+
+  <section id="downloads" aria-labelledby="dl">
+    <h2 id="dl">下载</h2>
+    <div class="grid">
+      <div class="os" data-os="windows">
+        <h3>Windows 10 / 11 <span class="tag">· 你的电脑</span></h3>
+        <p>64 位。装到「Program Files」，自动加上只在家庭（专用）网络生效的防火墙规则。</p>
+        <a class="btn" data-file="windows-x64-setup.exe" href="#">下载安装包</a>
+        <a class="btn line" data-file="windows-x64.zip" href="#">免安装版 zip</a>
+      </div>
+      <div class="os" data-os="mac-arm">
+        <h3>Mac · Apple 芯片 <span class="tag">· 你的电脑</span></h3>
+        <p>M1、M2、M3、M4…，macOS 12 以上。</p>
+        <a class="btn" data-file="macos-arm64.dmg" href="#">下载 DMG</a>
+      </div>
+      <div class="os" data-os="mac-intel">
+        <h3>Mac · Intel 芯片 <span class="tag">· 你的电脑</span></h3>
+        <p>macOS 12 以上。不确定是哪种：苹果菜单 →「关于本机」，写「芯片 Apple」的是 Apple 芯片，写「处理器 Intel」的是 Intel。</p>
+        <a class="btn" data-file="macos-x86_64.dmg" href="#">下载 DMG</a>
+      </div>
+      <div class="os" data-os="linux">
+        <h3>Linux（附带支持） <span class="tag">· 你的电脑</span></h3>
+        <p>x86_64 的压缩包，没有托盘的机器加 <code>--no-tray</code>；NAS 和服务器也可以用 Docker（见教程最后的「进阶」）。</p>
+        <a class="btn line" data-file="linux-x86_64.tar.gz" href="#">下载 tar.gz</a>
+      </div>
+    </div>
+    <p>所有文件和校验值（<code>SHA256SUMS</code>）都在 <a id="release" href="https://github.com/rooma1989/ai-passport-tv/releases">GitHub 发布页</a>。
+      <span class="todo">国内镜像：TODO（发布时补上地址）。</span></p>
+  </section>
+
+  <section id="tutorial" aria-labelledby="tu">
+    <h2 id="tu">装好以后</h2>
+    <div class="grid">
+      <div>
+        <h3>Windows 提示「Windows 已保护你的电脑」</h3>
+        <ol><li>点「更多信息」。</li><li>点「仍要运行」。</li><li>「用户账户控制」点「是」，按向导装完。</li></ol>
+        <p class="todo">截图 TODO</p>
+      </div>
+      <div>
+        <h3>Mac 提示「未打开"Xiaozhi TV"」</h3>
+        <ol><li>先把「Xiaozhi TV」从 DMG 窗口<b>拖进「应用程序」</b>，再从「应用程序」里打开。</li>
+          <li>被拦下时点「完成」（不要点「移到废纸篓」）。</li>
+          <li>系统设置 → 隐私与安全性 → 往下滑，点「仍要打开」，再确认并输入密码。</li>
+          <li>问能不能查找本地网络上的设备时，点「允许」。</li></ol>
+        <p class="todo">截图 TODO</p>
+      </div>
+      <div>
+        <h3>第一次运行</h3>
+        <ol><li>任务栏或菜单栏出现小电视图标；第一次会自动下载视频组件，进度在图标的菜单里。</li>
+          <li>浏览器自动打开设置页，设置码已经填好：填名字，成为管理员。</li></ol>
+      </div>
+      <div>
+        <h3>连接手机、设置小电视</h3>
+        <ol><li>图标菜单 →「连接手机…」，手机相机扫二维码登录，加到主屏幕。</li>
+          <li>图标菜单 →「设置一台电视…」，用 Chrome 或 Edge 给插在电脑上的小电视刷固件。</li>
+          <li>小电视用声波配网（服务器地址已经填好），然后用手机扫码绑定。</li></ol>
+      </div>
+    </div>
+    <p><a class="btn line" href="https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.zh_CN.md">完整图文教程</a></p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    本项目开源（MIT 许可），仅供在您自己家中私人、非商业使用；不包含、不托管、不推荐任何频道、直播流、视频、账号或代理。
+    · <a href="../">小智电视首页</a>
+  </div>
+</footer>
+
+<script>
+  // 发布的版本：发布流程（或手动）改这一行。文件名规则见 docs/desktop/README.zh_CN.md。
+  const VERSION = "0.2.0-beta";
+  const BASE = "https://github.com/rooma1989/ai-passport-tv/releases/download/v" + VERSION + "/";
+  document.querySelectorAll("a[data-file]").forEach((a) => {
+    const suffix = a.dataset.file;
+    a.href = BASE + (suffix.startsWith("linux") ? "xiaozhi-tv-" : "XiaozhiTV-") + VERSION + "-" + suffix;
+  });
+  document.getElementById("release").href = "https://github.com/rooma1989/ai-passport-tv/releases/tag/v" + VERSION;
+
+  // 猜一下访问者的电脑，把那一格标出来（猜不准也没关系，四个都在）。
+  (async () => {
+    let os = "";
+    const ua = navigator.userAgent;
+    if (/Windows/.test(ua)) os = "windows";
+    else if (/Macintosh|Mac OS X/.test(ua)) {
+      os = "mac-intel";
+      try {
+        const data = navigator.userAgentData && await navigator.userAgentData.getHighEntropyValues(["architecture"]);
+        if (data && data.architecture === "arm") os = "mac-arm";
+      } catch (e) { /* Safari 不告诉网页芯片，两个都留着 */ }
+      if (!navigator.userAgentData) os = "";
+    } else if (/Linux/.test(ua) && !/Android/.test(ua)) os = "linux";
+    if (os) {
+      const card = document.querySelector('.os[data-os="' + os + '"]');
+      if (card) { card.classList.add("mine"); card.parentNode.prepend(card); }
+    }
+  })();
+</script>
+</body>
+</html>

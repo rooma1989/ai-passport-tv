@@ -830,6 +830,11 @@ Windows 上 `socket.share` 交接；典型家庭的 `/api/state` 有多大；iOS
 - P2b. 阻止睡眠、自启动、网络类型检查、受信任网络。（1–1.5）
 - P2c. `.app` + DMG（arm64、x86_64）、Inno Setup、Linux 压缩包、带冒烟测试的 CI 流程、NOTICE。（1.5–2）
 
+**状态（2026-10-19）：在分支 `desktop-tray` 上实现**，按 5.13 节的 P1c 约定；`desktop-core` 合进来之前用替身核心
+（`desktop/devcore.py`）。代码在哪、定下的事和还没做的：[`docs/desktop/developer.zh_CN.md`](../../desktop/developer.zh_CN.md)。
+睡眠断言由托盘拿，登录启动项由托盘注册；受信任的网络（5.11）要等核心（托盘这边和提议的 `network` 状态字段已经准备好）；
+核心和托盘是两个 onedir（macOS 上核心放在 `Contents/Resources/core/` 而不是 `Contents/MacOS/`，为了代码签名）。
+
 ### P3 —— ffmpeg（1–2.5）
 
 - P3a. 测试版：固定哈希下载加镜像，托盘里显示进度。（0.5）
@@ -868,6 +873,10 @@ Windows 上 `socket.share` 交接；典型家庭的 `/api/state` 有多大；iOS
 
 每个系统的下载页、带截图的 Gatekeeper 和 SmartScreen 步骤、第一次运行、手机、在外面遥控和它的隐私说明，Docker 那几页
 挪到「进阶」。
+
+**状态（2026-10-19），`v0.2.0-beta` 的部分：** 教程 [`docs/desktop/`](../../desktop/README.zh_CN.md)（中文优先：下载、
+Gatekeeper 和 SmartScreen、第一次运行、手机、刷机和绑定、托盘菜单、数据和卸载；截图还是 TODO）和下载页
+`packaging/site/download/index.html`；`docs/selfhost/` 标成「进阶」。在外面遥控和它的隐私说明随 P5 一起。
 
 ### P11 —— 真机加固测试版（2–3）
 
