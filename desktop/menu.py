@@ -91,12 +91,19 @@ def problems(state: TrayState) -> list[str]:
             out.append("视频组件下载失败" + (f"：{ff.error}" if ff.error else ""))
         for problem in status.problems[:MAX_PROBLEMS]:
             out.append(problem.message)
+        # The core says these itself (problems network_away / network_public);
+        # the tray's own wording is only for a core that does not.
         network = status.network
-        if network is not None and network.lan_open is False:
+        if network is not None and network.id and network.lan_open is False and not core_says(state, "network_away"):
             out.append("不在家里的网络上：小电视和手机暂时连不进来")
-    if state.windows_public:
+    if state.windows_public and not core_says(state, "network_public"):
         out.append(f"「{state.windows_public}」被标成了公用网络，小电视连不进来")
     return out
+
+
+def core_says(state: TrayState, code: str) -> bool:
+    """The core reports this problem itself."""
+    return state.status is not None and any(p.code == code for p in state.status.problems)
 
 
 def headline(state: TrayState) -> str:
@@ -141,6 +148,8 @@ def _devices(status: Status) -> tuple[Item, ...]:
     for device in status.devices:
         if device.watching:
             what = f"{device.channel}（在看）" if device.channel else "在看"
+            if device.listening:
+                what += "，手机在听"
         else:
             what = "在线" if device.online else "离线"
         items.append(Item(f"{device.name} —— {what}", enabled=False))
@@ -180,7 +189,7 @@ def build(state: TrayState) -> tuple[Item, ...]:
         items.append(Item(f"设备（{len(status.devices)}）", submenu=_devices(status)))
     if network_trust_needed(state):
         items.append(Item("这是我家的网络（允许小电视和手机连进来）", TRUST_NETWORK))
-    if state.windows_public:
+    if state.windows_public or core_says(state, "network_public"):
         items.append(Item("怎么把家里的网络改成「专用」…", NETWORK_HELP))
     items.append(Item("不让电脑睡眠（小智电视运行时一直保持唤醒）", KEEP_AWAKE,
                       checked=state.keep_awake == "always"))

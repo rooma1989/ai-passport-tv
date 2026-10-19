@@ -11,7 +11,9 @@ does that, from a checkout or from the frozen build):
 - the one-time console link through the relay: loopback only, once, never as a phone link,
   never through the public port;
 - the ASR client over loopback TCP; the ffmpeg download's mirrors and its state for the tray;
-- children that end with the supervisor, however it ends; the stdin pipe the tray holds.
+- children that end with the supervisor, however it ends; the stdin pipe the tray holds;
+- trusted networks (5.11): the LAN ports only on the home network, the tray's answer, the children
+  rebuilt on the new address; a phone listening ("listening") in the status.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from server import front
-from server.selfhost import bootstrap, config, control, desktop, diagnostics, supervisor
+from server.selfhost import bootstrap, config, control, desktop, diagnostics, network, supervisor
 from server.selfhost.__main__ import build_children
 from server.voice import asr
 from tools import datadir, ffmpeg_fetch, subcommands
@@ -284,8 +286,8 @@ class ControlApiTests(unittest.TestCase):
 @NEEDS_311
 class StatusAndDiagnosticsTests(unittest.TestCase):
     CONTRACT = {"ok", "api", "version", "pid", "started", "state", "problems", "data_dir", "logs_dir", "bind",
-                "ports", "lan_url", "local_url", "setup_pending", "children", "devices", "watching", "ffmpeg",
-                "voice", "hub", "update", "settings"}
+                "ports", "lan_url", "local_url", "setup_pending", "children", "devices", "watching", "listening",
+                "network", "ffmpeg", "voice", "hub", "update", "settings"}
 
     def make(self, root: Path) -> desktop.Desktop:
         layout = bootstrap.Layout(root)
@@ -314,6 +316,34 @@ class StatusAndDiagnosticsTests(unittest.TestCase):
         self.assertEqual(status["state"], "error", "no ffmpeg yet")
         codes = [p["code"] for p in status["problems"]]
         self.assertEqual(codes, ["ffmpeg_missing", "lan_port_moved"])
+
+    def test_listening_and_network_in_the_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self.make(Path(tmp))
+            with mock.patch.object(desktop, "devices", return_value=[
+                    {"id": "a", "name": "", "model": "", "online": True, "channel": "x", "since": 0, "listening": True},
+                    {"id": "b", "name": "", "model": "", "online": True, "channel": "y", "since": 0,
+                     "listening": False}]):
+                status = state.status()
+        self.assertEqual((status["watching"], status["listening"]), (2, 1))
+        self.assertEqual(status["network"], {"id": "", "trusted": None, "profile": "", "lan_open": False},
+                         "bound to loopback by config: no trusted-network logic")
+
+    def test_a_listening_phone_is_read_from_now_playing(self):
+        from server import now_playing
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self.make(Path(tmp))
+            listens = {"dev1": {"route": "xingzhi", "lead": 2, "ok": True, "on": True, "lag": 0}, "dev2": None}
+            for device_id, listen in listens.items():
+                folder = state.layout.devices / device_id
+                folder.mkdir(parents=True, exist_ok=True)
+                now_playing.write(folder / "now-playing.json", "CCTV-1", True, True, listen=listen)
+            with mock.patch.object(desktop.sqlite3, "connect") as connect:
+                connect.return_value.execute.return_value.fetchall.return_value = [
+                    (device_id, device_id, "xingzhi-cube-154") for device_id in listens]
+                found = desktop.devices(state.layout)
+        self.assertEqual([(d["id"], d["online"], d["listening"]) for d in found],
+                         [("dev1", True, True), ("dev2", True, False)])
 
     def test_diagnostics_has_logs_and_config_but_no_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -468,6 +498,101 @@ class FfmpegStateTests(unittest.TestCase):
             self.assertEqual((ffmpeg.state, ffmpeg.error), ("failed", "没网"))
 
 
+class TrustedNetworkTests(unittest.TestCase):
+    HOME, CAFE = "0123456789abcdef", "fedcba9876543210"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.settings = desktop.Settings(Path(self.tmp.name) / "desktop.json")
+        self.seen = self.HOME
+        self.changes = []
+
+    def make(self, bind="0.0.0.0", profiles=None):
+        nets = network.TrustedNetworks(bind, self.settings, lambda _m: None, identify=lambda: self.seen,
+                                       profiles=profiles, platform_name="darwin", clock=lambda: 1000.0)
+        nets.on_change = lambda: self.changes.append(nets.bind)
+        nets.check(initial=True)
+        return nets
+
+    def test_first_run_is_open_and_asks(self):
+        nets = self.make()
+        self.assertEqual(nets.decision(), "ask")
+        self.assertEqual(nets.bind, "0.0.0.0")
+        self.assertEqual(nets.snapshot(), {"id": self.HOME, "trusted": None, "profile": "", "lan_open": True})
+        self.assertEqual(nets.problems(), [])
+
+    def test_away_from_a_remembered_home_only_loopback(self):
+        nets = self.make()
+        nets.trust(self.HOME, True)
+        self.assertEqual(self.changes, [], "trusting the network we are on changes nothing")
+        self.seen = self.CAFE
+        self.assertFalse(nets.check(), "one reading is not enough (ARP, Wi-Fi reconnecting)")
+        self.assertEqual(nets.bind, "0.0.0.0")
+        self.assertTrue(nets.check())
+        self.assertEqual(nets.bind, "127.0.0.1")
+        self.assertEqual(self.changes, ["127.0.0.1"])
+        self.assertEqual([p["code"] for p in nets.problems()], ["network_away"])
+        self.assertEqual(nets.snapshot()["trusted"], None, "a new router can still be trusted")
+        self.seen = ""
+        nets.check()
+        nets.check()
+        self.assertEqual(nets.bind, "127.0.0.1", "an unknown router is not home")
+        self.seen = self.HOME
+        nets.check()
+        self.assertTrue(nets.check())
+        self.assertEqual(self.changes, ["127.0.0.1", "0.0.0.0"])
+
+    def test_not_my_home_network_and_a_new_router(self):
+        nets = self.make()
+        nets.trust(self.HOME, False)
+        self.assertEqual(nets.bind, "127.0.0.1")
+        self.assertEqual(nets.snapshot()["trusted"], False)
+        nets.trust(self.HOME, True)
+        self.assertEqual(nets.bind, "0.0.0.0")
+        self.assertEqual(self.changes, ["127.0.0.1", "0.0.0.0"])
+        again = desktop.Settings(Path(self.tmp.name) / "desktop.json")
+        self.assertEqual(again.networks(), {"trusted": [self.HOME], "untrusted": []})
+        self.assertEqual(set(again.snapshot()), {"keep_awake", "autostart"}, "router ids stay out of settings")
+
+    def test_configured_loopback_never_opens(self):
+        nets = self.make(bind="127.0.0.1")
+        nets.trust(self.HOME, True)
+        self.assertEqual(nets.bind, "127.0.0.1")
+        self.assertEqual(nets.problems(), [])
+
+    def test_windows_public_only_matters_at_home(self):
+        nets = self.make(profiles=lambda: [{"name": "x", "category": "public"}])
+        nets.check_profile()
+        self.assertEqual(nets.snapshot()["profile"], "public")
+        problems = nets.problems()
+        self.assertEqual([p["code"] for p in problems], ["network_public"])
+        self.assertNotIn("x", problems[0]["message"].replace("Internet", ""), "no network names")
+        nets.trust(self.HOME, False)
+        self.assertEqual([p["code"] for p in nets.problems()], ["network_away"])
+
+    def test_bad_ids_in_the_file_are_dropped(self):
+        (Path(self.tmp.name) / "desktop.json").write_text(json.dumps(
+            {"trusted_networks": [self.HOME, "../x", 5], "untrusted_networks": "nope"}), encoding="utf-8")
+        self.assertEqual(desktop.Settings(Path(self.tmp.name) / "desktop.json").networks(),
+                         {"trusted": [self.HOME], "untrusted": []})
+
+    def test_control_api_trust(self):
+        fake = FakeDesktop(Path(self.tmp.name))
+        server = control.ControlServer(fake, fake.layout.run, log=lambda _m: None)
+        server.start()
+        self.addCleanup(server.close)
+        info = control.read_control(fake.layout.run)
+        fake.network = None
+        self.assertEqual(control.call(info, "POST", "network/trust", {"id": self.HOME, "trusted": True})[0], 409)
+        fake.network = self.make()
+        self.assertEqual(control.call(info, "POST", "network/trust", {"id": "nope", "trusted": True})[0], 400)
+        self.assertEqual(control.call(info, "POST", "network/trust", {"id": self.HOME, "trusted": 1})[0], 400)
+        self.assertEqual(control.call(info, "GET", "network/trust")[0], 405)
+        status, answer = control.call(info, "POST", "network/trust", {"id": self.HOME, "trusted": True})
+        self.assertEqual((status, answer["network"]["trusted"]), (200, True))
+
+
 class SupervisorTests(unittest.TestCase):
     SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
 
@@ -502,6 +627,37 @@ class SupervisorTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
             self.assertFalse(sup.children[0].running)
             self.assertGreaterEqual(len(calls), 3)
+
+    def test_rebuild_makes_new_children_from_pending(self):
+        """A network change: the children are made again (new --bind) and started."""
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = bootstrap.Layout(Path(tmp))
+            layout.run.mkdir(parents=True)
+            made = []
+
+            def pending():
+                child = supervisor.Child(f"a{len(made)}", self.SLEEPER, dict(os.environ), lambda _m: None, watch=True)
+                made.append(child)
+                return [child]
+
+            sup = supervisor.Supervisor(layout, [], 14, lambda _m: None, pending=pending)
+            thread = threading.Thread(target=sup.run)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 10
+                while not (sup.started and made[0].running) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                sup.rebuild_requested.set()
+                deadline = time.monotonic() + 15
+                while not (len(made) == 2 and made[1].running) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                self.assertEqual([c.name for c in sup.children], ["a1"])
+                self.assertFalse(made[0].running)
+                self.assertTrue(made[1].running)
+            finally:
+                sup.stopping.set()
+                thread.join(20)
+            self.assertFalse(made[1].running)
 
     def test_stdin_pipe_closing_sets_the_event(self):
         read, write = os.pipe()

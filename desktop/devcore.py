@@ -10,8 +10,9 @@ follows "The contract as implemented (P1c)" in design 5.13:
     POST /local/v1/console-link | phone-qr | power | autostart | ffmpeg/fetch | diagnostics | restart | stop
     errors: {"ok": false, "error": <code>, "message": <Chinese>}
 
-plus, only with --network, the proposed `network` status block and
-`POST /local/v1/network/trust` (trusted networks, 5.11; not in P1c).
+plus `listening`, and, only with --network, the `network` status block and
+`POST /local/v1/network/trust` (trusted networks, 5.11; the real core always
+reports `network`).
 
 Usage: python3 -m desktop.devcore [selfhost] [--desktop] --data <folder>
        [--setup] [--devices N] [--ffmpeg ready|fetching|missing|failed] [--network]
@@ -91,6 +92,7 @@ class DevCore:
             "setup_pending": bool(self.setup_code),
             "children": {name: {"running": True, "restarts": 0} for name in ("relay", "xingzhi", "passport", "front")},
             "devices": self.devices, "watching": sum(1 for d in self.devices if d["online"] and d["channel"]),
+            "listening": sum(1 for d in self.devices if d["online"] and d.get("listening")),
             "ffmpeg": ffmpeg, "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": False},
             "settings": dict(self.settings),
         }
@@ -136,7 +138,7 @@ class DevCore:
         if path == "/local/v1/network/trust" and self.network is not None:
             if body.get("id") == self.network["id"]:
                 self.network["trusted"] = bool(body.get("trusted"))
-            return 200, {"ok": True}
+            return 200, {"ok": True, "network": dict(self.network)}
         if path == "/local/v1/diagnostics":
             dest = Path(body["dest_dir"]) if isinstance(body.get("dest_dir"), str) else self.data / "exports"
             dest.mkdir(parents=True, exist_ok=True)

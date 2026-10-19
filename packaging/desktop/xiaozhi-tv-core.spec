@@ -34,7 +34,7 @@ def modules(package: str) -> list[str]:
 hiddenimports = modules("server") + [
     "tools", "tools.certs", "tools.console", "tools.datadir", "tools.ffmpeg_fetch", "tools.parentwatch",
     "tools.subcommands", "tools.packaged_entry", "tools.launch", "tools.channel_config",
-    "tools.firmware_manifest",
+    "tools.firmware_manifest", "tools.netcheck",
 ]
 
 datas = [

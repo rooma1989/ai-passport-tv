@@ -159,6 +159,7 @@ class Device:
     online: bool = False
     watching: bool = False
     channel: str = ""
+    listening: bool = False         # a phone is listening to it ("用手机听")
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,7 @@ class Ffmpeg:
 
 @dataclass(frozen=True)
 class Network:
-    """Trusted networks (5.11). Not in the P1c contract; read only if a core reports it."""
+    """Trusted networks (5.11): `status.network`, and `POST /network/trust` to answer."""
     id: str = ""                    # router identity (hash), "" = unknown
     trusted: bool | None = None     # None = not decided yet ("ask")
     profile: str = ""               # Windows: "private" | "public" | "domain" | ""
@@ -198,7 +199,7 @@ class Status:
     setup_pending: bool = False     # no admin yet: console-link answers with the setup page
     devices: tuple[Device, ...] = ()
     watching_count: int | None = None   # the core's own count, when it gives one
-    listening: int = 0
+    listening: int = 0              # devices a phone is listening to (keeps the computer awake too)
     ffmpeg: Ffmpeg = field(default_factory=Ffmpeg)
     problems: tuple[Problem, ...] = ()
     autostart: bool | None = None   # settings.autostart, None = core does not say
@@ -297,4 +298,5 @@ def _device(raw: dict) -> Device:
     if not isinstance(watching, bool):
         # P1c: a device is listed while connected; online with a channel = watching.
         watching = online and bool(channel)
-    return Device(name=name, model=_str(raw.get("model")), online=online, watching=watching, channel=channel)
+    return Device(name=name, model=_str(raw.get("model")), online=online, watching=watching, channel=channel,
+                  listening=online and raw.get("listening") is True)

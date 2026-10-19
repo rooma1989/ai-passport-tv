@@ -34,7 +34,7 @@ a = Analysis(
     binaries=[],
     datas=[],
     hiddenimports=["desktop", "desktop.tray", "desktop.icons", "desktop.diagnostics", "tools",
-                   "tools.parentwatch"] + backends,
+                   "tools.parentwatch", "tools.netcheck"] + backends,
     hookspath=[],
     runtime_hooks=[],
     # The tray never imports the server, numpy or a GUI toolkit other than the

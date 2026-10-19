@@ -8,12 +8,14 @@ Two questions:
 * **Is this the home network?** A laptop in a cafe should not expose ports
   8080/8097/8098 there. The home network is remembered by the router's identity
   (the default gateway's MAC address, hashed) once the user confirms it; on other
-  networks the core binds its LAN ports to 127.0.0.1. The core enforces it; the
-  tray asks the question and passes the answer through the control API.
+  networks the core binds its LAN ports to 127.0.0.1. The core enforces it
+  (server/selfhost/network.py); the tray asks the question and passes the answer
+  through the control API (`POST /local/v1/network/trust`).
 
-Everything here is stdlib and side-effect free apart from running `route`/`arp`
-(or PowerShell on Windows), so the core can use the same functions. Parsing is
-separate from running, for the tests.
+Shared by the core and the tray (both bundle `tools/`); the tray never imports
+`server`. Everything here is stdlib and side-effect free apart from running
+`route`/`arp` (or PowerShell on Windows). Parsing is separate from running, for
+the tests.
 """
 
 from __future__ import annotations
@@ -197,16 +199,30 @@ def public_profile_name(profiles: list[dict]) -> str:
     return ""
 
 
-def lan_decision(trusted: list[str], current: str) -> str:
+def lan_decision(trusted, current: str, untrusted=()) -> str:
     """What the core should do with the LAN ports on this network.
 
-    "open": a trusted network, or nothing decided yet (the first run is almost
-    always at home, and a closed first run would look broken);
-    "ask": open, but the tray asks "is this your home network?";
-    "closed": the user has a home network and this is not it -> 127.0.0.1 only.
+    "open": a trusted network;
+    "ask": nothing decided yet (the first run is almost always at home, and a
+    closed first run would look broken): open, and the tray asks "is this your
+    home network?";
+    "closed": the user said this is not the home network, or has a home network
+    and this is not it (or the router cannot be identified) -> 127.0.0.1 only.
     """
+    if current and current in untrusted:
+        return "closed"
     if current and current in trusted:
         return "open"
     if not trusted:
         return "ask"
     return "closed"
+
+
+def profile_category(profiles: list[dict]) -> str:
+    """The Windows category that matters for the firewall rule: "public" if any
+    connected network is Public, else "private", "domain" or "" (unknown)."""
+    categories = {p.get("category") for p in profiles}
+    for category in ("public", "private", "domain"):
+        if category in categories:
+            return category
+    return ""

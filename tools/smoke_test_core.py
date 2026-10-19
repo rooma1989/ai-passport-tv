@@ -285,6 +285,9 @@ def check_api(core: Core, info: dict, scratch: Path) -> None:
         fail(f"remote/enable answered {status}, expected 501")
 
     answer = core.status = api(info, "GET", "status")[1]
+    missing = {"listening", "network"} - set(answer)
+    if missing:
+        fail(f"status lacks {sorted(missing)}")
     lan = answer["ports"]["lan"]
     wait_health(lan)
     note(f"/healthz on :{lan}: 200")
@@ -335,8 +338,12 @@ def check_api(core: Core, info: dict, scratch: Path) -> None:
     if status != 200 or answer["settings"]["autostart"] is not False:
         fail(f"autostart: {status} {answer}")
     stored = json.loads((core.data / "desktop.json").read_text(encoding="utf-8"))
-    if stored != {"keep_awake": "always", "autostart": False}:
+    if {key: stored.get(key) for key in ("keep_awake", "autostart")} != {"keep_awake": "always", "autostart": False}:
         fail(f"desktop.json is {stored}")
+    # Bound to 127.0.0.1 by --bind: no trusted-network logic, and the API says so.
+    status, answer = api(info, "POST", "network/trust", {"id": "0123456789abcdef", "trusted": True})
+    if status != 409 or answer.get("error") != "not_available":
+        fail(f"network/trust on a loopback-only core: {status} {answer}")
 
     status, answer = api(info, "POST", "diagnostics", {"dest_dir": str(scratch)})
     if status != 200 or not Path(answer.get("path", "")).is_file():

@@ -112,6 +112,19 @@ class Actions:
             raise ControlError(400, "bad_request", "enabled 要是 true 或 false")
         return 200, {"ok": True, "settings": self.desktop.settings.update(autostart=value)}
 
+    def network_trust(self, body: dict) -> tuple[int, dict]:
+        """受信任的网络（第 5.11 节）：{"id": <状态里 network.id>, "trusted": true | false}。"""
+        from .network import valid_id
+        network = getattr(self.desktop, "network", None)
+        if network is None:
+            raise ControlError(409, "not_available", "这个核心不管受信任的网络（设置里只听本机，或设置文件有错）")
+        network_id, trusted = body.get("id"), body.get("trusted")
+        if not valid_id(network_id):
+            raise ControlError(400, "bad_request", "id 要是状态里 network.id 的值（16 位十六进制）")
+        if not isinstance(trusted, bool):
+            raise ControlError(400, "bad_request", "trusted 要是 true 或 false")
+        return 200, {"ok": True, "network": network.trust(network_id, trusted)}
+
     def ffmpeg_fetch(self, body: dict) -> tuple[int, dict]:
         from tools import ffmpeg_fetch
         mirror = body.get("mirror")
@@ -157,6 +170,7 @@ ROUTES = {
     ("POST", "phone-qr"): "phone_qr",
     ("POST", "power"): "power",
     ("POST", "autostart"): "autostart",
+    ("POST", "network/trust"): "network_trust",
     ("POST", "ffmpeg/fetch"): "ffmpeg_fetch",
     ("POST", "diagnostics"): "diagnostics",
     ("POST", "restart"): "restart",

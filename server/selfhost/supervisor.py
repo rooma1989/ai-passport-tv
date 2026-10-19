@@ -10,6 +10,7 @@
   监督进程从不写的管道（tools/parentwatch.py）；Windows 上每个子进程在自己的作业对象里，停一个子进程就是结束
   它的整个作业（连同 ffmpeg 孙进程），监督进程死了作业句柄一关，系统把它们全结束。
 - 停止不靠信号：本机控制接口（control.py）设 stopping；托盘关掉给监督进程的标准输入管道也一样（watch_stdin）。
+- 换了网络（受信任的网络，network.py）：rebuild_requested —— 停掉子进程，用 pending 按新的地址重新造一遍再起。
 """
 
 from __future__ import annotations
@@ -173,7 +174,8 @@ class Child:
 
 class Supervisor:
     """children：一开始就能起的子进程。pending：还不能起时（电脑客户端还在下载 ffmpeg）每半秒问一次的
-    函数，返回子进程列表（可以起了）或 None；tick：每半秒调一次（电脑客户端更新状态）。"""
+    函数，返回子进程列表（可以起了）或 None；rebuild_requested 时也用它重新造子进程（参数变了）。
+    tick：每半秒调一次（电脑客户端更新状态）。"""
 
     def __init__(self, layout: bootstrap.Layout, children: list[Child], keep_days: int, log=print,
                  pending=None, tick=None):
@@ -181,6 +183,7 @@ class Supervisor:
         self.pending, self.tick = pending, tick
         self.stopping = threading.Event()
         self.restart_requested = threading.Event()
+        self.rebuild_requested = threading.Event()
         self.started = False
         self._setup_seen = layout.setup_code.exists()
 
@@ -233,6 +236,18 @@ class Supervisor:
             else:
                 for child in self.children:
                     child.watch(now)
+            if self.rebuild_requested.is_set():
+                self.rebuild_requested.clear()
+                # 还没起的时候不用管：pending 第一次造子进程时就用新的参数。
+                if self.started and self.pending is not None:
+                    self.log("网络变了：按新的地址重启所有子进程…")
+                    self._stop_children()
+                    ready = self.pending()
+                    if ready is not None:
+                        self.children = list(ready)
+                    for child in self.children:
+                        child.delay, child.next_start = RESTART_MIN_S, 0.0
+                        child.start()
             if self.restart_requested.is_set() and self.started:
                 self.restart_requested.clear()
                 self.log("正在重启所有子进程…")

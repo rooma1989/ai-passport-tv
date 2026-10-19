@@ -10,7 +10,7 @@ What it does (design 5.1-5.4, 5.10, 5.11):
 2. start the core and keep it running (restart with back-off when it dies);
 3. every two seconds read `/local/v1/status` and redraw the menu, tooltip and
    icon; on the first run open the browser at the setup link the core reports;
-4. hold the idle-sleep assertion while a device watches (until the core says it
+4. hold the idle-sleep assertion while a device watches or a phone listens (until the core says it
    does so itself); keep the login item; warn about a Windows network marked
    Public; ask once whether this is the home network;
 5. on Quit: stop the core through the control API, release everything.
@@ -35,7 +35,9 @@ import webbrowser
 from dataclasses import replace
 from pathlib import Path
 
-from . import APP_ID, APP_NAME, __version__, autostart, menu, netcheck, paths, power
+from tools import netcheck
+
+from . import APP_ID, APP_NAME, __version__, autostart, menu, paths, power
 from .control import ControlClient, ControlError, ControlUnavailable, Status
 from .core import CoreProcess, no_window_flags
 from .instance import SingleInstance, hand_off
@@ -195,6 +197,14 @@ class App:
 
     def _network(self) -> None:
         if self.windows_profiles is None or self.clock() < self._next_network_check:
+            return
+        status = self.state.status
+        if status is not None and status.network is not None and status.network.profile:
+            # The core checks the Windows network category itself (problem
+            # network_public); one PowerShell a minute is enough.
+            if self.state.windows_public:
+                with self._lock:
+                    self.state = replace(self.state, windows_public="")
             return
         self._next_network_check = self.clock() + NETWORK_CHECK_S
         try:

@@ -184,12 +184,15 @@ def acquire_lock(path: Path):
 # ---- 托盘的开关 ----
 
 class Settings:
-    """<数据目录>/desktop.json：托盘经控制接口改的开关。读不懂的值用默认的。"""
+    """<数据目录>/desktop.json：托盘经控制接口改的开关。读不懂的值用默认的。
+    还存受信任的网络（network.py）：trusted、untrusted 两个路由器身份的列表；它们不在 snapshot() 里
+    （状态的 settings 只有托盘的开关）。"""
 
     def __init__(self, path: Path):
         self.path = path
         self._lock = threading.Lock()
         self.values = dict(DEFAULT_SETTINGS)
+        self._networks = {"trusted": [], "untrusted": []}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -199,18 +202,37 @@ class Settings:
                 self.values["keep_awake"] = data["keep_awake"]
             if isinstance(data.get("autostart"), bool):
                 self.values["autostart"] = data["autostart"]
+            from .network import valid_id
+            for key in self._networks:
+                found = data.get(f"{key}_networks")
+                if isinstance(found, list):
+                    self._networks[key] = [i for i in found if valid_id(i)]
+
+    def _write(self) -> None:
+        data = dict(self.values, trusted_networks=self._networks["trusted"],
+                    untrusted_networks=self._networks["untrusted"])
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def update(self, **changes) -> dict:
         with self._lock:
             self.values.update(changes)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(self.values, ensure_ascii=False, indent=1), encoding="utf-8")
-            os.replace(tmp, self.path)
+            self._write()
             return dict(self.values)
 
     def snapshot(self) -> dict:
         with self._lock:
             return dict(self.values)
+
+    def networks(self) -> dict:
+        with self._lock:
+            return {key: list(ids) for key, ids in self._networks.items()}
+
+    def set_networks(self, trusted: list[str], untrusted: list[str]) -> None:
+        with self._lock:
+            self._networks = {"trusted": list(trusted), "untrusted": list(untrusted)}
+            self._write()
 
 
 # ---- ffmpeg ----
@@ -350,9 +372,12 @@ def devices(layout: bootstrap.Layout, clock=time.time) -> list[dict]:
         return rows
     for device_id, name, model in found:
         playing = now_playing.read(layout.devices / str(device_id) / "now-playing.json", clock())
+        listen = playing.get("listen") if playing["online"] else None
         rows.append({"id": device_id, "name": name or "", "model": model or "", "online": bool(playing["online"]),
                      "channel": playing["channel"] if playing["online"] else "",
-                     "since": playing.get("since") or 0})
+                     "since": playing.get("since") or 0,
+                     # 「用手机听」：有手机在听这台设备（电视服务关掉没人听的流，见 server/listen.py）。
+                     "listening": bool(listen and listen.get("on"))})
     return rows
 
 
@@ -362,9 +387,12 @@ class Desktop:
     """电脑客户端模式下监督进程的全部状态；控制接口（control.py）只和它打交道。"""
 
     def __init__(self, layout: bootstrap.Layout, logs_dir: Path, log, bind: str, lan_port: int, lan_wanted: int,
-                 model_ports: dict, lan_address: str, ffmpeg: Ffmpeg, settings: Settings, clock=time.time):
+                 model_ports: dict, lan_address: str, ffmpeg: Ffmpeg, settings: Settings, clock=time.time,
+                 network=None):
         self.layout, self.logs_dir, self.log = layout, logs_dir, log
-        self.bind, self.lan_port, self.lan_wanted = bind, lan_port, lan_wanted
+        self.configured_bind, self.lan_port, self.lan_wanted = bind, lan_port, lan_wanted
+        # 受信任的网络（network.TrustedNetworks）：不在家时子进程只听本机；None 时就按设置的 bind。
+        self.network = network
         self.model_ports, self.lan_address = model_ports, lan_address
         self.ffmpeg, self.settings, self.clock = ffmpeg, settings, clock
         self.started = clock()
@@ -380,6 +408,11 @@ class Desktop:
     def add_problem(self, code: str, message: str, **extra) -> None:
         with self._lock:
             self._problems.append(dict(extra, code=code, message=message))
+
+    @property
+    def bind(self) -> str:
+        """子进程此刻听的地址（受信任的网络决定；没有时是设置里的）。"""
+        return self.network.bind if self.network is not None else self.configured_bind
 
     @property
     def lan_url(self) -> str:
@@ -419,6 +452,8 @@ class Desktop:
             out.append({"code": "ffmpeg_missing", "message": "没有视频转换组件 ffmpeg"})
         with self._lock:
             out.extend(dict(p) for p in self._problems)
+        if self.network is not None:
+            out.extend(self.network.problems())
         supervisor = self.supervisor
         if supervisor is not None and supervisor.started and not supervisor.stopping.is_set():
             for child in supervisor.children:
@@ -456,6 +491,9 @@ class Desktop:
             "lan_url": self.lan_url, "local_url": self.local_url,
             "setup_pending": self.layout.setup_code.exists(),
             "children": children, "devices": found, "watching": sum(1 for d in found if d["online"]),
+            "listening": sum(1 for d in found if d["listening"]),
+            "network": self.network.snapshot() if self.network is not None else
+            {"id": "", "trusted": None, "profile": "", "lan_open": self.bind != "127.0.0.1"},
             "ffmpeg": {k: ffmpeg[k] for k in ("state", "path", "source", "done", "total", "error")},
             "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": False},
             "settings": self.settings.snapshot(),

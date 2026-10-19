@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from desktop import autostart, menu, netcheck, paths, power  # noqa: E402
+from desktop import autostart, menu, paths, power  # noqa: E402
+from tools import netcheck  # noqa: E402
 from desktop.control import (ControlClient, ControlError, ControlUnavailable, Device, Ffmpeg,  # noqa: E402
                              Network, Problem, Status, read_control_file)
 from desktop.core import CoreProcess, redact  # noqa: E402
@@ -125,6 +126,29 @@ class MenuTest(unittest.TestCase):
         texts = [i.text for i in menu.build(public)]
         self.assertTrue(any("公用网络" in t for t in texts))
         self.assertIn(menu.NETWORK_HELP, menu.actions_in(menu.build(public)))
+
+    def test_network_problems_from_the_core_are_not_repeated(self):
+        away = running(Status(network=Network(id="xyz", trusted=None, lan_open=False),
+                              problems=(Problem("network_away", "不在家里的网络上：核心说的"),)))
+        texts = [i.text for i in menu.build(away)]
+        self.assertEqual(sum("不在家里的网络" in t for t in texts), 1)
+        self.assertIn(menu.TRUST_NETWORK, menu.actions_in(menu.build(away)), "a new router can still be trusted")
+        public = running(Status(problems=(Problem("network_public", "Windows 把现在连着的网络标成了「公用」"),)),
+                         windows_public="家里的WiFi")
+        texts = [i.text for i in menu.build(public)]
+        self.assertEqual(sum("公用" in t for t in texts), 1)
+        only_core = running(Status(problems=(Problem("network_public", "公用"),)))
+        self.assertIn(menu.NETWORK_HELP, menu.actions_in(menu.build(only_core)))
+
+    def test_a_listening_phone_is_shown(self):
+        state = running(Status(devices=(Device("客厅", online=True, watching=True, channel="CCTV-1", listening=True),)))
+        devices = next(i for i in menu.build(state) if i.submenu)
+        self.assertIn("手机在听", devices.submenu[0].text)
+        status = Status.from_json({"devices": [{"name": "a", "online": True, "channel": "x", "listening": True},
+                                               {"name": "b", "online": False, "listening": True}],
+                                   "listening": 1})
+        self.assertEqual([d.listening for d in status.devices], [True, False])
+        self.assertEqual(status.listening, 1)
 
     def test_translocated_app_is_told_to_move(self):
         self.assertTrue(any("应用程序" in i.text for i in menu.build(running(translocated=True))))
@@ -608,6 +632,11 @@ class NetcheckTest(unittest.TestCase):
         self.assertEqual(netcheck.lan_decision(["abc"], "abc"), "open")
         self.assertEqual(netcheck.lan_decision(["abc"], "cafe"), "closed")
         self.assertEqual(netcheck.lan_decision(["abc"], ""), "closed")
+        self.assertEqual(netcheck.lan_decision([], "cafe", ["cafe"]), "closed", "said: not my home network")
+        self.assertEqual(netcheck.lan_decision(["abc"], "abc", ["cafe"]), "open")
+        self.assertEqual(netcheck.profile_category([{"category": "private"}, {"category": "public"}]), "public")
+        self.assertEqual(netcheck.profile_category([{"category": "domain"}]), "domain")
+        self.assertEqual(netcheck.profile_category([]), "")
 
 
 # ----------------------------------------------------------------------------- paths
@@ -777,6 +806,16 @@ class AppTest(unittest.TestCase):
         app.shutdown()
         self.assertIn("release", self.backend.calls)
 
+    def test_a_listening_phone_holds_the_assertion(self):
+        core = DevCore(self.data)
+        app = self.make(core)
+        app.start()
+        self.assertFalse(app.state.awake_held)
+        original = core.status
+        core.status = lambda: dict(original(), watching=0, listening=1)
+        app.tick()
+        self.assertTrue(app.state.awake_held, "a phone listening keeps the computer awake (design 5.10)")
+
     def test_core_managed_power_releases_ours(self):
         core = DevCore(self.data, devices=1)
         app = self.make(core)
@@ -895,6 +934,16 @@ class AppTest(unittest.TestCase):
         app.start()
         self.assertEqual(app.state.windows_public, "家里的WiFi")
         self.assertIn(menu.NETWORK_HELP, menu.actions_in(menu.build(app.state)))
+
+    def test_no_own_windows_check_when_the_core_reports_the_profile(self):
+        asked = []
+        core = DevCore(self.data, network=True)
+        core.network["profile"] = "private"
+        app = self.make(core, windows_profiles=lambda: asked.append(1) or [{"name": "x", "category": "public"}])
+        app.start()
+        app.tick()
+        self.assertEqual(asked, [])
+        self.assertEqual(app.state.windows_public, "")
 
     def test_quit_stops_the_core_through_the_api(self):
         app = self.make(DevCore(self.data))
