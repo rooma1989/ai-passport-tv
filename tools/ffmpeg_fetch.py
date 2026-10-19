@@ -71,6 +71,41 @@ WHEELS = {
         "196faa79366b4a82f95c0f4053191d2013f4714a715780f0ad2a68ff37483cc2", 19652251),
 }
 
+# Where each wheel sits on PyPI's file host, the part after the host. Pinned
+# beside the hashes so the download needs no index query, and so any mirror
+# that copies PyPI's files under the same path can serve it: the hash is what
+# makes the file trustworthy, never the host it came from.
+PACKAGE_PATHS = {
+    "imageio_ffmpeg-0.6.0-py3-none-macosx_11_0_arm64.whl":
+        "packages/40/5c/f3d8a657d362cc93b81aab8feda487317da5b5d31c0e1fdfd5e986e55d17/",
+    "imageio_ffmpeg-0.6.0-py3-none-macosx_10_9_intel.macosx_10_9_x86_64.whl":
+        "packages/da/58/87ef68ac83f4c7690961bce288fd8e382bc5f1513860fc7f90a9c1c1c6bf/",
+    "imageio_ffmpeg-0.6.0-py3-none-manylinux2014_aarch64.whl":
+        "packages/33/e7/1925bfbc563c39c1d2e82501d8372734a5c725e53ac3b31b4c2d081e895b/",
+    "imageio_ffmpeg-0.6.0-py3-none-manylinux2014_x86_64.whl":
+        "packages/a0/2d/43c8522a2038e9d0e7dbdf3a61195ecc31ca576fb1527a528c877e87d973/",
+    "imageio_ffmpeg-0.6.0-py3-none-win_amd64.whl":
+        "packages/2c/c6/fa760e12a2483469e2bf5058c5faff664acf66cadb4df2ad6205b016a73d/",
+    "imageio_ffmpeg-0.6.0-py3-none-win32.whl":
+        "packages/a0/13/59da54728351883c3c1d9fca1710ab8eee82c7beba585df8f25ca925f08f/",
+}
+
+# Hosts that serve PyPI's files under the same path (checked 2026-10-19). PyPI
+# itself first; in mainland China the mirrors are much faster, so there they go
+# first (see default_mirrors). A user or the tray can put another in front
+# (MIRROR_ENV, or the `mirror` argument): the pinned hash still decides.
+MIRRORS = (
+    "https://files.pythonhosted.org",
+    "https://pypi.tuna.tsinghua.edu.cn",
+    "https://mirrors.aliyun.com/pypi",
+    "https://mirrors.cloud.tencent.com/pypi",
+    "https://repo.huaweicloud.com/repository/pypi",
+)
+MIRROR_ENV = "TV_FFMPEG_MIRROR"
+# China Standard Time. Not a location check -- nothing is asked of the network --
+# only an ordering hint; every host is still tried.
+_MAINLAND_UTC_OFFSET_S = 8 * 3600
+
 # Which wheel suits which machine. Keyed by what `platform` reports, which
 # spells the same architecture differently on each system: an ARM Mac is
 # "arm64", an ARM Linux box is "aarch64", and Windows reports "AMD64".
@@ -263,8 +298,57 @@ def _extract(blob: bytes, destination: Path) -> None:
         raise FetchError(f"写入 ffmpeg 失败：{error}") from error
 
 
-def fetch(data_dir: Path, on_announce=None, on_progress=None) -> Path:
+def _utc_offset_s() -> int:
+    import time
+    return -(time.altzone if time.localtime().tm_isdst > 0 else time.timezone)
+
+
+def valid_mirror(base: str) -> bool:
+    """A mirror is an https:// base address (http:// only on this machine, for tests)."""
+    import urllib.parse
+    try:
+        parts = urllib.parse.urlsplit(base)
+    except ValueError:
+        return False
+    if parts.query or parts.fragment or not parts.hostname:
+        return False
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1")
+
+
+def default_mirrors(utc_offset_s: int | None = None) -> list[str]:
+    """The built-in hosts in the order to try them."""
+    offset = _utc_offset_s() if utc_offset_s is None else utc_offset_s
+    hosts = list(MIRRORS)
+    if offset == _MAINLAND_UTC_OFFSET_S:
+        hosts = hosts[1:] + hosts[:1]
+    return hosts
+
+
+def sources(wheel: str, mirror: str | None = None, utc_offset_s: int | None = None) -> list[str]:
+    """Download addresses for `wheel`, best first: the given mirror, the one in
+    MIRROR_ENV, then the built-in hosts. Empty when the wheel has no pinned path."""
+    path = PACKAGE_PATHS.get(wheel)
+    if path is None:
+        return []
+    bases = [b for b in (mirror, os.environ.get(MIRROR_ENV)) if b and valid_mirror(b)]
+    urls: list[str] = []
+    for base in bases + default_mirrors(utc_offset_s):
+        url = f"{base.rstrip('/')}/{path}{wheel}"
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def fetch(data_dir: Path, on_announce=None, on_progress=None, mirror: str | None = None,
+          on_source=None) -> Path:
     """Download, verify and unpack ffmpeg. Returns where it was put.
+
+    Each source is tried in turn (sources(), then the index's own answer)
+    until one gives the file with the pinned hash. A source that fails or
+    answers with different bytes is skipped, never trusted. `on_source(url)` is
+    told which source is being tried, for a progress display.
 
     Raises FetchError with a message meant for the reader. Nothing is executed
     from the download and nothing is left in place unless the hash matched.
@@ -273,6 +357,8 @@ def fetch(data_dir: Path, on_announce=None, on_progress=None) -> Path:
     if wheel is None:
         raise FetchError(
             f"没有适配本机（{platform.system()} / {platform.machine()}）的下载包。")
+    if mirror and not valid_mirror(mirror):
+        raise FetchError(f"镜像地址不对：{mirror}（要写成 https://… 的基础网址）")
 
     expected_hash, expected_size = WHEELS[wheel]
     destination = cached_path(data_dir)
@@ -286,25 +372,39 @@ def fetch(data_dir: Path, on_announce=None, on_progress=None) -> Path:
     if on_announce:
         on_announce(expected_size)
 
-    url = _download_url(wheel)
-    blob = _download(url, on_progress)
+    failures: list[FetchError] = []
+    mismatch: FetchError | None = None
+    for url in sources(wheel, mirror) + [None]:
+        try:
+            if url is None:
+                # Last: ask the index where the file is, as before the paths were pinned.
+                url = _download_url(wheel)
+            if on_source:
+                on_source(url)
+            blob = _download(url, on_progress)
+        except FetchError as error:
+            failures.append(error)
+            continue
+        digest = hashlib.sha256(blob).hexdigest()
+        if digest != expected_hash:
+            # Refused rather than warned about: this file is about to be run, and a
+            # mismatch means it is not the file that was checked when this version
+            # was written. Another source may still have the right one.
+            mismatch = FetchError(
+                "下载的文件校验值不符，已停止，没有运行任何东西。\n"
+                f"  期望 {expected_hash}\n"
+                f"  实际 {digest}\n"
+                "  可能是下载不完整或文件被替换。请重试；若反复出现请报告。")
+            continue
+        _extract(blob, destination)
+        return destination
+    if mismatch is not None:
+        raise mismatch
+    raise failures[-1] if failures else FetchError("没有可用的下载地址。")
 
-    digest = hashlib.sha256(blob).hexdigest()
-    if digest != expected_hash:
-        # Refused rather than warned about: this file is about to be run, and a
-        # mismatch means it is not the file that was checked when this version
-        # was written.
-        raise FetchError(
-            "下载的文件校验值不符，已停止，没有运行任何东西。\n"
-            f"  期望 {expected_hash}\n"
-            f"  实际 {digest}\n"
-            "  可能是下载不完整或文件被替换。请重试；若反复出现请报告。")
 
-    _extract(blob, destination)
-    return destination
-
-
-def ensure(data_dir: Path, on_announce=None, on_progress=None) -> Path:
+def ensure(data_dir: Path, on_announce=None, on_progress=None, mirror: str | None = None,
+           on_source=None) -> Path:
     """The fetched ffmpeg, downloading it the first time only.
 
     The cache is checked first, so every run after the first is silent and
@@ -314,7 +414,8 @@ def ensure(data_dir: Path, on_announce=None, on_progress=None) -> Path:
     cached = cached_path(data_dir)
     if is_usable(cached):
         return cached
-    return fetch(data_dir, on_announce=on_announce, on_progress=on_progress)
+    return fetch(data_dir, on_announce=on_announce, on_progress=on_progress, mirror=mirror,
+                 on_source=on_source)
 
 
 if __name__ == "__main__":  # pragma: no cover - a convenience, not a feature

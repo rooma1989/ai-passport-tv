@@ -113,7 +113,7 @@ def _relay(path: str, query: str, public: bool, options: Options) -> Route:
     if check in ("/api/bind/register",) and (options.signup == "off" or (public and options.signup == "lan")):
         return Route("refuse")
     if public:
-        if check.startswith(("/setup", "/api/setup")):
+        if check.startswith(("/setup", "/api/setup", "/local-login")):
             return Route("refuse")
         if not options.admin_over_tunnel:
             keyed = "k" in urllib.parse.parse_qs(query, keep_blank_values=True)

@@ -38,6 +38,9 @@ NAME_MAX = 20
 # 设备地址：IPv4 或主机名（.local），不带端口——设备按自己的型号补端口（8098 / 8097）。
 _ADDRESS = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 DEVICE_ADDRESS_META = "device_address"
+# 电脑客户端托盘的「打开电脑版」：控制接口（server/selfhost/control.py）给本机浏览器的一次性登录链接。
+LOCAL_LOGIN = "/local-login"
+_LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
 @dataclass
@@ -122,6 +125,9 @@ def get(handler, relay, path: str) -> bool:
     if path == "/api/setup/info":
         handler._json({"ok": True, "pending": pending(relay), "device_address": device_address(relay)})
         return True
+    if path == LOCAL_LOGIN:
+        _local_login(handler, relay)
+        return True
     if not pending(relay):
         return False
     _point_to_setup(handler, path)
@@ -187,6 +193,30 @@ def _setup(handler, relay) -> None:
     relay.log(f"自建：第一个管理员（用户 {user_id}）已创建，设置码作废")
     handler._json({"ok": True, "redirect": f"/tv/?s={token}&home=1", "device_address": device_address(relay)},
                   headers={"Set-Cookie": handler._cookie_header(token)})
+
+
+def _local_login(handler, relay) -> None:
+    """/tv/local-login?t=<令牌>：只认这台电脑自己来的请求（中转的对端和前端转来的 X-Real-IP 都是回环；
+    前端的公开端口上这个路径根本不转，server/front.py），令牌是 PhoneLinks.create_local 给的（来路 local，
+    60 秒，用一次）。对了就给这个浏览器一个电脑会话，跳到电脑版。不对一律当作没有这个页面。"""
+    peer = handler.client_address[0]
+    token = handler._query().get("t")
+    links = relay.phone_links
+    if peer not in _LOOPBACK or handler._ip() not in _LOOPBACK or not isinstance(token, str) or links is None:
+        handler._not_found()
+        return
+    if links.origin_of(token=token)["origin"] != "local":
+        handler._not_found()
+        return
+    user = links.consume(token=token, ip=handler._ip(), user_agent=handler._agent())
+    if user is None:
+        handler._send(302, b"", "text/plain", {"Location": "/tv/console"})
+        return
+    session = relay.accounts.new_session(user, "pc", user_agent=handler._agent(), ip=handler._ip(), via="local")
+    relay.accounts.audit("login.pc.local", user, handler._ip(), "user", str(user))
+    relay.log(f"用户 {user} 用这台电脑上的小智电视程序登录了电脑版")
+    handler._send(302, b"", "text/plain",
+                  {"Location": "/tv/console", "Set-Cookie": console.cookie_header(session, "pc", handler._https())})
 
 
 def _remember_address(handler, relay) -> None:

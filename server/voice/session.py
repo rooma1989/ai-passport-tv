@@ -5,6 +5,7 @@
 
     TV_ASR_SOCKET       muse-asr 的 Unix 套接字（如 /run/muse-asr/asr.sock）；不设就不开语音，
                         CONFIG 里不给 voice，设备按住 OK 时显示「语音现在用不了」
+    TV_ASR_URL          电脑客户端：回环 TCP 上的识别服务 http://127.0.0.1:<端口>（没有 TV_ASR_SOCKET 时用）
     TV_VOICE_LOG_TEXT   1：日志里写识别出的文字（调阈值时用，调完关掉）；默认只写意图和耗时
     TV_VOICE_WAV_DIR    开发用：把每句话存成 WAV 到这个目录，做测试语料；默认不存，平时不要设
 
@@ -37,10 +38,12 @@ from .. import adpcm, channel_groups
 from ..protocol import (AUDIO_BYTES, VOICE_MAX_BLOCKS, VOICE_MAX_S, VOICE_RESULT_MAX, Kind,
                         Packet, ProtocolError, json_object)
 from . import intent
-from .asr import SAMPLE_RATE, AsrClient, AsrError
+from .asr import SAMPLE_RATE, AsrClient, AsrError, asr_key
 from .relay_client import DEVICE_ENV, RelayClient, RelayError
 
 ASR_SOCKET_ENV = "TV_ASR_SOCKET"
+# 电脑客户端：回环 TCP 上的识别服务（asr.py）；口令由 TV_RELAY_KEY_FILE 的中转密钥派生。
+ASR_URL_ENV = "TV_ASR_URL"
 LOG_TEXT_ENV = "TV_VOICE_LOG_TEXT"
 WAV_DIR_ENV = "TV_VOICE_WAV_DIR"
 # 结果里「听到的话」最多这么多字：设备顶栏只放得下一行。
@@ -141,7 +144,15 @@ class VoiceService:
         """per_device：多用户（电视服务设置了 TV_DB）。这时一个媒体单元先后服务不同的设备，
         中转里的设备就是这次会话认出来的那台（bind_device），不看 TV_RELAY_DEVICE。"""
         path = environ.get(ASR_SOCKET_ENV)
+        url = environ.get(ASR_URL_ENV)
         asr = AsrClient(path) if path else None
+        if asr is None and url:
+            try:
+                key_file = environ.get("TV_RELAY_KEY_FILE")
+                key = asr_key(Path(key_file).read_text(encoding="utf-8")) if key_file else ""
+                asr = AsrClient(url=url, key=key)
+            except (OSError, ValueError) as error:
+                logger(f"voice: local asr disabled ({type(error).__name__})")
         relay, relay_for = None, None
         try:
             if per_device:

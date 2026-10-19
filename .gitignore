@@ -61,6 +61,8 @@ FoloToy-AI-Passport*.bin
 # would not catch it anyway, since the file has no extension on macOS and Linux.
 build-server/
 build-server-work/
+build-core/
+packaging/desktop/firmware/
 *_runs/
 *.bak*
 *.patch
