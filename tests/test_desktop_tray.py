@@ -288,7 +288,7 @@ class SingleInstanceTest(unittest.TestCase):
             code = ("import sys,time; sys.path.insert(0, sys.argv[1]); from desktop.instance import SingleInstance;"
                     "s=SingleInstance(sys.argv[2]); print(s.acquire(), flush=True); time.sleep(30)")
             holder = subprocess.Popen([sys.executable, "-c", code, str(ROOT), str(lock)], stdout=subprocess.PIPE,
-                                      text=True)
+                                      text=True, encoding="utf-8")
             try:
                 self.assertEqual(holder.stdout.readline().strip(), "True")
                 self.assertFalse(SingleInstance(lock).acquire())
