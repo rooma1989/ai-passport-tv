@@ -13,7 +13,9 @@ Two workflows validate pull requests: `.github/workflows/static-checks.yml` and
 - **Static checks** (`static-checks.yml`): validates English-default bilingual
   Markdown, relative links, full-SHA Actions, issue forms, the dependency lock,
   conflict markers, and likely sensitive data; then runs `actionlint` and host
-  tests. It runs on every pull request.
+  tests. It runs on every pull request. It installs ffmpeg first, so the host
+  tests that generate or transcode media run there; they skip themselves where
+  ffmpeg is missing, as in the ESP-IDF container of the firmware workflows.
 - **Firmware checks** (`firmware-checks.yml`): runs
   `./tools/validate.sh --firmware` for ESP32-C3 in a fresh isolated
   build/configuration directory, verifies the build and the merged `0x0` image

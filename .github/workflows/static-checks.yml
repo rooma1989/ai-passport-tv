@@ -26,5 +26,14 @@ jobs:
           actionlint_bin="$(./tools/install-actionlint.sh "$RUNNER_TEMP/actionlint")"
           echo "ACTIONLINT_BIN=${actionlint_bin}" >> "$GITHUB_ENV"
 
+      # The runner image has no ffmpeg. Without it the host tests that generate
+      # or transcode media skip themselves (as they must in the ESP-IDF
+      # container of the firmware workflows); here they should run.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          command -v ffmpeg
+
       - name: Validate repository and run host tests
         run: ./tools/validate.sh --static

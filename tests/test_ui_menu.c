@@ -129,7 +129,10 @@ static void test_unusable_entries_are_skipped_not_fatal(void)
     check(strcmp(ui_menu_selected(&menu), "ok1") == 0, "the highlight follows the current id");
 
     // A 16-byte id is one the device table cannot hold, so it is dropped.
-    ui_menu_entry_t too_long[2] = { { "0123456789abcdef", "Sixteen", 0 }, { "ok", "Fine", 0 } };
+    // Filled by memcpy: a 16-character literal initialising the 16-byte field
+    // drops its terminator, which -Wextra rejects (clang 21, gcc 15).
+    ui_menu_entry_t too_long[2] = { { "", "Sixteen", 0 }, { "ok", "Fine", 0 } };
+    memcpy(too_long[0].id, "0123456789abcdef", sizeof(too_long[0].id));
     check(ui_menu_load(&menu, too_long, 2, NULL), "a list with only that id plus a good one loads");
     check(menu.count == 1 && strcmp(ui_menu_selected(&menu), "ok") == 0,
           "the unusable id is dropped and the good one kept");

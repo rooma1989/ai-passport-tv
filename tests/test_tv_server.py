@@ -533,7 +533,6 @@ class LiveServerTests(unittest.TestCase):
         self.assertEqual(self.server.abandoned, 0)
 
 
-@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg optional for offline preparation only")
 class ReconnectLeaveTests(unittest.TestCase):
     """The device leaves while the server holds it on the reconnect notice.
 
@@ -588,6 +587,7 @@ class ReconnectLeaveTests(unittest.TestCase):
         self.assertIsNone(server.live_channel)
 
 
+@unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg optional for offline preparation only")
 class PreparationTests(unittest.TestCase):
     def test_generate_ten_second_shared_timeline_and_reload(self):
         with tempfile.TemporaryDirectory() as temporary:

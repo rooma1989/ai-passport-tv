@@ -4,6 +4,17 @@
 #include <stdio.h>
 #include <string.h>
 
+// strnlen is POSIX rather than C: glibc hides it from a strict -std=c11 host build
+// (see av_channel_policy.c), so the fields are measured by hand.
+static size_t bounded_length(const char *s, size_t max)
+{
+    size_t n = 0;
+    while (n < max && s[n] != '\0') {
+        n++;
+    }
+    return n;
+}
+
 static const char *const CODES[AV_WIFI_E_COUNT] = {
     "ok", "bad", "replay", "full", "changed", "key", "store", "busy",
 };
@@ -74,8 +85,8 @@ av_wifi_err_t av_wifi_plan(const av_wifi_op_t *op, uint64_t last_seq,
     if (op->seq == 0) return AV_WIFI_E_BAD;
     if (op->seq <= last_seq) return AV_WIFI_E_REPLAY;
     if (op->kind == AV_WIFI_OP_ADD) {
-        const size_t ssid = strnlen(op->ssid, sizeof(op->ssid));
-        const size_t password = strnlen(op->password, sizeof(op->password));
+        const size_t ssid = bounded_length(op->ssid, sizeof(op->ssid));
+        const size_t password = bounded_length(op->password, sizeof(op->password));
         // WPA wants 8..63 characters, or 64 hex digits; empty is an open network.
         if (ssid == 0 || ssid > AV_WIFI_SSID_MAX || password > AV_WIFI_PASSWORD_MAX ||
             (password > 0 && password < 8)) {

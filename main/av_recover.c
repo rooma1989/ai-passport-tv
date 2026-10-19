@@ -258,12 +258,23 @@ void av_recover_lines(const av_recover_screen_t *r, const char **line1, const ch
 
 // ---- 3. The address ----
 
+// strnlen is POSIX rather than C: glibc hides it from a strict -std=c11 host build
+// (see av_channel_policy.c), so the address is measured by hand.
+static size_t bounded_length(const char *s, size_t max)
+{
+    size_t n = 0;
+    while (n < max && s[n] != '\0') {
+        n++;
+    }
+    return n;
+}
+
 bool av_recover_url_ok(const char *url)
 {
     if (!url) {
         return false;
     }
-    const size_t n = strnlen(url, AV_RECOVER_URL_MAX + 1u);
+    const size_t n = bounded_length(url, AV_RECOVER_URL_MAX + 1u);
     if (n == 0 || n > AV_RECOVER_URL_MAX) {
         return false;
     }
