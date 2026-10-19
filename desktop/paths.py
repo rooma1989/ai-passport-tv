@@ -129,5 +129,5 @@ def translocated(executable: Path | None = None) -> bool:
     """macOS runs an unsigned app from a quarantined DMG under a random read-only
     path (App Translocation); data paths and autostart then point nowhere.
     The tray asks the user to drag the app to Applications first (design 5.12)."""
-    path = str(Path(executable or sys.executable))
+    path = Path(executable or sys.executable).as_posix()
     return "/AppTranslocation/" in path or path.startswith("/Volumes/")

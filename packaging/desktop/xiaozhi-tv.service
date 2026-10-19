@@ -1,0 +1,17 @@
+# Optional: run Xiaozhi TV without a desktop session, as your own user.
+#   mkdir -p ~/.config/systemd/user && cp xiaozhi-tv.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now xiaozhi-tv
+#   loginctl enable-linger "$USER"     # keep it running when you are logged out
+# Adjust ExecStart if the folder is not ~/xiaozhi-tv.
+[Unit]
+Description=Xiaozhi TV (小智电视) household server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/xiaozhi-tv/xiaozhi-tv --no-tray
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

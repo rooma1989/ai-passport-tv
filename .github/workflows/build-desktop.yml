@@ -1,0 +1,145 @@
+name: Build desktop client
+
+# The PC client (design docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md,
+# 5.2 and phase P2c): the tray plus the core in a macOS .app/DMG (Apple silicon
+# and Intel), a Windows Inno Setup installer and portable zip, and a Linux
+# tarball. Until branch desktop-core (P1) is merged, the bundled core is the
+# stand-in of desktop/devcore.py (--stub-core): these builds exercise the tray,
+# the bundle layout and the installers, and must not be given to users -- the
+# artifacts say "stub-core" in their name.
+
+on:
+  push:
+    branches:
+      - "desktop-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    strategy:
+      # One platform failing is a fact about that platform; the others still
+      # answer whether the same change works there.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macOS arm64
+            slug: macos-arm64
+          # GitHub's Intel macOS runner (design Q6: two DMGs).
+          - os: macos-15-intel
+            label: macOS x86_64
+            slug: macos-x86_64
+          - os: windows-latest
+            label: Windows x64
+            slug: windows-x64
+          # Older glibc for wider reach (design 5.2).
+          - os: ubuntu-22.04
+            label: Linux x86_64
+            slug: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install --disable-pip-version-check pyinstaller==6.22.3 pystray==0.19.5 pillow==13.0.0
+
+      # The tray's own tests on the OS each branch of it is written for (locks,
+      # registry, ctypes wrappers, paths).
+      - name: Unit tests (desktop/)
+        run: python packaging/desktop/unit_tests.py
+
+      - name: Build
+        run: python packaging/desktop/build.py --stub-core
+
+      - name: Smoke test (bundle)
+        run: python packaging/desktop/smoke.py
+
+      # The real tray icon inside the frozen app (pystray + PyInstaller, design
+      # section 15). Runners are not desktops: kept separate and allowed to fail
+      # so it never hides the result of the steps above.
+      - name: Tray icon check
+        if: runner.os != 'Linux'
+        continue-on-error: true
+        run: python packaging/desktop/smoke.py --tray-check-only
+
+      - name: Installer (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          if (-not (Test-Path $iscc)) { Write-Output "::error::Inno Setup is not available on this runner"; exit 1 }
+          # Chinese wizard texts: Inno Setup's unofficial translation. Best effort;
+          # without it the wizard is in English.
+          try {
+            Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl" -OutFile packaging\desktop\ChineseSimplified.isl
+          } catch {
+            Write-Output "::warning::Chinese installer texts not downloaded: $($_.Exception.Message)"
+          }
+          $version = python -c "import desktop; print(desktop.__version__)"
+          $stage = Join-Path $PWD "build-desktop\stage\Xiaozhi TV"
+          $out = Join-Path $PWD "build-desktop"
+          & $iscc "/DSourceDir=$stage" "/DAppVersion=$version" "/DOutputDir=$out" /Qp packaging\desktop\xiaozhi-tv.iss
+          if ($LASTEXITCODE -ne 0 -and (Test-Path packaging\desktop\ChineseSimplified.isl)) {
+            Write-Output "::warning::compiling with the Chinese texts failed; retrying in English"
+            Remove-Item packaging\desktop\ChineseSimplified.isl
+            & $iscc "/DSourceDir=$stage" "/DAppVersion=$version" "/DOutputDir=$out" /Qp packaging\desktop\xiaozhi-tv.iss
+          }
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::ISCC failed with exit code $LASTEXITCODE"; exit 1 }
+          $setup = Get-ChildItem build-desktop\XiaozhiTV-*-windows-x64-setup.exe | Select-Object -First 1
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          Add-Content -Path build-desktop\SHA256SUMS -Value "$hash  $($setup.Name)"
+          Get-Content build-desktop\SHA256SUMS
+
+      - name: Install, smoke-test, uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem build-desktop\XiaozhiTV-*-windows-x64-setup.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=install.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Output "::error::installer exited with $($p.ExitCode)"; Get-Content install.log -Tail 40; exit 1 }
+          $dir = Join-Path $env:ProgramFiles "Xiaozhi TV"
+          if (-not (Test-Path "$dir\XiaozhiTV.exe")) { Write-Output "::error::not installed in $dir"; exit 1 }
+          # Firewall: one inbound rule for the core, Private profile only (design Q7).
+          $rule = netsh advfirewall firewall show rule name="Xiaozhi TV" verbose | Out-String
+          Write-Output $rule
+          if ($rule -notmatch "Profiles:\s+Private\s") { Write-Output "::error::firewall rule missing or not Private-only"; exit 1 }
+          if ($rule -notmatch [regex]::Escape("$dir\core\xiaozhi-tv-core.exe")) { Write-Output "::error::firewall rule is not for the core program"; exit 1 }
+          if ($rule -notmatch "Action:\s+Allow") { Write-Output "::error::firewall rule does not allow"; exit 1 }
+          python packaging/desktop/smoke.py --program "$dir"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $u = Start-Process -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          # The uninstaller hands over to a copy of itself; wait for the files to go.
+          for ($i = 0; $i -lt 60 -and (Test-Path "$dir\XiaozhiTV.exe"); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$dir\XiaozhiTV.exe") { Write-Output "::error::uninstall left $dir\XiaozhiTV.exe (exit $($u.ExitCode))"; exit 1 }
+          $after = netsh advfirewall firewall show rule name="Xiaozhi TV" | Out-String
+          if ($after -match "Profiles:") { Write-Output "::error::uninstall left the firewall rule"; exit 1 }
+          Write-Output "install / smoke / uninstall: PASS"
+
+      - name: Upload (stub core, not for users)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-${{ matrix.slug }}-stub-core
+          path: |
+            build-desktop/*.dmg
+            build-desktop/*.zip
+            build-desktop/*.exe
+            build-desktop/*.tar.gz
+            build-desktop/SHA256SUMS
+          if-no-files-found: warn
+          retention-days: 7

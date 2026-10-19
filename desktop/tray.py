@@ -621,12 +621,15 @@ def build_app(args, data: Path, logs_dir: Path, opener=open_url) -> App:
         def command():
             return paths.core_command(data)
     core = CoreProcess(command, log=log)
-    keep_awake = power.KeepAwake(power.NullBackend() if args.smoke_test else power.default_backend())
+    # A check run (CI, --tray-check) changes nothing on the machine: no sleep
+    # assertion, no login item, no PowerShell.
+    check = args.smoke_test or bool(args.tray_check)
+    keep_awake = power.KeepAwake(power.NullBackend() if check else power.default_backend())
     translocated = sys.platform == "darwin" and paths.is_frozen() and paths.translocated()
     login_item = None
-    if autostart.supported(paths.is_frozen(), translocated) and not args.smoke_test:
+    if autostart.supported(paths.is_frozen(), translocated) and not check:
         login_item = autostart.for_this_os(paths.program_path())
-    windows_profiles = netcheck.windows_profiles if sys.platform == "win32" and not args.smoke_test else None
+    windows_profiles = netcheck.windows_profiles if sys.platform == "win32" and not check else None
     return App(data, control, core, keep_awake, login_item=login_item, opener=opener,
                autostarted=args.autostarted, translocated=translocated, windows_profiles=windows_profiles,
                logs_dir=logs_dir)
@@ -686,6 +689,45 @@ def smoke_test(app: App, timeout: float, data: Path) -> int:
     return 0
 
 
+def tray_check(app: App, seconds: float, timeout: float) -> int:
+    """CI and local checks: show the real tray icon for a few seconds with the core
+    running, redraw the menu from its status, then quit through the menu action."""
+    if not tray_available():
+        log("::error::tray check: no tray available (pystray, Pillow or a display missing)")
+        return EXIT_FAILED
+    ui = PystrayUI(app)
+    errors: list[str] = []
+    result = {"status": False, "visible": False}
+    original_change = app.on_change
+
+    def on_change(state):
+        try:
+            original_change(state)
+        except Exception as error:      # noqa: BLE001
+            errors.append(f"{type(error).__name__}: {error}")
+
+    app.on_change = on_change
+
+    def later():
+        deadline = time.monotonic() + timeout
+        while app.state.status is None and time.monotonic() < deadline and not app.quitting.is_set():
+            time.sleep(0.5)
+        time.sleep(seconds)
+        result["status"] = app.state.status is not None
+        result["visible"] = bool(ui.icon is not None and ui.icon.visible)
+        log(f"tray check: icon visible={result['visible']}, status={result['status']}, "
+            f"menu items={len(menu.build(app.state))}, headline={menu.headline(app.state)}")
+        app.run_action(menu.QUIT)
+
+    threading.Thread(target=later, daemon=True, name="tray-check").start()
+    ui.run()
+    if errors or not result["status"] or not result["visible"]:
+        log(f"::error::tray check failed: {result} {errors[:3]}")
+        return EXIT_FAILED
+    log("tray check: PASS")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog=APP_ID, description=f"{APP_NAME}电脑客户端")
     parser.add_argument("--data", type=Path, help="数据文件夹（默认：每个用户自己的应用数据文件夹）")
@@ -695,6 +737,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--smoke-second", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dev-core", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=float, default=90.0, help=argparse.SUPPRESS)
+    parser.add_argument("--tray-check", type=float, default=0.0, metavar="SECONDS", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args(argv)
 
@@ -723,6 +766,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.smoke_test:
             app = build_app(args, data, logs_dir, opener=lambda url: log("smoke test: would open a URL"))
             return smoke_test(app, args.timeout, data)
+        if args.tray_check:
+            app = build_app(args, data, logs_dir, opener=lambda url: log("tray check: would open a URL"))
+            return tray_check(app, args.tray_check, args.timeout)
         app = build_app(args, data, logs_dir)
         if args.no_tray or not tray_available():
             if not args.no_tray:

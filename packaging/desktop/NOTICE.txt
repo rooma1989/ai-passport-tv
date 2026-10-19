@@ -1,0 +1,42 @@
+Xiaozhi TV (小智电视) PC client
+==============================
+
+This program is open source under the MIT licence:
+https://github.com/rooma1989/ai-passport-tv (LICENSE).
+
+It ships no content: no channel list, no stream address, no playlist, no
+cookies, no keys. Everything it plays is added by the person who runs it.
+
+Third-party components in this download
+---------------------------------------
+
+- Python (CPython runtime and standard library), Python Software Foundation
+  License Version 2. https://docs.python.org/3/license.html
+- PyInstaller bootloader, GPL 2.0 with the PyInstaller bootloader exception
+  (which allows distributing programs built with it under any licence).
+  https://pyinstaller.org/en/stable/license.html
+- pystray (the tray icon), GNU LGPL 3.0. It is shipped as separate,
+  replaceable Python modules inside the program folder (_internal/pystray, or
+  Contents/Frameworks/pystray in the macOS app).
+  Source: https://github.com/moses-palmer/pystray
+- Pillow (drawing the tray icon), MIT-CMU (HPND) licence.
+  https://github.com/python-pillow/Pillow/blob/main/LICENSE
+- macOS only: PyObjC, MIT licence. https://github.com/ronaldoussoren/pyobjc
+- Linux only: python-xlib, GNU LGPL 2.1 or later; six, MIT licence.
+- The QR code encoder in server/relay/qr.py follows Project Nayuki's QR Code
+  generator library, MIT licence; jsQR 1.4.0 (phone page scanner), Apache
+  License 2.0 (server/relay/assets/LICENSE.jsqr.txt). (Part of the core.)
+
+Downloaded on first run, not distributed with this program
+----------------------------------------------------------
+
+- FFmpeg, from the pinned imageio-ffmpeg 0.6.0 wheel on PyPI (or a mirror;
+  the SHA-256 is checked). Those builds are under the GNU GPL; they are fetched
+  by your computer from their publisher and are not part of this download.
+  Source: https://ffmpeg.org/download.html
+
+Not included in this version
+----------------------------
+
+- esptool (built-in flashing, planned for 1.0). Flashing uses the web flasher
+  at http://localhost:<port>/flash/ in Chrome or Edge.

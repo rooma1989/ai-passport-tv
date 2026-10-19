@@ -411,6 +411,7 @@ class AutostartTest(unittest.TestCase):
         self.assertFalse(entry.is_enabled())
         self.assertNotIn("XiaozhiTV", reg.keys[autostart.RUN_KEY])
 
+    @unittest.skipIf(os.name == "nt", "XDG autostart is for Linux desktops; Windows paths differ")
     def test_xdg_autostart(self):
         with tempfile.TemporaryDirectory() as config:
             entry = autostart.XdgAutostart(Path("/opt/xiaozhi-tv/xiaozhi-tv"), config_home=Path(config))
@@ -628,16 +629,20 @@ class PathsTest(unittest.TestCase):
         self.assertEqual(paths.logs_dir(Path("/t/d"), {paths.DATA_ENV: "/t/d"}, home, "Darwin"), Path("/t/d/logs"))
 
     def test_bundled_core(self):
-        mac = paths.bundled_core(Path("/Applications/Xiaozhi TV.app/Contents/MacOS/XiaozhiTV"), "Darwin")
-        self.assertEqual(mac, Path("/Applications/Xiaozhi TV.app/Contents/Resources/core/xiaozhi-tv-core"))
-        linux = paths.bundled_core(Path("/opt/xiaozhi-tv/xiaozhi-tv"), "Linux")
-        self.assertEqual(linux, Path("/opt/xiaozhi-tv/core/xiaozhi-tv-core"))
+        # resolve(): on Windows "/Applications" becomes "C:\\Applications"; the layout is what matters.
+        app = Path("/Applications/Xiaozhi TV.app").resolve()
+        mac = paths.bundled_core(app / "Contents" / "MacOS" / "XiaozhiTV", "Darwin")
+        self.assertEqual(mac, app / "Contents" / "Resources" / "core" / "xiaozhi-tv-core")
+        opt = Path("/opt/xiaozhi-tv").resolve()
+        self.assertEqual(paths.bundled_core(opt / "xiaozhi-tv", "Linux"), opt / "core" / "xiaozhi-tv-core")
+        self.assertEqual(paths.bundled_core(opt / "XiaozhiTV.exe", "Windows"), opt / "core" / "xiaozhi-tv-core.exe")
 
     def test_core_command(self):
-        command = paths.core_command(Path("/d"), env={})
-        self.assertEqual(command[-5:], ["-m", "server.selfhost", "--data", "/d", "--desktop"])
-        self.assertEqual(paths.core_command(Path("/d"), env={paths.CORE_ENV: "my-core --flag"}),
-                         ["my-core", "--flag", "selfhost", "--data", "/d", "--desktop"])
+        data = Path("/d")
+        command = paths.core_command(data, env={})
+        self.assertEqual(command[-5:], ["-m", "server.selfhost", "--data", str(data), "--desktop"])
+        self.assertEqual(paths.core_command(data, env={paths.CORE_ENV: "my-core --flag"}),
+                         ["my-core", "--flag", "selfhost", "--data", str(data), "--desktop"])
 
 
 # ----------------------------------------------------------------------------- core process
