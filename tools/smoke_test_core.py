@@ -352,7 +352,7 @@ def check_api(core: Core, info: dict, scratch: Path) -> None:
     note(f"diagnostics: {len(names)} files, no secrets")
 
 
-def run(command: list[str], ffmpeg: str | None, keep: bool, fetch_timeout: float) -> None:
+def run(command: list[str], ffmpeg: str | None, keep: bool, fetch_timeout: float, summary: list[str]) -> None:
     busy = [p for p in PORTS if port_open(p)]
     if busy:
         fail(f"ports already in use before the test: {busy}")
@@ -364,7 +364,10 @@ def run(command: list[str], ffmpeg: str | None, keep: bool, fetch_timeout: float
         core = Core(command, data, ffmpeg, scratch / "core-1.out")
         core.start()
         info = core.control()
-        core.wait_running(info, fetch_timeout)
+        started = time.monotonic()
+        ready = core.wait_running(info, fetch_timeout)
+        summary.append(f"running after {time.monotonic() - started:.0f} s with ffmpeg from "
+                       f"{ready['ffmpeg']['source']}")
         check_api(core, info, scratch)
 
         status, _a = api(info, "POST", "restart")
@@ -442,7 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         check_subcommands(command)
         check_channel_check(command)
-        run(command, args.ffmpeg, args.keep, args.fetch_timeout)
+        summary: list[str] = []
+        run(command, args.ffmpeg, args.keep, args.fetch_timeout, summary)
     except Failure as error:
         for line in str(error).splitlines()[:1]:
             print(f"::error::core smoke test: {line}", flush=True)
@@ -451,6 +455,9 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as error:      # noqa: BLE001 —— a crash of the test itself is a failure too
         print(f"::error::core smoke test crashed: {type(error).__name__}: {error}", flush=True)
         raise
+    import platform
+    print(f"::notice::core smoke test passed on {platform.system()} {platform.machine()}: "
+          f"{'; '.join(summary)}; every check in tools/smoke_test_core.py", flush=True)
     print("[smoke] all checks passed", flush=True)
     return 0
 

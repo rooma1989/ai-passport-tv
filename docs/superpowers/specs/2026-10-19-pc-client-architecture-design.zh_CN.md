@@ -4,7 +4,7 @@
 
 # 电脑客户端、手机遥控和云端遥控通道 —— 架构设计
 
-状态：2026-10-19 草案，待决定。只有设计，一行都没实现。本文**取代**
+状态：2026-10-19 已决定（见「决定」）。P1（核心）和 P3a（带镜像的 ffmpeg 下载）已在分支 `desktop-core` 上实现；各阶段的状态见第 13 节。本文**取代**
 [`2026-10-15-self-hosting-design.zh_CN.md`](2026-10-15-self-hosting-design.zh_CN.md) 的方向：家庭服务器不再
 「Docker 优先」，而是变成 Windows 和 macOS（Linux 算附带）上的一个桌面程序，用的还是同一套核心。那份文档的
 S1 和 S3 已实现，原样沿用；它的结论（局域网明文 HTTP 下的 cookie、前端的两个端口、不带内容的规则、安全上下文
@@ -479,7 +479,12 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
   或被杀），核心就正常停止。Windows 上还要把它放进带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业对象，并用
   `CREATE_NO_WINDOW` 启动；核心自己的每个子进程各在一个作业对象里，ffmpeg 孙进程跟着一起结束。
 - **退出码。** 0 正常停止；1 起不来（原因在 `core.log` 和标准错误的最后几行）；3 这个数据目录上已经有一个核心在跑
-  （`run/core.lock` 被占着）：改去读它的 `control.json`。
+  （`run/core.lock` 被占着）：改去读它的 `control.json`。核心不接受 `config.toml` 时不马上退出：控制接口照常开着，
+  `state` 是 `error`，问题里有一条 `config` 说是哪一项，电视服务不启动；`stop` 之后退出码是 1。
+- **Windows 上的窗口。** 核心启动的每个程序（一直到 ffmpeg）都带 `CREATE_NO_WINDOW`，不管谁启动核心都不会弹出控制台窗口。
+- **同一个可执行文件的子命令**（内部用，给监督进程）：`__relay`、`__tv`、`__front`、`__channel-check`、`__selfhost`、
+  `__tenancy-admin`（应急管理，`--db <数据目录>/tv.db`）、`__certs`。留给以后的阶段：`__gate`、`__worker`、`__hub-agent`、
+  `__asr`。
 - **锁。** 核心占着 `<数据目录>/run/core.lock`；托盘用自己的 `<数据目录>/run/tray.lock` 保证只开一个。
 
 **`<数据目录>/run/control.json`**（接口开始监听后原子地写出，权限 0600，正常停止时删掉；崩溃留下的文件里的端口
@@ -500,7 +505,7 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
 | --- | --- | --- |
 | `GET /local/v1/status` | – | 下面的状态 |
 | `POST /local/v1/console-link` | – | 还没有管理员时 `{"kind": "setup", "url": "http://localhost:<局域网端口>/tv/setup#<设置码>"}`（打开它，设置页里已经填好码）；有了之后 `{"kind": "login", "url": "http://localhost:<局域网端口>/tv/local-login?t=<令牌>", "expires_in": 60}`：在本机浏览器里打开就以管理员登录（30 天的电脑会话），落到 `/tv/console`。只能用一次，只认本机。网页前端起来之前 `503 not_ready` |
-| `POST /local/v1/phone-qr` | – | `{"url": "http://<局域网 IP>:<局域网端口>/TV/P/<令牌>", "svg": "<svg…>", "expires_in": 300}`：现有的一次性手机登录（以管理员）。`409 setup_pending`、`503 no_lan_address`（只听本机或不知道局域网地址）。`pairing_url` 等 P5 |
+| `POST /local/v1/phone-qr` | – | `{"url": "HTTP://<局域网 IP>:<局域网端口>/TV/P/<令牌>", "svg": "<svg…>", "code": "<8 位码>", "typed": "http://<局域网 IP>:<局域网端口>/tv/p", "expires_in": 300}`：现有的一次性手机登录（以管理员；网址大写是为了二维码小；`code` 是手机在 `typed` 那一页输入的码）。10 分钟最多 6 个，再多 `429 limited`。`409 setup_pending`、`503 no_lan_address`（只听本机或不知道局域网地址）。`pairing_url` 等 P5 |
 | `POST /local/v1/power` | `{"keep_awake": "watching" \| "always" \| "never"}` | `{"settings": {…}}`。只存下来；睡眠断言由谁来拿是 P2b 的事 |
 | `POST /local/v1/autostart` | `{"enabled": true \| false}` | `{"settings": {…}}`。只存下来；登录项由托盘注册 |
 | `POST /local/v1/ffmpeg/fetch` | `{"mirror": "<基础网址>"}`（可选） | `202`，开始下载（ffmpeg 缺失或上次失败时）；否则 `409 busy` 或 `409 ready`。进度在状态里 |
@@ -892,6 +897,21 @@ Windows 上 `socket.share` 交接；典型家庭的 `/api/state` 有多大；iOS
   （1–1.5）
 - P1c. 控制接口、一次性电脑版链接、轮转日志、诊断信息。（1）
 
+**P1 的状态（2026-10-19，分支 `desktop-core`）：已实现。** 约定见 5.13 节「实际实现的约定」。文件：
+`server/selfhost/desktop_main.py`、`desktop.py`、`control.py`、`diagnostics.py`、`supervisor.py`（`child_command`、每个子进程
+一个作业对象或进程组）、`server/relay/setup.py`（`/local-login`）、`tools/core_entry.py`、`tools/packaged_entry.py`
+（`run_core`）、`packaging/desktop/xiaozhi-tv-core.spec`、`tools/build_core.py`、`tools/smoke_test_core.py`、
+`.github/workflows/build-desktop-core.yml`，测试在 `tests/test_selfhost_desktop.py`。验证过：打包的 onedir 核心通过
+`tools/smoke_test_core.py`（每个子命令、路径带中文和空格的数据目录、ffmpeg 下载、控制接口的拒绝和回答、第一次设置、一次性
+电脑版链接、模拟的未绑定星智拿到 CONFIG 和绑定画面、不含秘密的诊断包、重启、停止、托盘的管道、第二个核心被拒、强杀后
+不留进程和端口）——本机 macOS arm64，以及 CI 上的 macOS arm64（`macos-15`）、macOS x86_64（`macos-15-intel`）、
+Windows x64（`windows-latest`）、Linux x86_64（`ubuntu-22.04`）。没验证：真的 Windows 10/11 桌面（只有 CI 机器）、
+用户名带中文的 Windows（数据目录带中文，用户目录没有）、真设备经打包核心播放、语音识别走 TCP 连真的识别服务（P9 才做）、
+Windows 上固定端口被别的程序占着。和设计不同的：托盘的开关存在 `<数据目录>/desktop.json`，不在 `config.toml`（5.6），
+`config.toml` 仍是用户手改的文件；`power`、`autostart` 只存设置（拿睡眠断言、注册登录项是 P2b）；CI 流程叫
+`build-desktop-core.yml`，和 P2c 的 `build-desktop.yml` 分开；没做：第一次运行时沿用测试版的 `selfhost` 文件夹（5.5）、
+状态里的 Windows 网络类型提醒（5.11；诊断包里记了网络类型）。
+
 ### P2 —— 托盘和安装包（4–5.5）
 
 - P2a. 托盘、菜单、第一次运行流程、只开一个。（1.5–2）
@@ -901,6 +921,10 @@ Windows 上 `socket.share` 交接；典型家庭的 `/api/state` 有多大；iOS
 ### P3 —— ffmpeg（1–2.5）
 
 - P3a. 测试版：固定哈希下载加镜像，托盘里显示进度。（0.5）
+  **状态：已实现**（分支 `desktop-core`）：`tools/ffmpeg_fetch.py` 固定了每个 wheel 在 PyPI 文件服务器上的路径，所以按哈希
+  校验的下载可以来自 PyPI、清华、阿里云、腾讯或华为（UTC+8 时区先试国内镜像；经 `POST /local/v1/ffmpeg/fetch` 或
+  `TV_FFMPEG_MIRROR` 给的镜像最先试）；进度和错误在控制接口的状态里。CI 上四个构建都验证过（冒烟测试用 `--ffmpeg fetch`）。
+  下载的版本没有 ffprobe，帧率探测退回名义帧率，和单用户版一样。
 - P3b. 1.0：CI 里给每个平台编最小 LGPL 版，附源码。（0.5–2；不确定的是 macOS 那份）
 
 ### P4 —— 多台同时看（3.5–5）

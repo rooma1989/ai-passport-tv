@@ -4,8 +4,9 @@
 
 # PC client, phone remote and cloud remote channel — architecture design
 
-Status: draft for decision, 2026-10-19. Design only; nothing here is
-implemented. This document **supersedes the direction** of
+Status: decided 2026-10-19 (see "Decisions"). Phases P1 (the core) and P3a
+(ffmpeg download with mirrors) are implemented on branch `desktop-core`; the
+status of each phase is in section 13. This document **supersedes the direction** of
 [`2026-10-15-self-hosting-design.md`](2026-10-15-self-hosting-design.md): the
 household server stops being "Docker first" and becomes a desktop program for
 Windows and macOS (Linux as a bonus) built from the same core. Phases S1 and S3
@@ -611,6 +612,16 @@ core is `python3 -m server.selfhost --desktop`.
 - **Exit codes.** 0 stopped normally; 1 could not start (the reason is the last
   lines of `core.log` and of standard error); 3 another core already runs on
   this data folder (`run/core.lock` is held): read its `control.json` instead.
+  A `config.toml` the core refuses does not exit at once: the control API
+  stays up with `state` `error` and a `config` problem naming the key, the
+  TV service does not start, and after `stop` the exit code is 1.
+- **Windows windows.** The core gives `CREATE_NO_WINDOW` to everything it
+  starts, down to ffmpeg, so no console window appears whatever starts it.
+- **Sub-commands** of the same executable (internal, for the supervisor):
+  `__relay`, `__tv`, `__front`, `__channel-check`, `__selfhost`,
+  `__tenancy-admin` (break-glass administration on `--db <data>/tv.db`),
+  `__certs`. Reserved for later phases: `__gate`, `__worker`, `__hub-agent`,
+  `__asr`.
 - **Locks.** The core holds `<data>/run/core.lock`; the tray uses its own
   `<data>/run/tray.lock` for its single instance.
 
@@ -635,7 +646,7 @@ Answers are JSON: `{"ok": true, …}` or `{"ok": false, "error": "<code>",
 | --- | --- | --- |
 | `GET /local/v1/status` | – | the status below |
 | `POST /local/v1/console-link` | – | `{"kind": "setup", "url": "http://localhost:<lan>/tv/setup#<code>"}` while there is no admin (open it: the setup page has the code), otherwise `{"kind": "login", "url": "http://localhost:<lan>/tv/local-login?t=<token>", "expires_in": 60}`: opening it in the local browser signs it in as the admin (a 30-day computer session) and lands on `/tv/console`. One use, loopback only. `503 not_ready` before the web front is up |
-| `POST /local/v1/phone-qr` | – | `{"url": "http://<lan ip>:<lan>/TV/P/<token>", "svg": "<svg…>", "expires_in": 300}`: the existing one-time phone sign-in for the admin. `409 setup_pending`, `503 no_lan_address` (bound to loopback or no LAN address). `pairing_url` arrives with P5 |
+| `POST /local/v1/phone-qr` | – | `{"url": "HTTP://<LAN IP>:<lan>/TV/P/<token>", "svg": "<svg…>", "code": "<8-character code>", "typed": "http://<lan ip>:<lan>/tv/p", "expires_in": 300}`: the existing one-time phone sign-in for the admin (the URL is upper case for a compact QR; `code` is what a phone types at `typed`).  Six per 10 minutes, then `429 limited`. `409 setup_pending`, `503 no_lan_address` (bound to loopback or no LAN address). `pairing_url` arrives with P5 |
 | `POST /local/v1/power` | `{"keep_awake": "watching" \| "always" \| "never"}` | `{"settings": {…}}`. Stored only; who takes the sleep assertion is P2b's choice |
 | `POST /local/v1/autostart` | `{"enabled": true \| false}` | `{"settings": {…}}`. Stored only; the tray registers the login item |
 | `POST /local/v1/ffmpeg/fetch` | `{"mirror": "<base URL>"}` (optional) | `202` and the download starts (when ffmpeg is missing or the last try failed); `409 busy` or `409 ready` otherwise. Progress is in the status |
@@ -1140,6 +1151,35 @@ keeps a URL fragment in a home-screen bookmark.
   over TCP, non-ASCII paths, port fallback, `%LOCALAPPDATA%`. (1–1.5)
 - P1c. Control API, one-time console link, rotating logs, diagnostics. (1)
 
+**Status of P1 (2026-10-19, branch `desktop-core`): implemented.** Contract in
+5.13 ("The contract as implemented"). Files: `server/selfhost/desktop_main.py`,
+`desktop.py`, `control.py`, `diagnostics.py`, `supervisor.py`
+(`child_command`, per-child job objects and process groups),
+`server/relay/setup.py` (`/local-login`), `tools/core_entry.py`,
+`tools/packaged_entry.py` (`run_core`), `packaging/desktop/xiaozhi-tv-core.spec`,
+`tools/build_core.py`, `tools/smoke_test_core.py`,
+`.github/workflows/build-desktop-core.yml`, tests in
+`tests/test_selfhost_desktop.py`. Verified: the frozen onedir core passes
+`tools/smoke_test_core.py` (every sub-command, a data folder with Chinese
+characters and a space, the ffmpeg download, control API refusals and
+answers, setup, the one-time console link, a simulated unbound Xingzhi
+getting CONFIG and the bind picture, diagnostics without secrets, restart,
+stop, the tray's pipe, a second core refused, a hard kill leaving no process
+and no port) on macOS arm64 locally and in CI on macOS arm64 (`macos-15`),
+macOS x86_64 (`macos-15-intel`), Windows x64 (`windows-latest`) and Linux
+x86_64 (`ubuntu-22.04`). Not verified: a real Windows 10/11 desktop (only the
+CI runner), a Windows user name with Chinese characters (the data folder had
+them, the user profile did not), a real device playing through the frozen
+core, the ASR over TCP against a real recogniser (P9 builds it), a fixed port
+held by another program on Windows. Deviations: the tray's settings live in
+`<data>/desktop.json`, not in `config.toml` (5.6), which stays hand-edited;
+`power` and `autostart` only store the setting (taking the sleep assertion
+and registering the login item are P2b); the CI workflow is
+`build-desktop-core.yml`, separate from P2c's `build-desktop.yml`; not done:
+reusing the beta's `selfhost` folder on first run (5.5) and the Windows
+network-profile warning in the status (5.11; the diagnostics zip records the
+profile).
+
 ### P2 — tray and installers (4–5.5)
 
 - P2a. Tray, menu, first-run flow, single instance. (1.5–2)
@@ -1150,6 +1190,14 @@ keeps a URL fragment in a home-screen bookmark.
 ### P3 — ffmpeg (1–2.5)
 
 - P3a. Beta: mirrors for the pinned fetch, tray progress. (0.5)
+  **Status: implemented** (branch `desktop-core`): `tools/ffmpeg_fetch.py`
+  pins each wheel's path on PyPI's file host, so the hash-pinned download can
+  come from PyPI, Tsinghua, Aliyun, Tencent or Huawei (mainland mirrors first
+  in UTC+8; a mirror given through `POST /local/v1/ffmpeg/fetch` or
+  `TV_FFMPEG_MIRROR` goes first); progress and errors are in the control
+  API's status. Verified in CI on all four builds (the smoke test uses
+  `--ffmpeg fetch`). The fetched builds have no ffprobe, so frame-rate probing
+  falls back to the nominal rate, as in the single-user build.
 - P3b. 1.0: minimal LGPL builds per platform in CI with source assets. (0.5–2;
   the macOS build is the uncertain part)
 
