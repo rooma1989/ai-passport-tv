@@ -135,6 +135,10 @@ Non-goals:
 - Changing the device wire protocol, the rate controller or timing code.
 - Peer-to-peer (WebRTC) between phone and PC in the first release (section 7.11).
 
+## Decisions (2026-10-19)
+
+The owner accepted every recommendation (Q1–Q15 as recommended). `v0.2.0-beta` comes first: P0's small trials, P1, P2, P3a and part of P10 (the PC client, one device per model, LAN remote).
+
 ## 3. Questions for you to decide
 
 Each has options and a recommendation; the rest of the document assumes the
