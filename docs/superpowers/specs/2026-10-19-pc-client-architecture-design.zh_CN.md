@@ -904,7 +904,7 @@ Windows 上 `socket.share` 交接；典型家庭的 `/api/state` 有多大；iOS
 `.github/workflows/build-desktop-core.yml`，测试在 `tests/test_selfhost_desktop.py`。验证过：打包的 onedir 核心通过
 `tools/smoke_test_core.py`（每个子命令、路径带中文和空格的数据目录、ffmpeg 下载、控制接口的拒绝和回答、第一次设置、一次性
 电脑版链接、模拟的未绑定星智拿到 CONFIG 和绑定画面、不含秘密的诊断包、重启、停止、托盘的管道、第二个核心被拒、强杀后
-不留进程和端口）——本机 macOS arm64，以及 CI 上的 macOS arm64（`macos-15`）、macOS x86_64（`macos-15-intel`）、
+不留进程和端口）——本机 macOS arm64，以及 CI 上的 macOS arm64（`macos-latest`，arm64）、macOS x86_64（`macos-15-intel`）、
 Windows x64（`windows-latest`）、Linux x86_64（`ubuntu-22.04`）。没验证：真的 Windows 10/11 桌面（只有 CI 机器）、
 用户名带中文的 Windows（数据目录带中文，用户目录没有）、真设备经打包核心播放、语音识别走 TCP 连真的识别服务（P9 才做）、
 Windows 上固定端口被别的程序占着。和设计不同的：托盘的开关存在 `<数据目录>/desktop.json`，不在 `config.toml`（5.6），

@@ -1165,7 +1165,7 @@ characters and a space, the ffmpeg download, control API refusals and
 answers, setup, the one-time console link, a simulated unbound Xingzhi
 getting CONFIG and the bind picture, diagnostics without secrets, restart,
 stop, the tray's pipe, a second core refused, a hard kill leaving no process
-and no port) on macOS arm64 locally and in CI on macOS arm64 (`macos-15`),
+and no port) on macOS arm64 locally and in CI on macOS arm64 (`macos-latest`, arm64),
 macOS x86_64 (`macos-15-intel`), Windows x64 (`windows-latest`) and Linux
 x86_64 (`ubuntu-22.04`). Not verified: a real Windows 10/11 desktop (only the
 CI runner), a Windows user name with Chinese characters (the data folder had
