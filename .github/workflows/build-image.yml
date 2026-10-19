@@ -101,7 +101,7 @@ jobs:
         run: |
           mkdir -p data && sudo chown 1000:1000 data
           docker run -d --name tv -v "$PWD/data:/data" -p 18080:8080 --read-only --tmpfs /tmp --cap-drop ALL xiaozhi-tv:check
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
             sleep 1
           done

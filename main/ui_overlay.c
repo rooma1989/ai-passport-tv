@@ -358,7 +358,9 @@ void ui_overlay_status(ui_surface_t surface, const ui_status_page_t *page)
     ui_text_draw_scaled(surface, pen, 40, fitted, 1, UI_PAPER, UI_INK);
     ui_draw_dotted_hline(surface, 16, 223, 63, UI_RULE);
 
-    char value[8];
+    // Room for any int, sign included: gcc proves no bound tighter than that
+    // for the battery value below and refuses a smaller buffer (-Wformat-truncation).
+    char value[16];
     ui_text_draw_scaled(surface, 20, 72, "信号", 1, UI_MUTED, UI_INK);
     // The strength in dBm says more than the bars when the signal is weak.
     if (page->bars && page->rssi) snprintf(value, sizeof(value), "%ddBm", page->rssi);
