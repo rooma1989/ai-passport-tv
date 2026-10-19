@@ -4,6 +4,11 @@
 
 # Running the Xiaozhi TV server at home (0.x beta)
 
+> **Advanced.** For a Windows PC or a Mac, use the **PC client** instead: an
+> installer, a tray icon, the setup page opens by itself
+> ([`docs/desktop/`](../desktop/README.md), from 0.2.0-beta). This page is for a
+> NAS, a mini PC without a desktop, Docker, or running from source.
+
 The Xiaozhi TV server can run on a computer, NAS or mini PC at home that stays
 on; the TVs on the same home network connect to it. No cloud server, no
 bandwidth bill, and the best picture. This page is the quick start; the design

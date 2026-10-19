@@ -1187,6 +1187,15 @@ profile).
 - P2c. `.app` + DMG (arm64, x86_64), Inno Setup, Linux archive, CI workflow
   with smoke tests, NOTICE. (1.5–2)
 
+**Status (2026-10-19): implemented on branch `desktop-tray`**, against the P1c
+contract of 5.13, with `desktop-core` merged in (CI builds the installers around
+the real core; `desktop/devcore.py` is a stand-in core for the tray's tests). Code map, decisions and what is still open:
+[`docs/desktop/developer.md`](../../desktop/developer.md). The tray holds the
+sleep assertion and registers the login item; trusted networks (5.11) wait for
+the core (the tray side and a proposed `network` status block are ready); the
+core and the tray are two onedirs (macOS: the core in `Contents/Resources/core/`,
+not `Contents/MacOS/`, for code signing).
+
 ### P3 — ffmpeg (1–2.5)
 
 - P3a. Beta: mirrors for the pinned fetch, tray progress. (0.5)
@@ -1243,6 +1252,13 @@ settings page, memory warning.
 Download page per OS, Gatekeeper and SmartScreen steps with screenshots,
 first run, phones, away-from-home control and its privacy statement, Docker
 pages moved to "advanced".
+
+**Status (2026-10-19), the `v0.2.0-beta` part:** the tutorial
+[`docs/desktop/`](../../desktop/README.md) (Chinese first: download, Gatekeeper
+and SmartScreen, first run, phones, flashing and binding, tray menu, data and
+uninstalling; screenshots still TODO) and the download page
+`packaging/site/download/index.html`; `docs/selfhost/` is marked "advanced".
+Away-from-home control and its privacy statement come with P5.
 
 ### P11 — beta hardening on real machines (2–3)
 

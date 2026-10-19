@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=小智电视
+Name[en]=Xiaozhi TV
+Comment=小智电视电脑客户端：给家里的小电视推流
+Comment[en]=Xiaozhi TV PC client: streams to the TV devices at home
+# For a folder other than ~/xiaozhi-tv, put its full path after Exec= instead.
+# (\\$ is how the Desktop Entry format writes a literal $ inside a quoted argument.)
+Exec=sh -c "\\$HOME/xiaozhi-tv/xiaozhi-tv"
+Icon=xiaozhi-tv
+Terminal=false
+Categories=AudioVideo;Video;

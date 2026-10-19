@@ -4,6 +4,10 @@
 
 # 在家里跑小智电视服务器（0.x 测试版）
 
+> **进阶。** 家里是 Windows 电脑或 Mac 的，请用**电脑客户端**：有安装包、托盘图标，设置页自己打开
+> （[`docs/desktop/`](../desktop/README.zh_CN.md)，0.2.0 测试版起）。这一页给 NAS、没有桌面的迷你主机、Docker、
+> 或者从源代码运行的人。
+
 小智电视的服务器可以装在你家里一台一直开着的电脑、NAS 或迷你主机上，小电视在同一个家庭网络里连它。不用云服务器、
 不花带宽费，画面也最好。这一页是快速上手；设计和取舍见
 [`2026-10-15-self-hosting-design.zh_CN.md`](../superpowers/specs/2026-10-15-self-hosting-design.zh_CN.md)。
