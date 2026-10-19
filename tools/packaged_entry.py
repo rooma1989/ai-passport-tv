@@ -77,7 +77,8 @@ use_system_ca()
 # what keeps the lazily imported modules in the bundle.
 from tools import (certs, channel_config, datadir, ffmpeg_fetch, launch,  # noqa: E402,F401
                    parentwatch)
-from tools.subcommands import CERTS_COMMAND, CONFIG_COMMAND, MEDIA_COMMAND  # noqa: E402
+from tools.subcommands import (CERTS_COMMAND, CONFIG_COMMAND, CORE_COMMANDS,  # noqa: E402
+                               MEDIA_COMMAND, SELFHOST_COMMAND)
 
 # Named in packaging/tv-server.spec's hiddenimports, and imported here only as
 # the names are actually needed -- see _load_server_modules below.
@@ -181,13 +182,69 @@ def _run_certs() -> int:
     return 0 if count > 0 else 1
 
 
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _no_console_windows() -> None:
+    """Windows: every process the core starts gets CREATE_NO_WINDOW unless it asks otherwise.
+
+    The tray starts the core without a console, and a console program started by a process
+    that has none gets a console window of its own: every ffmpeg the media server starts for a
+    channel change, every probe, would flash a black window on the family's screen. The
+    supervisor passes the flag for its children itself (server/selfhost/supervisor.py); this
+    covers everything below them, which is started from code that knows nothing about it.
+    """
+    if os.name != "nt":
+        return
+    import subprocess
+
+    original = subprocess.Popen.__init__
+    if getattr(original, "_no_window", False):
+        return
+
+    def init(self, *args, **kwargs):
+        if not kwargs.get("creationflags"):
+            kwargs["creationflags"] = _CREATE_NO_WINDOW
+        original(self, *args, **kwargs)
+
+    init._no_window = True      # type: ignore[attr-defined]
+    subprocess.Popen.__init__ = init    # type: ignore[method-assign]
+
+
+def run_core(arguments: list[str]) -> int:
+    """Become the PC client's core or one of its children (CORE_COMMANDS).
+
+    Checked before anything the single-user program does below: no chdir into
+    a data directory beside the executable (the core is given its data folder,
+    and beside the executable is Program Files or a read-only app bundle), no
+    single-user encoder defaults (the supervisor sets each child's environment
+    itself), no copied channel table (a self-hosted server starts empty).
+
+    A child takes the parent watch the supervisor offers (TV_WATCH_PARENT and a
+    pipe on standard input; a job object on Windows): when the supervisor ends,
+    however it ends, so does the child. The supervisor itself watches its own
+    standard input in server/selfhost, where it can stop its children first.
+    """
+    import importlib
+
+    _no_console_windows()
+    command, rest = arguments[0], arguments[1:]
+    if command not in (SELFHOST_COMMAND, "__selfhost"):
+        parentwatch.start()
+    module = importlib.import_module(CORE_COMMANDS[command])
+    result = module.main(rest)
+    return int(result or 0)
+
+
 def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in CORE_COMMANDS:
+        return run_core(arguments)
+
     os.environ.setdefault("TV_ENCODE", "fill")
     os.environ.setdefault("TV_DEGRADE", "steady")
     os.environ.setdefault("TV_FRAME_BYTES", "20000")
     os.environ.setdefault("TV_SEND_BUFFER", "16384")
-
-    arguments = list(sys.argv[1:] if argv is None else argv)
 
     # Answered before anything is set up, because it is a question about this
     # process and its platform and about nothing else. Creating a data directory

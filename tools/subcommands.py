@@ -24,3 +24,32 @@ CONFIG_COMMAND = "__config"
 # Python answers that question correctly, so it has to be the built program that
 # is asked. See tools/smoke_test_package.py and tools/certs.py.
 CERTS_COMMAND = "__certs"
+
+# The PC client's core (docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md,
+# section 5.1): the self-host supervisor and the children it starts, all from
+# the one frozen executable. The supervisor asks for a child by these names
+# (server/selfhost/supervisor.py, child_command); tools/packaged_entry.py maps
+# each to the module it runs. `selfhost` is the one a person or the tray types,
+# so it has no underscores; the rest are the internal protocol, like the two
+# above. Reserved for later phases, not dispatched yet: __gate, __worker (P4),
+# __hub-agent (P5), __asr (P9).
+SELFHOST_COMMAND = "selfhost"
+CORE_COMMANDS = {
+    SELFHOST_COMMAND: "server.selfhost.__main__",
+    "__selfhost": "server.selfhost.__main__",
+    "__relay": "server.relay.__main__",
+    "__front": "server.front",
+    "__tv": "server.tv_server",
+    # The relay checks a channel table before saving it with the media server's own parser, in a
+    # process of its own (server/relay/channeltable.py, media_check).
+    "__channel-check": "server.relay.channeltable",
+    # The break-glass administration commands (users, login-link, …) against the
+    # client's database, for support: `xiaozhi-tv-core __tenancy-admin --db <data>/tv.db users`.
+    "__tenancy-admin": "server.tenancy.admin",
+}
+# The module each child of the supervisor runs, and the name it is started by.
+CHILD_COMMANDS = {
+    "server.relay": "__relay",
+    "server.front": "__front",
+    "server.tv_server": "__tv",
+}

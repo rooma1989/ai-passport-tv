@@ -25,8 +25,9 @@ INVITE_S = 7 * 24 * 3600
 # 重新配对的窗口：这段时间里设备用新的密钥连上来，就记住新的。
 REPAIR_S = 10 * 60
 NAME_MAX = 20
-# 会话是怎么来的（session.via）：普通登录、设备恢复、管理员给的链接、扫绑定码注册。
-VIAS = ("", "recover", "admin", "signup")
+# 会话是怎么来的（session.via）：普通登录、设备恢复、管理员给的链接、扫绑定码注册、
+# 电脑客户端的托盘「打开电脑版」（本机的一次性链接，server/relay/setup.py 的 /local-login）。
+VIAS = ("", "recover", "admin", "signup", "local")
 # 「有新手机通过设备恢复登录」在别的登录上提示多久。
 NOTICE_S = 7 * 24 * 3600
 MODEL_NAMES = {"xingzhi-cube-154": "小智", "ai-passport": "Passport"}

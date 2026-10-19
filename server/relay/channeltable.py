@@ -158,7 +158,10 @@ def render(rows: list[dict]) -> str:
 def media_check(text: str, timeout_s: float = CHECK_TIMEOUT_S) -> dict:
     """用电视服务的解析器（live.parse_channels）在子进程里检查：{ok, error, warnings}。"""
     try:
-        done = subprocess.run([sys.executable, "-m", "server.relay.channeltable", "--check"], input=text,
+        # 电脑客户端的打包版里没有 `python -m`：同一个可执行文件加子命令（tools/subcommands.py）。
+        command = [sys.executable, "__channel-check", "--check"] if getattr(sys, "frozen", False) else \
+            [sys.executable, "-m", "server.relay.channeltable", "--check"]
+        done = subprocess.run(command, input=text,
                               capture_output=True, text=True, encoding="utf-8", timeout=timeout_s,
                               cwd=str(_ROOT), env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         answer = json.loads(done.stdout.strip().splitlines()[-1])
@@ -226,8 +229,12 @@ def _check_main() -> int:
     return 0
 
 
-if __name__ == "__main__":
-    if sys.argv[1:] == ["--check"]:
-        sys.exit(_check_main())
+def main(argv: list[str] | None = None) -> int:
+    if (sys.argv[1:] if argv is None else argv) == ["--check"]:
+        return _check_main()
     print("用法：python3 -m server.relay.channeltable --check < channels.txt", file=sys.stderr)
-    sys.exit(2)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

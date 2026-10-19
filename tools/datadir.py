@@ -176,6 +176,54 @@ def data_dir() -> Path:
     return path
 
 
+# The PC client (docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md,
+# section 5.5). A folder of its own, not APP_DIR_NAME above: the client is a
+# separate program from the single-user server and the plain-Python self-host
+# beta, and its data folder holds a database and secrets.
+DESKTOP_DIR_NAME = "XiaozhiTV"
+DESKTOP_DIR_NAME_LINUX = "xiaozhi-tv"
+
+
+def desktop_data_dir(system: str | None = None, environ=None, home: Path | None = None) -> Path:
+    """The PC client's data folder for this platform. Not created here.
+
+    Windows uses the *local* application data folder, not the roaming one that
+    `user_data_dir` uses: a SQLite database in a roaming profile can be synced
+    half-written on domain machines.
+    """
+    system = system or platform.system()
+    environ = os.environ if environ is None else environ
+    home = home or Path.home()
+    if system == "Windows":
+        local = environ.get("LOCALAPPDATA")
+        return (Path(local) if local else home / "AppData" / "Local") / DESKTOP_DIR_NAME
+    if system == "Darwin":
+        return home / "Library" / "Application Support" / DESKTOP_DIR_NAME
+    xdg = environ.get("XDG_DATA_HOME")
+    return (Path(xdg) if xdg else home / ".local" / "share") / DESKTOP_DIR_NAME_LINUX
+
+
+def desktop_logs_dir(data: Path | None = None, system: str | None = None, environ=None,
+                     home: Path | None = None) -> Path:
+    """Where the PC client writes core.log. Not created here.
+
+    `data` is the data folder when one was given explicitly (`--data`): the logs
+    then go inside it, so a test or a second installation keeps everything in
+    one place. Otherwise each platform's usual place for logs.
+    """
+    if data is not None:
+        return Path(data) / "logs"
+    system = system or platform.system()
+    environ = os.environ if environ is None else environ
+    home = home or Path.home()
+    if system == "Darwin":
+        return home / "Library" / "Logs" / DESKTOP_DIR_NAME
+    if system == "Windows":
+        return desktop_data_dir(system, environ, home) / "logs"
+    xdg = environ.get("XDG_STATE_HOME")
+    return (Path(xdg) if xdg else home / ".local" / "state") / DESKTOP_DIR_NAME_LINUX / "logs"
+
+
 def channels_file() -> Path:
     """The channel table the user edits, wherever the data directory landed."""
     return data_dir() / "channels.txt"

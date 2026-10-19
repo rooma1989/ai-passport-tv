@@ -1403,6 +1403,7 @@ async function loadSessions() {
     if (s.current) kind.appendChild(el("span", "sub live", "这台电脑"));
     if (s.via === "recover") kind.appendChild(el("span", "sub live", "设备恢复登录"));
     else if (s.via === "admin") kind.appendChild(el("span", "sub", "管理员给的链接"));
+    else if (s.via === "local") kind.appendChild(el("span", "sub", "电脑上的小智电视程序"));
     const a = el("td", "a");
     if (!s.current) a.appendChild(button("退出", "linkbtn red", async () => {
       try {

@@ -466,6 +466,74 @@ LGPL 版。
 `/local/v1/status`。核心不改。B 带来的：真正的窗口而不是浏览器标签页、系统通知、更像原生应用；代价：4–6 个
 agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的 Windows 10/11 都有），签名照样要做。
 
+#### 实际实现的约定（P1c）
+
+这是核心（P1，分支 `desktop-core`）和托盘（P2）或以后的 Tauri 外壳之间的接口。这里没写的都不算约定。
+
+**启动核心。** onedir 构建是一个文件夹 `xiaozhi-tv-core/`，里面的可执行文件叫 `xiaozhi-tv-core`（Windows 上带
+`.exe`）。托盘运行 `xiaozhi-tv-core selfhost --desktop`（不带参数也是这个意思），可以加 `--data <文件夹>`；不加时数据
+目录是 5.5 节里各系统的那个。其他选项：`--ffmpeg <路径>`（或 `--ffmpeg fetch`：一定用固定哈希的下载版）、
+`--bind 127.0.0.1`（只听本机；测试用）。从源代码运行时同一个核心是 `python3 -m server.selfhost --desktop`。
+
+- **生命周期。** 启动时把标准输入设成一个托盘永远不写的管道，并设环境变量 `TV_WATCH_PARENT=1`：管道一关（托盘退出
+  或被杀），核心就正常停止。Windows 上还要把它放进带 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的作业对象，并用
+  `CREATE_NO_WINDOW` 启动；核心自己的每个子进程各在一个作业对象里，ffmpeg 孙进程跟着一起结束。
+- **退出码。** 0 正常停止；1 起不来（原因在 `core.log` 和标准错误的最后几行）；3 这个数据目录上已经有一个核心在跑
+  （`run/core.lock` 被占着）：改去读它的 `control.json`。
+- **锁。** 核心占着 `<数据目录>/run/core.lock`；托盘用自己的 `<数据目录>/run/tray.lock` 保证只开一个。
+
+**`<数据目录>/run/control.json`**（接口开始监听后原子地写出，权限 0600，正常停止时删掉；崩溃留下的文件里的端口
+已经没人应答）：
+
+```json
+{"api": 1, "port": 51234, "token": "<43 个字符>", "pid": 4242,
+ "version": "0.2.0-beta", "started": 1760870000.0,
+ "data_dir": "…", "logs_dir": "…"}
+```
+
+**请求。** `http://127.0.0.1:<端口>/local/v1/…`，请求头 `Authorization: Bearer <令牌>`。拒绝：没有令牌或令牌不对
+（401）、`Host` 不是 `127.0.0.1:<端口>` 或 `localhost:<端口>`（403）、带任何 `Origin` 头（403；网页用不了这个接口）。
+请求体是 JSON 对象，最多 64 kB。回答是 JSON：`{"ok": true, …}` 或 `{"ok": false, "error": "<代码>", "message":
+"<给用户看的中文>"}`。
+
+| 接口 | 请求体 | 回答 |
+| --- | --- | --- |
+| `GET /local/v1/status` | – | 下面的状态 |
+| `POST /local/v1/console-link` | – | 还没有管理员时 `{"kind": "setup", "url": "http://localhost:<局域网端口>/tv/setup#<设置码>"}`（打开它，设置页里已经填好码）；有了之后 `{"kind": "login", "url": "http://localhost:<局域网端口>/tv/local-login?t=<令牌>", "expires_in": 60}`：在本机浏览器里打开就以管理员登录（30 天的电脑会话），落到 `/tv/console`。只能用一次，只认本机。网页前端起来之前 `503 not_ready` |
+| `POST /local/v1/phone-qr` | – | `{"url": "http://<局域网 IP>:<局域网端口>/TV/P/<令牌>", "svg": "<svg…>", "expires_in": 300}`：现有的一次性手机登录（以管理员）。`409 setup_pending`、`503 no_lan_address`（只听本机或不知道局域网地址）。`pairing_url` 等 P5 |
+| `POST /local/v1/power` | `{"keep_awake": "watching" \| "always" \| "never"}` | `{"settings": {…}}`。只存下来；睡眠断言由谁来拿是 P2b 的事 |
+| `POST /local/v1/autostart` | `{"enabled": true \| false}` | `{"settings": {…}}`。只存下来；登录项由托盘注册 |
+| `POST /local/v1/ffmpeg/fetch` | `{"mirror": "<基础网址>"}`（可选） | `202`，开始下载（ffmpeg 缺失或上次失败时）；否则 `409 busy` 或 `409 ready`。进度在状态里 |
+| `POST /local/v1/diagnostics` | `{"dest_dir": "<文件夹>"}`（可选；默认桌面，没有桌面就 `<数据目录>/exports`） | `{"path": "<压缩包>", "size": n}`（5.15；不含秘密，地址截短） |
+| `POST /local/v1/restart` | – | `202`；所有子进程停了再起 |
+| `POST /local/v1/stop` | – | `202`；核心停止，退出码 0 |
+| `/local/v1/remote/*`、`/flash/*`、`/update/*` | – | `501 not_implemented`，等 P5、P7、P8 |
+
+状态（`GET /local/v1/status`），每个字段都一定有：
+
+```json
+{"ok": true, "api": 1, "version": "0.2.0-beta", "pid": 4242, "started": 1760870000.0,
+ "state": "starting | fetching_ffmpeg | running | stopping | error",
+ "problems": [{"code": "…", "message": "…"}],
+ "data_dir": "…", "logs_dir": "…", "bind": "0.0.0.0",
+ "ports": {"lan": 8080, "lan_wanted": 8080, "xingzhi": 8098, "passport": 8097, "control": 51234},
+ "lan_url": "http://192.168.1.5:8080/tv/", "local_url": "http://localhost:8080/tv/",
+ "setup_pending": true,
+ "children": {"relay": {"running": true, "restarts": 0}, "xingzhi": {…}, "passport": {…}, "front": {…}},
+ "devices": [{"id": "…", "name": "…", "model": "xingzhi-cube-154", "online": true, "channel": "…", "since": 1760870100.0}],
+ "watching": 1,
+ "ffmpeg": {"state": "ready | fetching | missing | failed", "path": "…", "source": "given | system | fetched",
+            "done": 0, "total": 0, "error": ""},
+ "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": false},
+ "settings": {"keep_awake": "watching", "autostart": true}}
+```
+
+`problems[].code` 是这几种之一：`ffmpeg_missing`、`ffmpeg_failed`、`port_in_use`（带 `port`；系统肯说时还带
+`holder`：占着它的程序名）、`lan_port_moved`（带 `from` 和 `to`）、`child_down`（带 `name`）、`config`（config.toml
+不合法；这时 `state` 是 `error`）。托盘显示第一个问题的 `message`。只听本机或不知道局域网地址时 `lan_url` 是空串。
+
+托盘上的开关存在 `<数据目录>/desktop.json`（核心经接口写），不放进 `config.toml`：那是用户手改的文件，程序从不改写。
+
 ### 5.14 更新
 
 按 Q12 的流程。`<static-site>` 上的 `latest.json`：
