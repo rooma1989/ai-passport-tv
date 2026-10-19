@@ -214,6 +214,9 @@ def _phone_link_info(handler, relay) -> None:
         handler._json({"ok": False, "error": "输错太多次了，请 10 分钟后再试"})
         return
     found = links.info(token=query.get("t"), code=query.get("code") if by_code else None)
+    if found is not None and links.origin_of(token=query.get("t"),
+                                             code=query.get("code") if by_code else None)["origin"] == "local":
+        found = None     # 电脑客户端给本机浏览器的链接（setup.py 的 /local-login），不是给手机的
     if found is None:
         if by_code:
             links.missed(ip)
@@ -252,7 +255,8 @@ def _accept_phone_link(handler, relay, body: dict) -> None:
     if code is not None and links.blocked(ip):
         handler._json({"ok": False, "error": "输错太多次了，请 10 分钟后再试"})
         return
-    user = links.consume(token=token, code=code, ip=ip, user_agent=handler._agent())
+    local = links.origin_of(token=token, code=code)["origin"] == "local"
+    user = None if local else links.consume(token=token, code=code, ip=ip, user_agent=handler._agent())
     if user is None:
         if code is not None:
             links.missed(ip)

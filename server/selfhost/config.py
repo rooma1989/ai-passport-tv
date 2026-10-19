@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,7 +41,7 @@ proxy = ""                      # 以后的本机模式用，现在不起作用
 cookies = "youtube/cookies.txt"
 
 [voice]
-asr_socket = ""                 # 语音识别容器的套接字，例如 "/data/run/asr.sock"；空 = 不开语音
+asr_socket = ""                 # 语音识别容器的套接字，例如 "/data/run/asr.sock"，或本机 TCP http://127.0.0.1:<端口>；空 = 不开语音
 
 [maintenance]
 backup_keep_days = 14           # 每晚备份数据库，留几天
@@ -158,6 +159,14 @@ def _check(config: Config) -> None:
         raise ConfigError(f"config.toml：[youtube] mode 只能是 {' / '.join(YOUTUBE)}")
     if config.max_streams < 0 or config.backup_keep_days < 1:
         raise ConfigError("config.toml：max_streams 不能是负数，backup_keep_days 至少 1")
+    if config.asr_socket.startswith(("http:", "https:")):
+        from ..voice.asr import loopback_url
+        try:
+            loopback_url(config.asr_socket)
+        except ValueError:
+            raise ConfigError("config.toml：asr_socket 用 TCP 时只能写 http://127.0.0.1:<端口>") from None
+    elif config.asr_socket and os.name == "nt":
+        raise ConfigError("config.toml：Windows 上 asr_socket 要写 http://127.0.0.1:<端口>（没有 Unix 套接字）")
     if len(config.name) > 20:
         raise ConfigError("config.toml：name 最多 20 个字")
 

@@ -14,6 +14,11 @@
 0.x 测试版每个型号一次服务一台设备（设计的 Q1 选项 A）；同一型号的第二台要等第一台断开。
 
   python3 -m server.selfhost health   查 /healthz（Docker 的 HEALTHCHECK 用）
+
+电脑客户端（托盘启动的核心）：python3 -m server.selfhost --desktop [--data <数据目录>]，打包版是
+xiaozhi-tv-core selfhost --desktop。多出来的（端口后备、日志文件、ffmpeg 下载、本机控制接口、子进程随监督
+进程结束）见 desktop.py、control.py、supervisor.py 和 docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md
+第 5 节。没有 --desktop 时一切和以前一样（Docker、./run.sh --selfhost）。
 """
 
 from __future__ import annotations
@@ -62,14 +67,20 @@ def _addresses(config, accounts, in_container: bool) -> tuple[str, str, str]:
 
 
 def build_children(layout, config, ffmpeg: str, device_address: str, public_url: str, log,
-                   in_container: bool = False, firmware: Path | None = None) -> list:
-    """firmware：网页刷机用的固件文件夹（bootstrap.firmware_dir），没有时 None。"""
-    from .supervisor import Child, python_command
+                   in_container: bool = False, firmware: Path | None = None, desktop: bool = False) -> list:
+    """firmware：网页刷机用的固件文件夹（bootstrap.firmware_dir），没有时 None。
+    desktop：电脑客户端——子进程经 tools/packaged_entry.py 的分派启动、随监督进程结束、工作目录是数据目录。"""
+    from .supervisor import Child, child_command, is_frozen
     root = Path(__file__).resolve().parents[2]
     base_env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
     base_env["PYTHONPATH"] = str(root) + (os.pathsep + base_env["PYTHONPATH"] if base_env.get("PYTHONPATH") else "")
-    python = python_command()
-    relay = python + ["-m", "server.relay", "--db", str(layout.db), "--devices-dir", str(layout.devices),
+    watch = desktop or is_frozen()
+    cwd = layout.root if desktop else None
+
+    def child(name: str, argv: list[str], env: dict):
+        return Child(name, argv, env, log, cwd=cwd, watch=watch)
+
+    relay = child_command("server.relay", desktop) + ["--db", str(layout.db), "--devices-dir", str(layout.devices),
                       "--key-file", str(layout.relay_key), "--wifi-key", str(layout.wifi_key),
                       "--main-channels", str(layout.channels), "--ffmpeg", ffmpeg,
                       "--selfhost", "--setup-code-file", str(layout.setup_code)]
@@ -83,7 +94,7 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
     relay_env = dict(base_env, TV_FLASHER_URL="/flash/")
     if firmware is not None:
         relay_env["TV_FIRMWARE_MANIFEST"] = str(firmware / "manifest.json")
-    children = [Child("relay", relay, relay_env, log)]
+    children = [child("relay", relay, relay_env)]
     for name, port_attr, geometry, fps, rate, listen_port in MODELS:
         env = dict(base_env, TV_GEOMETRY=geometry, TV_FPS=str(fps), TV_RATE_START=str(rate),
                    TV_DB=str(layout.db), TV_DEVICES_DIR=str(layout.devices), TV_CHANNELS_FILE=str(layout.channels),
@@ -91,12 +102,15 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
                    TV_DECODER_CONNECT_TIMEOUT_S="30",
                    TV_LISTEN_PORT=str(listen_port), TV_LISTEN_ROUTE=name, TV_LISTEN_KEY_FILE=str(layout.relay_key),
                    TV_PCM_QUEUE_CHUNKS="600", TV_VIDEO_QUEUE_S="24")
-        if config.asr_socket:
+        if config.asr_socket.startswith("http://"):
+            # 电脑客户端的本机识别服务走回环 TCP（Windows 没有 Unix 套接字；server/voice/asr.py）。
+            env.update(TV_ASR_URL=config.asr_socket, TV_RELAY_KEY_FILE=str(layout.relay_key))
+        elif config.asr_socket:
             env.update(TV_ASR_SOCKET=config.asr_socket, TV_RELAY_KEY_FILE=str(layout.relay_key))
-        argv = python + ["-m", "server.tv_server", "live", "--port", str(getattr(config, port_attr)),
-                         "--bind", config.bind, "--ffmpeg", ffmpeg]
-        children.append(Child(name, argv, env, log))
-    front = python + ["-m", "server.front", "--bind", config.bind, "--lan-port", str(config.lan_port),
+        argv = child_command("server.tv_server", desktop) + ["live", "--port", str(getattr(config, port_attr)),
+                                                             "--bind", config.bind, "--ffmpeg", ffmpeg]
+        children.append(child(name, argv, env))
+    front = child_command("server.front", desktop) + ["--bind", config.bind, "--lan-port", str(config.lan_port),
                       "--signup", config.signup_via_device, "--status-file", str(layout.status)]
     for name, _, _, _, _, listen_port in MODELS:
         front += ["--listen", f"{name}={listen_port}"]
@@ -112,7 +126,7 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         front += ["--flasher-dir", str(flasher)]
     if firmware is not None:
         front += ["--firmware-dir", str(firmware)]
-    children.append(Child("front", front, base_env, log))
+    children.append(child("front", front, base_env))
     return children
 
 
@@ -135,8 +149,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m server.selfhost", description="小智电视自建服务器")
     parser.add_argument("command", nargs="?", choices=("run", "health"), default="run")
     parser.add_argument("--data", type=Path, help="数据目录（Docker 里是 /data）")
-    parser.add_argument("--ffmpeg", help="ffmpeg 的路径（默认在 PATH 里找）")
+    parser.add_argument("--ffmpeg", help="ffmpeg 的路径（默认在 PATH 里找）；--desktop 时 fetch = 用固定哈希下载的那份")
+    parser.add_argument("--desktop", action="store_true", help="电脑客户端（托盘启动的核心）")
+    parser.add_argument("--bind", help="和 --desktop 一起用：覆盖 config.toml 的 bind（例如 127.0.0.1，测试用）")
     args = parser.parse_args(argv)
+    if args.desktop:
+        from . import desktop_main
+        return desktop_main.run(args)
     in_container = _in_container()
     data = args.data or (Path("/data") if in_container else None)
     if data is None:

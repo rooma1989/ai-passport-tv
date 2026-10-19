@@ -323,3 +323,57 @@ def start() -> bool:
 
     threading.Thread(target=watch, daemon=True, name="parent-watch").start()
     return True
+
+
+# ---- One job per child: the PC client's supervisor (server/selfhost/supervisor.py) ----
+#
+# attach() above puts every child into one job that lives as long as this
+# process. The supervisor needs a little more: it restarts one child at a time,
+# and on Windows `terminate()` is TerminateProcess, which ends that child and
+# leaves its ffmpeg grandchildren running and holding their sockets. A job per
+# child lets it end the child and everything the child started, in one call,
+# and still has the kernel end them all if the supervisor itself dies.
+
+
+def new_job():
+    """A kill-on-close job object (Windows), or None anywhere else or on failure."""
+    if os.name != "nt":
+        return None
+    try:
+        return _windows_job()
+    except Exception:       # noqa: BLE001 —— a backstop, see attach()
+        return None
+
+
+def assign(job, process: subprocess.Popen) -> bool:
+    """Put `process` in `job`. False when there is no job or Windows refused."""
+    if job is None or os.name != "nt":
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        return bool(kernel32.AssignProcessToJobObject(job, int(process._handle)))  # type: ignore[attr-defined]
+    except Exception:       # noqa: BLE001
+        return False
+
+
+def terminate_job(job, code: int = 1) -> bool:
+    """End every process in `job` (the child and its children)."""
+    if job is None or os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.WinDLL("kernel32", use_last_error=True).TerminateJobObject(job, code))
+    except Exception:       # noqa: BLE001
+        return False
+
+
+def close_job(job) -> None:
+    """Close the handle; with kill-on-close this also ends anything still in the job."""
+    if job is None or os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(job)
+    except Exception:       # noqa: BLE001
+        pass

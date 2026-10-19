@@ -40,6 +40,8 @@ CREATE_NET_LIMIT = (12, 600)
 GUESS_LIMIT = (10, 600)
 GUESS_ALL_LIMIT = (100, 600)
 KEEP_S = 3600
+# 电脑客户端托盘「打开电脑版」的本机链接：只在这台电脑上、马上就用。
+LOCAL_LINK_S = 60
 
 # 设备恢复登录：每台设备每小时最多要这么多个（按库里的记录算，电视服务重启也不清零）。
 DEVICE_LIMIT = (3, 3600)
@@ -221,6 +223,25 @@ class PhoneLinks:
             token = self._insert(conn, user_id, "admin", None, "", now)
         accounts.audit("phone_link.admin", actor, ip, "user", str(user_id))
         return {"token": token, "ttl": LINK_S}
+
+    def create_local(self, user_id: int, ttl: float = LOCAL_LINK_S) -> dict:
+        """电脑客户端的控制接口（server/selfhost/control.py）要的「打开电脑版」链接：{token, ttl}。
+
+        来路是 local：只有中转的 /local-login 认它，而且只认本机来的请求（setup.py）；60 秒、用一次。
+        没有这个用户、被封了或不是管理员时 ValueError。"""
+        accounts = self.accounts
+        now = self.clock()
+        with accounts.lock, db.transaction(accounts.conn) as conn:
+            row = conn.execute("SELECT status, role FROM user WHERE id=?", (user_id,)).fetchone()
+            if row is None or row["status"] != "active" or row["role"] != "admin":
+                raise ValueError("没有这个管理员，或者他被封了")
+            conn.execute("DELETE FROM phone_link WHERE expires_at < ?", (now - KEEP_S,))
+            conn.execute("UPDATE phone_link SET expires_at=? WHERE origin='local' AND user_id=? "
+                         "AND used_at IS NULL AND expires_at > ?", (now, user_id, now))
+            token = self._insert(conn, user_id, "local", None, "127.0.0.1", now)
+            conn.execute("UPDATE phone_link SET expires_at=? WHERE token_sha256=?", (now + ttl, db.sha256(token)))
+        accounts.audit("phone_link.local", user_id, "127.0.0.1", "user", str(user_id))
+        return {"token": token, "ttl": int(ttl)}
 
     def origin_of(self, token: str | None = None, code: str | None = None) -> dict:
         """一个链接是哪儿来的：{origin: pc/device/admin, device_id, device_name}（找不到时当作 pc）。
