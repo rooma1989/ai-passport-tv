@@ -174,6 +174,24 @@ class ManifestToolTests(unittest.TestCase):
                 bundle.writestr(name, data)
         return archive
 
+    def test_the_zips_sha256sums_matches_its_contents(self) -> None:
+        """`sha256sum -c SHA256SUMS` inside the unpacked firmware folder passes: every line names a
+        file that is in the zip with that hash, and every file but SHA256SUMS itself is listed."""
+        import hashlib
+        import zipfile
+        archive = self.release_zip()
+        with zipfile.ZipFile(archive) as bundle:
+            files = {name[len(FM.BUNDLE_FIRMWARE):]: bundle.read(name) for name in bundle.namelist()
+                     if name.startswith(FM.BUNDLE_FIRMWARE) and not name.endswith("/")}
+        listed = {}
+        for line in files["SHA256SUMS"].decode("utf-8").splitlines():
+            digest, name = line.split(None, 1)
+            listed[name.lstrip("*")] = digest
+        self.assertTrue((self.out / "manifest-ai-passport.json").is_file(), "the release has per-board manifests")
+        self.assertEqual(set(listed), set(files) - {"SHA256SUMS"})
+        for name, digest in listed.items():
+            self.assertEqual(hashlib.sha256(files[name]).hexdigest(), digest, name)
+
     def test_install_takes_only_the_checked_firmware(self) -> None:
         archive = self.release_zip({"flash/firmware/../../evil.txt": b"x", "flash/firmware/.hidden": b"x"})
         target = self.tmp / "data" / "firmware"

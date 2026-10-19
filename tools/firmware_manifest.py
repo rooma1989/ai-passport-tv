@@ -323,10 +323,17 @@ def cmd_bundle(args) -> int:
     shutil.copytree(FLASHER_DIR, out, ignore=shutil.ignore_patterns("README*", "firmware"))
     (out / "firmware").mkdir()
     manifest = json.loads((firmware / "manifest.json").read_text(encoding="utf-8"))
-    names = ["manifest.json", "SHA256SUMS"] + [p["path"] for b in manifest["builds"] for p in b["parts"]]
+    names = [p["path"] for b in manifest["builds"] for p in b["parts"]] + ["manifest.json"]
     for name in names:
         shutil.copyfile(firmware / name, out / "firmware" / name)
-    print(f"flasher bundle: {out} ({len(names)} firmware files)")
+    # The bundle's own SHA256SUMS lists exactly what is in it. The release's
+    # SHA256SUMS also names the per-board manifest-<board>.json files, which the
+    # flasher does not need and the bundle does not carry; copied as it was, a
+    # careful user's `sha256sum -c` on the unpacked folder reported them missing.
+    lines = [f"{sha256_file(out / 'firmware' / name)}  {name}" for name in names]
+    (out / "firmware" / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    load_checked(out / "firmware")
+    print(f"flasher bundle: {out} ({len(names) + 1} firmware files)")
     return 0
 
 
