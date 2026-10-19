@@ -1,0 +1,28 @@
+ChineseSimplified.isl -- Simplified Chinese texts for the Inno Setup wizard
+=========================================================================
+
+Inno Setup's own Languages folder has no Simplified Chinese; the translation
+is one of the "unofficial" (user-contributed) translations listed on
+https://jrsoftware.org/files/istrans/ and kept in the Inno Setup source
+repository. Vendored byte for byte, not edited:
+
+  source:   https://github.com/jrsoftware/issrc/blob/is-6_7_1/Files/Languages/Unofficial/ChineseSimplified.isl
+  tag:      is-6_7_1 (Inno Setup 6.7.1, the version on GitHub's windows-latest
+            runner image when this was vendored; .github/workflows/build-desktop.yml
+            warns when the runner's Inno Setup differs)
+  sha256:   7d544b9bb1d142cfa11f2e5d3cc8abe2e55f8e066c5124e3772675aa236e1278
+  messages: all 281 of that version's Default.isl
+
+Maintainer (as named in the file): Zhenghan Yang,
+https://github.com/kira-96/Inno-Setup-Chinese-Simplified-Translation
+
+Licence: the Inno Setup licence (https://jrsoftware.org/files/is/license.txt):
+redistribution in source and binary form is permitted provided the copyright
+notices are retained ("Copyright (C) 1997-2026 Jordan Russell. All rights
+reserved. Portions Copyright (C) 2000-2026 Martijn Laan."). The file is only
+read by the Inno Setup compiler; its texts end up in the installer.
+
+To update: take the same file from the issrc tag of the new Inno Setup
+version, check that it has every [Messages] key of that version's
+Files/Default.isl, and update the tag and sha256 above (tests/test_desktop_packaging.py
+checks the hash).

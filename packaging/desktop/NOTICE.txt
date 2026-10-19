@@ -23,6 +23,11 @@ Third-party components in this download
   https://github.com/python-pillow/Pillow/blob/main/LICENSE
 - macOS only: PyObjC, MIT licence. https://github.com/ronaldoussoren/pyobjc
 - Linux only: python-xlib, GNU LGPL 2.1 or later; six, MIT licence.
+- Windows installer: built with Inno Setup, Copyright (C) 1997-2026 Jordan
+  Russell, portions Copyright (C) 2000-2026 Martijn Laan, Inno Setup licence
+  (https://jrsoftware.org/files/is/license.txt); its Simplified Chinese texts
+  are the community translation maintained by Zhenghan Yang
+  (packaging/desktop/ChineseSimplified-SOURCE.txt in the source).
 - The QR code encoder in server/relay/qr.py follows Project Nayuki's QR Code
   generator library, MIT licence; jsQR 1.4.0 (phone page scanner), Apache
   License 2.0 (server/relay/assets/LICENSE.jsqr.txt). (Part of the core.)
