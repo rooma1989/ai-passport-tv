@@ -846,7 +846,11 @@ function renderCreators() {
       if (!answer.ok) toast(answer.error, true);
       refresh();
     };
-    row.append(el("span", "t", cr.name), el("span", "src", siteTag(cr.site) + " · 未看 " + cr.left + "/" + cr.total), remove);
+    // 中转只轮播最新的 20 个投稿，「未看」只数这些；count 是 UP 主一共有多少个（不知道时为 0）。
+    const all = Math.max(cr.count || 0, cr.total);
+    row.append(el("span", "t", cr.name),
+               el("span", "src", siteTag(cr.site) + " · 共 " + all + (all > cr.total ? " · 近 " + cr.total + " 个未看 " : " · 未看 ") + cr.left),
+               remove);
     li.appendChild(row);
     list.appendChild(li);
   }

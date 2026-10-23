@@ -110,6 +110,9 @@ class State:
         self.group_overrides: dict[str, str] = {}
         # 单用户时每台设备的语音记忆（换台历史、定时、投屏历史，见 voicecmds.py），按设备 id。
         self.voice: dict[str, dict] = {}
+        # UP 主一共有多少个投稿（网站说的，台 id → 个数）；只留着最新的 LIST_SIZE 个，「未看」只数这些。
+        # 不放进 Creator：旧版本读到 Creator 里不认识的字段会当作状态文件损坏，这里多一项它们会忽略。
+        self.totals: dict[str, int] = {}
         source = str(self.path) if store is None else "用户状态"
         try:
             if store is not None:
@@ -134,11 +137,18 @@ class State:
         voice = data.get("voice")
         self.voice = {str(k): dict(v) for k, v in voice.items() if isinstance(v, dict)} \
             if isinstance(voice, dict) else {}
+        totals = data.get("totals")
+        self.totals = {str(k): v for k, v in totals.items()
+                       if isinstance(v, int) and not isinstance(v, bool) and v > 0} \
+            if isinstance(totals, dict) else {}
 
     def snapshot(self) -> dict:
         """要存的内容。文件里的格式和以前一样；存进数据库的只有这个用户自己的部分。"""
         with self.lock:
             data = {"creators": [dataclasses.asdict(c) for c in self.creators]}
+            totals = {c.id: self.totals[c.id] for c in self.creators if c.id in self.totals}
+            if totals:
+                data["totals"] = totals
             if self.store is not None:
                 data["history"] = [dict(h) for h in self.history]
                 data["group_overrides"] = dict(self.group_overrides)
@@ -194,7 +204,14 @@ class State:
         with self.lock:
             before = len(self.creators)
             self.creators = [c for c in self.creators if c.id != cid]
+            self.totals.pop(cid, None)
             return len(self.creators) != before
+
+    def set_total(self, cid: str, total: int) -> None:
+        """UP 主一共有多少个投稿（0 = 不知道，保留原来的）。"""
+        with self.lock:
+            if total > 0 and self.get(cid) is not None:
+                self.totals[cid] = int(total)
 
     def set_videos(self, cid: str, videos: list[Video], now: float) -> None:
         with self.lock:

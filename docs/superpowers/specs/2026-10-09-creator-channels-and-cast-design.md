@@ -122,6 +122,9 @@ calls); a wrong key gets 404. Key file: `/etc/ai-passport-tv/relay-key`, mode
 | `POST /api/creators {url}` | add a creator from a space/channel link |
 | `DELETE /api/creators/<id>` | remove one |
 | `POST /api/cast {url}` | replace the cast queue with this video, write a "cast" event |
+| `POST /api/subs/play {channel, device}` | (later, PC console) switch the device to a subscribed creator or series channel; same check as `/api/switch`, and on a multi-user relay only on a device the caller owns |
+| `GET /api/bili/search?q=&kind=video\|user\|bangumi&page=` | (later, PC console) one page of Bilibili search results with cover, intro, uploader; cached 10 min, one upstream search per caller per second, 30 per minute site-wide |
+| `GET /api/bili/thumb?u=&s=v\|f\|p` | (later) a cover thumbnail fetched by the relay: only `*.hdslb.com/bfs/…` images, no redirects, at most 512 KB, `Cache-Control: private, max-age=86400` |
 
 Links are accepted only from `bilibili.com`, `b23.tv` (short links are resolved
 first), `youtube.com` and `youtu.be`. yt-dlp and ffmpeg run with argument lists,

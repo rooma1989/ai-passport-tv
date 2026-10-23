@@ -27,7 +27,8 @@ from ..tenancy.claimguard import ClaimGuard
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
-from . import admin, console, events, setup, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
+from . import admin, bilisearch, console, events, setup, stream, table, voice, voicecmds, wifi as wifi_api, \
+    youtube as youtube_links
 from .bilibili import BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
@@ -178,6 +179,8 @@ class Relay:
         self._users: dict[int, State] = {}
         self._casts: dict[str, CastSlot] = {}
         self._cache_lock = threading.RLock()
+        # 电脑版「订阅」页的 B 站搜索和封面缩略图（bilisearch.py）：缓存和次数限制。
+        self.bili_search = bilisearch.BiliSearch(clock=monotonic, log=lambda message: self.log(message))
         # 设备文件上次写的样子（主人、遥控码），变了就重写。
         self._synced: dict[str, tuple] = {}
         # 多用户：给设备加密 Wi-Fi 修改用的 X25519 私钥（wifi.setup_key 在启动时读进来）。
@@ -362,8 +365,19 @@ class Relay:
             if videos:
                 now = self.clock()
                 state.set_videos(cid, videos, now)
+                if creator.kind == "up":
+                    state.set_total(cid, self._upload_total(creator.site, creator.source))
                 state.save()
                 self._cache_videos(creator, videos, now)
+
+    def _upload_total(self, site: str, source: str) -> int:
+        """UP 主一共有多少个投稿：客户端最近一次取列表时网站说的（B 站有，YouTube 节点没有），不知道为 0。"""
+        getter = getattr(self.clients.get(site), "upload_total", None)
+        try:
+            total = getter(source) if getter is not None else 0
+        except (TypeError, ValueError):
+            return 0
+        return total if isinstance(total, int) and not isinstance(total, bool) and total > 0 else 0
 
     def _cache_videos(self, creator, videos, now: float) -> None:
         if self.tenant:
@@ -1108,6 +1122,25 @@ class Relay:
         # at：中转此刻的时间。手机等到小智报告的会话开始时间晚于它，才算切换完成。
         return {"ok": True, "at": self.clock()}
 
+    def play_subscription(self, channel: str, caller: Caller = LEGACY, device: str | None = None) -> dict:
+        """电脑版「订阅」页的「在小电视上播放」：让选的那台换到这个 UP 主或剧集的台（和遥控换台同一个 switch）。
+
+        台 id（up01、sr03）是账号里的编号，设备的频道表按设备主人的订阅写。多用户时只有主人的设备上
+        这个编号才是这个 UP 主；遥控别人的设备（成员）时不换，免得换到主人那边同号的另一个台。"""
+        state = self._account(caller)
+        creator = state.get(channel)
+        if creator is None:
+            return {"ok": False, "error": "没有这个台"}
+        dev = self._pick(caller, device)
+        if self.tenant and not dev["id"]:
+            return {"ok": False, "error": "还没有绑定小电视"}
+        if self.tenant and dev["owner"] != caller.user:
+            return {"ok": False, "error": f"{dev['name']}放的是主人订阅的台，只能在主人的账号里换到这里"}
+        answer = self.switch(channel, caller, dev["id"] or None)
+        if answer.get("ok"):
+            answer.update(channel=channel, name=creator.name)
+        return answer
+
     def set_group(self, channel: str, group, caller: Caller = LEGACY) -> dict:
         state = self._account(caller)
         names = dict(self._rows_of(state))
@@ -1149,10 +1182,15 @@ class Relay:
         creators, series, history = [], [], []
         if account is not None:
             with account.lock:
-                creators = [{"id": c.id, "name": c.name, "site": c.site,
+                # left、total 只数中转留着的最新 LIST_SIZE 个投稿；count 是 UP 主一共有多少个（不知道为 0）。
+                creators = [{"id": c.id, "name": c.name, "site": c.site, "source": c.source,
                              "left": sum(v.bvid not in c.watched for v in c.videos),
-                             "total": len(c.videos)} for c in account.creators if c.kind == "up"]
-                series = [{"id": c.id, "name": c.name, "site": c.site, "episode": account.episode(c.id),
+                             "total": len(c.videos),
+                             "count": max(account.totals.get(c.id) or self._upload_total(c.site, c.source),
+                                          len(c.videos))}
+                            for c in account.creators if c.kind == "up"]
+                series = [{"id": c.id, "name": c.name, "site": c.site, "source": c.source,
+                           "episode": account.episode(c.id),
                            "total": len(c.videos)} for c in account.creators if c.kind == "series"]
                 history = [dict(h) for h in account.history]
         cast_slot = self._cast_of(dev)
@@ -1193,6 +1231,7 @@ class Relay:
             creator = state.add(site, mid, name, videos, self.clock())
         except ValueError as error:
             return {"ok": False, "error": str(error)}
+        state.set_total(creator.id, self._upload_total(site, mid))
         state.save()
         self._cache_videos(creator, creator.videos, creator.fetched_at)
         self._tables_changed(state)
@@ -1766,6 +1805,9 @@ def _manage_handler(relay: Relay):
                 query = self._query()
                 self._json(voice.search(relay, device, caller, query.get("site"), query.get("q"),
                                         query.get("wait"), query.get("kind") or "video"))
+            elif path in bilisearch.PATHS:
+                # 电脑版「订阅」页的 B 站搜索和封面缩略图；和订阅接口一样要账号（访客 404）。
+                bilisearch.get(self, relay, caller, path)
             elif relay.tenant and path == "/api/devices":
                 self._json({"ok": True, "devices": relay.my_devices(caller)})
             elif relay.tenant and path == "/api/wifi":
@@ -1882,6 +1924,10 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/switch":
                 self._json(relay.switch(str(body.get("channel") or ""), caller, device))
+                return
+            if path == "/api/subs/play":
+                # 电脑版「订阅」页的「在小电视上播放」：换到这个 UP 主或剧集的台（Relay.play_subscription）。
+                self._json(relay.play_subscription(str(body.get("channel") or ""), caller, device))
                 return
             if path == "/api/groups":
                 group = body.get("group")

@@ -214,6 +214,41 @@
   .wifistate.bad { border-color: var(--red); color: var(--paper); }
   .wifistate:empty { display: none; }
 
+  /* ---- 订阅：UP 主和剧集的一行、B 站搜索 ---- */
+  .subrow td.t .sub { font: 12px var(--mono); }
+  .subrow.air td.t, .subrow.air td.t .sub { color: var(--amber); }
+  .subrow td.a button.play { color: var(--amber); }
+  .subrow td.a button.play:disabled { color: var(--faint); }
+  .kinds { display: flex; gap: 22px; margin: 4px 0 10px; }
+  .kinds button { background: none; border: 0; padding: 4px 0 6px; color: var(--dim); font: 15px var(--serif); }
+  .kinds button:hover { color: var(--paper); }
+  .kinds button.on { color: var(--paper-hi); box-shadow: inset 0 -2px 0 var(--red); }
+  input[type=search] { width: 100%; background: var(--ink-deep); border: 1px solid var(--rule); color: var(--paper);
+                       font: 15px/1.5 var(--sans); padding: 10px 12px; border-radius: 0; -webkit-appearance: none; appearance: none; }
+  input[type=search]:focus { outline: none; border-color: var(--dim); }
+  .bsstate { margin: 10px 0 6px; font: 13px var(--serif); color: var(--faint); }
+  .bsstate.bad { color: var(--red); }
+  .bsstate.busy { color: var(--amber); }
+  .hit { display: grid; grid-template-columns: 168px minmax(0, 1fr) auto; gap: 18px; align-items: start;
+         padding: 14px 0; border-bottom: 1px dotted var(--rule); }
+  .hit .cover { position: relative; width: 168px; height: 105px; background: var(--ink-deep); border: 1px solid var(--rule); overflow: hidden; }
+  .hit .cover.face { width: 72px; height: 72px; border-radius: 50%; margin: 0 48px; }
+  .hit .cover.poster { width: 84px; height: 112px; margin: 0 42px; }
+  .hit .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .hit .cover .dur { position: absolute; right: 4px; bottom: 4px; padding: 0 5px; background: rgba(15,13,11,.82);
+                     font: 11px/18px var(--mono); color: var(--paper-hi); }
+  .hit .body { min-width: 0; }
+  .hit .t { font: 16px/1.4 var(--serif); color: var(--paper-hi); overflow: hidden; display: -webkit-box;
+            -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .hit .m { margin-top: 4px; font: 12px var(--mono); color: var(--dim); }
+  .hit .m b { font-weight: 400; color: var(--amber-soft); }
+  .hit .d { margin-top: 4px; font-size: 13px; line-height: 1.5; color: var(--faint); overflow: hidden; display: -webkit-box;
+            -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .hit .acts { display: flex; flex-direction: column; gap: 8px; min-width: 112px; }
+  .hit .acts button { padding: 7px 14px; font-size: 14px; }
+  .hit .acts button.done { color: var(--faint); border-color: var(--rule); }
+  .bsmore { margin-top: 14px; text-align: center; }
+
   .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); background: var(--paper-hi); color: var(--ink);
            padding: 9px 18px; font: 14px var(--serif); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; max-width: 80vw; }
   .toast.on { opacity: 1; }
@@ -232,6 +267,11 @@
     .who { border: 0; margin-left: auto; padding: 10px 16px; }
     main { padding: 0 16px 40px; }
     .remote, .cols { grid-template-columns: minmax(0, 1fr); }
+    .hit { grid-template-columns: 112px minmax(0, 1fr); gap: 12px; }
+    .hit .cover { width: 112px; height: 70px; }
+    .hit .cover.face { margin: 0 20px; }
+    .hit .cover.poster { width: 60px; height: 80px; margin: 0 26px; }
+    .hit .acts { grid-column: 2; flex-direction: row; flex-wrap: wrap; }
     .signin { grid-template-columns: minmax(0, 1fr); justify-items: center; padding: 28px 20px; gap: 24px; }
   }
 </style>
@@ -346,7 +386,7 @@
             <button class="go" id="addCreator">添加</button>
           </div>
           <table><tbody id="creatorRows"></tbody></table>
-          <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播。</p>
+          <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播（只轮播最新的 20 个）。「在小电视上播放」换到右上角选的那台。</p>
         </div>
         <div class="block">
           <div class="h3">剧集 <small id="seriesCount"></small></div>
@@ -360,6 +400,22 @@
           <table><tbody id="seriesRows"></tbody></table>
           <p class="hint">每部剧是一个台（在「动画影视」组里），按顺序播，换台回来接着上次的地方。点一部剧选集。</p>
         </div>
+      </div>
+      <!-- B 站搜索：订阅 UP 主、把多集视频或番剧加为剧集（bilisearch.py）。 -->
+      <div class="block bsearch">
+        <div class="h3">在 B 站上找 <small>搜到的 UP 主可以订阅，多集视频、合集和番剧可以加为剧集</small></div>
+        <div class="kinds" id="bsKinds">
+          <button data-kind="video" class="on">视频</button>
+          <button data-kind="user">UP 主</button>
+          <button data-kind="bangumi">番剧</button>
+        </div>
+        <div class="inline">
+          <input type="search" id="bsQuery" placeholder="搜 B 站视频、UP 主或番剧" maxlength="40" autocomplete="off" spellcheck="false">
+          <button class="go" id="bsGo">搜索</button>
+        </div>
+        <p class="bsstate" id="bsState">输入关键词，停手一会儿就会搜；按回车马上搜。</p>
+        <div class="hits" id="bsHits"></div>
+        <div class="bsmore"><button class="ghost" id="bsMore" hidden>更多</button></div>
       </div>
     </section>
 
@@ -655,7 +711,7 @@ function go(name) {
   for (const b of document.querySelectorAll("#nav button")) b.classList.toggle("on", b.dataset.page === name);
   for (const p of document.querySelectorAll(".page")) p.classList.toggle("on", p.id === name);
   $("pageTitle").textContent = PAGES[name];
-  $("devpick").hidden = !["remote", "cast"].includes(name);
+  $("devpick").hidden = !["remote", "cast", "subs"].includes(name);
   try { localStorage.setItem("console.page", name); } catch (error) {}
   if (name === "devices") loadDevices();
   if (name === "settings") loadSessions();
@@ -1078,32 +1134,68 @@ function removeButton(kind, item) {
   });
 }
 
+// UP 主：中转只轮播最新的 20 个投稿，「未看」只数这些；count 是 UP 主一共有多少个（不知道时为 0）。
+function upMeta(c) {
+  const count = Math.max(c.count || 0, c.total);
+  return siteTag(c.site) + " · 共 " + count + " 个视频 · " + (count > c.total ? "最近 " + c.total + " 个里" : "") + "未看 " + c.left;
+}
+// 右上角选的那台：多用户时只有自己是主人的设备，频道表才是自己的订阅。
+function playTarget() {
+  const d = data && (data.devices || []).find((x) => x.id === deviceId());
+  if (!d) return { ok: false, why: "还没有小电视" };
+  if (d.mine === false) return { ok: false, why: d.name + "是别人的，放的是主人订阅的台" };
+  if (!d.online) return { ok: false, why: d.name + "没在线" };
+  return { ok: true, name: d.name };
+}
+function playButton(item) {
+  const target = playTarget();
+  const b = button("在小电视上播放", "linkbtn play", (event) => {
+    event.stopPropagation();
+    busy(b, async () => {
+      const answer = await call("POST", "api/subs/play", withDevice({ channel: item.id }));
+      if (!answer.ok) { toast(answer.error, true); return; }
+      toast("正在让「" + deviceName() + "」换到「" + item.name + "」");
+      startPending(item.id, item.name, answer.at, true);
+      refresh();
+    });
+  });
+  b.disabled = !target.ok;
+  b.title = target.ok ? "换到这个台：" + target.name : target.why;
+  return b;
+}
+function onAir(id) { return data.now && data.now.online && data.now.channel === id; }
+
 function renderSubs() {
   if (!me || me.role === "guest") return;
   const ups = $("creatorRows");
   ups.replaceChildren();
   $("upCount").textContent = data.creators.length + " / 12";
-  if (!data.creators.length) ups.appendChild(emptyRow("还没有添加 UP 主", 3));
+  if (!data.creators.length) ups.appendChild(emptyRow("还没有添加 UP 主", 2));
   for (const c of data.creators) {
-    const tr = el("tr");
+    const tr = el("tr", "subrow" + (onAir(c.id) ? " air" : ""));
+    const name = el("td", "t", c.name);
+    name.appendChild(el("span", "sub", upMeta(c) + (onAir(c.id) ? " · 正在播" : "")));
     const a = el("td", "a");
-    a.appendChild(removeButton("creators", c));
-    tr.append(el("td", "t", c.name), el("td", "m", siteTag(c.site) + " · 未看 " + c.left + " / " + c.total), a);
+    a.append(playButton(c), removeButton("creators", c));
+    tr.append(name, a);
     ups.appendChild(tr);
   }
   const rows = $("seriesRows");
   rows.replaceChildren();
   const room = data.room || {};
   $("seriesCount").textContent = (data.series || []).length + " 部" + (room.fits === false ? " · 频道列表已满" : "");
-  if (!(data.series || []).length) rows.appendChild(emptyRow("还没有添加剧集", 3));
+  if (!(data.series || []).length) rows.appendChild(emptyRow("还没有添加剧集", 2));
   for (const s of data.series || []) {
-    const tr = el("tr", "tap");
+    const tr = el("tr", "tap subrow" + (onAir(s.id) ? " air" : ""));
     tr.onclick = () => openEpisodes(s.id);
+    const name = el("td", "t", s.name);
+    name.appendChild(el("span", "sub", siteTag(s.site) + " · 第 " + s.episode + " / " + s.total + " 集" + (onAir(s.id) ? " · 正在播" : "")));
     const a = el("td", "a");
-    a.append(button("选集 ›", "linkbtn", (event) => { event.stopPropagation(); openEpisodes(s.id); }), removeButton("series", s));
-    tr.append(el("td", "t", s.name), el("td", "m", siteTag(s.site) + " · 第 " + s.episode + " / " + s.total + " 集"), a);
+    a.append(playButton(s), button("选集 ›", "linkbtn", (event) => { event.stopPropagation(); openEpisodes(s.id); }), removeButton("series", s));
+    tr.append(name, a);
     rows.appendChild(tr);
   }
+  markSubscribed();
 }
 function emptyRow(text, span) {
   const tr = el("tr");
@@ -1126,6 +1218,170 @@ $("addSeries").onclick = () => busy($("addSeries"), async () => {
     toast("已添加「" + answer.series.name + "」，共 " + answer.series.total + " 集"); refresh();
   } else toast(answer.error, true);
 });
+
+// ---------- 订阅：B 站搜索（/api/bili/search，封面经 /api/bili/thumb） ----------
+
+const bs = { kind: "video", q: "", page: 0, pages: 0, items: [], run: 0, timer: 0, retried: false };
+function bsSay(text, kind) {
+  $("bsState").textContent = text;
+  $("bsState").className = "bsstate" + (kind ? " " + kind : "");
+}
+function bigNumber(n) {
+  if (n >= 1e8) return (n / 1e8).toFixed(1).replace(/\.0$/, "") + " 亿";
+  if (n >= 1e4) return (n / 1e4).toFixed(1).replace(/\.0$/, "") + " 万";
+  return String(n);
+}
+function day(at) {
+  if (!at) return "";
+  const d = new Date(at * 1000);
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+}
+async function bsSearch(fresh) {
+  const q = $("bsQuery").value.trim().replace(/\s+/g, " ");
+  if (!q) { bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。"); return; }
+  clearTimeout(bs.timer);
+  const run = ++bs.run, kind = bs.kind, page = fresh ? 1 : bs.page + 1;
+  if (fresh) bs.retried = false;
+  bsSay(fresh ? "正在搜「" + q + "」…" : "正在取第 " + page + " 页…", "busy");
+  $("bsMore").disabled = true;
+  let answer;
+  try {
+    answer = await call("GET", "api/bili/search?" + new URLSearchParams({ q, kind, page }));
+  } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
+    if (run === bs.run) { bsSay("连不上小电视服务器", "bad"); $("bsMore").disabled = false; }
+    return;
+  }
+  if (run !== bs.run) return;           // 已经有更新的搜索了
+  $("bsMore").disabled = false;
+  if (!answer.ok) {
+    if (answer.retry && !bs.retried) {  // 搜得太快：等一下再试一次
+      bs.retried = true;
+      bs.timer = setTimeout(() => bsSearch(fresh), answer.retry * 1000 + 200);
+      return;
+    }
+    bsSay(answer.error, "bad");
+    return;
+  }
+  bs.q = q; bs.page = answer.page; bs.pages = answer.pages;
+  bs.items = fresh ? answer.items : bs.items.concat(answer.items.filter((x) => !bs.items.some((y) => y.id === x.id)));
+  if (!bs.items.length) bsSay("没有搜到「" + q + "」" + { video: "的视频", user: "的 UP 主（有投稿的）", bangumi: "的番剧" }[kind]);
+  else bsSay((answer.total ? "B 站说有 " + bigNumber(answer.total) + " 个结果，" : "") + "这里列出 " + bs.items.length + " 个");
+  renderSearch();
+}
+$("bsQuery").addEventListener("input", () => {
+  clearTimeout(bs.timer);
+  const q = $("bsQuery").value.trim();
+  if (q.length >= 2 && q !== bs.q) bs.timer = setTimeout(() => bsSearch(true), 900);   // 停手 0.9 秒再搜，不逐字去问 B 站
+});
+$("bsQuery").addEventListener("keydown", (event) => { if (event.key === "Enter") bsSearch(true); });
+$("bsGo").onclick = () => bsSearch(true);
+$("bsMore").onclick = () => bsSearch(false);
+for (const b of document.querySelectorAll("#bsKinds button")) {
+  b.onclick = () => {
+    if (bs.kind === b.dataset.kind) return;
+    bs.kind = b.dataset.kind;
+    for (const x of document.querySelectorAll("#bsKinds button")) x.classList.toggle("on", x === b);
+    bs.items = []; bs.page = 0; bs.q = "";
+    renderSearch();
+    if ($("bsQuery").value.trim()) bsSearch(true);
+    else bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。");
+  };
+}
+
+function thumb(item, size, cls) {
+  const box = el("div", "cover" + (cls ? " " + cls : ""));
+  if (item.cover) {
+    const img = el("img");
+    img.alt = "";
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.onerror = () => img.remove();
+    img.src = "api/bili/thumb?" + new URLSearchParams({ s: size, u: item.cover });
+    box.appendChild(img);
+  }
+  return box;
+}
+function subscribed(kind, source) {
+  if (!data) return false;
+  return kind === "user" ? (data.creators || []).some((c) => c.site === "bilibili" && c.source === source)
+    : (data.series || []).some((s) => s.site === "bilibili" && s.source === source);
+}
+function addButton(text, kind, source, work) {
+  const b = el("button", "ghost", text);
+  b.dataset.kind = kind; b.dataset.source = source; b.dataset.text = text;
+  b.onclick = async () => {
+    b.disabled = true;
+    try { await work(); }
+    catch (error) { if (error instanceof SignedOut) signedOut(); else toast(error.message || "网络不通", true); }
+    finally { b.disabled = false; markSubscribed(); }
+  };
+  return b;
+}
+function subscribeUp(mid, name) {
+  return addButton("订阅 UP 主", "user", mid, async () => {
+    toast("正在订阅" + (name ? "「" + name + "」" : "") + "…");
+    const answer = await call("POST", "api/creators", { url: "https://space.bilibili.com/" + mid });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    toast("已订阅「" + answer.creator.name + "」，在频道里是一个新台");
+    await refresh();
+  });
+}
+function addAsSeries(item) {
+  // 剧集的来源：番剧是 ss<季 id>，多集视频是 BV 号（和订阅列表里的 source 一样，好标「已添加」）。
+  return addButton("加为剧集", "series", item.id, async () => {
+    toast("正在取集数…");
+    const answer = await call("POST", "api/series", { url: item.link, name: "" });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    toast("已添加「" + answer.series.name + "」，共 " + answer.series.total + " 集");
+    await refresh();
+  });
+}
+// 已经订阅过的：按钮变灰，写「已订阅」「已添加」（每次刷新订阅列表后都对一遍）。
+function markSubscribed() {
+  for (const b of document.querySelectorAll("#bsHits button[data-kind]")) {
+    const done = subscribed(b.dataset.kind, b.dataset.source);
+    b.classList.toggle("done", done);
+    b.textContent = done ? (b.dataset.kind === "user" ? "已订阅" : "已添加") : b.dataset.text;
+    if (done) b.disabled = true;
+    else if (b.classList.contains("was")) b.disabled = false;
+    b.classList.toggle("was", done);
+  }
+}
+function renderSearch() {
+  const box = $("bsHits");
+  box.replaceChildren();
+  for (const item of bs.items) {
+    const row = el("div", "hit");
+    const body = el("div", "body");
+    const acts = el("div", "acts");
+    if (item.kind === "video") {
+      const cover = thumb(item, "v");
+      if (item.duration) cover.appendChild(el("span", "dur", clock(item.duration)));
+      const meta = el("div", "m");
+      meta.append(el("b", "", item.author || "—"));
+      meta.append(" · 播放 " + bigNumber(item.play) + (item.pubdate ? " · " + day(item.pubdate) : ""));
+      body.append(el("div", "t", item.title), meta, el("div", "d", item.desc || ""));
+      if (item.mid) acts.appendChild(subscribeUp(item.mid, item.author));
+      if (item.series) acts.appendChild(addAsSeries(item));
+      row.append(cover, body, acts);
+    } else if (item.kind === "user") {
+      body.append(el("div", "t", item.name), el("div", "m", "粉丝 " + bigNumber(item.fans) + " · 视频 " + bigNumber(item.videos) + " 个"),
+                  el("div", "d", item.desc || ""));
+      acts.appendChild(subscribeUp(item.id, item.name));
+      row.append(thumb(item, "f", "face"), body, acts);
+    } else {
+      body.append(el("div", "t", item.title),
+                  el("div", "m", [item.badge || "番剧", item.eps ? "共 " + item.eps + " 集" : "", item.styles].filter(Boolean).join(" · ")),
+                  el("div", "d", item.desc || ""));
+      acts.appendChild(addAsSeries(item));
+      row.append(thumb(item, "p", "poster"), body, acts);
+    }
+    box.appendChild(row);
+  }
+  $("bsMore").hidden = !bs.items.length || bs.page >= bs.pages;
+  markSubscribed();
+}
 
 // ---------- 投屏 ----------
 

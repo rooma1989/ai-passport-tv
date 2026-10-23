@@ -97,6 +97,9 @@ nginx 把 `https://iewww.com/TV/cast/` 转到中转。这里的每个请求都�
 | `POST /api/creators {url}` | 用主页链接添加 UP 主 |
 | `DELETE /api/creators/<id>` | 删除 UP 主 |
 | `POST /api/cast {url}` | 用这个视频替换投屏队列，写「cast」事件 |
+| `POST /api/subs/play {channel, device}` | （后加，电脑版）让设备换到一个订阅的 UP 主或剧集台；检查和 `/api/switch` 一样，多用户时只能在调用者自己是主人的设备上 |
+| `GET /api/bili/search?q=&kind=video\|user\|bangumi&page=` | （后加，电脑版）一页 B 站搜索结果，带封面、简介、UP 主；缓存 10 分钟，每人每秒最多真去搜一次，全站每分钟 30 次 |
+| `GET /api/bili/thumb?u=&s=v\|f\|p` | （后加）由中转去取的封面缩略图：只认 `*.hdslb.com/bfs/…` 的图片，不跟随跳转，最大 512 KB，`Cache-Control: private, max-age=86400` |
 
 只接受 `bilibili.com`、`b23.tv`（短链先解析）、`youtube.com`、`youtu.be` 的链接。yt-dlp 和 ffmpeg 都用参数列表调用，
 不经过 shell，URL 放在 `--` 之后。

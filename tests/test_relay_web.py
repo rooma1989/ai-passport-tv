@@ -407,7 +407,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(answer, {"ok": True, "series": {"id": "sr01", "name": "海尔 兄弟", "total": 3}})
         self.assertIn("sr01 | 海尔 兄弟(B站) | http://127.0.0.1:8099/ch/sr01", self.table.read_text())
         state = self.call("GET", "/api/state")
-        self.assertEqual(state["series"], [{"id": "sr01", "name": "海尔 兄弟", "site": "bilibili", "episode": 1, "total": 3}])
+        self.assertEqual(state["series"], [{"id": "sr01", "name": "海尔 兄弟", "site": "bilibili", "source": "ss7",
+                                            "episode": 1, "total": 3}])
         self.assertEqual(state["creators"], [])
         self.assertTrue(state["room"]["fits"])
         group = next(g for g in state["groups"] if g["name"] == "动画影视")

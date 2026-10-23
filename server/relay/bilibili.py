@@ -229,6 +229,140 @@ def creator_hits(data: dict, limit: int = SEARCH_MAX) -> list[dict]:
     return hits
 
 
+# ---- 电脑版「订阅」页的 B 站搜索：带封面、简介的结果，可以翻页 ----
+
+# 一页最多给几个；每次等多久（电脑上的人可以多等一会儿，语音只等 4 秒）；最多翻到第几页。
+BROWSE_SIZE = 20
+BROWSE_TIMEOUT_S = 8.0
+BROWSE_PAGES = 20
+# 搜索的种类 → 接口的 search_type。
+BROWSE_KINDS = {"video": "video", "user": "bili_user", "bangumi": "media_bangumi"}
+DESC_MAX = 160
+# 封面和头像只认 B 站图床（*.hdslb.com）上 /bfs/ 下的图片；缩略图代理（bilisearch.py）用同一条规则。
+_IMAGE_HOST = re.compile(r"^[a-z0-9-]{1,20}\.hdslb\.com$")
+_IMAGE_PATH = re.compile(r"^/bfs/[A-Za-z0-9_./-]{1,200}\.(?:jpe?g|png|webp|gif)$", re.IGNORECASE)
+# 标题像多集视频或合集（「全13集」「合集」「第1集」「P1」「EP01」）：给「加为剧集」，真不是时添加会说「只有一集」。
+_SERIES_HINT = re.compile(r"全\s*\d+\s*[集话期]|\d+\s*[集话]全|合集|全集|第\s*\d+\s*[集话期季]|(?<![A-Za-z])P\d{1,3}(?!\d)"
+                          r"|(?<![A-Za-z])EP\s*\d+"
+                          r"|连载|系列|动画片|动画全", re.IGNORECASE)
+
+
+def cover_url(raw) -> str:
+    """搜索结果里的封面地址（常是「//i0.hdslb.com/bfs/...」或 http://）→ https 地址；不是 B 站图床的给空串。"""
+    text = str(raw or "").strip()
+    if text.startswith("//"):
+        text = "https:" + text
+    try:
+        url = urllib.parse.urlsplit(text)
+        port = url.port
+    except ValueError:
+        return ""
+    if url.scheme not in ("http", "https") or port is not None or url.username or url.password \
+            or url.query or url.fragment or not url.hostname:
+        return ""
+    host, path = url.hostname.lower(), url.path
+    if not _IMAGE_HOST.match(host) or not _IMAGE_PATH.match(path) or ".." in path or "//" in path:
+        return ""
+    return f"https://{host}{path}"
+
+
+def _number(value) -> int:
+    """播放数之类：整数，或「12.3万」「--」这种字符串；看不懂为 0。"""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return max(0, value)
+    text = str(value or "").strip()
+    scale = 1
+    if text.endswith("万"):
+        text, scale = text[:-1], 10_000
+    elif text.endswith("亿"):
+        text, scale = text[:-1], 100_000_000
+    try:
+        return max(0, int(float(text) * scale))
+    except ValueError:
+        return 0
+
+
+def _text(value, limit: int) -> str:
+    text = clean_title(value)
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def browse_videos(data: dict) -> list[dict]:
+    """视频搜索的 data → [{"kind": "video", "id", "title", "desc", "cover", "author", "mid", "duration",
+    "play", "pubdate", "series", "link"}]。
+
+    直播间和课程不要（订阅不了，也不是剧）；付费、充电专属的留着（还能订阅它的 UP 主）。番剧的一集
+    给的是番剧链接（link），「加为剧集」用它。series：像不像多集视频或合集（只看标题，添加时由 B 站确认）。"""
+    items, seen = [], set()
+    for item in (data or {}).get("result") or []:
+        if not isinstance(item, dict) or item.get("type") != "video":
+            continue
+        bvid = str(item.get("bvid") or "")
+        url = str(item.get("arcurl") or "")
+        if not _BVID.match(bvid) or bvid in seen or item.get("is_live_room_inline") \
+                or "live.bilibili.com" in url or "/cheese/" in url:
+            continue
+        title = _text(item.get("title"), 80)
+        if not title:
+            continue
+        mid = str(item.get("mid") or "")
+        bangumi = "/bangumi/" in url and parse_series_link(url) is not None
+        seen.add(bvid)
+        items.append({"kind": "video", "id": bvid, "title": title,
+                      "desc": _text(item.get("description"), DESC_MAX),
+                      "cover": cover_url(item.get("pic")), "author": _text(item.get("author"), 40),
+                      "mid": mid if mid.isdigit() and len(mid) <= 20 else "",
+                      "duration": parse_duration(item.get("duration")), "play": _number(item.get("play")),
+                      "pubdate": _number(item.get("pubdate")),
+                      "series": bangumi or bool(_SERIES_HINT.search(title)),
+                      "link": url if bangumi else f"https://www.bilibili.com/video/{bvid}"})
+    return items[:BROWSE_SIZE]
+
+
+def browse_users(data: dict) -> list[dict]:
+    """UP 主搜索的 data → [{"kind": "user", "id": mid, "name", "desc", "cover", "fans", "videos"}]。
+    没有投稿的不要（订阅了也没得播）。"""
+    items, seen = [], set()
+    for item in (data or {}).get("result") or []:
+        if not isinstance(item, dict) or item.get("type") != "bili_user":
+            continue
+        mid, name = str(item.get("mid") or ""), _text(item.get("uname"), 40)
+        videos = _number(item.get("videos"))
+        if not mid.isdigit() or len(mid) > 20 or mid in seen or not name or videos <= 0:
+            continue
+        seen.add(mid)
+        items.append({"kind": "user", "id": mid, "name": name, "desc": _text(item.get("usign"), DESC_MAX),
+                      "cover": cover_url(item.get("upic")), "fans": _number(item.get("fans")), "videos": videos})
+    return items[:BROWSE_SIZE]
+
+
+def browse_bangumi(data: dict) -> list[dict]:
+    """番剧搜索的 data → [{"kind": "bangumi", "id": "ss<季 id>", "title", "desc", "cover", "eps", "styles",
+    "badge", "link"}]。"""
+    items, seen = [], set()
+    for item in (data or {}).get("result") or []:
+        if not isinstance(item, dict):
+            continue
+        season = item.get("season_id")
+        if not isinstance(season, int) or isinstance(season, bool) or season <= 0 or season in seen:
+            continue
+        title = _text(item.get("title"), 80)
+        if not title:
+            continue
+        seen.add(season)
+        items.append({"kind": "bangumi", "id": f"ss{season}", "title": title,
+                      "desc": _text(item.get("desc"), DESC_MAX), "cover": cover_url(item.get("cover")),
+                      "eps": _number(item.get("ep_size")), "styles": _text(item.get("styles"), 40),
+                      "badge": _text(item.get("season_type_name"), 10),
+                      "link": f"https://www.bilibili.com/bangumi/play/ss{season}"})
+    return items[:BROWSE_SIZE]
+
+
+_BROWSE_SHAPERS = {"video": browse_videos, "user": browse_users, "bangumi": browse_bangumi}
+
+
 def _resolve(url: str) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(request, timeout=TIMEOUT_S) as answer:
@@ -242,12 +376,25 @@ DEFAULT_QUALITY = 16
 SELFHOST_QUALITY = 64
 
 
+def _count(data, *keys) -> int:
+    """回答里的一个非负整数（投稿总数之类）；没有或看不懂时为 0。"""
+    if not isinstance(data, dict):
+        return 0
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return 0
+
+
 class Bilibili:
     def __init__(self, fetch_json=None, resolve=None, quality: int = DEFAULT_QUALITY):
         self.quality = quality if quality in QUALITIES else DEFAULT_QUALITY
         self._fetch = fetch_json or _fetch_json
         self._resolve = resolve or _resolve
         self._cookie = ""
+        # 每个 UP 主（mid）一共有多少个投稿：取投稿列表时 B 站顺带给的（upload_total）。
+        self._totals: dict[str, int] = {}
 
     def _call(self, path: str, _timeout: float | None = None, **params) -> dict:
         # 只有语音搜索给 _timeout：取 buvid3 和搜索两次请求加起来不超过它（设备只等 8 秒）；
@@ -282,13 +429,18 @@ class Bilibili:
         return answer.get("data") or answer.get("result") or {}
 
     def uploads(self, mid: str) -> list[Video]:
+        """最新的 LIST_SIZE 个投稿（只取第一页）。UP 主一共有多少个投稿顺带记下（upload_total）。"""
         data = self._call("/x/space/arc/list", mid=mid, ps=LIST_SIZE, pn=1)
         try:
-            return [Video(bvid=a["bvid"], title=str(a.get("title", "")),
-                          duration=int(a.get("duration", 0)), pubdate=int(a.get("pubdate", 0)))
-                    for a in data.get("archives") or []]
+            videos = [Video(bvid=a["bvid"], title=str(a.get("title", "")),
+                            duration=int(a.get("duration", 0)), pubdate=int(a.get("pubdate", 0)))
+                      for a in data.get("archives") or []]
         except (KeyError, TypeError, ValueError) as error:
             raise BilibiliError(f"投稿列表格式不对：{error}") from None
+        total = _count(data.get("page"), "count", "total")
+        if total:
+            self._totals[str(mid)] = max(total, len(videos))
+        return videos
 
     def creator(self, mid: str) -> tuple[str, list[Video]]:
         card = self._call("/x/web-interface/card", mid=mid)
@@ -296,7 +448,17 @@ class Bilibili:
             name = str(card["card"]["name"])
         except (KeyError, TypeError):
             raise BilibiliError("拿不到 UP 主名字") from None
-        return name, self.uploads(mid)
+        videos = self.uploads(mid)
+        # 列表接口没给总数时，名片里的投稿数（archive_count）也行。
+        if str(mid) not in self._totals:
+            total = _count(card, "archive_count")
+            if total:
+                self._totals[str(mid)] = max(total, len(videos))
+        return name, videos
+
+    def upload_total(self, mid: str) -> int:
+        """UP 主一共有多少个投稿（最近一次取列表时 B 站说的）；不知道时为 0。中转只取最新的 LIST_SIZE 个。"""
+        return self._totals.get(str(mid), 0)
 
     def media_url(self, bvid: str) -> str:
         episode = _EPISODE.match(bvid)
@@ -410,6 +572,17 @@ class Bilibili:
         data = self._call("/x/web-interface/search/type", _timeout=timeout, search_type="bili_user",
                           keyword=query, page=1)
         return creator_hits(data, limit)
+
+    def browse(self, query: str, kind: str = "video", page: int = 1,
+               timeout: float = BROWSE_TIMEOUT_S) -> dict:
+        """电脑版的搜索：{"items": [...], "page", "pages", "total"}。kind 是 video、user 或 bangumi。"""
+        if kind not in BROWSE_KINDS:
+            raise ValueError(kind)
+        data = self._call("/x/web-interface/search/type", _timeout=timeout, search_type=BROWSE_KINDS[kind],
+                          keyword=query, page=page)
+        pages = min(_count(data, "numPages"), BROWSE_PAGES)
+        return {"items": _BROWSE_SHAPERS[kind](data), "page": page, "pages": pages,
+                "total": _count(data, "numResults")}
 
     def video(self, bvid: str) -> Video:
         view = self._call("/x/web-interface/view", bvid=bvid)
