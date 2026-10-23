@@ -72,7 +72,8 @@ async function api(method, path, body) {
   return response.json();
 }
 
-function grouped(text) { return text.replace(/(.{5})(?=.)/g, "$1 "); }
+// 20 位的码每 5 个一组；自建的 6 位数字绑定码 3 个一组（和小电视屏幕上一样）。
+function grouped(text) { return /^[0-9]{6}$/.test(text) ? text.slice(0, 3) + " " + text.slice(3) : text.replace(/(.{5})(?=.)/g, "$1 "); }
 
 async function scan() {
   const answer = await api("POST", "api/scan", { code });

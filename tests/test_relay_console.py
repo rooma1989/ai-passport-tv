@@ -645,6 +645,10 @@ class ScanAssetTests(unittest.TestCase):
             f"HTTPS://EXAMPLE.COM/TV/R/{t26}": ["", ""],                # wrong length
             f"HTTPS://EXAMPLE.COM/TV/P/{t20}": ["", ""],
             f"HTTPS://EXAMPLE.COM/TV/B/{t20}?x=1": ["", ""],
+            "HTTP://192.168.1.5:8080/TV/B/042917": ["bind", "042917"],   # a self-hosted 6-digit bind code
+            "http://192.168.1.5:8080/tv/b/042917": ["bind", "042917"],
+            "HTTP://192.168.1.5:8080/TV/B/04291": ["", ""],             # 5 digits
+            "HTTP://192.168.1.5:8080/TV/R/042917": ["", ""],            # guest codes stay 20 characters
             f"HTTPS://EXAMPLE.COM/x/TV/R/{t20}": ["", ""],
             f"javascript://x/TV/R/{t20}": ["", ""],
             "HTTPS://EXAMPLE.COM/TV/W/../x": ["", ""],

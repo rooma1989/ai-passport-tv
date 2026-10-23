@@ -30,6 +30,9 @@ NAME_MAX = 20
 VIAS = ("", "recover", "admin", "signup", "local")
 # 「有新手机通过设备恢复登录」在别的登录上提示多久。
 NOTICE_S = 7 * 24 * 3600
+# 自建 / 电脑客户端：监督进程（server/selfhost/bootstrap.py）在库里记 meta.selfhost = 1。这样的库里新的
+# 绑定码是 6 位数字（db.new_short_claim）；云端的库没有这一项，绑定码还是 20 位。
+SELFHOST_META = "selfhost"
 MODEL_NAMES = {"xingzhi-cube-154": "小智", "ai-passport": "Passport"}
 _MODEL = re.compile(r"^[a-z0-9-]{1,32}$")
 
@@ -75,6 +78,14 @@ class Accounts:
     def set_meta(self, key: str, value: str) -> None:
         self._run("INSERT INTO meta(key, value) VALUES (?, ?) "
                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+
+    def short_claims(self) -> bool:
+        """绑定码用 6 位数字（自建）还是 20 位（云端）。"""
+        return self.meta(SELFHOST_META) == "1"
+
+    def _claim_code(self, conn) -> str:
+        """新的绑定码。conn 是调用方正在进行的写事务：6 位数字查重和写入在同一个事务里。"""
+        return db.new_short_claim(conn) if self.short_claims() else db.new_code()
 
     def is_empty(self) -> bool:
         """没有用户也没有设备：迁移只在空库上跑。"""
@@ -360,12 +371,12 @@ class Accounts:
         if not _MODEL.match(model or ""):
             model = ""
         now = self.clock()
-        with self.lock:
+        with self.lock, db.transaction(self.conn):
             self.conn.execute(
                 "INSERT OR IGNORE INTO device(id, model, secret_sha256, status, claim_code, remote_code, fw, "
                 "created_at, last_seen, last_ip_prefix) VALUES (?, ?, ?, 'unclaimed', ?, ?, ?, ?, ?, ?)",
-                (device_id, model, db.sha256(secret), db.new_code(), db.new_code(), fw[:64], now, now,
-                 db.ip_prefix(ip)))
+                (device_id, model, db.sha256(secret), self._claim_code(self.conn), db.new_code(), fw[:64], now,
+                 now, db.ip_prefix(ip)))
         self.audit("device.register", None, ip, "device", device_id, f"model={model}")
         return self.device(device_id)
 
@@ -413,11 +424,41 @@ class Accounts:
             if row["legacy_port"] is not None:
                 raise ValueError("旧固件的设备不能解绑：先给它刷新固件")
             self.conn.execute("UPDATE device SET status='unclaimed', claim_code=?, remote_code=? WHERE id=?",
-                              (db.new_code(), db.new_code(), device_id))
+                              (self._claim_code(self.conn), db.new_code(), device_id))
             self.conn.execute("DELETE FROM device_member WHERE device_id=?", (device_id,))
             self.conn.execute("DELETE FROM device_state WHERE device_id=?", (device_id,))
             self.conn.execute("DELETE FROM session WHERE device_id=?", (device_id,))
         self.audit("device.unbind", actor, ip, "device", device_id)
+
+    def renew_short_claim(self, device_id: str) -> str:
+        """自建：未绑定的设备还拿着升级前的 20 位绑定码（或者没有码）就换成 6 位数字。返回它现在的绑定码。
+
+        电视服务认出未绑定的设备时调用（gate.py），屏幕上于是写的是新码；云端（short_claims() 为假）什么都不改。"""
+        with self.lock, db.transaction(self.conn):
+            row = self.conn.execute("SELECT status, claim_code FROM device WHERE id=?", (device_id,)).fetchone()
+            if row is None:
+                return ""
+            if row["status"] != "unclaimed" or db.is_short_claim(row["claim_code"]) or not self.short_claims():
+                return row["claim_code"] or ""
+            code = db.new_short_claim(self.conn)
+            self.conn.execute("UPDATE device SET claim_code=? WHERE id=?", (code, device_id))
+        self.audit("device.claim_renewed", None, "", "device", device_id)
+        return code
+
+    def rotate_claims(self, ip: str = "") -> list[str]:
+        """自建：错码太多（server/tenancy/claimguard.py）时给所有未绑定的设备换新的 6 位绑定码，猜过的都作废。
+        电视服务看到码变了就结束这次会话（unbound.py），设备重连后屏幕上是新码。返回换了码的设备 id。"""
+        if not self.short_claims():
+            return []
+        with self.lock, db.transaction(self.conn):
+            ids = [r["id"] for r in self.conn.execute(
+                "SELECT id FROM device WHERE status='unclaimed' AND claim_code IS NOT NULL ORDER BY id").fetchall()]
+            for device_id in ids:
+                self.conn.execute("UPDATE device SET claim_code=? WHERE id=?",
+                                  (db.new_short_claim(self.conn), device_id))
+        for device_id in ids:
+            self.audit("device.claim_rotated", None, ip, "device", device_id)
+        return ids
 
     def rename(self, device_id: str, name: str, actor: int | None, ip: str = "") -> str:
         name = _clean_name(name)

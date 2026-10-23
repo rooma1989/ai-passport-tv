@@ -158,9 +158,13 @@ remote, Me > "let another phone sign in".
    links to it). Enter the Wi-Fi name and password; the "server" field is
    already this computer's address. Tap Send with the phone loud and close to
    the device (within half a metre).
-3. **Bind**: once connected the device shows "BIND THIS TV" and a code. Scan the
-   QR on the device's status page with the signed-in phone, or enter the code
-   in the remote under Me > "bind a new device".
+3. **Bind**: once connected the device shows "BIND THIS TV" and a 6-digit code.
+   Scan the QR on the device's status page with the signed-in phone, or enter
+   the code in the remote under Me > "bind a new device" (the field opens the
+   number pad). 5 wrong codes from one phone address, or 30 in total, within
+   10 minutes pause binding for up to 10 minutes; after 30 every unbound device
+   also gets a new code. A device still showing a 20-character code from an
+   earlier version shows a 6-digit one after its next reconnect.
 4. **Add channels**: in the console (tray > "Open the console"), the channel
    table imports your own playlists; on the phone, Subscriptions adds Bilibili
    creators and series.

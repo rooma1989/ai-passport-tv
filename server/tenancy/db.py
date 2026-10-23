@@ -17,6 +17,11 @@ SCHEMA_VERSION = 1
 # 码和遥控码同一套字母（server/relay/state.py 的 CODE_ALPHABET）：全大写 base32，二维码可用字母数字模式。
 CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 CODE_LENGTH = 20
+# 自建 / 电脑客户端（meta.selfhost = 1，server/selfhost/bootstrap.py 写的）的绑定码：6 位数字，家里人好输。
+# 只用于绑定码；遥控码、邀请码还是 20 位。暴力猜由中转的错码限流挡（server/tenancy/claimguard.py）。
+CLAIM_DIGITS = 6
+# 6 位数字撞上已有的绑定码时重抽几次；都撞上（不会发生）就退回 20 位的码。
+CLAIM_TRIES = 32
 BUSY_TIMEOUT_MS = 5000
 
 SCHEMA = """
@@ -229,6 +234,25 @@ def sha256(text: str) -> bytes:
 def new_code() -> str:
     """20 位、100 位随机的码：遥控码、绑定码、邀请码。"""
     return "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+
+
+def _draw_digits() -> str:
+    return "".join(secrets.choice("0123456789") for _ in range(CLAIM_DIGITS))
+
+
+def is_short_claim(code: str | None) -> bool:
+    return bool(code) and len(code) == CLAIM_DIGITS and code.isascii() and code.isdigit()
+
+
+def new_short_claim(conn: sqlite3.Connection, draw=_draw_digits, tries: int = CLAIM_TRIES) -> str:
+    """6 位数字的绑定码，和库里已有的（device.claim_code 是 UNIQUE）都不一样。
+
+    调用方在写事务里调用并在同一个事务里写进去，别的进程（另一个电视服务）就插不进来。"""
+    for _ in range(tries):
+        code = draw()
+        if conn.execute("SELECT 1 FROM device WHERE claim_code=?", (code,)).fetchone() is None:
+            return code
+    return new_code()
 
 
 def ip_prefix(address: str | None) -> str:

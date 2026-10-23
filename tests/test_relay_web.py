@@ -1123,6 +1123,8 @@ class PageFieldTests(unittest.TestCase):
                   "svg", "code", "poll", "ttl", "typed", "sessions", "count", "not_mine",
                   # GET /api/state for a member after another phone signed in by device recovery.
                   "notice",
+                  # GET /api/state on a self-hosted relay: the bind code is 6 digits (web.py summary()).
+                  "claim_digits",
                   # 用手机听: now.listen, POST /api/listen (web.py Relay.listen).
                   "listen", "url", "bye"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")

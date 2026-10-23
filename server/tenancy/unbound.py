@@ -1,10 +1,11 @@
 """未绑定的设备：不转码，只发一张写着绑定码的静止画面和静音。
 
 CONFIG 里的 remote_url 换成绑定地址（HTTPS://<SITE>/TV/B/<码>），设备的状态页照常把它画成
-二维码；新固件还会收到 "bound": 0（旧固件不认识这个键，忽略）。画面上同时写出 20 位绑定码，
-不打开状态页也能在手机遥控的「绑定设备」里输入。
+二维码；新固件还会收到 "bound": 0（旧固件不认识这个键，忽略）。画面上同时写出绑定码（云端 20 位，
+自建 6 位数字），不打开状态页也能在手机遥控的「绑定设备」里输入。
 
-每隔几秒看一次数据库：一旦有人绑定了，就结束会话，设备马上重连，拿到主人的频道表。
+每隔几秒看一次数据库：一旦有人绑定了，就结束会话，设备马上重连，拿到主人的频道表；绑定码换了
+（自建时错码太多，accounts.rotate_claims）也结束会话，重连后画面和二维码是新码。
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import time
 
 from .. import frames, media, overlay, reconnect
 from ..protocol import VIDEO_CONTINUES, Kind, Packet, json_bytes, send_packet
+from . import db
 
 # 频道表里只有这一个台；设备在它上面换台也还是回到这张画面。
 BIND_CHANNEL = "bind"
@@ -28,8 +30,10 @@ MAX_S = 10 * 60
 
 
 def picture_lines(claim: str) -> list[str]:
-    """画面上的三行：标题，绑定码分两行、每 5 个字一组。"""
+    """画面上的几行：标题，然后是绑定码。6 位数字（自建）一行、3 位一组；20 位的分两行、每 5 个字一组。"""
     code = claim.upper()
+    if db.is_short_claim(code):
+        return ["BIND THIS TV", f"{code[0:3]} {code[3:6]}"]
     return ["BIND THIS TV", f"{code[0:5]} {code[5:10]}", f"{code[10:15]} {code[15:20]}"]
 
 
@@ -81,6 +85,9 @@ def serve(server, connection, admission, gate, config: dict) -> None:
             next_check = now + CHECK_S
             if gate.is_bound(admission.device_id):
                 server.logger(f"session={session} device={admission.device_id} bound; reconnecting")
+                return
+            if gate.claim_changed(admission.device_id, admission.claim):
+                server.logger(f"session={session} device={admission.device_id} new bind code; reconnecting")
                 return
         if now - started > MAX_S:
             return

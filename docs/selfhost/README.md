@@ -207,10 +207,15 @@ PHONE" and reconnects by itself once something is added.
    address from the banner (no port). Press "Send" with the phone near the TV.
    **Hotspot** (fallback): join the TV's hotspot with the phone, open
    `192.168.4.1`, and enter the Wi-Fi and the server address.
-3. **Bind**: once connected, the TV shows "BIND THIS TV" and a code. With the
-   signed-in phone, scan the QR code on the TV's status page with the phone's
-   camera, or use Me → Bind a new device in the remote to scan or type the
-   code. The TV then plays your channels.
+3. **Bind**: once connected, the TV shows "BIND THIS TV" and a 6-digit bind
+   code (the cloud service uses 20 characters; a self-hosted server uses 6
+   digits). With the signed-in phone, scan the QR code on the TV's status page
+   with the phone's camera, or use Me → Bind a new device in the remote to scan
+   or type the code. The TV then plays your channels. Wrong codes are limited:
+   5 per phone address and 30 in total per 10 minutes, then binding pauses for
+   up to 10 minutes; after 30 wrong codes every unbound TV also gets a new code,
+   shown within a few seconds. A TV still showing a 20-character code from an
+   older version gets a 6-digit one the next time it connects.
 
 The server's address must not change: a fixed IP from the router is the most
 reliable. A name like `computer.local` may work too, but has not been verified
