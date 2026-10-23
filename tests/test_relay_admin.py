@@ -317,6 +317,32 @@ class AdminApiTests(unittest.TestCase):
         self.assertFalse(self.call("admin", "POST", f"/api/admin/devices/{ALICE_DEVICE}/reconnect")[1]["ok"])
         self.assertEqual(self.call("admin", "POST", "/api/admin/devices/zzzzzzzzzzzz/ban")[0], 404)
 
+    def test_a_device_refused_for_its_secret_is_flagged_until_it_connects(self):
+        """The admin sees which device needs "re-pair" (gate.py audits device.secret_mismatch)."""
+        def flagged():
+            rows = self.call("admin", "GET", "/api/admin/devices")[1]["devices"]
+            overview = self.call("admin", "GET", "/api/admin/overview")[1]["devices"]
+            mine = {d["id"]: d["key_mismatch"] for d in rows}
+            self.assertEqual(mine, {d["id"]: d["key_mismatch"] for d in overview})
+            return mine
+        self.accounts.touch_device(ALICE_DEVICE)
+        self.assertEqual(flagged(), {ALICE_DEVICE: False, BOB_DEVICE: False})
+        self.now += 60
+        self.accounts.audit("device.secret_mismatch", None, "203.0.113.5", "device", ALICE_DEVICE)
+        self.assertEqual(flagged(), {ALICE_DEVICE: True, BOB_DEVICE: False})
+        # While a re-pair window is open the badge gives way to "waiting for the new key".
+        self.assertTrue(self.call("admin", "POST", f"/api/admin/devices/{ALICE_DEVICE}/repair")[1]["ok"])
+        self.assertFalse(flagged()[ALICE_DEVICE])
+        self.now += 11 * 60
+        self.assertTrue(flagged()[ALICE_DEVICE])
+        # Connected again (with the pinned or the old secret): gone.
+        self.now += 1
+        self.accounts.touch_device(ALICE_DEVICE)
+        self.assertFalse(flagged()[ALICE_DEVICE])
+        page = admin.ADMIN_PAGE.decode()
+        self.assertIn("密钥不匹配：点「重新配对」", page)
+        self.assertIn("d.key_mismatch", page)
+
     def test_devices_carry_the_firmware_version_and_the_release_s(self):
         self.accounts.touch_device(ALICE_DEVICE, fw="v0.1.0")
         manifest = self.root / "manifest.json"

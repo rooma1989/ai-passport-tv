@@ -24,7 +24,7 @@ from server import frames, overlay
 from server.media import FRAME_COUNT, Media
 from server.protocol import Kind, Packet, ProtocolError, json_bytes, json_object, receive_packet, send_packet
 from server.tenancy import db, gate, unbound
-from server.tenancy.accounts import Accounts
+from server.tenancy.accounts import SELFHOST_META, Accounts
 from server.tv_server import AVServer
 
 TOKEN = b"host-test-only-not-a-real-secret"
@@ -219,6 +219,51 @@ class GateTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_A), None, 8097, "198.51.100.1")
 
+    def test_self_hosted_mismatch_gets_the_re_pair_picture_and_still_counts(self):
+        """A household server tells a device whose secret changed (flashed with its settings
+        cleared) what to do, instead of letting it sit on the loading screen; the cloud does not."""
+        self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_A), None, 8097)
+        user = self.accounts.create_user("Alice")
+        self.accounts.bind(self.accounts.device(DEVICE)["claim_code"], user)
+        self.accounts.set_meta(SELFHOST_META, "1")
+        self.assertTrue(self.gate.refused_frame())
+        refused = self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_B), None, 8097, "203.0.113.5")
+        self.assertEqual((refused.device_id, refused.bound, refused.refused, refused.files, refused.claim,
+                          refused.claim_url), (DEVICE, False, True, None, "", ""))
+        self.assertEqual(self.accounts.audit_rows(1)[0]["action"], "device.secret_mismatch")
+        self.assertEqual(self.accounts.device(DEVICE)["status"], "active", "nothing about the device changes")
+        self.assertFalse(self.gate.refusal_over(DEVICE))
+        # One audit row an hour per device, not one per session.
+        self.mono += 120
+        self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_B), None, 8097, "203.0.113.5")
+        self.assertEqual(len([r for r in self.accounts.audit_rows(50) if r["action"] == "device.secret_mismatch"]), 1)
+        # The failure limit still applies: ten in a minute and it is cut off without a picture.
+        for _ in range(gate.FAILURES_PER_MINUTE):
+            try:
+                self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_B), None, 8097, "203.0.113.5")
+            except ProtocolError:
+                pass
+        with self.assertRaises(ProtocolError):
+            self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_B), None, 8097, "203.0.113.5")
+        # The owner presses "re-pair": the picture session ends, the reconnect pins the new secret.
+        self.mono += 61
+        self.accounts.start_repair(DEVICE, self.admin)
+        self.assertTrue(self.gate.refusal_over(DEVICE))
+        admitted = self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_B), None, 8097, "203.0.113.5")
+        self.assertTrue(admitted.bound)
+        self.assertFalse(admitted.refused)
+        # A ban ends a picture session too; a banned device gets no picture.
+        self.accounts.set_device_status(DEVICE, "banned", self.admin)
+        self.assertTrue(self.gate.refusal_over(DEVICE))
+        with self.assertRaises(ProtocolError):
+            self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_A), None, 8097, "198.51.100.9")
+
+    def test_the_cloud_still_closes_a_mismatch_at_once(self):
+        self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_A), None, 8097)
+        self.assertFalse(self.gate.refused_frame())
+        with self.assertRaises(ProtocolError):
+            self.gate.admit(hello(device_id=DEVICE, device_secret=SECRET_B), None, 8097, "203.0.113.5")
+
     def test_new_firmware_with_the_token_keeps_playing_as_legacy_until_adopted(self):
         fields = hello(device_id=DEVICE, device_secret=SECRET_A, token=TOKEN.decode(), model="xingzhi-cube-154")
         admission = self.gate.admit(fields, TOKEN, 8098)
@@ -260,6 +305,15 @@ class UnboundPictureTests(unittest.TestCase):
                          (7, 0, "HTTPS://EXAMPLE.COM/TV/B/X"))
         self.assertEqual(payload["channel_list"], [{"id": "bind", "name": "扫码绑定", "g": 0}])
         self.assertNotIn("remote_url", unbound.config_payload({}, 7, ""))
+
+    def test_the_re_pair_picture_and_its_config(self):
+        frame = overlay.lines_frame(unbound.REFUSED_LINES)
+        self.assertEqual(len(frame), frames.FRAME_PIXELS)
+        self.assertIn("RE-PAIR THIS TV", unbound.REFUSED_LINES)
+        payload = unbound.refused_payload({"width": 1}, 9)
+        self.assertEqual((payload["session"], payload["channel"]), (9, "repair"))
+        for key in ("remote_url", "bound", "voice", "recover", "wifi_key"):
+            self.assertNotIn(key, payload)
 
 
 def indexed_frame(fill=0):
@@ -336,6 +390,39 @@ class ServerHookTests(unittest.TestCase):
                 except (EOFError, OSError, ProtocolError, TimeoutError):
                     ended = True
             self.assertTrue(ended, "the session ends once bound, so the device reconnects as itself")
+
+    def test_self_hosted_wrong_secret_gets_only_the_re_pair_picture(self):
+        accounts = Accounts(self.db)
+        accounts.register_device(DEVICE, "ai-passport", SECRET_A)
+        accounts.set_meta(SELFHOST_META, "1")
+        accounts.close()
+        connection = self.connect()
+        with patch.object(unbound, "CHECK_S", 0.2):
+            send_packet(connection, Packet(Kind.HELLO, 0, 0, 0, json_bytes(
+                hello(device_id=DEVICE, device_secret=SECRET_B, model="ai-passport", fw="test"))))
+            config = receive_packet(connection, 2)
+            payload = json_object(config.payload)
+            self.assertEqual(payload["channel"], "repair")
+            self.assertNotIn("remote_url", payload)
+            self.assertNotIn("voice", payload)
+            self.assertEqual(receive_packet(connection, 2, config.session).kind, Kind.PALETTE)
+            kinds = set()
+            for _ in range(100):
+                kinds.add(receive_packet(connection, 2, config.session).kind)
+                if Kind.JPEG in kinds:
+                    break
+            self.assertEqual(kinds, {Kind.PCM, Kind.JPEG}, "silence and the picture, nothing else")
+            accounts = Accounts(self.db)
+            accounts.start_repair(DEVICE, self.admin)
+            accounts.close()
+            deadline = time.monotonic() + 3
+            ended = False
+            while time.monotonic() < deadline and not ended:
+                try:
+                    receive_packet(connection, 1, config.session)
+                except (EOFError, OSError, ProtocolError, TimeoutError):
+                    ended = True
+            self.assertTrue(ended, "re-pair ends the picture session, so the device reconnects and is pinned")
 
     def test_wrong_secret_is_refused_before_config(self):
         accounts = Accounts(self.db)

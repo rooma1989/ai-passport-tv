@@ -705,7 +705,14 @@ console (`GET`/`POST /api/wifi`, `server/relay/wifi.py`). Everyone else gets 404
   ("the TV is offline"); the page shows "no answer from the TV" after 20 s without an answer.
 - **Re-pair.** A device whose key changed (flash erased) is refused until the
   owner presses "re-pair"; the next HELLO in that window pins both its secret
-  and its Wi-Fi key.
+  and its Wi-Fi key. The admin backend marks such a device "key mismatch"
+  from the `device.secret_mismatch` audit until it connects again.
+  On a self-hosted server (`selfhost` meta) the refusal still counts against
+  the failure limit, but instead of closing the connection the media server
+  sends one still picture, `KEY CHANGED / RE-PAIR THIS TV / IN ADMIN`, with
+  silence (`server/tenancy/unbound.py`: no channel, no transcoding, no voice,
+  no remote address in CONFIG), and ends that session as soon as a re-pair
+  window opens or the device is banned. The cloud relay closes it as before.
 
 Deploy: `server/wifi_crypto.py`, `server/tenancy/{db,gate,wifi}.py`,
 `server/tv_server.py`, `server/cast_switch.py`, `server/relay/{events,wifi,web,__main__}.py`

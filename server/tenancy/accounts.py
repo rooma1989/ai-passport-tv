@@ -561,5 +561,11 @@ class Accounts:
                   (self.clock(), actor, db.ip_prefix(ip) if ip and "/" not in ip else ip, action,
                    target_kind, target_id, detail[:200]))
 
+    def secret_mismatches(self) -> dict[str, float]:
+        """每台设备最近一次「密钥对不上」被拒的时间（gate.py 写的 device.secret_mismatch 记录）。"""
+        return {row["target_id"]: row["at"] for row in self._all(
+            "SELECT target_id, MAX(at) AS at FROM audit_log WHERE action='device.secret_mismatch' "
+            "AND target_kind='device' GROUP BY target_id")}
+
     def audit_rows(self, limit: int = 50) -> list[dict]:
         return self._all("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))

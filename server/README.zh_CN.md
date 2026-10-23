@@ -435,6 +435,10 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
   等回答的修改、上一次回答。密码从不写进数据库、事件文件或日志，只在中转加密时的内存里。
 - **不在线不排队。** 设备不在线时直接拒绝（`小电视不在线`）；20 秒没回答，页面显示 `小电视没有回应`。
 - **重新配对。** 钥匙变了的设备（刷机清空过）会被拒绝，直到主人点「重新配对」；这段时间里的下一次 HELLO 同时换上新的密钥和 Wi-Fi 钥匙。
+  总后台按 `device.secret_mismatch` 操作记录给这台设备标上「密钥不匹配」，直到它再正常连上。自建服务器（meta `selfhost`）上
+  被拒照样算进失败限流，但电视服务不直接断开，而是只发一张「KEY CHANGED / RE-PAIR THIS TV / IN ADMIN」的静止画面和静音
+  （`server/tenancy/unbound.py`：没有频道、不转码、没有语音、CONFIG 里没有遥控地址），一开始重新配对或设备被封禁就结束会话。
+  云端中转照旧直接断开。
 
 部署：`server/wifi_crypto.py`、`server/tenancy/{db,gate,wifi}.py`、`server/tv_server.py`、`server/cast_switch.py`、
 `server/relay/{events,wifi,web,__main__}.py` 和两个页面。中转要能在数据库所在目录里写文件（它本来就在那里写数据库）才能生成 `wifi-key`。

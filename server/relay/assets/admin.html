@@ -283,10 +283,10 @@
           <tbody id="devRows"></tbody>
         </table></div>
         <p class="hint">「重连」让设备断开再马上连上（新固件才认这个命令），封禁、解绑之后会自动做一次。
-          「重新配对」：设备擦过 flash、密钥变了时，10 分钟内它用新密钥连上来就会被记住。
+          「重新配对」：设备擦过 flash、密钥变了时，10 分钟内它用新密钥连上来就会被记住；被拒的设备在「状态」里标着「密钥不匹配」。
           旧固件的设备（legacy-…）不能解绑，先刷新固件再在命令行 adopt。</p>
         <p class="hint" id="devUpdate"><b>怎么更新固件：</b>在插着设备的那台电脑上，用 Chrome 或 Edge 打开<span id="devFlasher">项目网站的「刷机」页</span>，
-          连上设备后选「更新固件」：只写固件，Wi-Fi、服务器地址和绑定都保留，设备不用重新配对。
+          连上设备后选「更新固件」：只写启动程序和固件本体，设置区不写，Wi-Fi、服务器地址和绑定都保留，设备不用重新配对。
           网页串口只能在 https 页面或本机的 localhost 上用；设备插在家庭服务器那台电脑上时，在那台电脑上打开 http://localhost:8080/flash/。</p>
       </div>
     </section>
@@ -653,6 +653,7 @@ function renderOvDevices(rows) {
     const state = td(d.online ? "live" : d.status === "active" ? "off" : "bad",
                      d.online ? (d.audio_only ? "在线 · 只听" : "在线") : STATUS[d.status] === "在用" ? "离线" : STATUS[d.status] || d.status);
     if (!d.online && d.last_seen) state.appendChild(el("span", "sub", "最后 " + when(d.last_seen)));
+    if (d.key_mismatch) state.appendChild(el("span", "tag red", "密钥不匹配：到「设备」点「重新配对」"));
     const playing = td("", d.online ? (d.channel_name || d.channel || "—") : "");
     if (d.online && d.title) playing.appendChild(el("span", "sub", d.title));
     tr.append(name, owner, state, playing, td("n", d.online ? span(d.session_s) : ""),
@@ -940,6 +941,8 @@ async function loadDevices() {
     const status = td(d.status === "banned" ? "bad" : d.online ? "live" : "", (STATUS[d.status] || d.status) +
                       (d.online ? " · 在线" : "") + (d.repair ? " · 等新密钥" : ""));
     if (d.online && (d.channel_name || d.channel)) status.appendChild(el("span", "sub", d.channel_name || d.channel));
+    // 被拒在密钥对不上之后再没连上过（server/tenancy/gate.py）：多半是刷机清空了设置区。
+    if (d.key_mismatch) status.appendChild(el("span", "tag red", "密钥不匹配：点「重新配对」"));
     const seen = td("m", when(d.last_seen));
     seen.appendChild(el("span", "sub", d.network || ""));
     const actions = td("a");
@@ -950,6 +953,8 @@ async function loadDevices() {
                                     button("解绑", "linkbtn red", () => unbindDevice(d)));
     }
     if (d.status === "unclaimed") actions.append(button("改名", "", () => renameDevice(d)));
+    // 解绑过的设备也还记着旧密钥：没有「重新配对」它就一直被拒。
+    if (d.status === "unclaimed" && d.key_mismatch) actions.append(button("重新配对", "", () => repairDevice(d)));
     if (d.status !== "retired") {
       actions.append(button(d.status === "banned" ? "解封" : "封禁", d.status === "banned" ? "" : "linkbtn red", () => banDevice(d)));
     }

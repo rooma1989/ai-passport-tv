@@ -8,6 +8,9 @@
 - 新固件同时带了令牌、但还没绑定：照旧当作这个端口的旧设备服务，免得刷完固件就看不了；
   管理员之后用 `python3 -m server.tenancy.admin adopt` 把旧记录的状态搬到真 id 上。
 - 未绑定的设备不转码：只发绑定码的静止画面和静音（unbound.py）。
+- 自建（家庭服务器）上密钥对不上的设备：照样算一次失败（限流、操作记录），但不立刻断开，而是
+  只发一张「RE-PAIR THIS TV IN ADMIN」的静止画面和静音（unbound.py），免得它一直停在加载画面、
+  主人不知道该做什么；主人点了「重新配对」或封禁它，会话就结束，设备重连。云端不变：直接断开。
 - 被封禁的设备、主人被封禁的设备：拒绝（和密钥不对一样关掉连接）。
 
 阶段 1 仍是每个型号一个电视服务、一次一台设备（静态单元）；设备认出来以后，这次会话用
@@ -40,6 +43,8 @@ SECRET = re.compile(r"^[A-Za-z0-9_-]{43}$")
 FW_MAX = 64
 # 认证失败：每个 IP、每个设备 id 每分钟最多这么多次，之后一分钟内直接拒绝。
 FAILURES_PER_MINUTE = 10
+# 自建时被拒设备（密钥不对、拿到提示画面）的操作记录：同一台设备一小时最多记一次，免得每次会话都记。
+MISMATCH_AUDIT_S = 3600
 # 共享令牌可以由管理员关掉（meta.legacy_token = 0），所有设备都刷了新固件以后。
 LEGACY_TOKEN_KEY = "legacy_token"
 _REMOTE_URL = re.compile(r"^HTTPS?://[A-Z0-9.:/%-]+$")
@@ -53,6 +58,7 @@ class Admission(NamedTuple):
     claim: str = ""                 # 未绑定时的绑定码
     claim_url: str = ""             # 状态页二维码：HTTPS://<SITE>/TV/B/<码>，没有网站地址时为空
     legacy: bool = False            # 按共享令牌当作旧设备服务
+    refused: bool = False           # 自建：密钥对不上，只给「去后台重新配对」的提示画面
 
 
 def _token_matches(supplied, token: bytes | None) -> bool:
@@ -74,6 +80,7 @@ class Gate:
         self.clock = clock
         self.monotonic = monotonic
         self._failures: dict[str, list[float]] = {}
+        self._mismatch_audited: dict[str, float] = {}
 
     # ---- 失败限流 ----
 
@@ -86,17 +93,40 @@ class Gate:
                 return True
         return False
 
-    def _fail(self, reason: str, keys: tuple[str, ...], audit: tuple | None = None) -> None:
+    def _count_failure(self, keys: tuple[str, ...]) -> bool:
+        """记一次失败（限流用）；这几个键最近一分钟都没失败过时返回 True。"""
         now = self.monotonic()
         first = all(not self._failures.get(k) for k in keys)
         for key in keys:
             self._failures.setdefault(key, []).append(now)
+        return first
+
+    def _fail(self, reason: str, keys: tuple[str, ...], audit: tuple | None = None) -> None:
         # 日志和操作记录只写第一次：被人反复撞时不刷屏。
-        if first:
+        if self._count_failure(keys):
             self.logger(f"device refused: {reason}")
             if audit is not None:
                 self.accounts.audit(*audit)
         raise ProtocolError("authentication failed")
+
+    def _refuse_with_picture(self, did: str, keys: tuple[str, ...], peer: str) -> Admission:
+        """自建：密钥对不上的设备照样算失败、照样限流，但给它一张提示画面而不是直接断开。
+
+        画面会话（unbound.serve）没有频道、没有转码、没有语音、CONFIG 里没有遥控地址；和一台从没
+        见过的新设备拿到的绑定画面一样多，别的什么都没有。主人点了「重新配对」它就结束，设备重连后
+        新密钥被记住。"""
+        self._count_failure(keys)
+        now = self.monotonic()
+        last = self._mismatch_audited.get(did)
+        if last is None or now - last >= MISMATCH_AUDIT_S:
+            self._mismatch_audited[did] = now
+            self.logger(f"device refused: device {did} secret mismatch (shown the re-pair picture)")
+            self.accounts.audit("device.secret_mismatch", None, peer, "device", did)
+        return Admission(did, False, None, refused=True)
+
+    def refused_frame(self) -> bool:
+        """密钥不对的设备给不给提示画面：只在自建（家庭服务器）上给；云端照旧直接断开。"""
+        return self.accounts.short_claims()
 
     # ---- 认设备 ----
 
@@ -130,9 +160,12 @@ class Gate:
                     if repaired:
                         self.accounts.pin_secret(did, secret)
                         self.logger(f"device {did} re-paired: new secret pinned")
+                    elif self.refused_frame():
+                        return self._refuse_with_picture(did, keys, peer)
                     else:
                         self._fail(f"device {did} secret mismatch", keys,
                                    ("device.secret_mismatch", None, peer, "device", did))
+                self._mismatch_audited.pop(did, None)
                 self.accounts.touch_device(did, fw=fw, model=model, ip=peer)
                 row = self.accounts.device(did)
             if row["status"] == "active":
@@ -189,6 +222,13 @@ class Gate:
     def is_bound(self, device_id: str) -> bool:
         row = self.accounts.device(device_id)
         return row is not None and row["status"] == "active"
+
+    def refusal_over(self, device_id: str) -> bool:
+        """提示画面该结束了：主人点了「重新配对」（窗口开着），或者设备被封禁、删掉了。设备重连后重新判断。"""
+        row = self.accounts.device(device_id)
+        if row is None or row["status"] in ("banned", "retired"):
+            return True
+        return row["repair_until"] is not None and row["repair_until"] > self.clock()
 
     def claim_changed(self, device_id: str, claim: str) -> bool:
         """绑定画面上的码已经不是库里的了（自建时错码太多换了码，accounts.rotate_claims）：该重连了。"""

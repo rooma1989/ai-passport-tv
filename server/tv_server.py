@@ -1508,8 +1508,12 @@ class AVServer:
         self.device_peer = peer
         admission = self.tenancy.admit(json_object(hello.payload), self.token, self.port, peer)
         if not admission.bound:
-            # 未绑定的设备没有主人：CONFIG 里不给 voice，语音也不替它调中转。
+            # 未绑定（或自建时密钥对不上）的设备没有主人：CONFIG 里不给 voice，语音也不替它调中转。
             self.voice.bind_device(None)
+            # 上一台设备会话的状态不带过来：它的 STATUS 不写别人的「正在播放」，不报给用手机听。
+            self.device_status = None
+            self.device_listen = False
+            self.device_wifimgr = False
             tenancy_unbound.serve(self, connection, admission, self.tenancy, CONFIG)
             return True
         tenancy_gate.apply(self, admission.files)

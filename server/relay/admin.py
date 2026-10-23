@@ -168,6 +168,7 @@ def _device_rows(relay) -> list[dict]:
         "SELECT device_id, COUNT(*) AS n FROM session WHERE kind='guest' AND expires_at > ? GROUP BY device_id",
         (now,))}
     live = {dev["id"]: dev for dev in relay.devices}
+    mismatches = accounts.secret_mismatches()
     rows = []
     for row in accounts.all_devices():
         files = tenancy_files.device_files(relay.devices_dir, row["id"])
@@ -181,6 +182,11 @@ def _device_rows(relay) -> list[dict]:
                 "owner_banned": bool(owner) and owner["status"] == "banned",
                 "guests": guests.get(row["id"], 0), "online": playing["online"],
                 "repair": bool(row["repair_until"] and row["repair_until"] > now)}
+        # 被拒在「密钥对不上」之后再没正常连上过：多半是刷机清空了设置区，要主人点「重新配对」。
+        refused_at = mismatches.get(row["id"])
+        item["key_mismatch"] = bool(refused_at and refused_at > (row["last_seen"] or 0) and not item["repair"]
+                                    and not playing["online"] and row["status"] in ("active", "unclaimed")
+                                    and row["legacy_port"] is None)
         if playing["online"]:
             item.update(channel=playing["channel"], since=playing["since"],
                         session_s=max(0, int(now - playing["since"])) if playing["since"] else 0,
