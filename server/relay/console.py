@@ -35,9 +35,10 @@ LOGIN_PAGE = (_ASSET_DIR / "login.html").read_bytes()
 PHONE_PAGE = (_ASSET_DIR / "phone.html").read_bytes()
 # 登录确认页和电脑版都不许被别的网站嵌进框里（防止骗点「确认」）。
 # 脚本只许本站的（'self'：扫码登录时才加载的 /tv/scan.js、/tv/jsqr.js）；相机画面是 srcObject，不受 media-src 管。
+# media-src：电脑版「在电脑上看」的播放器（watch.py）——本站的 HLS，或者 MediaSource 的 blob: 地址。
 PAGE_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; "
-                               "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; "
+                               "img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; manifest-src 'self'; "
                                "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     "X-Frame-Options": "DENY",
 }

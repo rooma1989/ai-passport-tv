@@ -89,6 +89,7 @@
 | [`server/channel_groups.py`](../../server/channel_groups.py) | 频道分组：按台名归类、手机上的调整、CONFIG 里的分组表。 |
 | [`server/now_playing.py`](../../server/now_playing.py) / [`server/cast_switch.py`](../../server/cast_switch.py) | 正在播放（给手机看），以及把中转的事件变成 SWITCH 包或 HELLO 时的新台。 |
 | [`server/listen.py`](../../server/listen.py) | 用手机听（原型，尚未接入）：设备晚 H 秒照着放的时间表、HLS 音频段窗口、从队列取声音、收听令牌。设计见 [`2026-10-12-phone-audio-design.zh_CN.md`](../superpowers/specs/2026-10-12-phone-audio-design.zh_CN.md)；本机试验在 `tools/listen_proto/`。 |
+| [`server/relay/watch.py`](../../server/relay/watch.py) | 在电脑上看（只有自建 / 电脑客户端，中转 `--selfhost`）：电脑版的「在电脑上看」放选中的小电视正在播的台的片源——ffmpeg（H.264 只换封装，别的画面转码，声音转 AAC）把分片 MP4 写到管道，这里切成内存里的 HLS，同源给 `/tv/watch/<编号>/<令牌>/`；`POST /api/watch`（主人和成员）在 `web.py`；播放器是 `assets/console.html` 里的 `WatchPlayer`（MediaSource）。 |
 | [`server/episode_info.py`](../../server/episode_info.py) | 给 `"info": 1` 的固件的「正在播 / 正在加载哪一集」：中转的 `/info/<台>`、CONFIG 的 `playing`、SWITCH 的 `loading`。 |
 | [`server/progress.py`](../../server/progress.py) | 给 `"progress": 1` 的固件的进度条锚点：中转 `/info/<台>` 的 `duration`/`offset`，每个片源开始时的 SWITCH `progress`，断流或暂停时的 `stop`。设备侧：`main/ui_menu.c` 的 `ui_progress_*`，由 `ui_overlay_progress_*` 画。 |
 | [`server/voice/`](../../server/voice/session.py) | 设备的语音命令：VOICE_CTL/VOICE 包和结果队列（`session.py`）、到 muse-asr 的 Unix 套接字桥（`asr.py`）、规则优先的意图引擎（`intent.py`、`match.py`、`numbers.py`、由 `tools/make_pinyin_table.py` 生成的 `pinyin_table.py`）、带明确设备的中转调用（`relay_client.py`）。运维说明见 [`server/README.zh_CN.md`](../../server/README.zh_CN.md#语音控制)。 |

@@ -27,8 +27,9 @@ from ..tenancy.claimguard import ClaimGuard
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
-from . import admin, console, events, setup, stream, table, voice, voicecmds, wifi as wifi_api, youtube as youtube_links
-from .bilibili import BilibiliError, SourceError
+from . import admin, console, events, setup, stream, table, voice, voicecmds, watch as watch_pc, wifi as wifi_api, \
+    youtube as youtube_links
+from .bilibili import REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
 
@@ -155,6 +156,9 @@ class Relay:
         self.log = log
         self.clock = clock
         self.monotonic = monotonic
+        # 在电脑上看（watch.py）：只在自建 / 电脑客户端开；云端的小主机上行带宽不够，没有这个功能。
+        self.watch = (watch_pc.WatchService(ffmpeg, watch_pc.derive_secret(key), log=lambda m: self.log(m))
+                      if selfhost is not None and accounts is not None else None)
         self.starter = starter
         self.pumper = pumper
         self._quick_failures: dict[tuple, int] = {}
@@ -1082,6 +1086,56 @@ class Relay:
         return {"ok": True, "device": dev["id"], "name": dev["name"], "url": f"{path}live.m3u8?t={token}",
                 "bye": f"{path}bye?t={token}", "lead": info["lead"]}
 
+    def watch_start(self, caller: Caller = LEGACY, device: str | None = None) -> dict:
+        """电脑版「在电脑上看」：这台设备正在播的台的片源，转成 HLS 的地址（带短期令牌，watch.py）。
+        只给设备的主人和成员：访客（扫访客码的）不行，别人的设备 404（_pick）。没开这个功能（云端）也 404。"""
+        if self.watch is None:
+            raise NotFound("watch")
+        if caller.guest or caller.user is None:
+            return {"ok": False, "error": "访客不能在电脑上看，请用家里人的账号登录"}
+        dev = self._pick(caller, device)
+        playing = self._playing(dev)
+        if not dev["id"] or not playing["online"] or not playing["channel"]:
+            return {"ok": False, "error": f"{dev['name']}没在线"}
+        cid = playing["channel"]
+        source = self._watch_source(dev, cid)
+        if isinstance(source, str):
+            return {"ok": False, "error": source}
+        try:
+            stream = self.watch.open(dev["id"], source)
+        except watch_pc.Busy:
+            return {"ok": False, "error": f"已经有 {self.watch.max_streams} 路在电脑上看了，先关掉一路"}
+        return {"ok": True, "device": dev["id"], "sid": stream.sid, "channel": cid, "title": source.label,
+                "kind": source.key[0], "url": f"watch/{stream.sid}/{self.watch.token(stream)}/"}
+
+    def _watch_source(self, dev: dict, cid: str):
+        """设备正在播的 cid 的片源（watch.Source），或者给人看的原因（字符串）。
+        视频（UP 主、剧集、投屏）从设备此刻的位置起；直播台用频道表里的地址和 User-Agent。"""
+        if _relay_channel(cid):
+            paused = self._paused_on(dev, cid)
+            if paused is not None:
+                video, position = paused["video"], paused["position"]
+            else:
+                _, video, position, _ = self._current(dev)
+            if video is None:
+                return "这个台还没开始放，过几秒再试"
+            key = ("video", cid, video.site, video.bvid)
+            if video.site == "youtube":
+                client = self.clients.get("youtube")
+                if client is None:
+                    return "YouTube 还没配置"
+                return watch_pc.Source(key, opener=lambda: client.open(video.bvid, position), paced=False,
+                                       label=video.title)
+            client = self.clients.get("bilibili")
+            return watch_pc.Source(key, url=lambda: client.media_url(video.bvid), user_agent=BILIBILI_UA,
+                                   referer=BILIBILI_REFERER, offset=position, label=video.title)
+        found = watch_pc.live_source(self.main_channels, cid)
+        if found is None:
+            return "找不到这个台的地址"
+        url, agent = found
+        name = next((n for c, n in channel_groups.read_table(self.main_channels) if c == cid), cid)
+        return watch_pc.Source(("live", cid, url, agent), url=url, user_agent=agent, label=name)
+
     def youtube_state(self) -> str:
         """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
         now = self.clock()
@@ -1166,6 +1220,9 @@ class Relay:
                    "group_names": list(channel_groups.GROUPS[2:])}
         if self.tenant:
             summary["me"] = {"name": caller.name, "role": caller.role}
+            if self.watch is not None and not caller.guest:
+                # 在电脑上看（watch.py）：只有自建 / 电脑客户端有，电脑版据此显示按钮。
+                summary["watch"] = True
             if self.selfhost is not None:
                 # 自建：绑定码是 6 位数字，遥控页和电脑版的输入框据此换成数字键盘（云端没有这一项，还是 20 位）。
                 summary["claim_digits"] = tenancy_db.CLAIM_DIGITS
@@ -1703,6 +1760,9 @@ def _manage_handler(relay: Relay):
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
             if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)):
                 return
+            # 在电脑上看的列表和段（watch.py）：只认地址里的令牌，不看登录；没开这个功能时 404。
+            if watch_pc.get(self, relay, path):
+                return
             if relay.tenant:
                 # 扫设备二维码、绑定码、邀请链接：落地页不用登录，页面里的脚本再带着 cookie 问接口。
                 if relay.claim_route(path, _JOIN_SHORT, _JOIN):
@@ -1922,6 +1982,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/listen":
                 self._json(relay.listen(caller, device))
+                return
+            if path == "/api/watch":
+                self._json(relay.watch_start(caller, device))
                 return
             if path == "/api/pet":
                 self._json(relay.set_pet(body.get("pet"), caller, device))
