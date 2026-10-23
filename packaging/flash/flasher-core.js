@@ -4,8 +4,9 @@
 //
 // Nothing in here touches the DOM, the serial port or the network. The page
 // asks these functions what to do -- which image belongs to the chip it found,
-// whether the write stays inside the allowed range, whether the chip may be
-// erased -- and does it.
+// which ranges of it an update writes (the settings partitions never), whether
+// the write stays inside the allowed range, whether the chip may be erased --
+// and does it.
 //
 // BOARD_POLICY repeats tools/firmware_manifest.py's BOARDS on purpose: the page
 // does not take the manifest's word for what is safe to write. A manifest that
@@ -181,7 +182,8 @@ export function parsePartitionTable(bytes) {
 // 0x8000, the first bytes at 0x10000 and nothing else.
 //
 //   tv         this project's firmware (factory app at 0x10000 named
-//              FoloToy-AI-Passport): a re-flash keeps settings and binding
+//              FoloToy-AI-Passport): an update writes only the code
+//              (updatePlan) and keeps settings and binding
 //   muse-dual  the Passport carrying Muse in ota_0 with Muse's own table at
 //              0x10000 (docs/boards/passport-muse-dual.md): writing a full
 //              image would delete Muse and its pairing
@@ -200,27 +202,179 @@ export function classifyInstalled(table8000, head10000) {
   return { kind: 'other', app };
 }
 
-// ---- the erase decision --------------------------------------------------
+// ---- the partition table and the update plan ------------------------------
 
-// Whether this flash may erase, must erase, and whether the user has to agree
-// first. `choice` is what the user picked when there is a choice:
-// 'update' (keep settings) or 'clean' (erase and start over).
+export const PARTITION_TABLE_MAX = 0xc00;
+const SECTOR = 0x1000;
+
+// The strict reading of an ESP-IDF partition table (gen_esp32part.py's binary
+// format): 32-byte entries starting AA 50 (type, subtype, offset, size, a
+// 16-byte label, flags), then either the EB EB entry -- 14 bytes of FF and the
+// MD5 of every entry before it -- or FF FF. Anything else, an MD5 that does
+// not match, or no entries at all: null. parsePartitionTable() above is the
+// lenient reading classifyInstalled() uses to recognise a layout.
+export function readPartitionTable(bytes) {
+  if (!bytes || bytes.length < 32) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const entries = [];
+  const end = Math.min(bytes.length, PARTITION_TABLE_MAX);
+  for (let at = 0; at + 32 <= end; at += 32) {
+    const m0 = bytes[at], m1 = bytes[at + 1];
+    if (m0 === 0xaa && m1 === 0x50) {
+      entries.push({
+        type: bytes[at + 2], subtype: bytes[at + 3],
+        offset: view.getUint32(at + 4, true), size: view.getUint32(at + 8, true),
+        label: cstr(bytes.subarray(at + 12, at + 28)), flags: view.getUint32(at + 28, true),
+      });
+      continue;
+    }
+    if (!entries.length) return null;
+    if (m0 === 0xeb && m1 === 0xeb) {
+      const stored = Array.from(bytes.subarray(at + 16, at + 32), (b) => b.toString(16).padStart(2, '0')).join('');
+      return md5Hex(bytes.subarray(0, at)) === stored ? { entries, md5: stored } : null;
+    }
+    if (m0 === 0xff && m1 === 0xff) return { entries, md5: '' };
+    return null;
+  }
+  return null;
+}
+
+// The same layout: every entry equal, in the same order.
+export function sameLayout(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((e, i) => ['type', 'subtype', 'offset', 'size', 'label', 'flags'].every((k) => e[k] === b[i][k]));
+}
+
+// Data partitions whose content belongs to the device, never to a release:
+// otadata (0) is the boot selection, phy (1) the radio calibration, nvs (2)
+// Wi-Fi, server address, the device's secret and every setting, coredump (3)
+// and nvs_keys (4) likewise.
+const DEVICE_DATA = new Map([[0x00, 'otadata'], [0x01, 'phy'], [0x02, 'nvs'], [0x03, 'coredump'], [0x04, 'nvs_keys']]);
+
+const blankRange = (bytes, start, end) => {
+  for (let i = start; i < end; i++) if (bytes[i] !== 0xff) return false;
+  return true;
+};
+
+// What an update writes from a merged release image (bootloader at 0, table
+// at 0x8000, app at 0x10000, 0xFF padding between) so that the device keeps
+// its settings: the bootloader and the partition table, [0, first partition),
+// and each partition the release fills (the app, up to the image's end). Every
+// device-data partition is left alone, and so is any partition the image
+// leaves blank.
 //
-// - never: a Passport is never erased, whatever was asked.
-// - first-install, other firmware or unknown: erase is required, because the
-//   previous firmware's settings sit inside this firmware's settings area;
-//   the user must agree, since it deletes the Xiaozhi AI firmware.
-// - first-install, this firmware already there (or blank flash): no erase by
-//   default; 'clean' erases with agreement.
-export function eraseDecision(policy, installedKind, choice) {
-  if (policy.erase === 'never') {
-    return { erase: false, needsConsent: false, choosable: false, reason: 'never' };
+// `image` is the merged image; `deviceTable` the 0xC00 bytes read from the
+// device at 0x8000. Returns { ok: true, regions: [[start, end], ...], keep:
+// [{ label, start, end }] }, or { ok: false, code, zh, en } when an update
+// cannot keep the settings safely and the full path has to be taken:
+//
+//   image-table  the image's own table is missing, damaged or odd
+//   device-table the device's table cannot be read
+//   layout       the two tables differ: the settings may sit somewhere else
+//                in the new layout, and the old ones would be read as garbage
+//   otadata      the layout has OTA boot selection. Writing the image's 0xFF
+//                there resets the selection (the bootloader then starts ota_0,
+//                whatever ran before); keeping it may go on starting an older
+//                slot. Neither is safe without knowing the device, and no
+//                layout of this project has one, so such a layout is refused
+//   gap          the image has content outside any partition it would write
+export function updatePlan(image, deviceTable) {
+  const no = (code, zh, en) => ({ ok: false, code, zh, en });
+  const table = image && image.length > PARTITION_TABLE_OFFSET
+    ? readPartitionTable(image.subarray(PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET + PARTITION_TABLE_MAX)) : null;
+  const badImage = no('image-table', '新固件里的分区表读不出来，没法只更新固件。',
+    'The new image has no readable partition table, so an update that keeps the settings is not possible.');
+  if (!table) return badImage;
+  const sorted = [...table.entries].sort((a, b) => a.offset - b.offset);
+  let previousEnd = PARTITION_TABLE_OFFSET + SECTOR;
+  for (const e of sorted) {
+    if (e.offset % SECTOR || e.size <= 0 || e.size % SECTOR || e.offset < previousEnd) return badImage;
+    previousEnd = e.offset + e.size;
   }
-  if (installedKind === 'tv' || installedKind === 'blank') {
-    const clean = choice === 'clean';
-    return { erase: clean, needsConsent: clean, choosable: true, reason: clean ? 'clean' : 'update' };
+  if (!sorted.some((e) => e.type === 0 && e.offset === APP_OFFSET)) return badImage;
+  if (sorted.some((e) => e.type === 1 && e.subtype === 0)) {
+    return no('otadata', '新固件的分区里有 OTA 启动选择（otadata），保留设置的更新不支持这种布局。',
+      'The new layout has OTA boot selection (otadata); an update that keeps the settings does not support it.');
   }
-  return { erase: true, needsConsent: true, choosable: false, reason: 'replace' };
+  const device = readPartitionTable(deviceTable);
+  if (!device) {
+    return no('device-table', '设备里的分区表读不出来，没法确认设置区的位置。',
+      'The partition table on the device cannot be read, so the settings area cannot be located.');
+  }
+  if (!sameLayout(table.entries, device.entries)) {
+    return no('layout', '这次的固件改了分区表（设置区的位置或大小变了），旧的设置没法原样保留。',
+      'This firmware changes the partition table (the settings area moved or changed size); the old settings cannot be kept as they are.');
+  }
+  const regions = [[0, sorted[0].offset]];
+  const keep = [];
+  for (const e of sorted) {
+    const start = e.offset;
+    const end = e.offset + e.size;
+    const inImage = Math.min(end, image.length);
+    const deviceOwned = e.type !== 0 && (DEVICE_DATA.has(e.subtype) && e.type === 1
+      || start >= image.length || blankRange(image, start, inImage));
+    if (deviceOwned) keep.push({ label: e.label, start, end });
+    else regions.push([start, inImage]);
+  }
+  // Whatever the plan writes nothing to must be merge-bin's 0xFF padding, or
+  // one of the device's own partitions.
+  const covered = [...regions, ...keep.map((k) => [k.start, k.end])].sort((a, b) => a[0] - b[0]);
+  let at = 0;
+  for (const [start, end] of covered) {
+    if (start > at && !blankRange(image, at, Math.min(start, image.length))) {
+      return no('gap', '新固件在分区之外还有内容，没法只更新固件。',
+        'The new image has content outside its partitions; an update that keeps the settings is not possible.');
+    }
+    at = Math.max(at, end);
+  }
+  if (at < image.length && !blankRange(image, at, image.length)) {
+    return no('gap', '新固件在分区之外还有内容，没法只更新固件。',
+      'The new image has content outside its partitions; an update that keeps the settings is not possible.');
+  }
+  const merged = [];
+  for (const [start, end] of regions.filter(([s, e]) => e > s).sort((a, b) => a[0] - b[0])) {
+    const last = merged[merged.length - 1];
+    if (last && last[1] === start) last[1] = end;
+    else merged.push([start, end]);
+  }
+  return { ok: true, regions: merged, keep };
+}
+
+// ---- the decision --------------------------------------------------------
+
+// What this flash does: write only the update regions (partial) or the whole
+// image, erase the chip first or not, and whether the user has to agree.
+// `choice` is what the user picked when there is a choice: 'update' (keep
+// settings) or 'clean' (start over). `plan` is updatePlan()'s answer for a
+// device already running this firmware.
+//
+// - never (Passport): the chip is never erased, whatever was asked. A clean
+//   reinstall writes the whole image, which writes 0xFF over the settings.
+// - first-install (Xingzhi) replacing other firmware or unknown: erase is
+//   required, because the previous firmware's settings sit inside this
+//   firmware's settings area; the user must agree, since it deletes the
+//   Xiaozhi AI firmware.
+// - this firmware already there: an update writes only the code and keeps the
+//   settings; when the plan says it cannot (the layout changed), the clean
+//   path with the user's agreement is the only one offered.
+// - blank flash: the whole image, nothing to agree to.
+export function decide(policy, installedKind, choice, plan) {
+  const passport = policy.erase === 'never';
+  const full = (reason, erase, needsConsent, choosable = false) =>
+    ({ reason, erase: passport ? false : erase, needsConsent, choosable, partial: false });
+  if (installedKind === 'blank') return full('fresh', false, false);
+  if (installedKind === 'tv') {
+    if (choice === 'clean') return full('clean', true, true, true);
+    if (plan && plan.ok) return { reason: 'update', erase: false, needsConsent: false, choosable: true, partial: true };
+    return full('mismatch', true, true);
+  }
+  if (passport) return installedKind === 'other' ? full('fresh', false, false) : full('unknown', false, true);
+  return full('replace', true, true);
+}
+
+// The ranges a flash writes: the update plan's, or the whole image.
+export function writeRegions(decision, plan, imageLength) {
+  return decision.partial ? plan.regions.map(([s, e]) => [s, e]) : [[0, imageLength]];
 }
 
 // ---- flash size ----------------------------------------------------------

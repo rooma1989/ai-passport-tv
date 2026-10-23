@@ -2,12 +2,29 @@
 // Run by tests/test_flasher.py under Node (18+); also runnable on its own:
 //   node tests/flasher_core_test.mjs            run the tests
 //   node tests/flasher_core_test.mjs --policy   print BOARD_POLICY as JSON
+//   node tests/flasher_core_test.mjs --plan IMAGE
+//        print updatePlan(IMAGE, IMAGE's own table) as JSON (test_flasher.py
+//        compares it with tools/firmware_manifest.py's update_plan)
+// With FLASHER_RELEASE_DIR set to a folder holding the published images
+// (FoloToy-AI-Passport-tv.bin, Xingzhi-Cube-154-tv-public.bin), the update
+// plan is also checked on those.
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as core from '../packaging/flash/flasher-core.js';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 if (process.argv.includes('--policy')) {
   console.log(JSON.stringify(core.BOARD_POLICY));
+  process.exit(0);
+}
+if (process.argv.includes('--plan')) {
+  const image = new Uint8Array(readFileSync(process.argv[process.argv.indexOf('--plan') + 1]));
+  const table = image.subarray(core.PARTITION_TABLE_OFFSET, core.PARTITION_TABLE_OFFSET + core.PARTITION_TABLE_MAX);
+  console.log(JSON.stringify(core.updatePlan(image, table)));
   process.exit(0);
 }
 
@@ -148,37 +165,235 @@ test('what is installed', () => {
   assert.equal(core.classifyInstalled(new Uint8Array(0xc00).fill(0xff), new Uint8Array(0x100).fill(0xff)).kind, 'blank');
 });
 
-// ---- erase ----
+// ---- the partition table and the update plan ----
 
-test('a Passport is never erased, whatever is installed or chosen', () => {
+// gen_esp32part.py's binary table from a CSV of this project's shape: entries,
+// then the EB EB entry with the MD5 of the entries, then FF to 0xC00.
+const TYPES = { app: 0, data: 1 };
+const SUBTYPES = { factory: 0, ota_0: 0x10, ota_1: 0x11, ota: 0, phy: 1, nvs: 2, coredump: 3, nvs_keys: 4, spiffs: 0x82 };
+const tableFromRows = (rows, { md5 = true } = {}) => {
+  const b = new Uint8Array(core.PARTITION_TABLE_MAX).fill(0xff);
+  const v = new DataView(b.buffer);
+  rows.forEach(([label, type, subtype, offset, size], i) => {
+    const at = i * 32;
+    b[at] = 0xaa; b[at + 1] = 0x50;
+    b[at + 2] = typeof type === 'number' ? type : TYPES[type];
+    b[at + 3] = typeof subtype === 'number' ? subtype : SUBTYPES[subtype];
+    v.setUint32(at + 4, offset, true); v.setUint32(at + 8, size, true);
+    b.fill(0, at + 12, at + 28);
+    b.set(Buffer.from(label), at + 12);
+    v.setUint32(at + 28, 0, true);
+  });
+  if (md5) {
+    const at = rows.length * 32;
+    b[at] = 0xeb; b[at + 1] = 0xeb;
+    b.set(Buffer.from(createHash('md5').update(b.subarray(0, at)).digest()), at + 16);
+  }
+  return b;
+};
+const csvRows = (text) => text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+  .map((l) => l.split(',').map((x) => x.trim()))
+  .map(([label, type, subtype, offset, size]) => [label, type, Number.isNaN(Number(subtype)) ? subtype : Number(subtype), Number(offset), Number(size)]);
+const PROJECT_ROWS = csvRows(readFileSync(join(ROOT, 'partitions.csv'), 'utf8'));
+const PROJECT_TABLE = tableFromRows(PROJECT_ROWS);
+// The MD5 in the table of both v0.2.0-beta images (and of gen_esp32part.py's
+// output for partitions.csv): the builder above makes the same bytes.
+const RELEASE_TABLE_MD5 = '5f252f71170f9a17a171258600f4c012';
+
+// A merged image the way `esptool merge-bin` lays it out: bootloader at 0,
+// table at 0x8000, 0xFF padding (over nvs and phy_init), app at 0x10000.
+const mergedImage = (length, chipId, tableBytes = PROJECT_TABLE) => {
+  const b = new Uint8Array(length).fill(0xff);
+  b.set(randomBytes(0x5000), 0);
+  b[0] = 0xe9; b[12] = chipId;
+  b.set(tableBytes, 0x8000);
+  b.set(randomBytes(length - 0x10000), 0x10000);
+  b.set(appImage('FoloToy-AI-Passport', 'v0.2.0-beta'), 0x10000);
+  return b;
+};
+// The two v0.2.0-beta images' sizes.
+const PASSPORT_LEN = 1750672;   // 0x1ab690
+const XINGZHI_LEN = 1551632;    // 0x17ad10
+
+test('the partition table is read strictly, MD5 included', () => {
+  const read = core.readPartitionTable(PROJECT_TABLE);
+  assert.ok(read);
+  assert.equal(read.md5, RELEASE_TABLE_MD5);
+  assert.deepEqual(read.entries.map((e) => [e.label, e.type, e.subtype, e.offset, e.size]), [
+    ['nvs', 1, 2, 0x9000, 0x6000], ['phy_init', 1, 1, 0xf000, 0x1000],
+    ['factory', 0, 0, 0x10000, 0x300000], ['cardid', 1, 2, 0x356000, 0x4000]]);
+  // Without the MD5 entry (gen_esp32part --disable-md5sum): FF FF ends it.
+  assert.equal(core.readPartitionTable(tableFromRows(PROJECT_ROWS, { md5: false })).entries.length, 4);
+  // A flipped bit anywhere in the entries fails the MD5.
+  const bad = PROJECT_TABLE.slice();
+  bad[8] ^= 1;
+  assert.equal(core.readPartitionTable(bad), null);
+  // Erased flash, garbage, an unterminated table, nothing.
+  assert.equal(core.readPartitionTable(new Uint8Array(0xc00).fill(0xff)), null);
+  const junk = PROJECT_TABLE.slice();
+  junk[0x80] = 0x12;
+  assert.equal(core.readPartitionTable(junk), null);
+  const full = new Uint8Array(0xc00);
+  for (let at = 0; at < 0xc00; at += 32) full.set(PROJECT_TABLE.subarray(0, 32), at);
+  assert.equal(core.readPartitionTable(full), null);
+  assert.equal(core.readPartitionTable(null), null);
+  // The lenient reader classifyInstalled() uses still agrees on the entries.
+  assert.equal(core.parsePartitionTable(PROJECT_TABLE).length, 4);
+});
+
+test('an update writes only the bootloader, the table and the app, on both boards', () => {
+  for (const [length, chip] of [[PASSPORT_LEN, 5], [XINGZHI_LEN, 9]]) {
+    const image = mergedImage(length, chip);
+    const plan = core.updatePlan(image, PROJECT_TABLE);
+    assert.equal(plan.ok, true, plan.zh);
+    assert.deepEqual(plan.regions, [[0, 0x9000], [0x10000, length]]);
+    assert.deepEqual(plan.keep.map((k) => [k.label, k.start, k.end]),
+      [['nvs', 0x9000, 0xf000], ['phy_init', 0xf000, 0x10000], ['cardid', 0x356000, 0x35a000]]);
+    // Nothing the image carries is lost: every byte outside the regions is 0xFF.
+    const written = new Uint8Array(length);
+    for (const [s, e] of plan.regions) written.fill(1, s, e);
+    for (let i = 0; i < length; i++) if (!written[i]) assert.equal(image[i], 0xff, `0x${i.toString(16)}`);
+    // And no region touches nvs or phy_init.
+    for (const [s, e] of plan.regions) assert.ok(e <= 0x9000 || s >= 0x10000);
+  }
+});
+
+test('the regions stay inside the Passport policy', () => {
+  const c3 = core.BOARD_POLICY['ESP32-C3'];
+  const plan = core.updatePlan(mergedImage(PASSPORT_LEN, 5), PROJECT_TABLE);
+  const parts = plan.regions.map(([s, e]) => ({ path: 'r', offset: s, size: e - s }));
+  assert.deepEqual(core.rangeProblems(parts, c3, 8 << 20), []);
+});
+
+test('a different layout on the device means no update', () => {
+  const image = mergedImage(PASSPORT_LEN, 5);
+  const moved = tableFromRows([['nvs', 'data', 'nvs', 0x9000, 0x4000], ['phy_init', 'data', 'phy', 0xd000, 0x1000],
+    ['factory', 'app', 'factory', 0x10000, 0x300000], ['cardid', 'data', 'nvs', 0x356000, 0x4000]]);
+  assert.equal(core.updatePlan(image, moved).code, 'layout');
+  // Renamed, or one more partition, is a different layout too.
+  const renamed = tableFromRows(PROJECT_ROWS.map((r) => (r[0] === 'nvs' ? ['nvs2', ...r.slice(1)] : r)));
+  assert.equal(core.updatePlan(image, renamed).code, 'layout');
+  // The Xiaozhi AI firmware's table; erased flash; a read that failed.
+  const xiaozhi = tableFromRows([['nvs', 'data', 'nvs', 0x9000, 0x4000], ['otadata', 'data', 'ota', 0xd000, 0x2000],
+    ['phy_init', 'data', 'phy', 0xf000, 0x1000], ['ota_0', 'app', 'ota_0', 0x20000, 0x3f0000]]);
+  assert.equal(core.updatePlan(image, xiaozhi).code, 'layout');
+  assert.equal(core.updatePlan(image, new Uint8Array(0xc00).fill(0xff)).code, 'device-table');
+  assert.equal(core.updatePlan(image, null).code, 'device-table');
+});
+
+test('an image the plan cannot split safely is refused', () => {
+  // No table, or a damaged one.
+  const noTable = mergedImage(PASSPORT_LEN, 5);
+  noTable.fill(0xff, 0x8000, 0x9000);
+  assert.equal(core.updatePlan(noTable, PROJECT_TABLE).code, 'image-table');
+  // OTA boot selection: neither writing 0xFF over otadata nor keeping it is
+  // safe without knowing which slot the device starts.
+  const otaRows = [['nvs', 'data', 'nvs', 0x9000, 0x4000], ['otadata', 'data', 'ota', 0xd000, 0x2000],
+    ['phy_init', 'data', 'phy', 0xf000, 0x1000], ['factory', 'app', 'factory', 0x10000, 0x300000]];
+  const ota = mergedImage(PASSPORT_LEN, 5, tableFromRows(otaRows));
+  assert.equal(core.updatePlan(ota, tableFromRows(otaRows)).code, 'otadata');
+  // Content outside every partition (past the app's end at 0x310000).
+  const gap = mergedImage(0x320000, 5);
+  gap.fill(0xff, 0x1ab690);
+  assert.equal(core.updatePlan(gap, PROJECT_TABLE).ok, true);
+  gap[0x315000] = 0;
+  assert.equal(core.updatePlan(gap, PROJECT_TABLE).code, 'gap');
+  // Misaligned or overlapping partitions.
+  const overlapRows = [['nvs', 'data', 'nvs', 0x9000, 0x8000], ['factory', 'app', 'factory', 0x10000, 0x300000]];
+  assert.equal(core.updatePlan(mergedImage(PASSPORT_LEN, 5, tableFromRows(overlapRows)), tableFromRows(overlapRows)).code,
+    'image-table');
+});
+
+test('a data partition the release fills is written; one it leaves blank is kept', () => {
+  const rows = [...PROJECT_ROWS.slice(0, 3), ['assets', 'data', 'spiffs', 0x310000, 0x10000], PROJECT_ROWS[3]];
+  const table = tableFromRows(rows);
+  const image = mergedImage(0x320000, 5, table);
+  image.fill(0xff, 0x1ab690, 0x310000);    // the app ends where the Passport's does
+  let plan = core.updatePlan(image, table);
+  assert.deepEqual(plan.regions, [[0, 0x9000], [0x10000, 0x320000]]);
+  image.fill(0xff, 0x310000, 0x320000);
+  plan = core.updatePlan(image, table);
+  assert.deepEqual(plan.regions, [[0, 0x9000], [0x10000, 0x310000]]);
+  assert.ok(plan.keep.some((k) => k.label === 'assets'));
+});
+
+const RELEASE_DIR = process.env.FLASHER_RELEASE_DIR;
+if (RELEASE_DIR) {
+  test('the published images split as expected', () => {
+    for (const [name, length] of [['FoloToy-AI-Passport-tv.bin', PASSPORT_LEN], ['Xingzhi-Cube-154-tv-public.bin', XINGZHI_LEN]]) {
+      const path = join(RELEASE_DIR, name);
+      assert.ok(existsSync(path), path);
+      const image = new Uint8Array(readFileSync(path));
+      const table = image.subarray(0x8000, 0x8c00);
+      assert.equal(core.readPartitionTable(table).md5, RELEASE_TABLE_MD5);
+      const plan = core.updatePlan(image, table);
+      assert.deepEqual(plan.regions, [[0, 0x9000], [0x10000, length]], name);
+    }
+  });
+}
+
+// ---- the decision ----
+
+const OK_PLAN = { ok: true, regions: [[0, 0x9000], [0x10000, 0x20000]], keep: [] };
+const NO_PLAN = { ok: false, code: 'layout', zh: 'x', en: 'x' };
+
+test('a Passport is never erased, whatever is installed, chosen or planned', () => {
   const c3 = core.BOARD_POLICY['ESP32-C3'];
   for (const kind of ['tv', 'other', 'blank', 'unknown', 'muse-dual']) {
     for (const choice of ['update', 'clean', undefined]) {
-      const d = core.eraseDecision(c3, kind, choice);
-      assert.equal(d.erase, false, `${kind}/${choice}`);
-      assert.equal(d.choosable, false);
+      for (const plan of [OK_PLAN, NO_PLAN, null]) {
+        assert.equal(core.decide(c3, kind, choice, plan).erase, false, `${kind}/${choice}`);
+      }
     }
   }
+});
+
+test('a Passport running the TV is updated in place, settings kept', () => {
+  const c3 = core.BOARD_POLICY['ESP32-C3'];
+  assert.deepEqual(core.decide(c3, 'tv', 'update', OK_PLAN),
+    { reason: 'update', erase: false, needsConsent: false, choosable: true, partial: true });
+  // Clean reinstall: the whole image (blank settings) with consent.
+  assert.deepEqual(core.decide(c3, 'tv', 'clean', OK_PLAN),
+    { reason: 'clean', erase: false, needsConsent: true, choosable: true, partial: false });
+  // The layout changed: only the whole image, with consent, no choice.
+  assert.deepEqual(core.decide(c3, 'tv', 'update', NO_PLAN),
+    { reason: 'mismatch', erase: false, needsConsent: true, choosable: false, partial: false });
+  assert.equal(core.decide(c3, 'tv', 'update', null).reason, 'mismatch');
+  // Unknown layout: whole image, and the user says it is not the Muse setup.
+  assert.equal(core.decide(c3, 'unknown', 'update', null).needsConsent, true);
+  assert.equal(core.decide(c3, 'unknown', 'update', null).partial, false);
+  for (const kind of ['other', 'blank']) assert.equal(core.decide(c3, kind, 'update', null).partial, false);
 });
 
 test('a Xingzhi replacing other firmware is erased, with consent', () => {
   const s3 = core.BOARD_POLICY['ESP32-S3'];
   for (const kind of ['other', 'unknown']) {
     for (const choice of ['update', 'clean']) {
-      assert.deepEqual(core.eraseDecision(s3, kind, choice),
-        { erase: true, needsConsent: true, choosable: false, reason: 'replace' });
+      assert.deepEqual(core.decide(s3, kind, choice, null),
+        { reason: 'replace', erase: true, needsConsent: true, choosable: false, partial: false });
     }
   }
 });
 
 test('a Xingzhi already running the TV keeps its settings unless told otherwise', () => {
   const s3 = core.BOARD_POLICY['ESP32-S3'];
-  for (const kind of ['tv', 'blank']) {
-    assert.equal(core.eraseDecision(s3, kind, 'update').erase, false);
-    assert.equal(core.eraseDecision(s3, kind, 'update').needsConsent, false);
-    assert.equal(core.eraseDecision(s3, kind, 'clean').erase, true);
-    assert.equal(core.eraseDecision(s3, kind, 'clean').needsConsent, true);
-  }
+  const update = core.decide(s3, 'tv', 'update', OK_PLAN);
+  assert.deepEqual(update, { reason: 'update', erase: false, needsConsent: false, choosable: true, partial: true });
+  assert.deepEqual(core.decide(s3, 'tv', 'clean', OK_PLAN),
+    { reason: 'clean', erase: true, needsConsent: true, choosable: true, partial: false });
+  // A changed layout falls back to the clean path, erase and consent included.
+  assert.deepEqual(core.decide(s3, 'tv', 'update', NO_PLAN),
+    { reason: 'mismatch', erase: true, needsConsent: true, choosable: false, partial: false });
+  // Erased flash: the whole image, no erase, nothing to agree to.
+  assert.deepEqual(core.decide(s3, 'blank', 'update', null),
+    { reason: 'fresh', erase: false, needsConsent: false, choosable: false, partial: false });
+});
+
+test('write regions follow the decision', () => {
+  const s3 = core.BOARD_POLICY['ESP32-S3'];
+  assert.deepEqual(core.writeRegions(core.decide(s3, 'tv', 'update', OK_PLAN), OK_PLAN, 0x20000), OK_PLAN.regions);
+  assert.deepEqual(core.writeRegions(core.decide(s3, 'tv', 'clean', OK_PLAN), OK_PLAN, 0x20000), [[0, 0x20000]]);
+  assert.deepEqual(core.writeRegions(core.decide(s3, 'tv', 'update', NO_PLAN), NO_PLAN, 0x20000), [[0, 0x20000]]);
 });
 
 // ---- sizes and checksums ----

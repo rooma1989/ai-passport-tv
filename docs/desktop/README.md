@@ -152,7 +152,13 @@ remote, Me > "let another phone sign in".
    no Web Serial). The page detects the chip:
    - a Xingzhi Cube is **fully erased** the first time (removes the Xiaozhi AI
      firmware; you tick to agree), later only updated;
-   - an AI Passport is **never erased** (it holds its factory identity).
+   - an AI Passport is **never erased** (it holds its factory identity);
+   - a device already running Xiaozhi TV: choose "**Update**". Only the
+     bootloader, the partition table and the firmware itself are written; the
+     settings area holding Wi-Fi, server address and the device's secret is
+     not, so settings and binding stay. If a new version changes the
+     partition table the page says so first and offers only a clean
+     reinstall (followed by "re-pair" in the admin backend).
 2. **Wi-Fi by sound**: when the device shows its setup screen, open the setup
    page on the phone: scan the code on the device's screen, or open
    `http://<the computer's LAN address>:8080/tv/wifi` (the finished setup page
@@ -244,6 +250,15 @@ Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
   When 8080 is taken the client moves to another port; phones scan a QR anyway.
 - **The flasher finds no device**: another USB cable that carries data; Chrome
   or Edge; on Windows a USB-serial driver (CH340/CP210x) may be needed.
+- **After an update the device keeps "opening", or its screen says
+  `RE-PAIR THIS TV IN ADMIN` (it is refused)**: its settings area was
+  cleared -- the flasher of v0.2.0-beta and earlier wrote it blank even
+  under "Update" (fixed since), and a clean reinstall does so too -- so it
+  made a new device secret while the household server still has the old one
+  and refuses it. Set up its Wi-Fi by sound again, then open Devices in the
+  admin backend: the refused device carries a red "key mismatch" badge.
+  Press "**re-pair**" on it; within 10 minutes it connects and is
+  remembered, with its channels and binding.
 - **The device stops when the laptop lid closes**: closing the lid sleeps the
   computer; change the lid action in the power settings, or use a desktop or
   mini PC that stays on.

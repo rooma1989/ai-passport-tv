@@ -19,6 +19,10 @@ const state = {
   manifest: null, sums: null, transport: null, loader: null,
   chip: '', policy: null, build: null, flashBytes: 0, mac: '',
   installed: { kind: 'unknown', app: null }, busy: false, done: false,
+  deviceTable: null,    // the 0xC00 bytes at 0x8000, as read at connect
+  files: null,          // [{ part, data }]: the build's files, downloaded and checked at connect
+  plan: null,           // core.updatePlan() for a device already running this firmware
+  doneReason: '',       // what the last successful flash did (core.decide().reason)
   wifi: null,           // { url, address } from the household server; null on the static site
 };
 
@@ -116,6 +120,8 @@ async function connect() {
   if (state.busy) return;
   state.busy = true;
   state.done = false;
+  state.files = null;
+  state.plan = null;
   entries.length = 0;
   esptoolLines.length = 0;
   renderLog();
@@ -153,10 +159,13 @@ async function connect() {
       await disconnect(true);
       return;
     }
+    state.deviceTable = null;
+    state.plan = null;
     try {
-      const table = await withTimeout(state.loader.readFlash(core.PARTITION_TABLE_OFFSET, 0xc00), READ_TIMEOUT_MS);
+      const table = await withTimeout(state.loader.readFlash(core.PARTITION_TABLE_OFFSET, core.PARTITION_TABLE_MAX), READ_TIMEOUT_MS);
       const head = await withTimeout(state.loader.readFlash(core.APP_OFFSET, 0x100), READ_TIMEOUT_MS);
       state.installed = core.classifyInstalled(table, head);
+      state.deviceTable = table;
     } catch (_) {
       state.installed = { kind: 'unknown', app: null };
     }
@@ -167,6 +176,12 @@ async function connect() {
       await disconnect(true);
       return;
     }
+    // The firmware is fetched and checked now, before anything is offered:
+    // whether an update can keep the settings depends on its partition table.
+    phase = 'fetch';
+    state.files = await downloadBuild(state.build);
+    state.plan = state.installed.kind === 'tv' ? planFor(state.files, state.deviceTable) : null;
+    if (state.plan && !state.plan.ok) log(state.plan.zh, state.plan.en);
     $('progress').classList.add('hidden');
     renderFacts();
     renderPlan();
@@ -222,13 +237,12 @@ function renderFacts() {
     other: [installed.app && installed.app.project ? `别的固件（${installed.app.project}）` : '别的固件', installed.app && installed.app.project ? `other firmware (${installed.app.project})` : 'other firmware'],
     unknown: ['没读出来', 'could not read'],
   }[installed.kind] || ['?', '?'];
-  const part = state.build.parts[0];
   const rows = [
     [t('设备', 'Device'), lang() === 'en' ? state.build.name_en || state.build.name : state.build.name],
     [t('芯片', 'Chip'), state.chip + (state.mac ? ' · ' + state.mac : '')],
     [t('Flash', 'Flash'), state.flashBytes ? kib(state.flashBytes) : t('未知', 'unknown')],
     [t('现在装的', 'Installed'), t(now[0], now[1])],
-    [t('将要写入', 'Will write'), `${state.manifest.version} · ${part.path} · ${kib(part.size)} @ ${core.hex(part.offset)}`],
+    [t('将要写入', 'Will write'), willWrite()],
   ];
   for (const [k, v] of rows) {
     const dt = document.createElement('dt');
@@ -247,30 +261,74 @@ function choice() {
 }
 
 function decision() {
-  return core.eraseDecision(state.policy, state.installed.kind, choice());
+  return core.decide(state.policy, state.installed.kind, choice(), state.plan);
 }
 
-// Whether the Passport's layout is unknown, so the user has to say it is not
-// the Muse dual setup before anything is written.
-const passportUnknown = () => state.policy && state.policy.erase === 'never' && state.installed.kind === 'unknown';
+// The update plan reads the partition table inside the merged image; a build
+// of several files (none published so far) is always written whole.
+function planFor(files, deviceTable) {
+  if (files.length !== 1 || files[0].part.offset !== 0) {
+    return { ok: false, code: 'parts', zh: '这个固件不是单个合并文件，只能整个写入。', en: 'This firmware is not one merged image; it can only be written whole.' };
+  }
+  return core.updatePlan(files[0].data, deviceTable);
+}
+
+// The writes this flash makes: [{ data, address }], from the update plan or
+// the whole of each file.
+function writes(d) {
+  if (d.partial) {
+    const image = state.files[0].data;
+    return core.writeRegions(d, state.plan, image.length).map(([start, end]) => ({ data: image.slice(start, end), address: start }));
+  }
+  return state.files.map(({ part, data }) => ({ data, address: part.offset }));
+}
+
+const span = (start, end) => `${core.hex(start)}–${core.hex(end)}`;
+
+function willWrite() {
+  if (!state.files) return state.manifest.version;
+  const d = decision();
+  const parts = writes(d).map((w) => span(w.address, w.address + w.data.length)).join(t('、', ', '));
+  let text = `${state.manifest.version} · ${parts}`;
+  if (d.partial && state.plan.keep.length) {
+    const kept = state.plan.keep.map((k) => k.label).join(t('、', ', '));
+    text += t(`（不动：${kept}）`, ` (untouched: ${kept})`);
+  }
+  if (d.erase) text = t('先擦除整块芯片，再写 ', 'erase the chip, then ') + text;
+  return text;
+}
 
 function renderPlan() {
   if (!state.policy) return;
   const d = decision();
   const xingzhi = state.policy.erase === 'first-install';
-  $('planReplace').classList.toggle('hidden', !(xingzhi && !d.choosable));
-  $('planChoose').classList.toggle('hidden', !(xingzhi && d.choosable));
+  $('planReplace').classList.toggle('hidden', d.reason !== 'replace');
+  $('planChoose').classList.toggle('hidden', !d.choosable);
+  $('cleanXingzhiZh').classList.toggle('hidden', !xingzhi);
+  $('cleanXingzhiEn').classList.toggle('hidden', !xingzhi);
+  $('cleanPassportZh').classList.toggle('hidden', xingzhi);
+  $('cleanPassportEn').classList.toggle('hidden', xingzhi);
+  $('planMismatch').classList.toggle('hidden', d.reason !== 'mismatch');
+  if (d.reason === 'mismatch') {
+    const why = state.plan && !state.plan.ok ? state.plan : { zh: '', en: '' };
+    $('mismatchWhy').textContent = t(why.zh, why.en);
+  }
   $('planPassport').classList.toggle('hidden', xingzhi);
-  $('planUnknownLayout').classList.toggle('hidden', !passportUnknown());
+  $('planUnknownLayout').classList.toggle('hidden', d.reason !== 'unknown');
+  if (state.files) renderFacts();
   let agree = null;
   if (d.reason === 'replace') {
     agree = ['我知道会擦除整块芯片，小智 AI 固件会被删掉，要换成小智电视。',
       'I understand the whole chip is erased and the Xiaozhi AI firmware is deleted.'];
-  } else if (d.reason === 'clean') {
-    agree = ['我知道会擦除整块芯片，Wi-Fi、服务器地址要重新设置，设备要重新配对。',
-      'I understand the chip is erased; Wi-Fi and server must be set again and the device re-paired.'];
-  } else if (passportUnknown()) {
-    agree = ['这台 Passport 没有装 Muse 双系统。', 'This Passport does not carry the Muse dual setup.'];
+  } else if (d.reason === 'clean' || d.reason === 'mismatch') {
+    agree = xingzhi
+      ? ['我知道会擦除整块芯片，Wi-Fi、服务器地址要重新设置，设备要在管理后台「重新配对」。',
+        'I understand the chip is erased; Wi-Fi and server must be set again and the device re-paired in the admin.']
+      : ['我知道设置会清空：Wi-Fi、服务器地址要重新设置，设备要在管理后台「重新配对」。',
+        'I understand the settings are cleared; Wi-Fi and server must be set again and the device re-paired in the admin.'];
+  } else if (d.reason === 'unknown') {
+    agree = ['这台 Passport 没有装 Muse 双系统；我知道设置会清空，可能要重新配网、在管理后台「重新配对」。',
+      'This Passport does not carry the Muse dual setup; I understand its settings are cleared and it may need Wi-Fi setup and re-pairing.'];
   }
   const row = $('agreeRow');
   if (agree) {
@@ -289,41 +347,23 @@ function renderPlan() {
 // ---- write ---------------------------------------------------------------
 
 async function flash() {
-  if (state.busy || !state.loader || !state.build) return;
+  if (state.busy || !state.loader || !state.build || !state.files) return;
   const d = decision();
-  if ((d.needsConsent || passportUnknown()) && !$('agree').checked) return;
+  if (d.needsConsent && !$('agree').checked) return;
   state.busy = true;
   $('flash').disabled = true;
   $('connect').disabled = true;
   $('doneSection').classList.add('hidden');
   let phase = 'fetch';
   try {
-    // 1. The files, checked before the device is touched.
-    const fileArray = [];
-    for (const part of state.build.parts) {
-      stage(`正在下载 ${part.path}…`, `Downloading ${part.path}…`, null);
-      const response = await fetch(FIRMWARE_DIR + part.path, { cache: 'no-store' });
-      if (!response.ok) {
-        throw new core.FlasherError('fetch', `下载 ${part.path} 失败（HTTP ${response.status}），设备没被改动。`,
-          `Downloading ${part.path} failed (HTTP ${response.status}); the device was not touched.`);
-      }
-      const data = new Uint8Array(await response.arrayBuffer());
-      if (data.length !== part.size) {
-        throw new core.FlasherError('fetch', `${part.path} 大小不对，可能没下载完整，设备没被改动。`,
-          `${part.path} has the wrong size (incomplete download?); the device was not touched.`);
-      }
-      core.checkDigest(part, await core.sha256Hex(data), state.sums);
-      if (part.offset === 0 && core.imageChipId(data) !== state.policy.chipId) {
-        throw new core.FlasherError('chip', `${part.path} 不是给 ${state.chip} 的固件，已停止，设备没被改动。`,
-          `${part.path} is not built for ${state.chip}; stopped, the device was not touched.`);
-      }
-      fileArray.push({ data, address: part.offset });
-    }
-    log('固件已下载，校验通过。', 'Firmware downloaded and checked.');
+    // 1. What goes where: the update plan's regions or the whole image, both
+    //    from the files checked at connect.
+    const fileArray = writes(d);
     // 2. Where it goes, once more, against the policy rather than the manifest.
-    const problems = core.rangeProblems(state.build.parts, state.policy, state.flashBytes || state.policy.flashBytes);
+    const ranges = fileArray.map((w) => ({ path: span(w.address, w.address + w.data.length), offset: w.address, size: w.data.length }));
+    const problems = core.rangeProblems(ranges, state.policy, state.flashBytes || state.policy.flashBytes);
     if (problems.length) throw new core.FlasherError('range', problems[0].zh, problems[0].en);
-    // 3. Erase, only when the plan says so; never on a Passport (eraseDecision).
+    // 3. Erase, only when the plan says so; never on a Passport (core.decide).
     if (d.erase) {
       phase = 'erase';
       stage('正在擦除整块芯片，约半分钟到一分钟…', 'Erasing the chip, 30-60 seconds…', null);
@@ -331,21 +371,30 @@ async function flash() {
       log('已擦除。', 'Erased.');
     }
     // 4. Write. eraseAll stays false: each sector is erased as it is written,
-    //    so only the image's own range changes. calculateMD5Hash makes the
-    //    stub hash what landed in flash and compare.
+    //    so only the listed ranges change -- in an update, not the settings.
+    //    calculateMD5Hash makes the stub hash each range in flash and compare.
     phase = 'write';
+    if (d.partial) {
+      const kept = state.plan.keep.map((k) => `${k.label} ${span(k.start, k.end)}`).join(t('、', ', '));
+      log(`只写 ${ranges.map((r) => r.path).join('、')}；不动 ${kept}。`,
+        `Writing only ${ranges.map((r) => r.path).join(', ')}; leaving ${kept} as it is.`);
+    }
+    const total = fileArray.reduce((sum, w) => sum + w.data.length, 0);
+    const before = fileArray.map((_, i) => fileArray.slice(0, i).reduce((sum, w) => sum + w.data.length, 0));
     stage('正在写入…', 'Writing…', 0);
     await state.loader.writeFlash({
       fileArray,
       flashSize: 'keep', flashMode: 'keep', flashFreq: 'keep',
       eraseAll: false,
       compress: true,
-      reportProgress: (_i, written, total) => stage('正在写入…', 'Writing…', total ? written / total : 0),
+      reportProgress: (i, written, size) => stage('正在写入…', 'Writing…',
+        total ? (before[i] + (size ? written / size : 0) * fileArray[i].data.length) / total : 0),
       calculateMD5Hash: (image) => core.md5Hex(image),
     });
     stage('写入完成，已核对。', 'Written and verified.', 1);
     log('写入完成，设备里的内容和固件一致。', 'Written; flash contents match the firmware.');
     state.done = true;
+    state.doneReason = d.reason;
     renderDone();
     $('doneSection').classList.remove('hidden');
     $('doneSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -360,8 +409,40 @@ async function flash() {
   }
 }
 
+// The build's files, downloaded and checked before the device is touched:
+// size, SHA-256 against the manifest and SHA256SUMS, chip id in the header.
+async function downloadBuild(build) {
+  const files = [];
+  for (const part of build.parts) {
+    stage(`正在下载 ${part.path}…`, `Downloading ${part.path}…`, null);
+    const response = await fetch(FIRMWARE_DIR + part.path, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new core.FlasherError('fetch', `下载 ${part.path} 失败（HTTP ${response.status}），设备没被改动。`,
+        `Downloading ${part.path} failed (HTTP ${response.status}); the device was not touched.`);
+    }
+    const data = new Uint8Array(await response.arrayBuffer());
+    if (data.length !== part.size) {
+      throw new core.FlasherError('fetch', `${part.path} 大小不对，可能没下载完整，设备没被改动。`,
+        `${part.path} has the wrong size (incomplete download?); the device was not touched.`);
+    }
+    core.checkDigest(part, await core.sha256Hex(data), state.sums);
+    if (part.offset === 0 && core.imageChipId(data) !== state.policy.chipId) {
+      throw new core.FlasherError('chip', `${part.path} 不是给 ${state.chip} 的固件，已停止，设备没被改动。`,
+        `${part.path} is not built for ${state.chip}; stopped, the device was not touched.`);
+    }
+    files.push({ part, data });
+  }
+  log('固件已下载，校验通过。', 'Firmware downloaded and checked.');
+  return files;
+}
+
 function renderDone() {
   const xingzhi = state.policy && state.policy.erase === 'first-install';
+  // An update kept Wi-Fi, server and the device's secret: it reconnects by
+  // itself. Everything else starts at the setup screens.
+  const kept = state.doneReason === 'update';
+  $('doneKept').classList.toggle('hidden', !kept);
+  $('doneSetup').classList.toggle('hidden', kept);
   $('restartZh').textContent = xingzhi
     ? '按一下最下面的键（复位键）。屏幕还是黑的，就长按它关机，再按一下开机。'
     : '按住电源键约 2 秒关机，再按住约 0.5 秒开机。它有电池，拔线不会重启。';

@@ -42,14 +42,43 @@ FLASH = ROOT / "packaging" / "flash"
 VENDOR = FLASH / "vendor" / "esptool-js-0.6.1"
 
 
+_TYPES = {"app": 0, "data": 1}
+_SUBTYPES = {"factory": 0, "ota": 0, "phy": 1, "nvs": 2, "coredump": 3, "nvs_keys": 4, "spiffs": 0x82}
+
+
+def table_bytes(rows: list[tuple[str, str, str, int, int]], md5: bool = True) -> bytes:
+    """gen_esp32part.py's binary table: 32-byte entries, the EB EB MD5 entry, FF to 0xC00."""
+    raw = bytearray()
+    for label, ptype, subtype, offset, size in rows:
+        raw += b"\xaa\x50" + struct.pack("<BBII", _TYPES[ptype], _SUBTYPES[subtype], offset, size)
+        raw += label.encode().ljust(16, b"\0") + struct.pack("<I", 0)
+    if md5:
+        raw += b"\xeb\xeb" + b"\xff" * 14 + hashlib.md5(bytes(raw)).digest()
+    return bytes(raw.ljust(0xC00, b"\xff"))
+
+
+def project_rows() -> list[tuple[str, str, str, int, int]]:
+    rows = []
+    for line in (ROOT / "partitions.csv").read_text(encoding="utf-8").splitlines():
+        if line.strip() and not line.lstrip().startswith("#"):
+            label, ptype, subtype, offset, size = [x.strip() for x in line.split(",")[:5]]
+            rows.append((label, ptype, subtype, int(offset, 0), int(size, 0)))
+    return rows
+
+
+# The MD5 in the partition table of both v0.2.0-beta images.
+RELEASE_TABLE_MD5 = "5f252f71170f9a17a171258600f4c012"
+
+
 def fake_image(chip_id: int, size: int = 0x20000, project: str = FM.APP_PROJECT_NAME,
-               version: str = "v0.1.0") -> bytes:
+               version: str = "v0.1.0", table: bytes | None = None) -> bytes:
     """A merged image shaped like idf.py merge-bin's: bootloader header at 0,
-    partition table at 0x8000, application with its description at 0x10000."""
+    partition table at 0x8000 (this project's, unless given), 0xFF over nvs and
+    phy_init, application with its description at 0x10000."""
     raw = bytearray(b"\xff" * size)
     raw[0] = FM.IMAGE_MAGIC
     struct.pack_into("<H", raw, 12, chip_id)
-    raw[0x8000:0x8002] = b"\xaa\x50"
+    raw[0x8000:0x8C00] = table if table is not None else table_bytes(project_rows())
     raw[0x10000] = FM.IMAGE_MAGIC
     struct.pack_into("<I", raw, 0x10020, FM.APP_DESC_MAGIC)
     raw[0x10030:0x10050] = version.encode().ljust(32, b"\0")
@@ -236,6 +265,68 @@ class ManifestToolTests(unittest.TestCase):
         self.assertTrue((data / "firmware" / "manifest.json").is_file(), "a failed download changes nothing")
 
 
+class UpdatePlanTests(unittest.TestCase):
+    """The release-time half of the flasher's update plan (flasher-core.js updatePlan)."""
+
+    def test_the_project_table_is_the_released_one(self) -> None:
+        table = table_bytes(project_rows())
+        self.assertEqual(table[0x90:0xA0].hex(), RELEASE_TABLE_MD5)
+        entries = FM.read_partition_table(table)
+        self.assertEqual([(e["label"], e["offset"], e["size"]) for e in entries],
+                         [("nvs", 0x9000, 0x6000), ("phy_init", 0xF000, 0x1000),
+                          ("factory", 0x10000, 0x300000), ("cardid", 0x356000, 0x4000)])
+        broken = bytearray(table)
+        broken[4] ^= 1
+        self.assertIsNone(FM.read_partition_table(bytes(broken)))
+        self.assertIsNone(FM.read_partition_table(b"\xff" * 0xC00))
+
+    def test_an_update_skips_nvs_and_phy_init(self) -> None:
+        for size in (0x1AB690, 0x17AD10):           # the v0.2.0-beta Passport and Xingzhi image sizes
+            regions, keep = FM.update_plan(fake_image(5, size=size))
+            self.assertEqual(regions, [[0, 0x9000], [0x10000, size]])
+            self.assertEqual([k["label"] for k in keep], ["nvs", "phy_init", "cardid"])
+
+    def test_images_an_update_cannot_handle_are_not_released(self) -> None:
+        with_nvs = bytearray(fake_image(5))
+        with_nvs[0x9000] = 0
+        ota = table_bytes([("nvs", "data", "nvs", 0x9000, 0x4000), ("otadata", "data", "ota", 0xD000, 0x2000),
+                           ("phy_init", "data", "phy", 0xF000, 0x1000), ("factory", "app", "factory", 0x10000, 0x300000)])
+        no_factory = table_bytes([("nvs", "data", "nvs", 0x9000, 0x6000)])
+        for image in (bytes(with_nvs), fake_image(5, table=ota), fake_image(5, table=no_factory),
+                      fake_image(5, table=b"\xaa\x50" + b"\0" * 30 + b"\x12" * 0xBE0)):
+            with self.assertRaises(FM.ManifestError):
+                FM.update_plan(image)
+        out = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out)
+        path = out / "with-nvs.bin"
+        path.write_bytes(bytes(with_nvs))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(FM.main(["make", "--board", "ai-passport", "--image", str(path),
+                                      "--out-dir", str(out / "r")]), 1)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_the_page_and_the_tool_split_an_image_the_same_way(self) -> None:
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        spiffs = table_bytes(project_rows()[:3] + [("assets", "data", "spiffs", 0x310000, 0x10000),
+                                                   project_rows()[3]])
+        filled = bytearray(fake_image(5, size=0x320000, table=spiffs))
+        filled[0x311000] = 0x42
+        for name, image in (("passport", fake_image(5, size=0x1AB690)), ("xingzhi", fake_image(9, size=0x17AD10)),
+                            ("assets", bytes(filled)), ("blank-assets", fake_image(5, size=0x320000, table=spiffs))):
+            with self.subTest(image=name):
+                path = folder / f"{name}.bin"
+                path.write_bytes(image)
+                result = subprocess.run(["node", str(ROOT / "tests" / "flasher_core_test.mjs"), "--plan", str(path)],
+                                        capture_output=True, text=True, encoding="utf-8", timeout=60)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                page = json.loads(result.stdout)
+                regions, keep = FM.update_plan(image)
+                self.assertTrue(page["ok"], page)
+                self.assertEqual(page["regions"], regions)
+                self.assertEqual(page["keep"], keep)
+
+
 class PublicBuildCheckTests(unittest.TestCase):
     def build_dir(self, server: str = '""', public: bool = True, image: bytes = b"\xe9 image") -> Path:
         folder = Path(tempfile.mkdtemp())
@@ -337,6 +428,26 @@ class FlasherPageTests(unittest.TestCase):
     def test_the_write_is_verified(self) -> None:
         self.assertIn("calculateMD5Hash", self.code(self.text("flasher.js")))
         self.assertIn("checkDigest", self.code(self.text("flasher.js")))
+
+    def test_an_update_writes_the_plan_s_regions_and_checks_the_device_table(self) -> None:
+        """The bug this guards against: "update" wrote the whole merged image, whose 0xFF padding
+        erased nvs -- Wi-Fi and the device's secret -- so a bound device was refused afterwards."""
+        script = self.code(self.text("flasher.js"))
+        self.assertIn("core.decide(", script)
+        self.assertIn("core.updatePlan(", script)
+        self.assertIn("core.writeRegions(", script)
+        self.assertIn("state.deviceTable", script)
+        self.assertNotIn("eraseDecision", script)
+        # Everything written goes through writes(), which follows the decision.
+        self.assertRegex(script, r"const fileArray = writes\(d\);")
+        self.assertRegex(script, r"rangeProblems\(ranges,")
+        page = self.text("index.html")
+        for element in ('id="planMismatch"', 'id="mismatchWhy"', 'id="doneKept"', 'id="doneSetup"',
+                        'id="cleanPassportZh"', 'id="cleanXingzhiZh"'):
+            self.assertIn(element, page)
+        self.assertIn("设置区（nvs）一个字节都不写", page)
+        self.assertNotIn("从地址 0 写到固件结束", page)
+        self.assertIn("RE-PAIR THIS TV IN ADMIN", page)
 
     def test_esptool_output_stays_out_of_the_reader_s_log(self) -> None:
         script = self.code(self.text("flasher.js"))

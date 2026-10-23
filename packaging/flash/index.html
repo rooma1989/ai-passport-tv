@@ -170,24 +170,35 @@
       <p data-lang="en">To go back, re-flash the Xiaozhi AI firmware the way the <a href="https://github.com/78/xiaozhi-esp32" rel="noopener noreferrer">xiaozhi-esp32</a> project describes; the board is <code>xingzhi-cube-1.54tft-ml307</code> with 8 MB of flash.</p>
     </div>
 
-    <!-- 星智：已经是小智电视，更新或清空重装 -->
+    <!-- 已经是小智电视（两种板子都有）：更新或清空重装 -->
     <div id="planChoose" class="hidden">
       <label class="choice"><input type="radio" name="mode" value="update" checked>
         <span data-lang="zh">更新固件（推荐）</span><span data-lang="en">Update (recommended)</span>
-        <small data-lang="zh">只写固件，Wi-Fi、服务器地址、绑定和设置都保留。</small>
-        <small data-lang="en">Writes the firmware only; Wi-Fi, server address, binding and settings stay.</small></label>
+        <small data-lang="zh">只写启动程序、分区表和固件本体；存 Wi-Fi、服务器地址、设备密钥和各项设置的设置区（nvs）一个字节都不写，所以设置和绑定都保留，不用重新配网、重新配对。</small>
+        <small data-lang="en">Writes only the bootloader, the partition table and the firmware itself; the settings area (nvs) holding Wi-Fi, server address, the device's secret and its settings is not written at all, so settings and binding stay and no setup or re-pairing is needed.</small></label>
       <label class="choice"><input type="radio" name="mode" value="clean">
         <span data-lang="zh">清空后重装</span><span data-lang="en">Erase and reinstall</span>
-        <small data-lang="zh">先擦除整块芯片。Wi-Fi、服务器地址要重新设置；设备的密钥会换新，家庭服务器的管理后台要对它点「重新配对」或解绑后重新绑定。</small>
-        <small data-lang="en">Erases the chip first. Wi-Fi and server address must be set again; the device gets a new secret, so in the household server's admin use "re-pair" or unbind and bind it again.</small></label>
+        <small data-lang="zh" id="cleanXingzhiZh">先擦除整块芯片。Wi-Fi、服务器地址要重新设置；设备的密钥会换新，家庭服务器的管理后台要对它点「重新配对」。</small>
+        <small data-lang="en" id="cleanXingzhiEn">Erases the chip first. Wi-Fi and server address must be set again; the device gets a new secret, so use "re-pair" on it in the household server's admin.</small>
+        <small data-lang="zh" id="cleanPassportZh">不擦除芯片，但整个固件连同空白的设置区一起写入：Wi-Fi、服务器地址要重新设置；设备的密钥会换新，家庭服务器的管理后台要对它点「重新配对」。出厂身份信息不受影响。</small>
+        <small data-lang="en" id="cleanPassportEn">The chip is not erased, but the whole image is written, blank settings area included: Wi-Fi and server address must be set again; the device gets a new secret, so use "re-pair" on it in the household server's admin. The factory identity is not affected.</small></label>
+    </div>
+
+    <!-- 已经是小智电视，但这次的固件改了分区表：只能清空重装 -->
+    <div id="planMismatch" class="note stop hidden">
+      <h3 data-lang="zh">这次没法保留设置更新</h3>
+      <h3 data-lang="en">This update cannot keep the settings</h3>
+      <p id="mismatchWhy"></p>
+      <p data-lang="zh">只能清空后重装：Wi-Fi、服务器地址要重新设置；设备的密钥会换新，装好、连上网以后，到家庭服务器的管理后台对它点「重新配对」。不想现在做就点「断开」，什么都不会改。</p>
+      <p data-lang="en">Only a clean reinstall is possible: Wi-Fi and server address must be set again, and the device gets a new secret, so once it is online use "re-pair" on it in the household server's admin. To leave it for now, press Disconnect; nothing is changed.</p>
     </div>
 
     <!-- Passport：从不擦除 -->
     <div id="planPassport" class="note ok hidden">
-      <h3 data-lang="zh">不擦除，只写固件那一段</h3>
-      <h3 data-lang="en">No erase; only the firmware range is written</h3>
-      <p data-lang="zh">从地址 0 写到固件结束，远在 <code>0x356000</code> 的出厂身份信息之前，不会碰到它。页面写之前会再核对一次范围，越界就不写。</p>
-      <p data-lang="en">Written from address 0 to the end of the firmware, well before the factory identity at <code>0x356000</code>, which is never touched. The range is checked again before writing.</p>
+      <h3 data-lang="zh">Passport 从不擦除芯片</h3>
+      <h3 data-lang="en">A Passport is never erased</h3>
+      <p data-lang="zh">写入范围都在 <code>0x356000</code> 的出厂身份信息之前，不会碰到它；上面「设备」一栏的「将要写入」列出了确切的地址。页面写之前会再核对一次范围，越界就不写。</p>
+      <p data-lang="en">Every write ends before the factory identity at <code>0x356000</code>, which is never touched; "Will write" above lists the exact addresses. The ranges are checked again before writing.</p>
     </div>
 
     <div class="note hidden" id="planUnknownLayout">
@@ -195,6 +206,8 @@
       <h3 data-lang="en">Could not read what is installed</h3>
       <p data-lang="zh">如果这台 Passport 装的是 <b>Muse 双系统</b>（Muse 和电视两个固件并存），不要在这里刷：整块写入会删掉 Muse 和它的配对。那种情况按项目文档里「Passport 与 Muse 并存」一节手动刷。</p>
       <p data-lang="en">If this Passport carries the <b>Muse dual setup</b> (Muse beside the TV), do not flash here: a full write deletes Muse and its pairing. Follow the "Passport beside Muse" board document instead.</p>
+      <p data-lang="zh">读不出来就没法只更新固件，只能整个写入：设置区也会写成空白，之后可能要重新配网、在管理后台「重新配对」。可以先断开，让设备重新开机后再连一次试试。</p>
+      <p data-lang="en">Without reading it, an update that keeps the settings is not possible and the whole image is written, blank settings area included: Wi-Fi setup and re-pairing may follow. You can disconnect, restart the device and connect again first.</p>
     </div>
 
     <label class="agree hidden" id="agreeRow"><input type="checkbox" id="agree">
@@ -233,6 +246,16 @@
         </div>
       </div>
     </div>
+    <!-- 「更新固件」：设置和绑定都还在 -->
+    <div class="note ok hidden" id="doneKept">
+      <h3 data-lang="zh">设置和绑定都保留了</h3>
+      <h3 data-lang="en">Settings and binding were kept</h3>
+      <p data-lang="zh">设置区没有被写。重启后它自己连上原来的 Wi-Fi 和家庭服务器，接着放你的频道，不用重新配网，也不用重新配对。</p>
+      <p data-lang="en">The settings area was not written. After the restart it joins the same Wi-Fi and household server by itself and goes on with your channels; no Wi-Fi setup and no re-pairing.</p>
+      <p class="muted" data-lang="zh">要是它连上以后一直停在加载画面，或者屏幕上写着 <code>RE-PAIR THIS TV IN ADMIN</code>：家庭服务器不认它的密钥了（以前用会清空设置的方式刷过）。到管理后台的「设备」里对它点「重新配对」，10 分钟内它会自己连上并被记住。</p>
+      <p class="muted" data-lang="en">If it then stays on the loading screen, or the screen says <code>RE-PAIR THIS TV IN ADMIN</code>, the household server no longer accepts its secret (an earlier flash cleared the settings). Use "re-pair" on it under Devices in the admin; within 10 minutes it reconnects and is remembered.</p>
+    </div>
+    <div id="doneSetup">
     <p data-lang="zh">重启后屏幕进入「设置」，等你告诉它连哪个 Wi-Fi、找哪台服务器：</p>
     <p data-lang="en">After the restart the device opens its setup screens and waits for a Wi-Fi network and a server:</p>
     <ol data-lang="zh">
@@ -247,8 +270,11 @@
     </ol>
     <p class="muted" data-lang="zh">手机打不开配网页：看看手机上是不是开着 VPN 或代理（加速器、科学上网一类的软件），关掉再试；手机和这台服务器要连同一个家里的网络。</p>
     <p class="muted" data-lang="en">The phone cannot open the setup page: if a VPN or proxy app is on, turn it off and retry; the phone and this server must be on the same home network.</p>
-    <p class="muted" data-lang="zh">以后更新固件：回到这个页面再刷一次，选「更新固件」，设置和绑定都保留。</p>
-    <p class="muted" data-lang="en">To update later, flash again here and choose Update; settings and binding stay.</p>
+    <p class="muted" data-lang="zh">这台设备以前绑定过：连上服务器后如果一直停在加载画面，或者屏幕上写着 <code>RE-PAIR THIS TV IN ADMIN</code>，到管理后台的「设备」里对它点「重新配对」。</p>
+    <p class="muted" data-lang="en">If this device was bound before and, once connected, stays on the loading screen or shows <code>RE-PAIR THIS TV IN ADMIN</code>, use "re-pair" on it under Devices in the admin.</p>
+    </div>
+    <p class="muted" data-lang="zh">以后更新固件：回到这个页面再刷一次，选「更新固件」，设置区不写，设置和绑定都保留（新版本改了分区表时页面会提前说明，只能清空重装）。</p>
+    <p class="muted" data-lang="en">To update later, flash again here and choose Update: the settings area is not written, so settings and binding stay (if a new version changes the partition table, the page says so first and offers only a clean reinstall).</p>
   </section>
 
   <footer>

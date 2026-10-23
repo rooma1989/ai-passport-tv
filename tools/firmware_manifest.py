@@ -11,10 +11,13 @@ Sub-commands:
   make          one board's manifest (``manifest-<board>.json``) beside a copy of
                 its image, after checking the image: chip id in the header,
                 this project's application at 0x10000, size inside the board's
-                write limit, version as given.
+                write limit, version as given, and a partition table the web
+                flasher can split for an update that keeps the settings
+                (update_plan).
   merge         every ``manifest-*.json`` in a folder into ``manifest.json``,
                 plus ``SHA256SUMS``; each file is re-hashed on the way.
-  check         a folder holding ``manifest.json`` and the images it names.
+  check         a folder holding ``manifest.json`` and the images it names; also
+                prints the ranges an update writes and the ones it keeps.
   bundle        the flasher page and a checked firmware folder, assembled into
                 one folder that a static site or the household server serves
                 as ``/flash/``.
@@ -59,7 +62,9 @@ MB = 1024 * 1024
 #   first-install  erased once, with the user's consent, when it replaces other
 #                  firmware (the Xingzhi's Xiaozhi AI firmware keeps its NVS
 #                  inside this firmware's NVS range); a re-flash over this
-#                  firmware writes without erasing, so settings and binding stay.
+#                  firmware writes without erasing and, as an update, only the
+#                  bootloader, the table and the app (update_plan), so settings
+#                  and binding stay.
 # "write_limit" is where every write must end; "protect" lists ranges no write
 # may touch even if the limit were raised.
 BOARDS: dict[str, dict] = {
@@ -123,6 +128,89 @@ def app_description(image: bytes, offset: int = APP_OFFSET) -> dict | None:
         return None
     return {"version": _cstr(image[base + 16: base + 48]),
             "project": _cstr(image[base + 48: base + 80])}
+
+
+PARTITION_TABLE_MAX = 0xC00
+SECTOR = 0x1000
+# Data partitions whose content belongs to the device (flasher-core.js DEVICE_DATA):
+# otadata, phy, nvs, coredump, nvs_keys.
+DEVICE_DATA_SUBTYPES = {0x00: "otadata", 0x01: "phy", 0x02: "nvs", 0x03: "coredump", 0x04: "nvs_keys"}
+
+
+def read_partition_table(raw: bytes) -> list[dict] | None:
+    """The strict reading flasher-core.js readPartitionTable() makes: 32-byte AA 50
+    entries ended by the EB EB MD5 entry (whose MD5 must match) or FF FF; else None."""
+    entries = []
+    for at in range(0, min(len(raw), PARTITION_TABLE_MAX) - 31, 32):
+        magic = raw[at:at + 2]
+        if magic == b"\xaa\x50":
+            ptype, subtype, offset, size = struct.unpack_from("<BBII", raw, at + 2)
+            entries.append({"type": ptype, "subtype": subtype, "offset": offset, "size": size,
+                            "label": _cstr(raw[at + 12:at + 28]),
+                            "flags": struct.unpack_from("<I", raw, at + 28)[0]})
+            continue
+        if not entries:
+            return None
+        if magic == b"\xeb\xeb":
+            return entries if hashlib.md5(raw[:at]).digest() == raw[at + 16:at + 32] else None
+        if magic == b"\xff\xff":
+            return entries
+        return None
+    return None
+
+
+def update_plan(image: bytes) -> tuple[list[list[int]], list[dict]]:
+    """What the web flasher's "update" writes from this merged image, and what it leaves alone.
+
+    The release-time half of flasher-core.js updatePlan() (the page also compares
+    the table with the device's): the image's own table must parse, the app must be
+    the factory slot at 0x10000, there is no OTA boot selection, nothing lies outside
+    the partitions, and the partitions holding the device's own data are blank -- an
+    update never writes them, so a release that put something there would silently
+    not deliver it. Returns (regions, keep) or raises ManifestError.
+    """
+    table = read_partition_table(image[PARTITION_TABLE_OFFSET:PARTITION_TABLE_OFFSET + PARTITION_TABLE_MAX])
+    if table is None:
+        raise ManifestError("the partition table at 0x8000 does not parse (or its MD5 is wrong)")
+    entries = sorted(table, key=lambda e: e["offset"])
+    previous_end = PARTITION_TABLE_OFFSET + SECTOR
+    for e in entries:
+        if e["offset"] % SECTOR or e["size"] <= 0 or e["size"] % SECTOR or e["offset"] < previous_end:
+            raise ManifestError(f"partition {e['label']!r} is misaligned or overlaps")
+        previous_end = e["offset"] + e["size"]
+    if not any(e["type"] == 0 and e["offset"] == APP_OFFSET for e in entries):
+        raise ManifestError("no app partition at 0x10000")
+    if any(e["type"] == 1 and e["subtype"] == 0 for e in entries):
+        raise ManifestError("the layout has otadata; the flasher's update does not support OTA boot selection")
+    blank = lambda start, end: image[start:end].count(0xFF) == max(0, end - start)  # noqa: E731
+    regions, keep = [[0, entries[0]["offset"]]], []
+    for e in entries:
+        start, end = e["offset"], e["offset"] + e["size"]
+        in_image = min(end, len(image))
+        if e["type"] == 1 and e["subtype"] in DEVICE_DATA_SUBTYPES and not blank(start, in_image):
+            raise ManifestError(f"{e['label']!r} holds data in the image; an update would not write it")
+        device_owned = e["type"] != 0 and (
+            (e["type"] == 1 and e["subtype"] in DEVICE_DATA_SUBTYPES) or start >= len(image)
+            or blank(start, in_image))
+        if device_owned:
+            keep.append({"label": e["label"], "start": start, "end": end})
+        else:
+            regions.append([start, in_image])
+    covered = sorted([r for r in regions] + [[k["start"], k["end"]] for k in keep])
+    at = 0
+    for start, end in covered:
+        if start > at and not blank(at, min(start, len(image))):
+            raise ManifestError(f"the image has content at 0x{at:x}-0x{start:x}, outside its partitions")
+        at = max(at, end)
+    if at < len(image) and not blank(at, len(image)):
+        raise ManifestError(f"the image has content after 0x{at:x}, outside its partitions")
+    merged: list[list[int]] = []
+    for start, end in sorted(r for r in regions if r[1] > r[0]):
+        if merged and merged[-1][1] == start:
+            merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return merged, keep
 
 
 def check_image(board: str, image: bytes, version: str | None = None) -> dict:
@@ -232,6 +320,9 @@ def cmd_make(args) -> int:
     image_path = Path(args.image)
     image = image_path.read_bytes()
     app = check_image(args.board, image, args.version)
+    # A release the web flasher could not update in place (settings kept) is not
+    # published. Installing an already published bundle does not re-apply this.
+    update_plan(image)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     target = out / BOARDS[args.board]["file"]
@@ -307,10 +398,14 @@ def load_checked(folder: Path) -> dict:
 
 def cmd_check(args) -> int:
     manifest = load_checked(Path(args.folder))
+    folder = Path(args.folder)
     for build in manifest["builds"]:
         part = build["parts"][0]
         print(f"{build['board']}: {part['path']} {part['size']} bytes at 0x{part['offset']:x}, "
               f"erase={build['erase']}, version {build['version']}")
+        regions, keep = update_plan((folder / part["path"]).read_bytes())
+        print("  update writes " + ", ".join(f"0x{a:x}-0x{b:x}" for a, b in regions)
+              + "; keeps " + ", ".join(f"{k['label']} 0x{k['start']:x}-0x{k['end']:x}" for k in keep))
     return 0
 
 
