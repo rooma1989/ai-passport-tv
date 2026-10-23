@@ -183,6 +183,9 @@ async function connect() {
   } finally {
     state.busy = false;
     $('connect').disabled = false;
+    // renderPlan() above ran while busy, so it left the flash button disabled;
+    // a Passport has no consent box whose click would redraw it.
+    if (state.loader && state.policy) renderPlan();
   }
 }
 
