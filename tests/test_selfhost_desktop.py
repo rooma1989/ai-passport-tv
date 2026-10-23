@@ -472,6 +472,18 @@ class FfmpegStateTests(unittest.TestCase):
             other = desktop.Ffmpeg(Path(tmp) / "bin")
             self.assertFalse(other.resolve(str(Path(tmp) / "nope"), environ={}))
             self.assertEqual(other.state, "failed")
+            self.assertTrue(other.resolved)
+
+    def test_nothing_found_is_not_an_error_until_the_download_starts(self):
+        """CI's core smoke test saw state "error" (ffmpeg_missing) between the search and the download."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ffmpeg = desktop.Ffmpeg(Path(tmp) / "bin")
+            self.assertFalse(ffmpeg.resolve(desktop.FFMPEG_FETCH, environ={}))
+            self.assertEqual(ffmpeg.state, "missing")
+            self.assertFalse(ffmpeg.resolved, "missing here means: about to download")
+            with mock.patch.object(ffmpeg, "_fetch"):
+                self.assertTrue(ffmpeg.fetch())
+            self.assertEqual((ffmpeg.state, ffmpeg.resolved), ("fetching", True))
 
     def test_fetch_reports_progress_and_becomes_ready(self):
         with tempfile.TemporaryDirectory() as tmp:

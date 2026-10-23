@@ -256,13 +256,22 @@ class Ffmpeg:
         self.error = ""
         self.version = ""
         self.mirror_used = ""
-        # resolve() 还没跑过：这时「没有」只是还没找，状态说 starting 而不是报错。
+        # 还没找完（或找不到、下载还没开始）：这时「没有」不是问题，状态说 starting 而不是报错。
+        # 找到了、指定的不能用、下载开始了，才算定下来。
         self.resolved = False
 
     def resolve(self, given: str | None, environ=os.environ) -> bool:
-        """找现成的。given：--ffmpeg 的值（"fetch" 表示一定用下载的那份）。找到了返回 True。"""
+        """找现成的。given：--ffmpeg 的值（"fetch" 表示一定用下载的那份）。找到了返回 True。
+        都没有时 resolved 还是 False：接着就该 fetch()（它把 resolved 设上）。以前一开始就设 resolved，
+        检查下载过的那份（Windows、Intel Mac 上 ffmpeg -version 要几秒）的这段时间里状态是 error。"""
+        try:
+            return self._resolve(given, environ)
+        finally:
+            if self.state != "missing":
+                self.resolved = True
+
+    def _resolve(self, given: str | None, environ) -> bool:
         from tools import datadir, ffmpeg_fetch
-        self.resolved = True
         cached = ffmpeg_fetch.cached_path(self.bin_dir)
         if given == FFMPEG_FETCH:
             return self._found(cached, "fetched") if ffmpeg_fetch.is_usable(cached) else False
@@ -305,6 +314,7 @@ class Ffmpeg:
             if self.state in ("fetching", "ready"):
                 return False
             self.state, self.error, self.done, self.total = "fetching", "", 0, 0
+            self.resolved = True
         thread = threading.Thread(target=self._fetch, args=(mirror,), daemon=True, name="ffmpeg-fetch")
         thread.start()
         if wait:
