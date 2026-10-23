@@ -228,7 +228,8 @@ Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
 ## Common problems
 
 - **Bilibili videos, creators or series never start (stuck on loading)**: open
-  bilibili.com in a browser on the same computer. If that fails too, a proxy app
+  bilibili.com in a browser on the same computer. If that fails too, this computer cannot reach Bilibili:
+  the router or parental controls block it (allow it there), or a proxy app
   (Clash, Surge and the like, especially in TUN mode) is sending Bilibili through
   a node that does not work. Add direct rules for Bilibili in the proxy app:
   `DOMAIN-SUFFIX,bilibili.com,DIRECT`, `DOMAIN-SUFFIX,bilivideo.com,DIRECT`,
