@@ -2,7 +2,7 @@
   <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# Xiaozhi TV PC client (0.2.0 beta)
+# Xiaozhi TV PC client (0.2.1 beta)
 
 Turns a Windows PC or a Mac at home into the "TV station" for Xiaozhi TV: the
 computer fetches and transcodes the sources in the background and streams them
@@ -227,6 +227,12 @@ Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
 
 ## Common problems
 
+- **Bilibili videos, creators or series never start (stuck on loading)**: open
+  bilibili.com in a browser on the same computer. If that fails too, a proxy app
+  (Clash, Surge and the like, especially in TUN mode) is sending Bilibili through
+  a node that does not work. Add direct rules for Bilibili in the proxy app:
+  `DOMAIN-SUFFIX,bilibili.com,DIRECT`, `DOMAIN-SUFFIX,bilivideo.com,DIRECT`,
+  `DOMAIN-SUFFIX,hdslb.com,DIRECT`, or turn TUN mode off for a while.
 - **The device says "server did not answer"**: is the computer on and the
   client running? Same router? On Windows, is the home network Private? Is
   another device of the same model watching (one at a time in the beta)?
