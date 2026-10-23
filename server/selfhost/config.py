@@ -36,9 +36,9 @@ signup_via_device = "lan"       # 扫未绑定小电视的码自己注册："lan
 admin_over_tunnel = false       # 隧道端口上也开放总后台和密钥登录（不建议）
 
 [youtube]
-mode = "off"                    # "off" 不用；"node" 用你自己的 YouTube 节点（secrets/youtube-node.json）
-proxy = ""                      # 以后的本机模式用，现在不起作用
-cookies = "youtube/cookies.txt"
+mode = "off"                    # "off" 不用；"local" 这台电脑直接取（组件第一次用时下载）；"node" 你自己的节点（secrets/youtube-node.json）
+proxy = ""                      # 本机模式的代理，例如 "http://127.0.0.1:端口" 或 "socks5://…"；空 = 直连。电脑版「设置 → YouTube」也能改
+cookies = "youtube/cookies.txt" # 本机模式的 cookies（电脑版「设置 → YouTube」导入，建议用小号）
 
 [voice]
 asr_socket = ""                 # 语音识别容器的套接字，例如 "/data/run/asr.sock"，或本机 TCP http://127.0.0.1:<端口>；空 = 不开语音
@@ -157,6 +157,12 @@ def _check(config: Config) -> None:
         raise ConfigError(f"config.toml：signup_via_device 只能是 {' / '.join(SIGNUP)}")
     if config.youtube_mode not in YOUTUBE:
         raise ConfigError(f"config.toml：[youtube] mode 只能是 {' / '.join(YOUTUBE)}")
+    if config.youtube_proxy:
+        from ..relay.ytnode import parse_proxy
+        try:
+            parse_proxy(config.youtube_proxy)
+        except ValueError as error:
+            raise ConfigError(f"config.toml：[youtube] proxy 不对：{error}") from None
     if config.max_streams < 0 or config.backup_keep_days < 1:
         raise ConfigError("config.toml：max_streams 不能是负数，backup_keep_days 至少 1")
     if config.asr_socket.startswith(("http:", "https:")):

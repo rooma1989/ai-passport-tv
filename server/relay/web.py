@@ -29,6 +29,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, events, setup, stream, table, voice, voicecmds, watch as watch_pc, \
     wifi as wifi_api, youtube as youtube_links
+from . import ytsettings
 from .bilibili import REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
@@ -1265,7 +1266,16 @@ class Relay:
                 summary["claim_digits"] = tenancy_db.CLAIM_DIGITS
         if self.clients.get("youtube") is not None:
             summary["youtube"] = {"state": self.youtube_state()}
+            if getattr(self, "youtube_kind", "") == "local":
+                summary["youtube"]["kind"] = "local"   # 自建的本机模式：遥控页的提示不说「海外节点」
+        elif self.selfhost is not None:
+            # 家庭服务器、电脑客户端：投屏页提示去「设置 → YouTube」打开它。
+            summary["youtube_off"] = True
         return summary
+
+    def _youtube_off(self, cloud: str) -> str:
+        """YouTube 没配置时的回答：自建的指向「设置 → YouTube」，云端照旧。"""
+        return YOUTUBE_OFF_SELFHOST if self.selfhost is not None else cloud
 
     def add_creator(self, text: str, caller: Caller = LEGACY) -> dict:
         state = self._account(caller)
@@ -1274,7 +1284,7 @@ class Relay:
             return {"ok": False, "error": "请先粘贴链接"}
         site = _site_of(text)
         if self.clients.get(site) is None:
-            return {"ok": False, "error": "YouTube 还没配置好，暂时只能添加 B 站 UP 主"}
+            return {"ok": False, "error": self._youtube_off("YouTube 还没配置好，暂时只能添加 B 站 UP 主")}
         try:
             mid = self.clients[site].creator_id(text)
             if mid is None:
@@ -1315,7 +1325,7 @@ class Relay:
         site = _site_of(text)
         client = self.clients.get(site)
         if client is None:
-            return {"ok": False, "error": "YouTube 还没配置好，剧集暂时只能用 B 站"}
+            return {"ok": False, "error": self._youtube_off("YouTube 还没配置好，剧集暂时只能用 B 站")}
         try:
             source = client.series_id(text)
             if source is None:
@@ -1351,7 +1361,7 @@ class Relay:
             return {"ok": False, "error": "请先粘贴视频链接"}
         site = _site_of(text)
         if self.clients.get(site) is None:
-            return {"ok": False, "error": "YouTube 还没配置好，暂时只能投 B 站视频"}
+            return {"ok": False, "error": self._youtube_off("YouTube 还没配置好，暂时只能投 B 站视频")}
         try:
             bvid = self.clients[site].video_id(text)
             if bvid is None:
@@ -1556,6 +1566,7 @@ class Relay:
 
 
 _SITE_NAMES = {"bilibili": "B 站", "youtube": "YouTube "}
+YOUTUBE_OFF_SELFHOST = "YouTube 还没开启：去「设置 → YouTube」填代理即可"
 
 
 def _phone_device(device: dict | None) -> dict | None:
@@ -1796,7 +1807,8 @@ def _manage_handler(relay: Relay):
             if setup.get(self, relay, path):
                 return
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
-            if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)):
+            if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)
+                                 or ytsettings.get(self, relay, path)):
                 return
             # 在电脑上看的列表和段（watch.py）：只认地址里的令牌，不看登录；没开这个功能时 404。
             if watch_pc.get(self, relay, path):
@@ -1938,7 +1950,8 @@ def _manage_handler(relay: Relay):
             path = self._path()
             if setup.post(self, relay, path):
                 return
-            if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)):
+            if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)
+                                 or ytsettings.post(self, relay, path)):
                 return
             if relay.tenant and path in ("/api/scan", "/api/invite/accept", "/api/bind/register"):
                 body = self._body()

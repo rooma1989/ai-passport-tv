@@ -52,6 +52,8 @@ _FRAGMENT_SECRET = re.compile(r"((?:setup|/r/)#)[^\s\"'<>]+")
 _SETUP_CODE = re.compile(r"(设置码[：:]\s*)\S+")
 _BEARER = re.compile(r"(Bearer\s+)\S+", re.IGNORECASE)
 _COOKIE = re.compile(r"(tvs=)[^;\s]+")
+# 网址里的「用户:密码@」（带密码的代理，config.toml 的 [youtube] proxy 会进诊断包）。
+_URL_PASSWORD = re.compile(r"(://)[^/\s:@\"']+:[^/\s@\"']*@")
 
 
 def redact(text: str, home: str | None = None) -> str:
@@ -63,6 +65,7 @@ def redact(text: str, home: str | None = None) -> str:
     text = _SETUP_CODE.sub(r"\1***", text)
     text = _BEARER.sub(r"\1***", text)
     text = _COOKIE.sub(r"\1***", text)
+    text = _URL_PASSWORD.sub(r"\1***@", text)
     text = _IPV4.sub(lambda m: m.group(0) if m.group(1) in ("127.0.0", "0.0.0") else m.group(1) + ".x", text)
     text = _IPV6ISH.sub(lambda m: m.group(1) + ":…", text)
     if home:
@@ -475,6 +478,27 @@ class Desktop:
                                 "message": f"{child.name} 停了，正在重启（看日志 core.log）"})
         return out
 
+    def youtube(self) -> dict:
+        """YouTube 本机模式（状态的 youtube）：设置里的模式、组件装好没有、正在下载的进度（中转写的
+        run/youtube-components.json，见 server/selfhost/ytcomponents.py）。"""
+        from . import config as config_module
+        from ..relay import ytnode
+        try:
+            mode = config_module.load(self.layout.config).youtube_mode
+        except config_module.ConfigError:
+            mode = "off"
+        answer = {"mode": mode, "ready": ytnode.read_components(str(self.layout.youtube_bin)) is not None,
+                  "state": "idle", "done": 0, "total": 0, "error": ""}
+        try:
+            progress = json.loads((self.layout.run / "youtube-components.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            progress = {}
+        if isinstance(progress, dict):
+            for key in ("state", "done", "total", "error"):
+                if isinstance(progress.get(key), type(answer[key])):
+                    answer[key] = progress[key]
+        return answer
+
     def setup_code(self) -> str:
         try:
             return self.layout.setup_code.read_text(encoding="utf-8").strip()
@@ -508,6 +532,7 @@ class Desktop:
             "network": self.network.snapshot() if self.network is not None else
             {"id": "", "trusted": None, "profile": "", "lan_open": self.bind != "127.0.0.1"},
             "ffmpeg": {k: ffmpeg[k] for k in ("state", "path", "source", "done", "total", "error")},
-            "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": False},
+            "voice": {"mode": "off"}, "youtube": self.youtube(), "hub": {"state": "off"},
+            "update": {"available": False},
             "settings": self.settings.snapshot(),
         }

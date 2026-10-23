@@ -46,10 +46,13 @@ CORE_COMMANDS = {
     # The break-glass administration commands (users, login-link, …) against the
     # client's database, for support: `xiaozhi-tv-core __tenancy-admin --db <data>/tv.db users`.
     "__tenancy-admin": "server.tenancy.admin",
+    # The local YouTube node ([youtube] mode = "local"): server/relay/ytnode.py with --plain.
+    "__ytnode": "server.relay.ytnode",
 }
 # The module each child of the supervisor runs, and the name it is started by.
 CHILD_COMMANDS = {
     "server.relay": "__relay",
     "server.front": "__front",
     "server.tv_server": "__tv",
+    "server.relay.ytnode": "__ytnode",
 }

@@ -207,6 +207,8 @@ def _run_locked(args, layout, logs_dir, log) -> int:
             log(f"重启：小智电视上的服务器地址填 {addresses['device'] or '（还不知道）'}")
 
         state.reload = reload
+        # 「设置 → YouTube」的 run/refresh-request（supervisor.py）：同样先重读设置。
+        supervisor.reload = reload
         if network is not None:
             from .network import AddressWatch
 

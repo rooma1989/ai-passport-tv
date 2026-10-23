@@ -455,6 +455,7 @@
         <div class="h3">粘贴即播 <small id="castTo"></small></div>
         <textarea id="castLink" placeholder="粘贴 B 站或 YouTube 视频链接"></textarea>
         <div class="inline" style="margin-top: 10px"><button class="go" id="castGo">在小电视上播放</button></div>
+        <p class="hint" id="castYt" hidden>YouTube 还没开启：去<button class="linkbtn" id="castYtGo">「设置 → YouTube」</button>填代理即可</p>
       </div>
       <div class="block noguest">
         <div class="h3">放过的 <small>最多 50 个</small></div>
@@ -483,6 +484,48 @@
       <div class="block" id="ytBlock" hidden>
         <div class="h3">YouTube 节点</div>
         <p id="ytState"></p>
+      </div>
+      <div class="block" id="ytLocal" hidden style="max-width: 760px">
+        <div class="h3">YouTube <small id="ytRun"></small></div>
+        <p class="hint" id="ytConfigError" hidden></p>
+        <div class="inline" id="ytModes">
+          <label><input type="radio" name="ytMode" value="off"> 关闭</label>
+          <label><input type="radio" name="ytMode" value="local"> 本机（这台电脑直接取 YouTube）</label>
+          <label><input type="radio" name="ytMode" value="node"> 自己的节点</label>
+        </div>
+        <div id="ytProxyBox">
+          <div class="inline">
+            <input type="text" id="ytProxy" placeholder="代理，例如 http://127.0.0.1:端口 或 socks5://127.0.0.1:端口；不填 = 直连" autocomplete="off" spellcheck="false">
+            <button class="ghost" id="ytDetect">自动检测</button>
+          </div>
+          <p class="hint" id="ytDetected"></p>
+        </div>
+        <div class="inline">
+          <button class="go" id="ytSave">保存</button>
+          <button class="ghost" id="ytTest">测试</button>
+        </div>
+        <p id="ytTestResult"></p>
+        <div id="ytParts">
+          <div class="h3" style="margin-top: 18px">YouTube 组件 <small>yt-dlp 和 deno，第一次用时下载（约 80 MB）</small></div>
+          <p id="ytPartsState"></p>
+          <div class="inline">
+            <button class="ghost" id="ytInstall">安装</button>
+            <button class="ghost" id="ytCheck">检查更新</button>
+            <button class="ghost" id="ytUpdate">更新 yt-dlp</button>
+          </div>
+          <input type="text" id="ytMirror" placeholder="下载镜像（可不填）：GitHub 加速站的网址前缀，写法见使用说明" autocomplete="off" spellcheck="false">
+          <p class="hint">经上面填的代理下载；填了镜像就从镜像下载。文件的校验值写在程序里，下错了会被拒绝。YouTube 经常改版，放不出来时先点「检查更新」。</p>
+        </div>
+        <div id="ytCookiesBox">
+          <div class="h3" style="margin-top: 18px">Cookies <small id="ytCookiesState"></small></div>
+          <div class="inline">
+            <input type="file" id="ytCookiesFile" accept=".txt,text/plain" hidden>
+            <button class="ghost" id="ytCookiesPick">导入 cookies.txt</button>
+            <button class="ghost" id="ytCookiesDelete">删除</button>
+          </div>
+          <p class="hint">YouTube 经常要求代理、机房的地址「登录证明不是机器人」，这时要导入 cookies。请用一个<b>小号</b>：在浏览器的无痕（隐私）窗口里登录小号、打开 YouTube，用导出 cookies.txt 的扩展只导出 youtube.com，然后关掉无痕窗口（不要在这个窗口里退出登录，退出会让 cookies 作废）。cookies 等于小号的登录凭据：只存在这台电脑上，不要发给别人。</p>
+        </div>
+        <p class="hint">「本机」：这台电脑经你填的代理访问 YouTube。本项目不提供代理，也不介绍怎么获得代理。</p>
       </div>
       <div class="block"><a class="linkbtn" href="/TV/" target="_blank" rel="noreferrer">使用说明 ›</a></div>
     </section>
@@ -746,7 +789,7 @@ function go(name) {
   $("devpick").hidden = !["remote", "cast", "subs"].includes(name);
   try { localStorage.setItem("console.page", name); } catch (error) {}
   if (name === "devices") loadDevices();
-  if (name === "settings") loadSessions();
+  if (name === "settings") { loadSessions(); loadYouTube(); }
   if (name === "invites") loadInvites();
 }
 for (const b of document.querySelectorAll("#nav button")) b.onclick = () => go(b.dataset.page);
@@ -805,11 +848,13 @@ function render() {
 
 function renderNotice() {
   const state = data.youtube ? data.youtube.state : "";
+  const local = data.youtube && data.youtube.kind === "local";
   const text = state === "login" ? "YouTube 需要更新 cookies（管理员用小号重新导出，见使用说明），B 站不受影响"
-    : state === "unreachable" ? "YouTube 暂时不可用（连不上海外节点）" : "";
+    : state === "unreachable" ? (local ? "YouTube 暂时不可用（本机的 YouTube 组件没有响应）" : "YouTube 暂时不可用（连不上海外节点）") : "";
+  $("castYt").hidden = !data.youtube_off;
   $("notice").hidden = !text;
   $("notice").textContent = text;
-  $("ytBlock").hidden = !data.youtube;
+  $("ytBlock").hidden = !data.youtube || !$("ytLocal").hidden;
   if (data.youtube) $("ytState").textContent = { ok: "正常", login: "cookies 过期了，需要重新导出", error: "出错了",
     unreachable: "连不上", unknown: "还不知道" }[state] || state;
 }
@@ -1928,6 +1973,146 @@ $("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
   const answer = await call("POST", "api/sessions/revoke", { others: true });
   toast(answer.ok ? "已退出 " + answer.count + " 个登录" : answer.error, !answer.ok);
   loadSessions();
+});
+
+// ---------- 设置 → YouTube（家庭服务器和电脑客户端的管理员；接口见 server/relay/ytsettings.py） ----------
+
+let yt = null, ytEdited = false, ytPoll = 0;
+const YT_MODES = { off: "关闭", local: "本机", node: "自己的节点" };
+$("castYtGo").onclick = () => { go("settings"); setTimeout(() => { const box = $("ytLocal"); if (!box.hidden) box.scrollIntoView(); }, 300); };
+
+async function loadYouTube() {
+  if (!me || me.role !== "admin") return;
+  let answer;
+  try { answer = await call("GET", "api/youtube/settings"); }
+  catch (error) { $("ytLocal").hidden = true; return; }   // 云端没有这个接口（404）
+  if (!answer.ok) return;
+  yt = answer;
+  renderYouTube();
+}
+
+function ytMode() {
+  const picked = document.querySelector("input[name=ytMode]:checked");
+  return picked ? picked.value : "off";
+}
+
+function renderYouTube() {
+  if (!yt) return;
+  $("ytLocal").hidden = false;
+  $("ytBlock").hidden = true;
+  if (!ytEdited) {
+    for (const r of document.querySelectorAll("input[name=ytMode]")) r.checked = r.value === yt.mode;
+    $("ytProxy").value = yt.proxy || "";
+  }
+  $("ytConfigError").hidden = !yt.config_error;
+  $("ytConfigError").textContent = yt.config_error ? "config.toml 有错：" + yt.config_error : "";
+  const health = { ok: "正常", login: "要求登录（导入或更新 cookies）", error: "上次出错了", unknown: "还没用过", unreachable: "没有响应" }[yt.health] || "";
+  $("ytRun").textContent = "现在：" + (YT_MODES[yt.running] || yt.running) + (yt.running !== "off" && health ? " · " + health : "")
+    + (yt.running !== yt.mode ? "（正在换成「" + (YT_MODES[yt.mode] || yt.mode) + "」）" : "");
+  const mode = ytMode();
+  $("ytProxyBox").hidden = mode !== "local";
+  $("ytParts").hidden = mode !== "local";
+  $("ytCookiesBox").hidden = mode !== "local";
+  const c = yt.components;
+  let line;
+  if (!c.supported) line = "这台电脑的系统没有官方的 deno，本机模式用不了；可以用「自己的节点」。";
+  else if (c.state === "working") line = "正在下载 " + (c.what || "") + (c.total ? "：" + Math.floor(c.done / c.total * 100) + "%（" + (c.done / 1e6).toFixed(1) + " / " + (c.total / 1e6).toFixed(1) + " MB）" : c.done ? "：" + (c.done / 1e6).toFixed(1) + " MB" : "…");
+  else if (c.ready) line = "已安装：yt-dlp " + c.ytdlp + "，deno " + c.deno + (c.update ? "。有新版 yt-dlp " + c.latest + "，点「更新 yt-dlp」" : c.latest ? "（已是最新）" : "");
+  else line = "还没安装" + (yt.mode === "local" ? "：点「安装」（经上面的代理下载）" : "");
+  if (c.state === "failed" && c.error) line += "。上次失败：" + c.error;
+  $("ytPartsState").textContent = line;
+  $("ytPartsState").style.color = c.state === "failed" ? "var(--red)" : "";
+  $("ytInstall").hidden = !c.supported || c.ready;
+  $("ytUpdate").hidden = !c.ready;
+  $("ytCheck").hidden = !c.ready;
+  for (const b of [$("ytInstall"), $("ytUpdate"), $("ytCheck")]) b.disabled = c.state === "working";
+  const k = yt.cookies;
+  $("ytCookiesState").textContent = k.present ? "已导入（" + k.count + " 条，YouTube 域名，" + when(k.updated) + "）" : "没有导入";
+  $("ytCookiesDelete").hidden = !k.present;
+  clearTimeout(ytPoll);
+  if (c.state === "working" || yt.running !== yt.mode) ytPoll = setTimeout(() => { if ($("settings").classList.contains("on")) loadYouTube(); }, 1500);
+}
+for (const r of document.querySelectorAll("input[name=ytMode]")) r.onchange = () => { ytEdited = true; renderYouTube(); };
+$("ytProxy").oninput = () => { ytEdited = true; };
+
+$("ytDetect").onclick = () => busy($("ytDetect"), async () => {
+  const answer = await call("POST", "api/youtube/detect", {});
+  if (answer.proxy) { $("ytProxy").value = answer.proxy; ytEdited = true; }
+  $("ytDetected").textContent = answer.message || answer.error || "";
+});
+
+$("ytSave").onclick = () => busy($("ytSave"), async () => {
+  const answer = await call("POST", "api/youtube/settings", { mode: ytMode(), proxy: $("ytProxy").value.trim() });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  ytEdited = false;
+  $("ytTestResult").textContent = "";
+  toast(!answer.changed ? "没有改动" : answer.restart ? "已保存，正在重启 YouTube 和遥控服务（几秒钟）" : "已保存，几秒后生效");
+  if (answer.changed) await ytAfterSave();
+});
+
+// 保存后服务会重启几秒：一直问到能回答为止（最多 30 秒）。
+async function ytAfterSave() {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    try {
+      const answer = await call("GET", "api/youtube/settings");
+      if (answer.ok) { yt = answer; renderYouTube(); if (answer.running === answer.mode) { refresh(); return; } }
+    } catch (error) { if (error instanceof SignedOut) { signedOut(); return; } }
+  }
+}
+
+$("ytTest").onclick = () => busy($("ytTest"), async () => {
+  $("ytTestResult").style.color = "";
+  $("ytTestResult").textContent = ytEdited ? "改动还没保存：先点「保存」，测试的是正在用的设置。" : "正在测试（解析一个公开的测试视频，最多 1 分钟）…";
+  if (ytEdited) return;
+  const answer = await call("POST", "api/youtube/test", {});
+  $("ytTestResult").style.color = answer.ok ? "var(--amber)" : "var(--red)";
+  $("ytTestResult").textContent = answer.message || answer.error || "";
+  loadYouTube();
+});
+
+async function ytParts(action, btn) {
+  await busy(btn, async () => {
+    const answer = await call("POST", "api/youtube/components", { action, mirror: $("ytMirror").value.trim() });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    if (action === "check") toast(answer.update ? "有新版 yt-dlp：" + answer.latest : "yt-dlp " + answer.current + " 已是最新");
+    if (answer.components && yt) { yt.components = answer.components; renderYouTube(); }
+    loadYouTube();
+  });
+}
+$("ytInstall").onclick = () => ytParts("install", $("ytInstall"));
+$("ytUpdate").onclick = () => ytParts("update", $("ytUpdate"));
+$("ytCheck").onclick = () => ytParts("check", $("ytCheck"));
+
+// cookies.txt：只把 youtube.com、google.com 的行发给服务器（别的网站的 cookies 不离开这台电脑）。
+$("ytCookiesPick").onclick = () => $("ytCookiesFile").click();
+$("ytCookiesFile").onchange = () => {
+  const file = $("ytCookiesFile").files[0];
+  $("ytCookiesFile").value = "";
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) { toast("文件太大了", true); return; }
+  const reader = new FileReader();
+  reader.onload = () => busy($("ytCookiesPick"), async () => {
+    const keep = /(^|\.)(youtube|google)\.com$/i;
+    const lines = String(reader.result).split(/\r?\n/).filter((line) => {
+      const domain = line.replace(/^#HttpOnly_/, "").split("\t")[0];
+      return (line.startsWith("#HttpOnly_") || !line.startsWith("#")) && line.split("\t").length === 7 && keep.test(domain.replace(/^\./, ""));
+    });
+    if (!lines.length) { toast("文件里没有 youtube.com 的 cookies（要 Netscape 格式的 cookies.txt）", true); return; }
+    const text = "# Netscape HTTP Cookie File\n" + lines.join("\n") + "\n";
+    if (text.length > 48 * 1024) { toast("YouTube 的 cookies 太多了：只导出 youtube.com 再试", true); return; }
+    const answer = await call("POST", "api/youtube/cookies", { text });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    toast("已导入（" + answer.cookies.count + " 条，YouTube 域名）");
+    if (yt) { yt.cookies = answer.cookies; renderYouTube(); }
+  });
+  reader.onerror = () => toast("读不了这个文件", true);
+  reader.readAsText(file);
+};
+$("ytCookiesDelete").onclick = () => busy($("ytCookiesDelete"), async () => {
+  if (!confirm("删除导入的 YouTube cookies？")) return;
+  const answer = await call("POST", "api/youtube/cookies/delete", {});
+  if (answer.ok && yt) { yt.cookies = answer.cookies; renderYouTube(); toast("已删除"); }
 });
 
 // 让手机登录：一次性的手机登录链接（5 分钟、只能用一次），手机用相机扫码在 Safari 里打开。

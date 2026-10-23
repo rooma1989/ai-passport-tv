@@ -16,5 +16,9 @@ This image contains:
 - tini and tzdata from Debian, under their own licences
   (/usr/share/doc/tini/copyright, /usr/share/doc/tzdata/copyright).
 
+Not in the image: yt-dlp (Unlicense) and Deno (MIT) are downloaded into
+/data/youtube/bin/ from their official GitHub releases only when YouTube
+"local mode" is turned on (pinned versions and SHA-256).
+
 The image ships no content: no channel list, no stream address, no playlist,
 no cookies, no keys. Everything it plays is added by the person who runs it.

@@ -7,7 +7,7 @@
 What it checks, in order (docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md, 5.2 and 5.13):
 
 1. Every sub-command the supervisor starts its children by answers `--help` from the build
-   (`__relay`, `__front`, `__tv`, `__selfhost`, `__tenancy-admin`) -- PyInstaller cannot see
+   (`__relay`, `__front`, `__tv`, `__selfhost`, `__tenancy-admin`, `__ytnode`) -- PyInstaller cannot see
    imports reached through a name at run time, and this is where a missing one shows.
 2. `selfhost --desktop` on 127.0.0.1 with a fresh data folder whose path has Chinese
    characters and a space: control.json appears, the status reaches "running" (after the
@@ -48,7 +48,7 @@ from tools.console import use_utf8  # noqa: E402
 use_utf8()
 
 PORTS = (8080, 8097, 8098, 8099, 8100, 8198, 8199)
-SUBCOMMANDS = ("__relay", "__front", "__tv", "__selfhost", "__tenancy-admin")
+SUBCOMMANDS = ("__relay", "__front", "__tv", "__selfhost", "__tenancy-admin", "__ytnode")
 
 
 class Failure(Exception):

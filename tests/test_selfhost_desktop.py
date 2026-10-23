@@ -317,7 +317,7 @@ class ControlApiTests(unittest.TestCase):
 class StatusAndDiagnosticsTests(unittest.TestCase):
     CONTRACT = {"ok", "api", "version", "pid", "started", "state", "problems", "data_dir", "logs_dir", "bind",
                 "ports", "lan_url", "local_url", "setup_pending", "children", "devices", "watching", "listening",
-                "network", "ffmpeg", "voice", "hub", "update", "settings"}
+                "network", "ffmpeg", "voice", "youtube", "hub", "update", "settings"}
 
     def make(self, root: Path) -> desktop.Desktop:
         layout = bootstrap.Layout(root)

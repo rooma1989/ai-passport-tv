@@ -93,7 +93,9 @@ class DevCore:
             "children": {name: {"running": True, "restarts": 0} for name in ("relay", "xingzhi", "passport", "front")},
             "devices": self.devices, "watching": sum(1 for d in self.devices if d["online"] and d["channel"]),
             "listening": sum(1 for d in self.devices if d["online"] and d.get("listening")),
-            "ffmpeg": ffmpeg, "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": False},
+            "ffmpeg": ffmpeg, "voice": {"mode": "off"},
+            "youtube": {"mode": "off", "ready": False, "state": "idle", "done": 0, "total": 0, "error": ""},
+            "hub": {"state": "off"}, "update": {"available": False},
             "settings": dict(self.settings),
         }
         if self.network is not None:
