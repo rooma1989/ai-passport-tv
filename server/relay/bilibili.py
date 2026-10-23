@@ -235,8 +235,16 @@ def _resolve(url: str) -> str:
         return answer.geturl()
 
 
+# 不登录时 html5 平台给的清晰度：16 = 360p，64 = 720p（B 站按能给的最高档往下给）。
+# 云主机 CPU 和带宽都紧，用 360p；家庭服务器在家宽上，用 720p（server/selfhost 传 --bilibili-quality）。
+QUALITIES = (16, 32, 64)
+DEFAULT_QUALITY = 16
+SELFHOST_QUALITY = 64
+
+
 class Bilibili:
-    def __init__(self, fetch_json=None, resolve=None):
+    def __init__(self, fetch_json=None, resolve=None, quality: int = DEFAULT_QUALITY):
+        self.quality = quality if quality in QUALITIES else DEFAULT_QUALITY
         self._fetch = fetch_json or _fetch_json
         self._resolve = resolve or _resolve
         self._cookie = ""
@@ -298,7 +306,7 @@ class Bilibili:
         cid = view.get("cid")
         if not cid:
             raise BilibiliError(f"{bvid}: 没有 cid", permanent=True)
-        play = self._call("/x/player/playurl", bvid=bvid, cid=cid, qn=16, fnval=1,
+        play = self._call("/x/player/playurl", bvid=bvid, cid=cid, qn=self.quality, fnval=1,
                           platform="html5")
         durl = play.get("durl") or []
         if not durl or not durl[0].get("url"):
@@ -307,12 +315,12 @@ class Bilibili:
 
     def _episode_url(self, part: str, cid: str) -> str:
         if part.startswith("ep"):
-            play = self._call("/pgc/player/web/playurl", ep_id=part[2:], cid=cid, qn=16, fnval=1)
+            play = self._call("/pgc/player/web/playurl", ep_id=part[2:], cid=cid, qn=self.quality, fnval=1)
             # 会员集在没登录时只给几分钟试看。
             if play.get("is_preview"):
                 raise BilibiliError(f"{part}: 只能试看（需要会员）", permanent=True)
         else:
-            play = self._call("/x/player/playurl", bvid=part, cid=cid, qn=16, fnval=1,
+            play = self._call("/x/player/playurl", bvid=part, cid=cid, qn=self.quality, fnval=1,
                               platform="html5")
         durl = play.get("durl") or []
         if not durl or not durl[0].get("url"):

@@ -18,10 +18,17 @@ from pathlib import Path
 
 from .. import listen
 from . import voicecmds
-from .bilibili import Bilibili
+from .bilibili import QUALITIES, SELFHOST_QUALITY, Bilibili, DEFAULT_QUALITY
 from .state import State
 from .web import Relay, make_servers
 from .youtube import YouTube
+
+
+def _quality(args) -> int:
+    """B 站清晰度：命令行给了就用它；没给时自建（家宽）720p，云端 360p。"""
+    if args.bilibili_quality is not None:
+        return args.bilibili_quality
+    return SELFHOST_QUALITY if args.selfhost else DEFAULT_QUALITY
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manage-port", type=int, default=8100)
     # 自建（server/selfhost 的监督进程给）：没有管理员也启动、等 /tv/setup；明文 HTTP 的 cookie；见 setup.py。
     parser.add_argument("--selfhost", action="store_true", help="自建模式（只和 --db 一起用）")
+    parser.add_argument("--bilibili-quality", type=int, choices=QUALITIES, default=None,
+                        help="B 站清晰度：16=360p，32=480p，64=720p；默认云端 16、自建 64")
     parser.add_argument("--setup-code-file", type=Path, help="自建：一次性设置码文件（还没有管理员时）")
     parser.add_argument("--device-address", default="", help="自建：设备该连的地址（不带端口）；空的话用设置时记下的")
     args = parser.parse_args(argv)
@@ -87,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.db is not None:
         return _serve_tenants(args, key, youtube)
     state = State(args.state)
-    relay = Relay(state, Bilibili(), args.channels_out, args.ffmpeg, key,
+    relay = Relay(state, Bilibili(quality=_quality(args)), args.channels_out, args.ffmpeg, key,
                   events_out=args.events_out, youtube=youtube,
                   main_channels=args.main_channels, groups_out=args.groups_out,
                   now_playing_in=args.now_playing, remote_url_out=args.remote_url_out,
@@ -138,7 +147,7 @@ def _serve_tenants(args, key: str, youtube) -> int:
         # 电视服务给未绑定设备的绑定二维码要用网站地址。
         accounts.set_meta("public_url", args.public_url.rstrip("/"))
     devices_dir = args.devices_dir or args.db.parent / "devices"
-    relay = Relay(None, Bilibili(), None, args.ffmpeg, key, youtube=youtube,
+    relay = Relay(None, Bilibili(quality=_quality(args)), None, args.ffmpeg, key, youtube=youtube,
                   main_channels=args.main_channels, public_url=args.public_url,
                   accounts=accounts, devices_dir=devices_dir, listen_secret=args.listen_secret,
                   log=lambda message: print(message, flush=True), selfhost=selfhost)

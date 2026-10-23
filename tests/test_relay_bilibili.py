@@ -364,3 +364,33 @@ class SearchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QualityTests(unittest.TestCase):
+    """清晰度：云端 360p（qn=16），家庭服务器 720p（qn=64），见 relay/__main__.py 的 _quality()。"""
+
+    def test_playurl_asks_for_the_configured_quality(self):
+        from server.relay.bilibili import Bilibili
+        asked = []
+
+        def fetch(url, *args, **kwargs):
+            asked.append(url)
+            if "/view" in url:
+                return {"code": 0, "data": {"cid": 7}}
+            return {"code": 0, "data": {"durl": [{"url": "https://example.com/v.mp4"}]}}
+
+        client = Bilibili(fetch_json=fetch, quality=64)
+        client._cookie = "buvid3=x"
+        self.assertEqual(client.media_url("BV1xx411c7mD"), "https://example.com/v.mp4")
+        self.assertIn("qn=64", [u for u in asked if "playurl" in u][0])
+
+    def test_unknown_quality_falls_back_to_default(self):
+        from server.relay.bilibili import DEFAULT_QUALITY, Bilibili
+        self.assertEqual(Bilibili(quality=120).quality, DEFAULT_QUALITY)
+
+    def test_relay_picks_quality_by_mode(self):
+        from types import SimpleNamespace
+        from server.relay.__main__ import _quality
+        self.assertEqual(_quality(SimpleNamespace(bilibili_quality=None, selfhost=False)), 16)
+        self.assertEqual(_quality(SimpleNamespace(bilibili_quality=None, selfhost=True)), 64)
+        self.assertEqual(_quality(SimpleNamespace(bilibili_quality=32, selfhost=True)), 32)

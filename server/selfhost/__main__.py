@@ -30,10 +30,11 @@ import sys
 from pathlib import Path
 
 # 这台电脑的型号 → (端口设置项, 画面, 帧率, 起始字节率, 「用手机听」端口, 路线)。
-# 和云端的 tv-xingzhi、tv-passport 两个单元一样；Passport 的字节率用设计 5.3 节表里的家用值。
+# 和云端的 tv-xingzhi、tv-passport 两个单元一样。Passport 原先用 110000（当初为按键卡顿压的上限），
+# 那会让画面发糊、出色块；按键卡顿已由固件的按键优先级修好，云端也早改回了 200000，家里带宽更不是问题。
 MODELS = (
     ("xingzhi", "xingzhi_port", "240x180", 15, 200000, 8198),
-    ("passport", "passport_port", "320x180", 12, 110000, 8199),
+    ("passport", "passport_port", "320x180", 12, 200000, 8199),
 )
 CONTAINER_ENV = "XIAOZHI_TV_CONTAINER"
 
