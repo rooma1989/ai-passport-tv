@@ -39,7 +39,7 @@ from .media import (AUDIO_CHUNK_MS, AUDIO_LEAD_MS, DURATION_MS, FPS,
 from .protocol import (AUDIO_PCM_BYTES, IO_TIMEOUT, VIDEO_CONTINUES, Kind, Packet,
                        ProtocolError, json_bytes, json_object, receive_packet,
                        send_packet, _write_slice)
-from . import episode_info, no_channels, now_playing, overlay, progress, reconnect
+from . import episode_info, no_channels, now_playing, overlay, progress, proxyenv, reconnect
 from .listen import ListenService
 from .cast_switch import SwitchWatcher
 from .voice.session import VoiceService
@@ -1661,6 +1661,8 @@ def main(argv: list[str] | None = None) -> int:
     # 输出固定为 UTF-8：管道下默认取本地编码（Windows 中文为 GBK），log_stamp 按 UTF-8 解码会乱码。
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
+    # ffmpeg 继承这份环境：本机地址不能走用户的代理（server/proxyenv.py）。
+    os.environ.update(proxyenv.loopback_bypass(os.environ))
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     live_parser = commands.add_parser("live", help="transcode one allowlisted public channel in real time")
