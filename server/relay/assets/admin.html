@@ -130,6 +130,22 @@
   .addrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr) auto; gap: 8px; }
   /* 自建模式的「导入播放列表」 */
   .improw { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+  .implabel { font: 14px var(--serif); color: var(--dim); margin: 14px 0 6px; }
+  .disclaimer { margin: 0 0 10px; padding: 8px 12px; border-left: 2px solid var(--amber); background: var(--ink-deep);
+                font: 13px/1.7 var(--serif); color: var(--amber-soft); }
+  .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+  .preset { border: 1px solid var(--rule); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .preset b { font: 600 15px var(--serif); color: var(--paper-hi); }
+  .preset p { margin: 0; font-size: 12px; color: var(--dim); flex: 1; }
+  .preset p a { color: var(--amber-soft); }
+  .preset .inline button { font-size: 13px; padding: 5px 10px; }
+  .chips button { border: 1px solid var(--rule); background: none; color: var(--dim); padding: 4px 12px; font: 13px var(--serif); }
+  .chips button.on { border-color: var(--amber); color: var(--amber); }
+  .chtab td.dup { font-size: 12px; color: var(--faint); white-space: nowrap; }
+  .implist td.name { white-space: nowrap; }
+  .implist td.st { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+  .chtab td.kind { font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #impRoom.bad { color: var(--red); }
   label.ghost { cursor: pointer; display: inline-flex; align-items: center; }
   .implist { max-height: 380px; overflow-y: auto; border: 1px solid var(--rule); }
   .chtab td.st { font: 12px var(--mono); color: var(--dim); white-space: nowrap; }
@@ -292,7 +308,13 @@
           </table></div>
         </div>
         <div class="block" id="importBlock" hidden>
-          <div class="h3">导入播放列表 <small>你自己的 M3U：粘贴地址或选文件，勾选要的台，加到表里，再点下面的「保存」</small></div>
+          <div class="h3">导入播放列表 <small>从网址导入、选 M3U 文件，或点一个公开列表；勾选要的台，加到表里，再点下面的「保存」</small></div>
+          <div id="impPresetBox" hidden>
+            <div class="implabel">一键导入：网上公开的播放列表（有央视、卫视）</div>
+            <p class="disclaimer">以下是网上公开的第三方播放列表，内容由其维护者负责，本项目不提供也不保证任何直播源；请只添加你有权观看的内容。</p>
+            <div class="presets" id="impPresets"></div>
+          </div>
+          <div class="implabel">从网址导入</div>
           <div class="improw">
             <input type="text" id="impUrl" placeholder="播放列表地址 http(s)://…（.m3u）">
             <button class="ghost" id="impFetch">读取</button>
@@ -300,21 +322,27 @@
             <input type="file" id="impFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl" hidden>
           </div>
           <div id="impList" hidden>
+            <p class="hint" id="impSource"></p>
             <div class="inline" style="margin: 10px 0">
-              <input type="text" id="impFilter" placeholder="找台：输入名字的一部分" style="max-width: 260px">
+              <span class="chips inline" id="impKinds">
+                <button data-kind="">全部</button><button data-kind="央视">央视</button><button data-kind="卫视">卫视</button>
+              </span>
+              <input type="text" id="impFilter" placeholder="找台：输入名字的一部分" style="max-width: 220px">
               <button class="ghost" id="impAll">全选</button>
               <button class="ghost" id="impNone">全不选</button>
-              <button class="ghost" id="impProbe">试一下选中的能不能放</button>
+              <button class="ghost" id="impProbe">试一下选中的（最多 20 个）</button>
               <span class="hint" id="impCount" style="margin: 0"></span>
             </div>
             <div class="implist"><table class="chtab">
-              <thead><tr><th></th><th>名字</th><th>地址</th><th>能不能放</th></tr></thead>
+              <thead><tr><th></th><th>名字</th><th>分组</th><th>地址</th><th>重复</th><th>能不能放</th></tr></thead>
               <tbody id="impRows"></tbody>
             </table></div>
-            <p><button class="go" id="impAdd">把选中的加到频道表</button></p>
+            <p class="hint" id="impRoom"></p>
+            <p><button class="go" id="impAdd">加入频道表</button></p>
           </div>
-          <p class="hint">地址只在点「读取」时取一次，不会保存。本软件不带、也不推荐任何播放列表：请只添加你有权观看的来源。
-            小电视最多收 128 个台，挑常看的就好。</p>
+          <p class="hint">地址只在点「读取」时取一次，不会保存。请只添加你有权观看的来源。
+            地址或名字已经在表里的台、列表里重复的台标成「重复」，默认不勾、「全选」也不选；确实要的可以自己勾上（同一个地址的不会再加）。
+            小电视最多收 128 个台，挑常看的就好。「试一下」要一个一个开 ffmpeg，只在你点的时候试选中的，一次最多 20 个。</p>
         </div>
         <div class="block">
           <div class="h3">加一个台 <small>加在最后，再用 ↑ 挪到想要的位置</small></div>
@@ -983,12 +1011,14 @@ async function loadChannels(keepMessage) {
   $("chOn").hidden = !chData.configured;
   if (!chData.configured) return;
   $("importBlock").hidden = !chData.import;
+  if (chData.import) renderPresets();
   chRows = chData.rows.map((r) => ({ id: r.id, name: r.name, url: r.url, agent: r.agent, group: r.group, orig: r }));
   if (!keepMessage) $("chProblems").hidden = true;
   if (chData.bad.length) showProblems(["文件里第 " + chData.bad.join("、") + " 行看不懂：为了不把它们弄丢，这里不能保存。请先在服务器上改好文件。"]);
   renderFit(chData.fit);
   $("chBackups").textContent = chData.backups.length ? "最近的备份（和频道表在同一个目录）：" + chData.backups.slice().reverse().join("、") : "保存时会先把原文件复制一份备份。";
-  renderChannels();
+  renderChannels();  // 表变了（保存、刷新）：导入列表的「重复」和放不放得下跟着重算。
+  if (impRows.length) { impMark(); renderImport(); }
 }
 function renderFit(fit) {
   const body = $("fitRows");
@@ -1064,6 +1094,7 @@ function chState() {
   $("chState").textContent = dirty ? "有没保存的修改（" + chRows.length + " 个台）" : "没有改动";
   $("chState").className = "state" + (dirty ? " dirty" : "");
   $("chSave").disabled = $("chReset").disabled = !dirty;
+  if (impRows.length) impCount();
 }
 $("chFilter").oninput = renderChannels;
 $("addCh").onclick = () => {
@@ -1133,24 +1164,66 @@ $("chSave").onclick = () => busy($("chSave"), async () => {
 });
 
 // ---------- 导入播放列表（自建模式） ----------
-// 服务端读 M3U、列出台；这里勾选、试播，再加进上面那张表（chRows），和手加的台一样要点「保存」。
+// 服务端读 M3U（地址、文件，或 chData.presets 里的公开列表）、列出台，每个台带自动分组 kind
+// （channel_groups.classify）；这里筛选、勾选、试播，再加进上面那张表（chRows），和手加的台一样要点「保存」。
 
-let impRows = [];     // {name, url, agent, on, state}
-async function impRead(body) {
+let impRows = [];     // {name, url, agent, kind, dup, on, state}
+let impKind = "";     // 快速筛选：""、"央视"、"卫视"
+const PROBE_MAX = 20;
+const DUP_TEXT = { url: "已在表里", name: "表里有同名", list: "列表里重复" };
+// 和 server/relay/playlist.name_key 一样：不分大小写，不管空格、横线、下划线。
+function nameKey(name) { return name.replace(/[\s\-_]+/g, "").toLowerCase(); }
+// 和 playlist.mark 一样，但对照的是页面上这张表（包括还没保存的修改）。
+function impMark() {
+  const urls = new Set(chRows.map((r) => r.url)), names = new Set(chRows.map((r) => nameKey(r.name)));
+  const seen = new Set();
+  for (const r of impRows) {
+    const key = nameKey(r.name);
+    r.dup = urls.has(r.url) ? "url" : names.has(key) ? "name" : seen.has(key) ? "list" : "";
+    seen.add(key);
+  }
+}
+function renderPresets() {
+  const box = $("impPresets");
+  box.replaceChildren();
+  for (const p of chData.presets || []) {
+    const item = el("div", "preset");
+    const about = el("p", "", p.description + " 维护者：");
+    const link = el("a", "", p.maintainer);
+    link.href = p.homepage; link.target = "_blank"; link.rel = "noopener noreferrer";
+    about.appendChild(link);
+    const actions = el("div", "inline");
+    p.urls.forEach((u, i) => {
+      const b = button(i ? u.label : "读取", "ghost");
+      b.title = u.url;
+      b.onclick = () => busy(b, () => impRead({ preset: p.id, mirror: i }, p.name + (i ? " · " + u.label : "")));
+      actions.appendChild(b);
+    });
+    item.append(el("b", "", p.name), about, actions);
+    box.appendChild(item);
+  }
+  $("impPresetBox").hidden = !box.children.length;
+}
+async function impRead(body, source) {
   const answer = await call("POST", "api/admin/channels/import", body);
   if (!answer.ok) { toast(answer.error || "没读出来", true); return; }
-  const known = new Set(chRows.map((r) => r.url));
-  impRows = answer.entries.map((e) => ({ ...e, on: false, state: known.has(e.url) ? "已在表里" : "" }));
+  impRows = answer.entries.map((e) => ({ ...e, on: false, state: "" }));
+  impMark();
+  impKind = "";
   $("impFilter").value = "";
+  $("impSource").textContent = "来源：" + source + "。读到 " + answer.total + " 个台" +
+    (answer.total > answer.entries.length ? "（只列出前 " + answer.entries.length + " 个）" : "") +
+    (answer.skipped ? "，另有 " + answer.skipped + " 个地址不合格没列出" : "") + "。";
   $("impList").hidden = false;
   renderImport();
-  toast("读到 " + answer.total + " 个台" + (answer.skipped ? "（另有 " + answer.skipped + " 个地址不合格，没列出）" : ""));
+  toast("读到 " + answer.total + " 个台");
 }
 function impVisible() {
   const filter = $("impFilter").value.trim().toLowerCase();
-  return impRows.filter((r) => !filter || r.name.toLowerCase().includes(filter));
+  return impRows.filter((r) => (!impKind || r.kind === impKind) && (!filter || r.name.toLowerCase().includes(filter)));
 }
 function renderImport() {
+  for (const b of $("impKinds").children) b.className = b.dataset.kind === impKind ? "on" : "";
   const body = $("impRows");
   body.replaceChildren();
   for (const r of impVisible().slice(0, 500)) {
@@ -1158,38 +1231,70 @@ function renderImport() {
     const box = el("input");
     box.type = "checkbox"; box.checked = r.on;
     box.onchange = () => { r.on = box.checked; impCount(); };
-    const cells = [td(""), td("", r.name), td("st", r.url), td("st " + (r.state === "能放" ? "ok" : r.state === "放不了" ? "dead" : ""), r.state)];
+    const st = r.state;
+    const cells = [td(""), td("name", r.name), td("kind", r.kind), td("st", r.url), td("dup", DUP_TEXT[r.dup] || ""),
+                   td("st " + (st === "能放" ? "ok" : st === "放不了" ? "dead" : ""), st)];
     cells[0].appendChild(box);
-    cells[2].title = r.url;
+    cells[3].title = r.url;
     tr.append(...cells);
     body.appendChild(tr);
   }
-  if (!body.children.length) body.appendChild(emptyRow("没有名字里带这几个字的台", 4));
+  if (!body.children.length) body.appendChild(emptyRow(impKind ? "这个列表里没有「" + impKind + "」的台" : "没有名字里带这几个字的台", 6));
   impCount();
 }
+// 设备上的频道列表（CONFIG 包）大约多大：和 server/channel_groups.config_bytes 的算法一样（JSON 转义后每个汉字 6 字节）。
+function cfgEntry(id, name) {
+  let n = 26 + id.length;     // {"id":"…","name":"…","g":0} 加一个逗号
+  for (const ch of name) {
+    const c = ch.codePointAt(0);
+    n += c > 0xffff ? 12 : c > 127 || c < 32 ? 6 : (ch === '"' || ch === "\\") ? 2 : 1;
+  }
+  return n;
+}
+function listBytes(rows) { return rows.reduce((n, r) => n + cfgEntry(r.id || "ch000", r.name), 0); }
+// 这张表（加上 extra）放进每个用户的设备后最挤的那份：{fits, bytes, count}。保存时服务端会再准确地查一遍。
+function impRoom(extra) {
+  const saved = listBytes(chData.rows), table = listBytes(chRows) + listBytes(extra);
+  let worst = { fits: true, bytes: 0, count: 0 };
+  for (const f of chData.fit || []) {
+    const bytes = f.bytes - saved + table, count = f.channels - chData.rows.length + chRows.length + extra.length;
+    worst = { fits: worst.fits && bytes <= chData.limits.bytes && count <= chData.limits.channels,
+              bytes: Math.max(worst.bytes, bytes), count: Math.max(worst.count, count) };
+  }
+  return worst;
+}
+function impChosen() { return impRows.filter((r) => r.on && r.dup !== "url" && r.state !== "放不了"); }
 function impCount() {
   const chosen = impRows.filter((r) => r.on).length;
   $("impCount").textContent = "共 " + impRows.length + " 个，选了 " + chosen + " 个" + (impVisible().length > 500 ? "（只显示前 500 个，用「找台」缩小）" : "");
+  const room = impRoom(impChosen());
+  $("impRoom").textContent = "加上选中的以后，小电视的频道列表约 " + room.count + " / " + chData.limits.channels + " 个台、" +
+    room.bytes + " / " + chData.limits.bytes + " 字节" + (room.fits ? "。" : "：放不下，加的时候只加放得下的前几个。");
+  $("impRoom").className = "hint" + (room.fits ? "" : " bad");
 }
+for (const b of $("impKinds").children) b.onclick = () => { impKind = b.dataset.kind; renderImport(); };
 $("impFetch").onclick = () => busy($("impFetch"), async () => {
   const url = $("impUrl").value.trim();
   if (!/^https?:\/\//.test(url)) { toast("地址要以 http:// 或 https:// 开头", true); return; }
-  await impRead({ url });
+  await impRead({ url }, url);
 });
 $("impFile").onchange = async () => {
   const file = $("impFile").files[0];
   $("impFile").value = "";
   if (!file) return;
   if (file.size > 2 * 1024 * 1024) { toast("文件太大（超过 2 MB）", true); return; }
-  try { await impRead({ text: await file.text() }); } catch (error) { failed(error); }
+  try { await impRead({ text: await file.text() }, "文件 " + file.name); } catch (error) { failed(error); }
 };
 $("impFilter").oninput = renderImport;
-$("impAll").onclick = () => { impVisible().forEach((r) => { r.on = true; }); renderImport(); };
+// 全选只选不重复的；重复的要自己一个个勾。
+$("impAll").onclick = () => { impVisible().forEach((r) => { r.on = !r.dup; }); renderImport(); };
 $("impNone").onclick = () => { impVisible().forEach((r) => { r.on = false; }); renderImport(); };
 $("impProbe").onclick = () => busy($("impProbe"), async () => {
-  const chosen = impRows.filter((r) => r.on);
-  if (!chosen.length) { toast("先勾选要试的台", true); return; }
-  // 两个两个地试（服务端每个开一个 ffmpeg 取一帧，慢的源要十几秒）。
+  const selected = impRows.filter((r) => r.on);
+  if (!selected.length) { toast("先勾选要试的台", true); return; }
+  // 只试点的时候选中的，一次最多 PROBE_MAX 个；服务端同时最多开两个 ffmpeg，每个取一帧，慢的源要十几秒。
+  const chosen = selected.slice(0, PROBE_MAX);
+  if (selected.length > PROBE_MAX) toast("一次最多试 " + PROBE_MAX + " 个：先试前 " + PROBE_MAX + " 个");
   let next = 0;
   async function worker() {
     while (next < chosen.length) {
@@ -1205,14 +1310,22 @@ $("impProbe").onclick = () => busy($("impProbe"), async () => {
   await Promise.all([worker(), worker()]);
 });
 $("impAdd").onclick = () => {
-  const known = new Set(chRows.map((r) => r.url));
-  const chosen = impRows.filter((r) => r.on && !known.has(r.url) && r.state !== "放不了");
+  impMark();
+  const chosen = impChosen();
   if (!chosen.length) { toast("没有可加的台：先勾选（已在表里的、试过放不了的不加）", true); return; }
-  for (const r of chosen) { chRows.push({ name: r.name, url: r.url, agent: r.agent, group: "" }); r.state = "已加入"; r.on = false; }
+  const added = [];
+  for (const r of chosen) {
+    if (!impRoom(added.concat([r])).fits) break;
+    added.push(r);
+  }
+  if (!added.length) { toast("放不下了：小电视最多 " + chData.limits.channels + " 个台、" + chData.limits.bytes + " 字节的频道列表。先删几个台", true); return; }
+  for (const r of added) { chRows.push({ name: r.name, url: r.url, agent: r.agent, group: "" }); r.on = false; }
+  impMark();
   $("chFilter").value = "";
   renderChannels();
   renderImport();
-  toast("加了 " + chosen.length + " 个台，记得点「保存」");
+  const rest = chosen.length - added.length;
+  toast("加了 " + added.length + " 个台" + (rest ? "，还有 " + rest + " 个放不下没加" : "") + "，记得点「保存」", rest > 0);
 };
 
 // ---------- 操作记录 ----------

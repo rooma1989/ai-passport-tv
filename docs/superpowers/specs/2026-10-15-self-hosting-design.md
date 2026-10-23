@@ -4,7 +4,8 @@
 
 # Self-hosting package ("Xiaozhi TV at home") — design
 
-Status: draft 2026-10-15, decided 2026-10-16 ("Decisions" below). Phases S1
+Status: draft 2026-10-15, decided 2026-10-16 ("Decisions" below); public
+playlist presets added 2026-10-22 (section 8.2). Phases S1
 and S3 are implemented, the 0.x beta's code (section 15, with what is verified
 and what is not); S2 and S4–S6 are design. Follows
 [`2026-10-12-multi-tenant-design.md`](2026-10-12-multi-tenant-design.md)
@@ -103,7 +104,9 @@ Non-goals:
 - A hosted service for strangers (the owner's host stays family and friends).
 - Native Windows service, Android, router firmware, 32-bit ARM (Raspberry Pi 3,
   Zero 2) as supported platforms.
-- Bundling any channel list, stream address, cookie, playlist URL or proxy.
+- Bundling any channel list, stream address, cookie or proxy. (Playlist links:
+  the owner decided on 2026-10-22 to list a few public third-party playlists by
+  their links, section 8.2; the community playlist below stays out.)
 - Making devices reach home over 4G without the user doing network work
   (section 6.6).
 - Changing the wire protocol, the rate controller or timing code.
@@ -742,6 +745,26 @@ fetched once, on request, and not stored. The users who may add URLs are the
 household's admins, so the multi-tenant design's server-side request concern
 (Q5 there) is the household's own business; schemes stay limited to
 `http`/`https`.
+
+**Public playlist presets** (decided by the owner 2026-10-22, option B): the
+release ships no stream address, but a household should get CCTV and the
+provincial satellite channels in one click. The import block therefore lists a
+few well-known public, community-maintained playlists by their links only
+(`server/relay/presets.py`: name, link, the upstream's own mirror links,
+maintainer, homepage; checked by `tests/test_playlist_presets.py`), under the
+notice "These are third-party playlists found on the internet; their content is
+the responsibility of their maintainers. This project does not provide or vouch
+for any live stream; add only what you are entitled to watch." Picking one is
+the same as pasting its address (`{preset, mirror}` to the import endpoint,
+fetched once, not stored). The list shows each entry's automatic group
+(`channel_groups.classify`) with quick filters for CCTV and satellite channels, a search box, select
+all / none, "Try" for at most 20 ticked entries on request (never the whole
+list), and marks entries whose address or name is already in the table, or
+that repeat within the list; those are skipped by default. Adding stops at what
+every user's device can hold (an estimate of `config_bytes`); saving checks and
+backs up as before. Self-host and PC client only: the cloud relay (no
+`--selfhost`) has neither the import nor the presets. `DEFAULT_SOURCE` is not
+among them and stays forbidden by the image content check.
 
 ### 8.3 Bilibili
 

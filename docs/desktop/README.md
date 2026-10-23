@@ -15,7 +15,8 @@ trade-offs:
 [`2026-10-19-pc-client-architecture-design.md`](../superpowers/specs/2026-10-19-pc-client-architecture-design.md).
 
 **This software ships no channels, streams, playlists, accounts or cookies.**
-The channel table is empty on the first start; you add what to play.
+The channel table is empty on the first start; you add what to play (the
+channel table can read a few public third-party playlists by their links).
 
 > Screenshots: places marked "screenshot TODO" will get real screenshots; the
 > written steps can be followed already. The Chinese page is the primary one.
@@ -161,9 +162,16 @@ remote, Me > "let another phone sign in".
 3. **Bind**: once connected the device shows "BIND THIS TV" and a code. Scan the
    QR on the device's status page with the signed-in phone, or enter the code
    in the remote under Me > "bind a new device".
-4. **Add channels**: in the console (tray > "Open the console"), the channel
-   table imports your own playlists; on the phone, Subscriptions adds Bilibili
-   creators and series.
+4. **Add channels**: in the console (tray > "Open the console") > admin
+   backend > Channels, import a playlist from an address or a file, or pick
+   one of the public playlists listed there and press "Read"; then the CCTV
+   or satellite quick filter, "Select all", **Add to the channel table**
+   and **Save** gives you CCTV and the provincial satellite channels in one go
+   (details in [`docs/selfhost/` step 3](../selfhost/README.md#step-3-add-channels-your-own)).
+   Those lists are third-party lists found on the internet; their content is
+   the responsibility of their maintainers, this project does not provide or
+   vouch for any stream, and you should add only what you are entitled to
+   watch. On the phone, Subscriptions adds Bilibili creators and series.
 
 **The computer's address must stay the same**: a laptop on another network, or
 a router that hands the computer a new IP, and the devices lose it. A DHCP
@@ -252,4 +260,6 @@ Developer notes (code map, building, CI, the interface with the core):
 The same as in [`docs/selfhost/`](../selfhost/README.md#disclaimer): for
 private, non-commercial use in your own home; ships, hosts and recommends no
 channels, streams, videos, accounts or proxies; provided "as is" without
-warranty (MIT licence).
+warranty (MIT licence). The public playlists listed on the Channels page are
+third-party lists whose content is the responsibility of their maintainers;
+the project does not provide or vouch for any live stream.
