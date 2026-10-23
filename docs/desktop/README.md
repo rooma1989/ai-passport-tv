@@ -2,7 +2,7 @@
   <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# Xiaozhi TV PC client (0.2.1 beta)
+# Xiaozhi TV PC client (0.2.2 beta)
 
 Turns a Windows PC or a Mac at home into the "TV station" for Xiaozhi TV: the
 computer fetches and transcodes the sources in the background and streams them

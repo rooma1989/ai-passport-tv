@@ -9,7 +9,7 @@ Tauri shell of option B can replace this package without core changes.
 Nothing in this package imports `server`; the core is a separate program.
 """
 
-__version__ = "0.2.1-beta"
+__version__ = "0.2.2-beta"
 
 APP_NAME = "小智电视"
 # File-system and registry names: ASCII, the same on every OS (section 5.5).
