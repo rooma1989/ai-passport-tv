@@ -150,6 +150,23 @@
   .chcard.pending .n span { color: var(--amber); animation: blink 1.2s ease-in-out infinite; }
   .chcard select { margin-top: auto; background: var(--ink); color: var(--paper); border: 1px solid var(--rule); font: 13px var(--serif); padding: 3px; }
 
+  /* ---- 在电脑上看（自建 / 电脑客户端才有，server/relay/watch.py） ---- */
+  .watch { margin-bottom: 28px; }
+  .watchhead { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap;
+               margin: 0 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
+  .watchhead b { font: 17px var(--serif); color: var(--paper-hi); }
+  .watchhead span { margin-left: 12px; font: 14px var(--serif); color: var(--amber-soft); }
+  .watchctl { display: flex; gap: 16px; align-items: center; }
+  .follow { display: flex; gap: 6px; align-items: center; font: 14px var(--serif); color: var(--dim); cursor: pointer; }
+  .follow input { accent-color: var(--red); margin: 0; }
+  .watchbox { position: relative; background: #000; aspect-ratio: 16 / 9; width: 100%; max-width: calc(62vh * 16 / 9); }
+  .watchbox video { display: block; width: 100%; height: 100%; background: #000; }
+  .watchmsg { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); padding: 0 24px; text-align: center;
+              font: 16px/1.6 var(--serif); color: var(--paper); pointer-events: none; }
+  .watchmsg.bad { color: var(--red); }
+  .watchmsg button { pointer-events: auto; margin-top: 10px; }
+  .watch .hint { max-width: calc(62vh * 16 / 9); }
+
   /* ---- 表格（设备、订阅、投屏历史、登录列表、邀请） ---- */
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; font: 12px var(--sans); color: var(--faint); font-weight: 400; padding: 0 12px 8px 0; border-bottom: 1px solid var(--rule); }
@@ -318,6 +335,18 @@
 
     <!-- 遥控 -->
     <section class="page on" id="remote">
+      <!-- 在电脑上看：点了「在电脑上看」才出现。 -->
+      <div class="watch" id="watch" hidden>
+        <div class="watchhead">
+          <div><b>在电脑上看</b><span id="watchWhat"></span></div>
+          <div class="watchctl">
+            <label class="follow" title="小电视换台、换下一个视频时，电脑上也跟着换"><input type="checkbox" id="watchFollow" checked>跟随小电视换台</label>
+            <button class="ghost" id="watchClose">关闭</button>
+          </div>
+        </div>
+        <div class="watchbox"><video id="watchVideo" controls playsinline></video><div class="watchmsg" id="watchMsg"></div></div>
+        <p class="hint" id="watchNote"></p>
+      </div>
       <div class="remote">
         <div>
           <div class="card screen off" id="screen">
@@ -336,6 +365,7 @@
               </div>
             </div>
             <div class="controls" id="epbar" hidden><button id="openEps">选集 · <span id="epnow"></span></button></div>
+            <div class="controls" id="watchbar" hidden><button id="watchOpen" title="用这台电脑看小电视正在播的台（画面和声音）">在电脑上看</button></div>
             <div class="dials off" id="dials">
               <label class="dial"><span>音量</span><input type="range" id="vol" min="0" max="100" step="10" value="0"><b id="volv">--</b></label>
               <label class="dial"><span>亮度</span><input type="range" id="bri" min="0" max="4" step="1" value="0"><b id="briv">--</b></label>
@@ -605,6 +635,7 @@ function recoveryNotice(notice) {
 }
 
 function showLogin() {
+  if (watching) stopWatch();
   me = null;
   data = null;
   $("app").hidden = true;
@@ -708,6 +739,7 @@ function showApp() {
 
 function go(name) {
   page = name;
+  if (name !== "remote" && watching) stopWatch();     // 在电脑上看的播放器在遥控页上，离开就关掉
   for (const b of document.querySelectorAll("#nav button")) b.classList.toggle("on", b.dataset.page === name);
   for (const p of document.querySelectorAll(".page")) p.classList.toggle("on", p.id === name);
   $("pageTitle").textContent = PAGES[name];
@@ -763,6 +795,7 @@ function render() {
   renderPlayer();
   renderDials();
   renderPets();
+  renderWatch();
   renderGroups();
   renderChannels();
   renderSubs();
@@ -977,6 +1010,202 @@ function renderPets() {
   }
   [...grid.children].forEach((b, i) => { b.className = i === cur ? "cur" : ""; b.disabled = cur === null; });
 }
+
+// ---------- 在电脑上看 ----------
+// 自建 / 电脑客户端才有（/api/state 的 watch）：中转把小电视正在播的台的片源转成 HLS（fMP4 段），
+// 这里用浏览器自带的 MediaSource 一段段接上放（server/relay/watch.py）。和小电视不同步：各自从片源取。
+
+let watching = null;      // {device, sid, key, player, busy}
+
+function watchKey(now) { return [now.channel, now.title, now.episode].join("|"); }
+
+function watchSay(text, bad, retry) {
+  const box = $("watchMsg");
+  box.className = "watchmsg" + (bad ? " bad" : "");
+  box.replaceChildren();
+  if (!text) return;
+  box.appendChild(el("div", "", text));
+  if (retry) box.appendChild(button("重试", "ghost", () => startWatch(false, true)));
+}
+
+// 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
+class WatchPlayer {
+  constructor(video, base, say) {
+    this.video = video; this.base = base; this.say = say;
+    this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false;
+    this.onWaiting = () => this.kick();
+    // 放完了：视频播完，或者直播源断了。跟随小电视时，小电视换到下一个就会自动接上。
+    this.onEnded = () => { if (this.alive) this.say("这一段放完了", false, true); };
+    video.addEventListener("waiting", this.onWaiting);
+    video.addEventListener("ended", this.onEnded);
+  }
+  async start() {
+    const v = this.video;
+    if (!window.MediaSource) {
+      // 没有 MediaSource（老 iPhone Safari）：浏览器自己放 HLS。
+      if (!v.canPlayType("application/vnd.apple.mpegurl")) { this.say("这个浏览器放不了，换 Chrome、Edge 或 Safari 试试", true); return; }
+      v.src = this.base + "master.m3u8";
+      v.play().catch(() => this.say("点一下画面开始播放"));
+      return;
+    }
+    this.say("正在连片源…（要几秒钟）");
+    try {
+      const master = await this.fetch("master.m3u8", "text");
+      if (!this.alive) return;
+      const codecs = (master.match(/CODECS="([^"]+)"/) || [])[1] || "avc1.640028,mp4a.40.2";
+      const mime = 'video/mp4; codecs="' + codecs + '"';
+      if (!MediaSource.isTypeSupported(mime)) { this.say("这个浏览器放不了这种格式（" + codecs + "）", true); return; }
+      this.ms = new MediaSource();
+      v.src = URL.createObjectURL(this.ms);
+      await new Promise((ok) => this.ms.addEventListener("sourceopen", ok, { once: true }));
+      if (!this.alive) return;
+      this.sb = this.ms.addSourceBuffer(mime);
+      await this.append(await this.fetch("init.mp4", "arrayBuffer"));
+      await this.loop();
+    } catch (error) {
+      if (this.alive) this.say(error.message || "放不了", true, true);
+    }
+  }
+  // 取一个文件：503（还在连片源）过一会儿再来；410 是这一路停了，正文是原因；404 是地址失效了。
+  async fetch(name, kind) {
+    for (let round = 0; ; round++) {
+      if (!this.alive) throw new Error("");
+      const response = await fetch(this.base + name, { credentials: "same-origin", cache: "no-store" });
+      if (response.ok) return response[kind]();
+      if (response.status === 503 && round < 8) { await sleep(1000); continue; }
+      if (response.status === 410) throw new Error("片源断了：" + (await response.text()));
+      if (response.status === 404 && name.endsWith(".m4s")) return null;      // 落在窗口外了，跳过
+      throw new Error(response.status === 404 ? "这一路已经停了" : "片源还没准备好");
+    }
+  }
+  append(buffer) {
+    return new Promise((ok, bad) => {
+      const sb = this.sb;
+      const done = () => { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); ok(); };
+      const fail = () => { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); bad(new Error("浏览器解不了这一段")); };
+      sb.addEventListener("updateend", done);
+      sb.addEventListener("error", fail);
+      try { sb.appendBuffer(buffer); } catch (error) { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); bad(error); }
+    });
+  }
+  remove(from, to) {
+    return new Promise((ok) => {
+      const sb = this.sb;
+      const done = () => { sb.removeEventListener("updateend", done); ok(); };
+      sb.addEventListener("updateend", done);
+      try { sb.remove(from, to); } catch (error) { sb.removeEventListener("updateend", done); ok(); }
+    });
+  }
+  async loop() {
+    while (this.alive) {
+      const text = await this.fetch("index.m3u8", "text");
+      const first = Number((text.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/) || [])[1] || 0);
+      const count = (text.match(/^\d+\.m4s$/gm) || []).length;
+      const ended = text.includes("#EXT-X-ENDLIST");
+      // 第一次从倒数第三段起（离最新的近一点，又不至于一开始就卡）；落在窗口外就跳到窗口里。
+      if (this.next < 0) this.next = Math.max(first, first + count - 3);
+      if (this.next < first) this.next = first;
+      for (; this.next < first + count && this.alive; this.next++) {
+        const data = await this.fetch(this.next + ".m4s", "arrayBuffer");
+        if (!data || !this.alive) continue;
+        await this.trim();
+        await this.append(data);
+        this.kick();
+      }
+      if (ended && this.next >= first + count) {
+        if (this.ms.readyState === "open") this.ms.endOfStream();
+        return;
+      }
+      await sleep(1000);
+    }
+  }
+  // 起播、跳过空档、落后太多时追到最新附近。
+  kick() {
+    if (!this.alive || !this.sb) return;
+    const v = this.video, b = v.buffered;
+    if (!b.length) return;
+    const end = b.end(b.length - 1);
+    let inside = -1;
+    for (let i = 0; i < b.length; i++) if (v.currentTime >= b.start(i) - 0.05 && v.currentTime <= b.end(i)) inside = i;
+    if (inside < 0) {
+      const ahead = [...Array(b.length).keys()].map((i) => b.start(i)).find((t) => t > v.currentTime);
+      v.currentTime = (ahead !== undefined ? ahead : b.start(0)) + 0.05;
+    } else if (end - v.currentTime > 25) v.currentTime = end - 6;
+    if (!this.started) {
+      this.started = true;
+      this.say("");
+      v.play().catch(() => this.say("点一下画面开始播放"));
+    }
+  }
+  async trim() {
+    const v = this.video, b = this.sb.buffered;
+    if (b.length && v.currentTime - b.start(0) > 90) await this.remove(b.start(0), v.currentTime - 30);
+  }
+  stop() {
+    this.alive = false;
+    const v = this.video;
+    v.removeEventListener("waiting", this.onWaiting);
+    v.removeEventListener("ended", this.onEnded);
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+  }
+}
+
+async function startWatch(auto, again) {
+  const device = deviceId(), key = watchKey(data.now);
+  if (watching) watching.busy = true;
+  let answer;
+  try { answer = await call("POST", "api/watch", withDevice({})); }
+  catch (error) {
+    if (watching) watching.busy = false;
+    if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
+    return;
+  }
+  if (!answer.ok) {
+    if (watching && auto) { watching.key = key; watching.busy = false; watchSay(answer.error, true, true); }
+    else toast(answer.error, true);
+    return;
+  }
+  if (watching && watching.sid === answer.sid && watching.device === device && !again) {
+    watching.key = key; watching.busy = false; return;       // 还是同一个片源，接着放
+  }
+  if (watching) watching.player.stop();
+  $("watch").hidden = false;
+  const player = new WatchPlayer($("watchVideo"), answer.url, watchSay);
+  watching = { device, sid: answer.sid, key, player, busy: false };
+  $("watchWhat").textContent = deviceName() + " · " + (data.now.name || answer.channel) + (answer.title && answer.title !== data.now.name ? " · " + answer.title : "");
+  renderWatch();
+  player.start();
+}
+
+function stopWatch() {
+  if (watching) watching.player.stop();
+  watching = null;
+  watchSay("");
+  $("watch").hidden = true;
+  if (data) renderWatch();
+}
+
+function renderWatch() {
+  const can = !!data.watch;
+  $("watchbar").hidden = !can;
+  if (!can) { if (watching) stopWatch(); return; }
+  const online = data.now.online && !!data.now.channel;
+  const open = $("watchOpen");
+  open.disabled = !online || !!watching;
+  open.textContent = watching ? "正在电脑上看" : online ? "在电脑上看" : "在电脑上看（" + deviceName() + "没在线）";
+  if (!watching) return;
+  const d = data.now.device;
+  $("watchNote").textContent = "电脑上的画面和小电视不同步：两边各自从片源取，电脑上通常晚几秒到十几秒。"
+    + (d && d.audio_only === 1 ? "小电视现在「只听」，电脑上照样有画面。" : "")
+    + "只在开着这个画面时才转（多用一点这台电脑的 CPU 和网络），关掉约 20 秒后自动停。";
+  // 跟随：小电视换了台（或下一个视频）、电脑版换了设备，就重新要一次地址；还是同一个片源时不打断。
+  if ($("watchFollow").checked && online && !watching.busy &&
+      (watchKey(data.now) !== watching.key || watching.device !== deviceId())) startWatch(true);
+}
+$("watchOpen").onclick = () => startWatch(false);
+$("watchClose").onclick = stopWatch;
 
 function renderGroups() {
   const names = data.groups.map((g) => g.name);
