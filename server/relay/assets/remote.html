@@ -489,7 +489,7 @@
         <p>绑定后，这台小电视播你订阅的台，只有你和你请来的客人能遥控。</p>
       </div>
       <ol class="steps">
-        <li>先给新的小电视配好网。连上网后，它的屏幕上会出现 <b>BIND THIS TV</b> 和一串 20 位的绑定码。</li>
+        <li>先给新的小电视配好网。连上网后，它的屏幕上会出现 <b>BIND THIS TV</b> 和一串绑定码。</li>
         <li>双击小电视的按键打开状态页，上面有<b>绑定二维码</b>：点下面的按钮扫它。</li>
         <li>扫不了的话，把屏幕上的绑定码输进下面的框里。</li>
       </ol>
@@ -1698,6 +1698,7 @@ async function refresh() {
   }
   fetchedAt = Date.now();
   settlePending();
+  claimField();
   render();
   if ($("mine").classList.contains("on")) loadMine(!$("sessionCount").textContent);
 }
@@ -1867,9 +1868,29 @@ $("addSeries").onclick = () => busy($("addSeries"), async () => {
   } else toast(answer.error, true);
 });
 
+// 绑定码：云端 20 位（A–Z、2–7），自建 / 电脑客户端 6 位数字（/api/state 的 claim_digits）。两种都认，服务器说了算。
+const CLAIM_CODE = /^(?:[0-9]{6}|[A-Z2-7]{20})$/;
+function claimField() {
+  const input = $("claim");
+  if (!input || !data || !data.claim_digits || input.dataset.digits) return;
+  input.dataset.digits = "1";
+  input.placeholder = "小电视屏幕上的 6 位数字";
+  input.inputMode = "numeric";
+  input.setAttribute("autocapitalize", "off");
+  input.setAttribute("enterkeyhint", "go");
+}
+function claimFrom(text) {
+  const claim = String(text || "").replace(/[\s-]/g, "").toUpperCase();
+  if (!claim) return { error: "请先输入绑定码" };
+  if (!CLAIM_CODE.test(claim)) {
+    return { error: data && data.claim_digits ? "绑定码是小电视屏幕上的 6 位数字" : "绑定码是小电视屏幕上的 20 位字母和数字" };
+  }
+  return { claim };
+}
+
 $("bind").onclick = () => busy($("bind"), async () => {
-  const claim = $("claim").value.replace(/[\s-]/g, "").toUpperCase();
-  if (!claim) { toast("请先输入绑定码", true); return; }
+  const { claim, error } = claimFrom($("claim").value);
+  if (error) { toast(error, true); return; }
   const answer = await call("POST", "api/bind", { claim });
   if (!answer.ok) { toast(answer.error, true); return; }
   $("claim").value = "";
@@ -1895,7 +1916,7 @@ function loadScan() {
   if (!scanLoading) {
     scanLoading = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = "/tv/scan.js?v=2";
+      script.src = "/tv/scan.js?v=3";
       script.onload = () => (window.TVScan ? resolve(window.TVScan) : reject(new Error("扫码组件没加载上")));
       script.onerror = () => { scanLoading = null; reject(new Error("扫码组件没加载上，请检查网络")); };
       document.head.appendChild(script);

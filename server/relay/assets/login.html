@@ -140,7 +140,7 @@ function loadScan() {
   if (!scanLoading) {
     scanLoading = new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = "/tv/scan.js?v=2";
+      script.src = "/tv/scan.js?v=3";
       script.onload = () => (window.TVScan ? resolve(window.TVScan) : reject(new Error("scan")));
       script.onerror = () => { scanLoading = null; reject(new Error("scan")); };
       document.head.appendChild(script);

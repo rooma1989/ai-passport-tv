@@ -22,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .. import channel_groups, listen as listen_audio, now_playing
-from ..tenancy import files as tenancy_files
+from ..tenancy import db as tenancy_db, files as tenancy_files
+from ..tenancy.claimguard import ClaimGuard
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
@@ -52,6 +53,9 @@ _CODE = re.compile(r"^/r/([A-Za-z2-7]{20})$")
 _JOIN = re.compile(r"^/(?:r|b|i)/([A-Za-z2-7]{20})$")
 _INVITE_INFO = re.compile(r"^/api/invite/([A-Za-z2-7]{20})$")
 _BIND_INFO = re.compile(r"^/api/bind/([A-Za-z2-7]{20})$")
+# 自建（--selfhost）的绑定码是 6 位数字（server/tenancy/db.py 的 new_short_claim）：只在自建时认这两条。
+_JOIN_SHORT = re.compile(r"^/b/([0-9]{6})$")
+_BIND_INFO_SHORT = re.compile(r"^/api/bind/([0-9]{6})$")
 _DEVICE_API = re.compile(r"^/api/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})(?:/(unbind|repair))?$")
 # 只作用在一台设备上的遥控接口。多用户时，带密钥（X-Key）并点名设备的这些请求——电视服务替
 # 说话的那台设备发的语音命令——按那台设备的访客处理：只能动那一台，按设备主人的剧和进度来，
@@ -123,6 +127,9 @@ class Relay:
         self.phone_links = PhoneLinks(accounts) if accounts is not None else None
         # 没登录的手机扫未绑定设备的绑定码：建账号并绑定（server/tenancy/signup.py）。
         self.signup = SignUp(accounts) if accounts is not None else None
+        # 自建的绑定码只有 6 位数字：收绑定码的接口先过错码限流（server/tenancy/claimguard.py）。云端没有。
+        self.claim_guard = (ClaimGuard(accounts, log=lambda message: self.log(message))
+                            if accounts is not None and selfhost is not None else None)
         # 每个网站一个客户端；YouTube 只经 cstone 节点，没配置时为 None。
         self.clients = {"bilibili": client, "youtube": youtube}
         self.events_out = Path(events_out) if events_out is not None else None
@@ -1159,6 +1166,9 @@ class Relay:
                    "group_names": list(channel_groups.GROUPS[2:])}
         if self.tenant:
             summary["me"] = {"name": caller.name, "role": caller.role}
+            if self.selfhost is not None:
+                # 自建：绑定码是 6 位数字，遥控页和电脑版的输入框据此换成数字键盘（云端没有这一项，还是 20 位）。
+                summary["claim_digits"] = tenancy_db.CLAIM_DIGITS
         if self.clients.get("youtube") is not None:
             summary["youtube"] = {"state": self.youtube_state()}
         return summary
@@ -1327,26 +1337,56 @@ class Relay:
                          "online": now_playing.read(dev["now"], now)["online"]})
         return rows
 
-    def bind_info(self, claim: str, caller: Caller) -> dict:
+    def claim_route(self, path: str, short, long):
+        """路径里的绑定码：20 位的总认；6 位数字只在自建时认。"""
+        match = long.match(path)
+        if match is None and self.selfhost is not None:
+            match = short.match(path)
+        return match
+
+    def _find_claim(self, claim: str, ip: str) -> dict | None:
+        """按绑定码找未绑定的设备；自建时先过错码限流（太频繁时 Limited），找不到算一次错码。"""
+        guard = self.claim_guard
+        if guard is not None:
+            guard.check(ip)
+        row = self.accounts.device_by_claim(claim)
+        if row is None and guard is not None:
+            guard.failed(ip)
+        return row
+
+    def bind_info(self, claim: str, caller: Caller, ip: str = "") -> dict:
         if caller.guest or caller.user is None:
             raise NotFound("bind")
-        row = self.accounts.device_by_claim(claim)
+        try:
+            row = self._find_claim(claim, ip)
+        except Limited as error:
+            return {"ok": False, "error": str(error), "limited": True}
         if row is None:
             return {"ok": False, "error": "这个绑定码不对，或者设备已经绑定过了"}
         return {"ok": True, "model": row["model"], "tail": row["id"][-4:].upper()}
 
-    def bind_preview(self, claim: str) -> dict:
+    def bind_preview(self, claim: str, ip: str = "") -> dict:
         """没登录（或只是访客）的手机打开绑定码：设备是什么型号、尾号几位，可以「创建账号并绑定」。"""
-        row = self.accounts.device_by_claim(claim)
+        try:
+            row = self._find_claim(claim, ip)
+        except Limited as error:
+            return {"ok": False, "error": str(error), "limited": True}
         if row is None:
             return {"ok": False, "error": "这个绑定码不对，或者设备已经绑定过了"}
         return {"ok": True, "model": row["model"], "tail": row["id"][-4:].upper(), "register": True}
 
     def register_bind(self, claim: str, name: str, ip: str = "", agent: str = "") -> tuple[dict, str | None]:
         """创建账号并绑定这台设备：(给页面的回答, 新会话或 None)。"""
+        guard = self.claim_guard
         try:
+            if guard is not None:
+                guard.check(ip)
             user_id, token, row = self.signup.register(claim, name, ip, agent)
-        except (Limited, ValueError) as error:
+        except Limited as error:
+            return {"ok": False, "error": str(error), "limited": True}, None
+        except ValueError as error:
+            if guard is not None:
+                guard.failed(ip)
             return {"ok": False, "error": str(error)}, None
         with self._cache_lock:
             self._casts.pop(row["id"], None)
@@ -1358,9 +1398,16 @@ class Relay:
     def bind(self, claim: str, caller: Caller, ip: str = "") -> dict:
         if caller.guest or caller.user is None:
             raise NotFound("bind")
+        guard = self.claim_guard
         try:
+            if guard is not None:
+                guard.check(ip)
             row = self.accounts.bind(claim, caller.user, ip)
+        except Limited as error:
+            return {"ok": False, "error": str(error), "limited": True}
         except ValueError as error:
+            if guard is not None:
+                guard.failed(ip)
             return {"ok": False, "error": str(error)}
         with self._cache_lock:
             self._casts.pop(row["id"], None)
@@ -1658,15 +1705,15 @@ def _manage_handler(relay: Relay):
                 return
             if relay.tenant:
                 # 扫设备二维码、绑定码、邀请链接：落地页不用登录，页面里的脚本再带着 cookie 问接口。
-                if _JOIN.match(path):
+                if relay.claim_route(path, _JOIN_SHORT, _JOIN):
                     self._send(200, JOIN_PAGE.encode(), "text/html; charset=utf-8")
                     return
-                match = _BIND_INFO.match(path)
+                match = relay.claim_route(path, _BIND_INFO_SHORT, _BIND_INFO)
                 if match:
                     # 没登录、或只是访客：可以「创建账号并绑定」；登录了的手机走下面原来的绑定确认。
                     member = self._caller()
                     if member is None or member.guest or member.user is None:
-                        self._json(relay.bind_preview(match.group(1)))
+                        self._json(relay.bind_preview(match.group(1), self._ip()))
                         return
                 match = _INVITE_INFO.match(path)
                 if match:
@@ -1724,8 +1771,8 @@ def _manage_handler(relay: Relay):
             elif relay.tenant and path == "/api/wifi":
                 # 设备保存的 Wi-Fi（只有名字）和最近一次修改的结果：主人才看得到（server/relay/wifi.py）。
                 self._json(wifi_api.get(relay, caller, device))
-            elif relay.tenant and _BIND_INFO.match(path):
-                self._json(relay.bind_info(_BIND_INFO.match(path).group(1), caller))
+            elif relay.tenant and (claimed := relay.claim_route(path, _BIND_INFO_SHORT, _BIND_INFO)):
+                self._json(relay.bind_info(claimed.group(1), caller, self._ip()))
             else:
                 self._not_found()
 

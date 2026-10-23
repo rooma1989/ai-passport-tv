@@ -328,7 +328,7 @@
       <div class="block" style="max-width: 640px">
         <div class="h3">绑定新的小电视</div>
         <div class="inline">
-          <input type="text" id="claim" placeholder="小电视屏幕上的 20 位绑定码" autocomplete="off">
+          <input type="text" id="claim" placeholder="小电视屏幕上的 20 位绑定码" autocomplete="off" spellcheck="false">
           <button class="go" id="bind">绑定</button>
         </div>
         <p class="hint">新的小电视连上网以后，屏幕上会显示绑定码；也可以用手机扫它状态页上的二维码绑定。
@@ -685,6 +685,7 @@ async function refresh() {
   }
   fetchedAt = Date.now();
   settlePending();
+  claimField();
   render();
 }
 
@@ -1377,9 +1378,29 @@ async function wifiChange(body, label) {
   await loadWifi();
 }
 
+// 绑定码：云端 20 位（A–Z、2–7），自建 / 电脑客户端 6 位数字（/api/state 的 claim_digits）。两种都认，服务器说了算。
+const CLAIM_CODE = /^(?:[0-9]{6}|[A-Z2-7]{20})$/;
+function claimField() {
+  const input = $("claim");
+  if (!input || !data || !data.claim_digits || input.dataset.digits) return;
+  input.dataset.digits = "1";
+  input.placeholder = "小电视屏幕上的 6 位数字";
+  input.inputMode = "numeric";
+  input.setAttribute("autocapitalize", "off");
+  input.setAttribute("enterkeyhint", "go");
+}
+function claimFrom(text) {
+  const claim = String(text || "").replace(/[\s-]/g, "").toUpperCase();
+  if (!claim) return { error: "请先输入绑定码" };
+  if (!CLAIM_CODE.test(claim)) {
+    return { error: data && data.claim_digits ? "绑定码是小电视屏幕上的 6 位数字" : "绑定码是小电视屏幕上的 20 位字母和数字" };
+  }
+  return { claim };
+}
+
 $("bind").onclick = () => busy($("bind"), async () => {
-  const claim = $("claim").value.replace(/[\s-]/g, "").toUpperCase();
-  if (!claim) { toast("请先输入绑定码", true); return; }
+  const { claim, error } = claimFrom($("claim").value);
+  if (error) { toast(error, true); return; }
   const answer = await call("POST", "api/bind", { claim });
   if (!answer.ok) { toast(answer.error, true); return; }
   $("claim").value = "";

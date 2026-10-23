@@ -142,7 +142,7 @@ class AdminOps:
             for row in owned:
                 if row["status"] in ("active", "banned", "repair"):
                     conn.execute("UPDATE device SET status='unclaimed', claim_code=?, remote_code=? WHERE id=?",
-                                 (db.new_code(), db.new_code(), row["id"]))
+                                 (accounts._claim_code(conn), db.new_code(), row["id"]))
                     unbound.append(row["id"])
                 conn.execute("DELETE FROM device_state WHERE device_id=?", (row["id"],))
                 conn.execute("DELETE FROM session WHERE device_id=?", (row["id"],))

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from ..protocol import ProtocolError
+from . import db
 from . import files as device_files_module
 from . import wifi as device_wifi
 from .accounts import Accounts
@@ -147,6 +148,9 @@ class Gate:
                     self.wifi_hello(legacy, hello, repaired)
                     return Admission(legacy, True, self.files(legacy), legacy=True)
             claim = row["claim_code"] or ""
+            if not db.is_short_claim(claim) and self.accounts.short_claims():
+                # 自建：升级前生成的 20 位绑定码换成 6 位数字，屏幕上写新的（云端不走这里）。
+                claim = self.accounts.renew_short_claim(did)
             return Admission(did, False, None, claim=claim, claim_url=self.claim_url(claim))
         if token_ok:
             legacy = self._legacy(port)
@@ -185,6 +189,11 @@ class Gate:
     def is_bound(self, device_id: str) -> bool:
         row = self.accounts.device(device_id)
         return row is not None and row["status"] == "active"
+
+    def claim_changed(self, device_id: str, claim: str) -> bool:
+        """绑定画面上的码已经不是库里的了（自建时错码太多换了码，accounts.rotate_claims）：该重连了。"""
+        row = self.accounts.device(device_id)
+        return row is not None and row["status"] == "unclaimed" and (row["claim_code"] or "") != claim
 
 
 def from_env(logger=print) -> Gate | None:

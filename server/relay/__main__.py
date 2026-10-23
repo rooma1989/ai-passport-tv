@@ -125,7 +125,10 @@ def _serve_tenants(args, key: str, youtube) -> int:
     accounts = Accounts(args.db)
     selfhost = None
     if args.selfhost:
+        from ..tenancy.accounts import SELFHOST_META
         from .setup import SelfHost
+        # 自建的库：绑定码是 6 位数字（电视服务读同一项，accounts.short_claims）。监督进程也写，这里再确认一次。
+        accounts.set_meta(SELFHOST_META, "1")
         selfhost = SelfHost(setup_code_file=args.setup_code_file, device_address=args.device_address)
         if accounts.admin_id() is None:
             # 自建：不拒绝启动，等第一个管理员在 /tv/setup 用设置码建出来。
