@@ -4,7 +4,7 @@
 
 # 电脑客户端、手机遥控和云端遥控通道 —— 架构设计
 
-状态：2026-10-19 已决定（见「决定」）。P1（核心）和 P3a（带镜像的 ffmpeg 下载）已在分支 `desktop-core` 上实现；各阶段的状态见第 13 节。本文**取代**
+状态：2026-10-19 已决定（见「决定」）。P1（核心）和 P3a（带镜像的 ffmpeg 下载）已在分支 `desktop-core` 上实现，P2 在 `desktop-tray` 上，`v0.2.0-beta` 剩下的（受信任的网络、`listening`、打标签发布、中文安装向导）在 `desktop-finish` 上；各阶段的状态见第 13 节。本文**取代**
 [`2026-10-15-self-hosting-design.zh_CN.md`](2026-10-15-self-hosting-design.zh_CN.md) 的方向：家庭服务器不再
 「Docker 优先」，而是变成 Windows 和 macOS（Linux 算附带）上的一个桌面程序，用的还是同一套核心。那份文档的
 S1 和 S3 已实现，原样沿用；它的结论（局域网明文 HTTP 下的 cookie、前端的两个端口、不带内容的规则、安全上下文
@@ -298,7 +298,10 @@ XiaozhiTV（托盘进程，图形界面主线程）
   `/healthz`，用模拟设备（`tools/device_sim.py`）拿到「未绑定」画面，并检查每个子进程的打包分派。单用户构建保留到
   发布说明里由客户端取代为止（第 10 节）。
 - **发布说明。** `build-server.yml` 里的发布正文是上游的单用户说明（8096 端口、`FoloToy-XXXX` 热点、上游的链接）；
-  要按客户端重写。
+  要按客户端重写。**已做（`desktop-finish`）：** 一份说明 `packaging/release/release-body.txt`（电脑客户端在前，
+  然后是固件和网页刷机，家用服务器算进阶，不签名测试版的步骤；先中文后英文），固件、服务器、电脑客户端三个发布任务都发它。
+  推标签时 `build-desktop.yml` 把两个 DMG、Windows 安装包和免安装 zip、Linux 压缩包连同 `SHA256SUMS-desktop`（不叫
+  `SHA256SUMS`：那是固件的）发到同一个发布；别的运行是试运行，做到检查过的文件集为止。
 
 ### 5.3 托盘菜单
 
@@ -382,6 +385,9 @@ hub_url = "https://<public-domain>/hub/"
 mode = "off"                   # "off" | "local"（下载的运行库 + 模型，5.9）
 ```
 
+实际实现时 `[desktop]` 不从 `config.toml` 读：托盘的开关和受信任的网络由核心写进 `<数据目录>/desktop.json`（5.13），
+`config.toml` 仍是用户自己的文件。
+
 ### 5.7 ffmpeg
 
 核心要 ffmpeg 做的事（来自 `server/live.py`、`server/media.py`、`server/frames.py`、`server/listen.py`）：读 HTTP(S)/HLS/
@@ -434,6 +440,12 @@ LGPL 版。
 - **受信任的网络：** 带着笔记本去咖啡馆，8080/8097/8098 就会暴露在那里的网络上。用户第一次确认「这是我家的网络」时，
   客户端按路由器的身份（默认网关的 MAC 地址）记住家里的网络；在别的网络上核心把局域网端口只绑在 `127.0.0.1`（中继
   代理照常工作）。约 1 个 agent-day；值得做，因为测试版用户大多会在笔记本上跑。
+- **实际实现（`desktop-finish`）：** `server/selfhost/network.py`，路由器身份和判断用 `tools/netcheck.py`（和托盘共用）。
+  每 15 秒读一次网关，新的读数连续两次一样才算数（ARP 表一时没有条目、Wi-Fi 重连），开/关的判断变了就按新的地址重启
+  子进程（`Supervisor.rebuild_requested`）。还没记下任何网络（「询问」）时照常开放，因为第一次运行几乎总在家里；记下家里
+  以后，认不出的路由器（没联网、有的 VPN）算不在家；「这不是我家的网络」也会记下。列表存在 `desktop.json`；`config.toml`
+  里 `bind = "127.0.0.1"` 时什么都不开放。Windows 网络类型也由核心查（一分钟一次），变成问题 `network_public`，只在端口
+  开着时报。
 
 ### 5.12 不签名的测试版：用户会看到什么、教程怎么写
 
@@ -508,6 +520,7 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
 | `POST /local/v1/phone-qr` | – | `{"url": "HTTP://<局域网 IP>:<局域网端口>/TV/P/<令牌>", "svg": "<svg…>", "code": "<8 位码>", "typed": "http://<局域网 IP>:<局域网端口>/tv/p", "expires_in": 300}`：现有的一次性手机登录（以管理员；网址大写是为了二维码小；`code` 是手机在 `typed` 那一页输入的码）。10 分钟最多 6 个，再多 `429 limited`。`409 setup_pending`、`503 no_lan_address`（只听本机或不知道局域网地址）。`pairing_url` 等 P5 |
 | `POST /local/v1/power` | `{"keep_awake": "watching" \| "always" \| "never"}` | `{"settings": {…}}`。只存下来；睡眠断言由谁来拿是 P2b 的事 |
 | `POST /local/v1/autostart` | `{"enabled": true \| false}` | `{"settings": {…}}`。只存下来；登录项由托盘注册 |
+| `POST /local/v1/network/trust` | `{"id": "<状态里的 network.id>", "trusted": true \| false}` | `{"network": {…}}`（5.11）：`true` 记下家里的网络（在那里开放端口），`false` 是「这不是我家的网络」（在那里不开放）。id 不是 16 位十六进制时 `400 bad_request`；核心不管网络时（`bind = "127.0.0.1"`、`config.toml` 不合法）`409 not_available` |
 | `POST /local/v1/ffmpeg/fetch` | `{"mirror": "<基础网址>"}`（可选） | `202`，开始下载（ffmpeg 缺失或上次失败时）；否则 `409 busy` 或 `409 ready`。进度在状态里 |
 | `POST /local/v1/diagnostics` | `{"dest_dir": "<文件夹>"}`（可选；默认桌面，没有桌面就 `<数据目录>/exports`） | `{"path": "<压缩包>", "size": n}`（5.15；不含秘密，地址截短） |
 | `POST /local/v1/restart` | – | `202`；所有子进程停了再起 |
@@ -525,8 +538,10 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
  "lan_url": "http://192.168.1.5:8080/tv/", "local_url": "http://localhost:8080/tv/",
  "setup_pending": true,
  "children": {"relay": {"running": true, "restarts": 0}, "xingzhi": {…}, "passport": {…}, "front": {…}},
- "devices": [{"id": "…", "name": "…", "model": "xingzhi-cube-154", "online": true, "channel": "…", "since": 1760870100.0}],
- "watching": 1,
+ "devices": [{"id": "…", "name": "…", "model": "xingzhi-cube-154", "online": true, "channel": "…", "since": 1760870100.0,
+              "listening": false}],
+ "watching": 1, "listening": 0,
+ "network": {"id": "<16 位十六进制，或空>", "trusted": null, "profile": "", "lan_open": true},
  "ffmpeg": {"state": "ready | fetching | missing | failed", "path": "…", "source": "given | system | fetched",
             "done": 0, "total": 0, "error": ""},
  "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": false},
@@ -535,7 +550,8 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
 
 `problems[].code` 是这几种之一：`ffmpeg_missing`、`ffmpeg_failed`、`port_in_use`（带 `port`；系统肯说时还带
 `holder`：占着它的程序名）、`lan_port_moved`（带 `from` 和 `to`）、`child_down`（带 `name`）、`config`（config.toml
-不合法；这时 `state` 是 `error`）。托盘显示第一个问题的 `message`。只听本机或不知道局域网地址时 `lan_url` 是空串。
+不合法；这时 `state` 是 `error`）、`network_away`（不在家里的网络上：局域网端口在 127.0.0.1）、`network_public`
+（Windows：端口开着时网络被标成公用）。托盘显示第一个问题的 `message`。只听本机或不知道局域网地址时 `lan_url` 是空串。
 
 托盘上的开关存在 `<数据目录>/desktop.json`（核心经接口写），不放进 `config.toml`：那是用户手改的文件，程序从不改写。
 
@@ -910,7 +926,7 @@ Windows x64（`windows-latest`）、Linux x86_64（`ubuntu-22.04`）。没验证
 Windows 上固定端口被别的程序占着。和设计不同的：托盘的开关存在 `<数据目录>/desktop.json`，不在 `config.toml`（5.6），
 `config.toml` 仍是用户手改的文件；`power`、`autostart` 只存设置（拿睡眠断言、注册登录项是 P2b）；CI 流程叫
 `build-desktop-core.yml`，和 P2c 的 `build-desktop.yml` 分开；没做：第一次运行时沿用测试版的 `selfhost` 文件夹（5.5）、
-状态里的 Windows 网络类型提醒（5.11；诊断包里记了网络类型）。
+状态里的 Windows 网络类型提醒（5.11；诊断包里记了网络类型；后来在 `desktop-finish` 里做了，是问题 `network_public`）。
 
 ### P2 —— 托盘和安装包（4–5.5）
 
@@ -920,8 +936,10 @@ Windows 上固定端口被别的程序占着。和设计不同的：托盘的开
 
 **状态（2026-10-19）：在分支 `desktop-tray` 上实现**，按 5.13 节的 P1c 约定，已合入 `desktop-core`（CI 用真核心构建
 安装包；`desktop/devcore.py` 是给托盘测试用的替身核心）。代码在哪、定下的事和还没做的：[`docs/desktop/developer.zh_CN.md`](../../desktop/developer.zh_CN.md)。
-睡眠断言由托盘拿，登录启动项由托盘注册；受信任的网络（5.11）要等核心（托盘这边和提议的 `network` 状态字段已经准备好）；
-核心和托盘是两个 onedir（macOS 上核心放在 `Contents/Resources/core/` 而不是 `Contents/MacOS/`，为了代码签名）。
+睡眠断言由托盘拿（手机在听时也拿：`status.listening`），登录启动项由托盘注册；核心和托盘是两个 onedir（macOS 上核心放在
+`Contents/Resources/core/` 而不是 `Contents/MacOS/`，为了代码签名）。
+**在分支 `desktop-finish` 上收尾：** 核心执行受信任的网络（5.11），Windows 公用网络提醒由核心报，`listening`，打标签时的发布
+任务（`SHA256SUMS-desktop`）和共用的发布说明（5.2），安装向导默认简体中文（附带对应 Inno Setup 6.7.1 的翻译）。
 
 ### P3 —— ffmpeg（1–2.5）
 

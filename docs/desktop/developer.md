@@ -19,11 +19,13 @@ P2c installers). User tutorial: [`README.md`](README.md).
 | `desktop/instance.py` | Single instance: an OS file lock on `run/tray.lock`; a second launch opens the console through the control API and exits |
 | `desktop/power.py` | Idle-sleep prevention: Windows `SetThreadExecutionState` (one dedicated thread), macOS `IOPMAssertion` (ctypes, `caffeinate -i -w` fallback), Linux `systemd-inhibit`; the `KeepAwake` policy (held while a device watches, released 2 minutes after the last leaves) |
 | `desktop/autostart.py` | Start at login: LaunchAgent, HKCU Run (respects Task Manager's switch), XDG autostart |
-| `desktop/netcheck.py` | Windows network marked Public; router identity (hashed gateway MAC) and the trusted-network decision (for the core) |
+| `tools/netcheck.py` | Windows network marked Public; router identity (hashed gateway MAC) and the trusted-network decision; shared with the core (`server/selfhost/network.py` enforces it) |
 | `desktop/icons.py`, `logs.py`, `diagnostics.py`, `paths.py` | Tray icons (drawn with Pillow), `tray.log`, the tray's own diagnostics zip when the core is down, per-OS paths |
 | `desktop/devcore.py` | Stand-in core: only the control API with made-up state, speaking the P1c contract. For the tests and `--stub-core` builds; **never for users** |
-| `packaging/desktop/` | `tray.spec`, `stub-core.spec`, `build.py`, `smoke.py`, `xiaozhi-tv.iss` (Inno Setup), `NOTICE.txt`, the Linux `.desktop` file, systemd unit and notes |
-| `.github/workflows/build-desktop.yml` | Builds and smoke tests on four platforms; pushes to `desktop-*` branches or on demand |
+| `packaging/desktop/` | `tray.spec`, `stub-core.spec`, `build.py`, `smoke.py`, `release.py` (version check, release set), `fetch_firmware.py`, `xiaozhi-tv.iss` (Inno Setup) with the vendored `ChineseSimplified.isl`, `NOTICE.txt`, the Linux `.desktop` file, systemd unit and notes |
+| `packaging/release/release-body.txt` | The release page text, published by the firmware, server and desktop workflows |
+| `.github/workflows/build-desktop.yml` | Builds and smoke tests on four platforms, assembles the release set; publishes it on tags |
+| `tests/test_desktop_release.py` | The release set, the tag/version check, waiting for the tag's firmware, the release text, the Chinese installer |
 | `tests/test_desktop_tray.py` | Menu state, status parsing, the control client (against the stand-in core), single instance, autostart files, sleep assertions (mocked), network parsing, the core process, `App` actions |
 
 The tray never imports `server`; the core is another program and the control
@@ -71,36 +73,42 @@ them later.
 
 What the tray uses: `control.json` (`port`, `token`), `Authorization: Bearer`,
 `GET /status` (`state`, `problems`, `lan_url`, `local_url`, `ports.lan`,
-`setup_pending`, `devices`, `watching`, `ffmpeg`, `settings`, `logs_dir`),
+`setup_pending`, `devices`, `watching`, `listening`, `network`, `ffmpeg`,
+`settings`, `logs_dir`),
 `console-link` (answers with the setup page on the first run), `phone-qr`
 (`url` + `svg`; the tray writes a local page with the QR code), `power`,
-`autostart`, `ffmpeg/fetch`, `diagnostics`, `restart`, `stop`; exit code 3.
+`autostart`, `network/trust`, `ffmpeg/fetch`, `diagnostics`, `restart`, `stop`;
+exit code 3.
 
 Decided on the tray's side:
 
 - **The tray takes the sleep assertion** (the contract leaves it to P2b). If
   the core takes it itself later, it reports `"power": {"managed_by": "core"}`
-  and the tray releases its own. The status has no "phone listening" count
-  (`listening`) yet: the design also keeps the computer awake while a phone
-  listens, which needs that field from the core.
+  and the tray releases its own. It is held while a device watches or a
+  phone listens (`status.listening`, from the media servers' now-playing
+  files).
 - **The tray registers the login item**; `POST /autostart` only lets the core
   record it in `desktop.json`. It is registered once on the first run; after
   that the OS entry is the truth (a switch-off in Task Manager or Login Items
   is not undone).
-- **Trusted networks (5.11) are not in the contract yet.** The tray already
-  reads a proposed `status.network` (`{"id", "trusted", "profile",
-  "lan_open"}`) and calls a proposed `POST /local/v1/network/trust {"id",
-  "trusted"}`; `desktop/netcheck.py` has the router identity and
-  `lan_decision()` ready for the core. The enforcement (binding
-  8080/8097/8098 to 127.0.0.1 away from home) can only be in the core.
-- **Windows network marked Public**: the tray checks it itself (PowerShell
-  `Get-NetConnectionProfile`, once a minute) and explains it in the menu.
+- **Trusted networks (5.11)**: the core reports `status.network` (`{"id",
+  "trusted", "profile", "lan_open"}`) and enforces it (away from the home
+  network the LAN ports are on 127.0.0.1, problem `network_away`); the tray
+  offers "this is my home network" while `trusted` is null and answers with
+  `POST /local/v1/network/trust {"id", "trusted"}`.
+- **Windows network marked Public**: the core reports it (problem
+  `network_public`, `network.profile`); the tray checks it itself (PowerShell
+  `Get-NetConnectionProfile`, once a minute) only for a core that does not.
 
 ## CI
 
 `build-desktop.yml`: macos-14 (arm64), macos-15-intel, windows-latest,
-ubuntu-22.04. On each: the tray's unit tests, the latest released firmware for
-the core's flasher page (best effort; v0.1.0-beta's bundle today), the core
+ubuntu-22.04. First one job fetches the firmware for the core's flasher page:
+on a tag it waits for that release's `xiaozhi-tv-flasher.zip` from
+build-firmware.yml and requires its version to be the tag; elsewhere the latest
+release's, best effort. On each platform: the tray's unit tests, the version
+(on a tag it must be `v` + `desktop.__version__`, and the core is stamped with
+it), the core
 (`tools/build_core.py`, merged from `desktop-core`), the client build, the
 smoke test (a data folder with Chinese characters and a space), the tray icon
 check (allowed to fail; skipped on Linux); on Windows also compiling the
@@ -110,14 +118,29 @@ that the rule and the files are gone. Failures are `::error::` annotations
 (logs need a login, annotations do not). The artifacts are unsigned test
 builds named `desktop-<platform>`, kept 7 days.
 
+Then `release-set` (every run) checks each platform's files against the
+`SHA256SUMS` they were built with and writes the five downloads plus
+`SHA256SUMS-desktop` as the artifact `desktop-release` (`packaging/desktop/release.py
+collect`). `release` runs only on a tag push (or a manual run on a tag with
+`publish` ticked) and publishes that set with softprops/action-gh-release into
+the tag's release, in the `release-<tag>` concurrency group shared with the
+firmware and server workflows. Branch pushes and manual runs are therefore dry
+runs of the release.
+
+Cutting a release: make sure `desktop/__init__.py` says the version, merge to
+the default branch, and push the tag `v<version>`; the firmware, server and
+desktop workflows each add their files to the one release.
+
+A local build to try (macOS): `python3 tools/build_core.py`, then
+`python3 packaging/desktop/build.py --core-dir build-core/dist/xiaozhi-tv-core`;
+copy the DMG to `dist-desktop/` (git-ignored) to keep it.
+
 ## Still to do
 
-- Release packaging: a tag-triggered job that publishes the installers with
-  `SHA256SUMS` (and later its Ed25519 signature, P8) and fills the core's
-  firmware from the same release.
+- The Ed25519 signature of `SHA256SUMS-desktop` (P8).
 - Build the PyInstaller bootloader from source in CI (fewer antivirus false
-  positives, 5.12); a Chinese installer wizard (a `ChineseSimplified.isl` must
-  be shipped when Inno Setup has none); version information in the Windows
-  executables.
+  positives, 5.12); version information in the Windows executables.
+- When GitHub's runner moves to another Inno Setup, take the matching
+  `ChineseSimplified.isl` (CI warns; `packaging/desktop/ChineseSimplified-SOURCE.txt`).
 - Real machines: the tray and menu on Windows 10/11, SmartScreen, Defender; an
   Intel Mac; the macOS 15 Local Network prompt.

@@ -5,8 +5,10 @@
 # PC client, phone remote and cloud remote channel — architecture design
 
 Status: decided 2026-10-19 (see "Decisions"). Phases P1 (the core) and P3a
-(ffmpeg download with mirrors) are implemented on branch `desktop-core`; the
-status of each phase is in section 13. This document **supersedes the direction** of
+(ffmpeg download with mirrors) are implemented on branch `desktop-core`, P2 on
+`desktop-tray`, and the rest of `v0.2.0-beta` (trusted networks, `listening`, the
+tag release job, the Chinese installer) on `desktop-finish`; the status of each
+phase is in section 13. This document **supersedes the direction** of
 [`2026-10-15-self-hosting-design.md`](2026-10-15-self-hosting-design.md): the
 household server stops being "Docker first" and becomes a desktop program for
 Windows and macOS (Linux as a bonus) built from the same core. Phases S1 and S3
@@ -378,7 +380,14 @@ antivirus false positives and makes LGPL components replaceable.
   build stays until the client replaces it in the release notes (section 10).
 - **Release text.** The release body in `build-server.yml` is upstream's
   single-user text (port 8096, the `FoloToy-XXXX` hotspot, upstream's links);
-  it is rewritten for the client.
+  it is rewritten for the client. **Done (`desktop-finish`):** one text,
+  `packaging/release/release-body.txt` (PC client first, firmware and the web
+  flasher, the household server as advanced, the unsigned-beta steps; Chinese
+  then English), published by the firmware, server and desktop release jobs.
+  On a tag, `build-desktop.yml` publishes the two DMGs, the Windows installer
+  and portable zip and the Linux tarball with `SHA256SUMS-desktop` (not
+  `SHA256SUMS`, which is the firmware's) into the same release; other runs are
+  dry runs that stop at the checked set.
 
 ### 5.3 Tray menu
 
@@ -474,6 +483,10 @@ hub_url = "https://<public-domain>/hub/"
 mode = "off"                   # "off" | "local" (downloaded runtime + model, 5.9)
 ```
 
+As implemented, `[desktop]` is not read from `config.toml`: the tray's
+switches and the trusted networks are written by the core into
+`<data>/desktop.json` (5.13), so `config.toml` stays the user's own file.
+
 ### 5.7 ffmpeg
 
 What the core asks of ffmpeg (from `server/live.py`, `server/media.py`,
@@ -547,6 +560,18 @@ does not answer; useful only for wired desktops with WoL enabled.
   "this is my home network"; on other networks the core binds the LAN ports to
   `127.0.0.1` only (the hub agent keeps working). About 1 agent-day; worth it
   because most beta users will run the client on a laptop.
+- **As implemented (`desktop-finish`):** `server/selfhost/network.py` with the
+  router identity and the decision from `tools/netcheck.py` (shared with the
+  tray). The gateway is read every 15 s; a new reading counts after it is seen
+  twice in a row (an ARP entry missing for a moment, Wi-Fi reconnecting), and a
+  change of the open/closed decision restarts the children on the new address
+  (`Supervisor.rebuild_requested`). Nothing remembered yet ("ask") means open,
+  because the first run is almost always at home; an unknown router (offline,
+  some VPNs) counts as away once a home is remembered; "this is not my home
+  network" is remembered too. The lists live in `desktop.json`; a
+  `config.toml` with `bind = "127.0.0.1"` never opens anything. The Windows
+  category check also runs in the core (once a minute) and becomes the problem
+  `network_public`, only while the ports are open.
 
 ### 5.12 Unsigned beta: what users see and the tutorial
 
@@ -649,6 +674,7 @@ Answers are JSON: `{"ok": true, …}` or `{"ok": false, "error": "<code>",
 | `POST /local/v1/phone-qr` | – | `{"url": "HTTP://<LAN IP>:<lan>/TV/P/<token>", "svg": "<svg…>", "code": "<8-character code>", "typed": "http://<lan ip>:<lan>/tv/p", "expires_in": 300}`: the existing one-time phone sign-in for the admin (the URL is upper case for a compact QR; `code` is what a phone types at `typed`).  Six per 10 minutes, then `429 limited`. `409 setup_pending`, `503 no_lan_address` (bound to loopback or no LAN address). `pairing_url` arrives with P5 |
 | `POST /local/v1/power` | `{"keep_awake": "watching" \| "always" \| "never"}` | `{"settings": {…}}`. Stored only; who takes the sleep assertion is P2b's choice |
 | `POST /local/v1/autostart` | `{"enabled": true \| false}` | `{"settings": {…}}`. Stored only; the tray registers the login item |
+| `POST /local/v1/network/trust` | `{"id": "<status network.id>", "trusted": true \| false}` | `{"network": {…}}` (5.11): `true` remembers the home network (the ports open there), `false` "not my home network" (closed there). `400 bad_request` for an id that is not 16 hex digits; `409 not_available` when the core does not manage networks (`bind = "127.0.0.1"`, a refused `config.toml`) |
 | `POST /local/v1/ffmpeg/fetch` | `{"mirror": "<base URL>"}` (optional) | `202` and the download starts (when ffmpeg is missing or the last try failed); `409 busy` or `409 ready` otherwise. Progress is in the status |
 | `POST /local/v1/diagnostics` | `{"dest_dir": "<folder>"}` (optional; default the Desktop, else `<data>/exports`) | `{"path": "<zip>", "size": n}` (5.15; no secrets, addresses shortened) |
 | `POST /local/v1/restart` | – | `202`; every child is stopped and started again |
@@ -666,8 +692,10 @@ The status (`GET /local/v1/status`), every field always present:
  "lan_url": "http://192.168.1.5:8080/tv/", "local_url": "http://localhost:8080/tv/",
  "setup_pending": true,
  "children": {"relay": {"running": true, "restarts": 0}, "xingzhi": {…}, "passport": {…}, "front": {…}},
- "devices": [{"id": "…", "name": "…", "model": "xingzhi-cube-154", "online": true, "channel": "…", "since": 1760870100.0}],
- "watching": 1,
+ "devices": [{"id": "…", "name": "…", "model": "xingzhi-cube-154", "online": true, "channel": "…", "since": 1760870100.0,
+              "listening": false}],
+ "watching": 1, "listening": 0,
+ "network": {"id": "<16 hex digits, or empty>", "trusted": null, "profile": "", "lan_open": true},
  "ffmpeg": {"state": "ready | fetching | missing | failed", "path": "…", "source": "given | system | fetched",
             "done": 0, "total": 0, "error": ""},
  "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": false},
@@ -677,7 +705,9 @@ The status (`GET /local/v1/status`), every field always present:
 `problems[].code` is one of `ffmpeg_missing`, `ffmpeg_failed`,
 `port_in_use` (with `port` and, when the OS says, `holder`: the program's
 name), `lan_port_moved` (with `from` and `to`), `child_down` (with `name`),
-`config` (config.toml refused; `state` is then `error`). The tray shows the
+`config` (config.toml refused; `state` is then `error`), `network_away` (not on
+the home network: LAN ports on 127.0.0.1), `network_public` (Windows: a network
+marked Public while the ports are open). The tray shows the
 first problem's `message`. `lan_url` is empty when the core listens on
 loopback only or the LAN address is unknown.
 
@@ -1178,7 +1208,7 @@ and registering the login item are P2b); the CI workflow is
 `build-desktop-core.yml`, separate from P2c's `build-desktop.yml`; not done:
 reusing the beta's `selfhost` folder on first run (5.5) and the Windows
 network-profile warning in the status (5.11; the diagnostics zip records the
-profile).
+profile; done since in `desktop-finish` as the problem `network_public`).
 
 ### P2 — tray and installers (4–5.5)
 
@@ -1191,10 +1221,13 @@ profile).
 contract of 5.13, with `desktop-core` merged in (CI builds the installers around
 the real core; `desktop/devcore.py` is a stand-in core for the tray's tests). Code map, decisions and what is still open:
 [`docs/desktop/developer.md`](../../desktop/developer.md). The tray holds the
-sleep assertion and registers the login item; trusted networks (5.11) wait for
-the core (the tray side and a proposed `network` status block are ready); the
-core and the tray are two onedirs (macOS: the core in `Contents/Resources/core/`,
-not `Contents/MacOS/`, for code signing).
+sleep assertion and registers the login item (also while a phone listens:
+`status.listening`); the core and the tray are two onedirs (macOS: the core in
+`Contents/Resources/core/`, not `Contents/MacOS/`, for code signing).
+**Finished on branch `desktop-finish`:** trusted networks enforced by the core
+(5.11), the Windows Public warning from the core, `listening`, the tag release
+job with `SHA256SUMS-desktop` and the shared release text (5.2), the installer
+in Simplified Chinese by default (vendored translation for Inno Setup 6.7.1).
 
 ### P3 — ffmpeg (1–2.5)
 

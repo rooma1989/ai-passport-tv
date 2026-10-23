@@ -60,10 +60,10 @@ website's download page picks it for you):
 **Which Mac?** Apple menu > About This Mac: "Chip Apple M..." is Apple silicon,
 "Processor Intel..." is Intel.
 
-**Checking the download (optional)**: the release has `SHA256SUMS`. On Windows,
+**Checking the download (optional)**: the release has `SHA256SUMS-desktop`. On Windows,
 `Get-FileHash .\XiaozhiTV-...-setup.exe` in PowerShell; on a Mac,
 `shasum -a 256 ~/Downloads/XiaozhiTV-....dmg` in Terminal. The result must equal
-the line in `SHA256SUMS`.
+the line in `SHA256SUMS-desktop`.
 
 ## Step 2: install
 
@@ -180,8 +180,9 @@ The menu is in Chinese in the product; in order:
 | Connect a phone | Phone sign-in by QR code |
 | Set up a TV | Opens the web flasher (the `localhost` flasher page) |
 | Devices | What each device plays, online or offline |
-| Keep this computer awake | Ticked: no idle sleep while Xiaozhi TV runs (a device can be switched on any time). Unticked (default): no idle sleep while a device watches, until 2 minutes after the last one stops. Neither keeps the screen on |
+| Keep this computer awake | Ticked: no idle sleep while Xiaozhi TV runs (a device can be switched on any time). Unticked (default): no idle sleep while a device watches or a phone listens, until 2 minutes after the last one stops. Neither keeps the screen on |
 | Start at login | Start after logging in (on by default) |
+| This is my home network | Shown until you answer it once. On a laptop the client then opens its ports (web page, devices) only on that network; elsewhere, in a café for example, only this computer can reach them and the menu says "not on the home network". A new router counts as a new network: click it again at home |
 | Open the logs folder / Export diagnostics | For problems: diagnostics are a zip on the Desktop without passwords or keys, for you to send to whoever helps you; nothing is uploaded |
 | Restart the TV service | Try this first when a device cannot connect or the picture freezes |
 | Quit Xiaozhi TV | Stops everything; devices show "server did not answer" |
@@ -240,8 +241,8 @@ Developer notes (code map, building, CI, the interface with the core):
   CI; the tray icon has only been seen on a Mac).
 - The exact SmartScreen, Gatekeeper and macOS Local Network screens and
   wording; whether Windows Defender flags the build.
-- The whole flow with the real core (this beta's installers are published only
-  after the core is merged).
+- The whole flow with the real core and a real device (CI runs the frozen
+  real core with a simulated device).
 - "Keep this computer awake" on Windows; on macOS the idle-sleep assertion was
   confirmed to appear in the system.
 - The Linux tray (GNOME has no tray area by default).
