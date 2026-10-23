@@ -61,8 +61,9 @@ def classify(channel_id: str, name: str) -> str:
         return "央视"
     if any(part in name for part in _HK_TW):
         return "港澳台"
-    # 地方台的 4K 频道（河北4K、苏州4K……）也放这里，比放进「其他」好找。
-    if "卫视" in name or name.endswith("4K"):
+    # 地方台的 4K 频道（河北4K、苏州4K……）也放这里，比放进「其他」好找。英文名的播放列表
+    # （iptv-org 等）把卫视写成「Hunan Satellite TV」「Ningxia Satellite Channel」。
+    if "卫视" in name or name.endswith("4K") or "Satellite" in name:
         return "卫视"
     if any(part in name for part in _MUSIC):
         return "音乐"

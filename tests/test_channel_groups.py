@@ -17,7 +17,9 @@ from server import channel_groups as cg
 EXPECTED = {
     "央视": [f"CCTV{n}" for n in range(1, 18)],
     "卫视": ["湖南卫视", "浙江卫视", "江苏卫视", "东方卫视", "东方卫视4K", "浙江卫视4K",
-             "江苏卫视4K", "河北4K", "苏州4K", "南国都市4K"],
+             "江苏卫视4K", "河北4K", "苏州4K", "南国都市4K",
+             # English names in public playlists (iptv-org).
+             "Beijing Satellite TV HD (1080p)", "Ningxia Satellite Channel (576p)"],
     "港澳台": ["香港卫视", "凤凰中文", "凤凰资讯", "凤凰香港", "台视新闻", "三立戏剧", "耀才财经",
                "TVBS新闻", "东森新闻", "华视新闻", "民视新闻", "三立新闻", "中视新闻", "中天新闻"],
     "国际": ["CGTN英语", "CGTN记录", "CNA", "ABC News Live", "WionNews", "Arirang", "Trace Sports",

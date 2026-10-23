@@ -10,16 +10,19 @@ and the admin backend has no playlist import.
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from server.relay import playlist, setup, web
+from server.relay import admin, playlist, presets, setup, web
 from server.tenancy.accounts import Accounts
 
 from test_relay_web import KEY, FakeClient
@@ -207,8 +210,16 @@ class CloudHostUnchangedTests(RelayHarness):
         status, _, _ = self.request("POST", "/tv/api/admin/channels/import", {"text": PLAYLIST},
                                     headers={"X-Key": KEY})
         self.assertEqual(status, 404)
+        status, _, _ = self.request("POST", "/tv/api/admin/channels/import", {"preset": presets.PRESETS[0]["id"]},
+                                    headers={"X-Key": KEY})
+        self.assertEqual(status, 404, "no public playlists on the cloud host either")
         channels = self.request("GET", "/tv/api/admin/channels", headers={"X-Key": KEY})[2]
         self.assertFalse(channels["import"])
+        self.assertEqual(channels["presets"], [])
+        big = {"version": channels["version"], "rows": [{"name": f"台{n}", "url": f"https://example.com/{n:04d}.m3u8"}
+                                                        for n in range(200)]}
+        status, _, _ = self.request("POST", "/tv/api/admin/channels", big, headers={"X-Key": KEY})
+        self.assertEqual(status, 400, "the cloud keeps its 8 kB body limit (nginx in front)")
         self.assertFalse(self.request("GET", "/tv/api/admin/system", headers={"X-Key": KEY})[2]["selfhost"])
 
     def test_wifi_page_is_the_static_file(self):
@@ -239,6 +250,52 @@ class PlaylistImportTests(RelayHarness):
         self.assertTrue(channels["import"])
         self.assertEqual(channels["rows"], [], "a new household starts with an empty table")
 
+    def test_presets_are_listed_for_the_admin_only(self):
+        channels = self.request("GET", "/tv/api/admin/channels", headers={"Cookie": self.cookie})[2]
+        self.assertEqual([p["id"] for p in channels["presets"]], [p["id"] for p in presets.PRESETS])
+        self.assertTrue(all(p["urls"][0]["url"].startswith("https://") for p in channels["presets"]))
+        user = self.accounts.create_user("家人")
+        member = {"Cookie": "tvs=" + self.accounts.new_session(user)}
+        self.assertEqual(self.request("GET", "/tv/api/admin/channels", headers=member)[0], 404)
+        fetched = []
+        with unittest.mock.patch.object(playlist, "_fetch", lambda url, *_a, **_k: fetched.append(url) or (PLAYLIST, "")):
+            status, _, _ = self.request("POST", "/tv/api/admin/channels/import", {"preset": presets.PRESETS[0]["id"]},
+                                        headers=member)
+            self.assertEqual(status, 404)
+            self.assertEqual(fetched, [], "a member's request fetches nothing")
+            answer = self.request("POST", "/tv/api/admin/channels/import", {"preset": presets.PRESETS[0]["id"]},
+                                  headers={"Cookie": self.cookie})[2]
+        self.assertEqual(fetched, [presets.PRESETS[0]["url"]])
+        self.assertEqual(answer["total"], 2)
+        row = next(r for r in self.accounts.audit_rows() if r["action"] == "channels.import")
+        self.assertEqual(row["target_id"], presets.PRESETS[0]["id"])
+
+    def test_cross_site_import_is_refused(self):
+        status, _, _ = self.request("POST", "/tv/api/admin/channels/import", {"text": PLAYLIST},
+                                    headers={"Cookie": self.cookie, "Origin": "https://evil.example"})
+        self.assertNotEqual(status, 200)
+
+    def test_import_marks_what_the_table_already_has(self):
+        self.main.write_text("ch000 | 家庭台一 | http://192.168.1.5/other.m3u8\n"
+                             "ch001 | Elsewhere | https://example.com/b.m3u8\n", encoding="utf-8")
+        answer = self.request("POST", "/tv/api/admin/channels/import", {"text": PLAYLIST},
+                              headers={"Cookie": self.cookie})[2]
+        self.assertEqual([(e["name"], e["dup"]) for e in answer["entries"]], [("家庭台 一", "name"), ("Two", "url")])
+        self.assertEqual([e["kind"] for e in answer["entries"]], ["其他", "国际"])
+
+    def test_a_hundred_imported_channels_save_in_one_go(self):
+        text = "#EXTM3U\n" + "".join(f"#EXTINF:-1,卫视{n}\nhttp://192.168.1.5/live/{n:03d}/index.m3u8\n"
+                                      for n in range(100))
+        entries = self.request("POST", "/tv/api/admin/channels/import", {"text": text},
+                               headers={"Cookie": self.cookie})[2]["entries"]
+        version = self.request("GET", "/tv/api/admin/channels", headers={"Cookie": self.cookie})[2]["version"]
+        body = {"version": version, "rows": [{k: e[k] for k in ("name", "url", "agent")} for e in entries]}
+        self.assertGreater(len(json.dumps(body, ensure_ascii=False).encode()), admin.BODY_MAX,
+                           "more than the cloud's 8 kB")
+        answer = self.request("POST", "/tv/api/admin/channels", body, headers={"Cookie": self.cookie})[2]
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual(answer["summary"]["total"], 100)
+
     def test_large_file_upload_fits(self):
         big = "#EXTM3U\n" + "".join(f"#EXTINF:-1,台{n}\nhttp://192.168.1.5/{n}.m3u8\n" for n in range(20000))
         self.assertGreater(len(big), web.MAX_BODY_BYTES * 100)
@@ -258,22 +315,13 @@ class PlaylistImportTests(RelayHarness):
         self.assertIn("ch001 | Two | https://example.com/b.m3u8 | VLC/3", text)
 
 
+class Response(io.BytesIO):
+    """What urlopen returns, enough of it: read(n) until b"" at the end."""
+
+
 class PlaylistReadTests(unittest.TestCase):
     def test_url_is_fetched_once_with_http_only(self):
         seen = []
-
-        class Response:
-            def __init__(self, data):
-                self.data = data
-
-            def read(self, limit):
-                return self.data[:limit]
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_):
-                return False
 
         def opener(request, timeout):
             seen.append(request.full_url)
@@ -291,6 +339,81 @@ class PlaylistReadTests(unittest.TestCase):
         self.assertFalse(playlist.read({"url": "https://x/a", "text": PLAYLIST})["ok"], "one or the other")
         self.assertIn("没有找到频道", playlist.read({"text": "<html>not a playlist</html>"})["error"])
         self.assertIn("太大", playlist.read({"text": "#" * (playlist.IMPORT_MAX + 1)})["error"])
+
+    def test_preset_is_fetched_by_id_and_mirror(self):
+        seen = []
+
+        def opener(request, timeout):
+            seen.append(request.full_url)
+            return Response(PLAYLIST.encode())
+
+        first = presets.PRESETS[0]
+        self.assertEqual(playlist.read({"preset": first["id"]}, opener)["total"], 2)
+        with_mirror = next(p for p in presets.PRESETS if p["mirrors"])
+        playlist.read({"preset": with_mirror["id"], "mirror": 1}, opener)
+        self.assertEqual(seen, [first["url"], with_mirror["mirrors"][0][1]])
+        for body in ({"preset": "nope"}, {"preset": first["id"], "mirror": 99}, {"preset": first["id"], "mirror": True},
+                     {"preset": first["id"], "url": "https://example.com/x.m3u"}, {"preset": None}):
+            self.assertFalse(playlist.read(body, opener)["ok"], body)
+        self.assertEqual(len(seen), 2, "an unknown preset or index is never fetched")
+
+    def test_fetch_limits_size_time_and_timeout(self):
+        timeouts = []
+
+        def opener_of(data):
+            def opener(request, timeout):
+                timeouts.append(timeout)
+                return Response(data)
+            return opener
+
+        text, error = playlist._fetch("https://example.com/big.m3u", opener_of(b"#" * (playlist.IMPORT_MAX + 10)))
+        self.assertIsNone(text)
+        self.assertIn("太大", error)
+        self.assertEqual(timeouts, [playlist.FETCH_TIMEOUT_S])
+
+        class Drip:
+            """A server that sends a few bytes at a time, forever."""
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self, _n):
+                return b"#EXTM3U\n"
+
+        clock = iter(range(0, 1000, 10))
+        text, error = playlist._fetch("https://example.com/slow.m3u", lambda *_a, **_k: Drip(),
+                                      monotonic=lambda: next(clock))
+        self.assertIsNone(text)
+        self.assertIn("太慢", error)
+
+        def refused(request, timeout):
+            raise urllib.error.URLError("timed out")
+        self.assertFalse(playlist.read({"url": "https://example.com/x.m3u"}, refused)["ok"])
+
+    def test_mark_duplicates_and_kinds(self):
+        entries = [{"name": "CCTV-1", "url": "https://a/1", "agent": ""},
+                   {"name": "湖南卫视", "url": "https://x/2.m3u8", "agent": ""},
+                   {"name": "cctv 1", "url": "https://a/1b", "agent": ""},
+                   {"name": "Hunan Satellite TV", "url": "https://a/3", "agent": ""},
+                   {"name": "Hunan Satellite TV", "url": "https://a/3b", "agent": ""},
+                   {"name": "某地新闻", "url": "https://a/4", "agent": ""}]
+        rows = [{"id": "ch000", "name": "CCTV1", "url": "https://x/1.m3u8", "agent": ""},
+                {"id": "ch001", "name": "湖南台", "url": "https://x/2.m3u8", "agent": ""}]
+        playlist.mark(entries, rows)
+        self.assertEqual([e["dup"] for e in entries], ["name", "url", "name", "", "list", ""])
+        self.assertEqual([e["kind"] for e in entries], ["央视", "卫视", "央视", "卫视", "卫视", "其他"])
+        self.assertEqual(playlist.name_key("CCTV-1 "), playlist.name_key("cctv_1"))
+
+    def test_name_after_a_comma_inside_quotes(self):
+        from server import m3u
+        text = ('#EXTINF:-1 http-user-agent="Mozilla/5.0 (KHTML, like Gecko) Chrome/144",CCTV-1 (720p)\n'
+                "https://example.com/1.m3u8\n"
+                '#EXTINF:-1 tvg-name="broken,CCTV2\nhttps://example.com/2.m3u8\n')
+        found = m3u.parse_playlist(text)
+        self.assertEqual([c["name"] for c in found], ["CCTV-1 (720p)", "CCTV2"])
+        self.assertEqual(found[0]["agent"], "Mozilla/5.0 (KHTML, like Gecko) Chrome/144")
 
     def test_probe_states(self):
         class Done:

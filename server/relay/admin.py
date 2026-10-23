@@ -27,13 +27,16 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, console, events, playlist, qr, table
+from . import channeltable, console, events, playlist, presets, qr, table
 from .ytnode import MAX_STREAMS
 
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 ADMIN_PAGE = (_ASSET_DIR / "admin.html").read_bytes()
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
 BODY_MAX = 8000
+# 自建模式（没有 nginx，前面是 server/front.py，它给普通接口 64 KB）保存频道表时可以大一些：一次从播放列表
+# 加一百多个台，每个新台都带完整地址，整张表的请求有十几 KB。
+SELFHOST_CHANNELS_BODY_MAX = 60 * 1024
 # 自建模式的「导入播放列表」可以直接上传 M3U 文件的内容（playlist.py）；云端没有这个接口。
 IMPORT_PATH = "/api/admin/channels/import"
 _USER = re.compile(r"^/api/admin/users/(\d{1,9})(?:/(rename|ban|unban|reviewed|login-link|delete|export|"
@@ -316,7 +319,9 @@ def channels(relay) -> dict:
             "groups": list(channel_groups.GROUPS[2:]), "limits": {"channels": channel_groups.CHANNEL_MAX,
                                                                   "bytes": channel_groups.CONFIG_MAX},
             "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:],
-            "import": relay.selfhost is not None}
+            "import": relay.selfhost is not None,
+            # 网上公开的第三方播放列表（只有列表地址）：和导入一样只在自建 / 电脑客户端里有。
+            "presets": presets.public() if relay.selfhost is not None else []}
 
 
 def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
@@ -388,7 +393,12 @@ def post(handler, relay, path: str) -> bool:
     if not path.startswith("/api/admin/"):
         return False
     selfhost = relay.selfhost is not None
-    body = _read_body(handler, playlist.IMPORT_BODY_MAX if selfhost and path == IMPORT_PATH else BODY_MAX)
+    limit = BODY_MAX
+    if selfhost and path == IMPORT_PATH:
+        limit = playlist.IMPORT_BODY_MAX
+    elif selfhost and path == "/api/admin/channels":
+        limit = SELFHOST_CHANNELS_BODY_MAX
+    body = _read_body(handler, limit)
     caller = _admin(handler)
     if caller is None:
         handler._not_found()
@@ -401,10 +411,14 @@ def post(handler, relay, path: str) -> bool:
         handler._json(save_channels(relay, body, caller, ip))
         return True
     if selfhost and path == IMPORT_PATH:
-        # 自建：读一份 M3U（地址或上传的内容），列出里面的台给页面勾选；不存地址、不改频道表。
+        # 自建：读一份 M3U（地址、上传的内容或一个公开列表），列出里面的台给页面勾选；不存地址、不改频道表。
         answer = playlist.read(body)
         if answer.get("ok"):
-            relay.accounts.audit("channels.import", caller.user, ip, "channels", "", f"{len(answer['entries'])} 个台")
+            current = channeltable.read(relay.main_channels)["rows"] if relay.main_channels is not None else []
+            playlist.mark(answer["entries"], current)
+            preset = body.get("preset") if isinstance(body.get("preset"), str) else ""
+            relay.accounts.audit("channels.import", caller.user, ip, "channels", preset[:40],
+                                 f"{len(answer['entries'])} 个台")
         handler._json(answer)
         return True
     if selfhost and path == "/api/admin/channels/probe":

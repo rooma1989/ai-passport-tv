@@ -13,10 +13,23 @@ USER_AGENT_RE = re.compile(r"""http-user-agent\s*=\s*["']([^"']*)["']""", re.IGN
 EXTVLCOPT_UA_RE = re.compile(r"""#EXTVLCOPT:http-user-agent\s*=\s*([^\r\n]*)""", re.IGNORECASE)
 
 
+def _title(extinf: str) -> str:
+    """#EXTINF 行的台名：第一个不在双引号里的逗号之后。"""
+    quoted = False
+    for index, char in enumerate(extinf):
+        if char == '"':
+            quoted = not quoted
+        elif char == "," and not quoted:
+            return extinf[index + 1:].strip()
+    # 引号没配对（写坏了的行）：退回第一个逗号。
+    return extinf.partition(",")[2].strip()
+
+
 def parse_playlist(text: str) -> list[dict]:
     """[{name, url, agent}]。
 
-    名字取 #EXTINF 最后一个逗号之后的部分；地址是其后第一行像网址的行。同名的台都保留
+    名字取 #EXTINF 上第一个不在引号里的逗号之后的部分（属性值里可以有逗号，例如
+    User-Agent 的 "(KHTML, like Gecko)"）；地址是其后第一行像网址的行。同名的台都保留
     （播放列表里一个台列两次是常见的），由调用方分配 id。
     """
     channels: list[dict] = []
@@ -27,8 +40,7 @@ def parse_playlist(text: str) -> list[dict]:
         if not line:
             continue
         if line.startswith("#EXTINF"):
-            _, _, tail = line.partition(",")
-            name = tail.strip() or "unnamed"
+            name = _title(line) or "unnamed"
             pending = name
             match = USER_AGENT_RE.search(line)
             pending_agent = match.group(1) if match else ""

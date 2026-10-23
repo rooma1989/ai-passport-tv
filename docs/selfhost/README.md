@@ -16,7 +16,9 @@ and its trade-offs are in
 [`2026-10-15-self-hosting-design.md`](../superpowers/specs/2026-10-15-self-hosting-design.md).
 
 **This software ships no channels, streams, playlists, accounts or cookies.**
-The channel table is empty on first start; you add what to play yourself.
+The channel table is empty on first start; you add what to play yourself (the
+Channels page can read a few public third-party playlists by their links, see
+step 3).
 Please read the [disclaimer](#disclaimer) at the end first.
 
 ## Limits of the beta
@@ -163,10 +165,24 @@ port). Five wrong codes from one network in 10 minutes means a wait.
 The server ships no channels. The administrator opens
 `http://<address>:8080/tv/admin` on a computer → **Channels**:
 
-- **Import a playlist**: paste the address of your own M3U playlist and press
-  "Read", or upload a `.m3u` file; tick the channels you want, optionally
-  "check which play", then add them to the table and press **Save** at the
-  bottom. The address is fetched once, when you press "Read", and not stored.
+- **CCTV and provincial satellite channels in one click**: under "Import a
+  playlist", pick one of the public playlists (iptv-org China or Chinese,
+  vbskycn/iptv, myIPTV) and press "Read" (or its upstream's mirror button, for
+  example gh-proxy, when GitHub is slow from where you are). In the list press
+  the CCTV or satellite quick filter, then "Select all" and **Add to the
+  channel table**, then **Save** at the bottom. These are third-party lists
+  found on the internet; their content is the responsibility of their
+  maintainers, this project does not provide or vouch for any stream, and you
+  should add only what you are entitled to watch. Many streams in them stop
+  working after a while; "Try" (up to 20 ticked channels at a time) shows which
+  play now.
+- **Import from an address or a file**: paste the address of an M3U playlist
+  and press "Read", or upload a `.m3u` file; then the same list. The address is
+  fetched once, when you press "Read", and not stored.
+- Channels whose address or name is already in the table, and repeats within
+  the list, are marked "duplicate", left unticked and skipped by "Select all";
+  the same address is never added twice. Adding stops at what every user's TV
+  can hold, and saving checks it again and backs up the old table first.
 - **Add one channel**: a name and a live stream address (`http(s)://…`).
 - A TV takes at most 128 channels; pick the ones you watch.
 
@@ -278,6 +294,10 @@ take effect on restart. The common keys:
 - The TVs resolving `.local` names; lock-screen media controls over plain HTTP
   on an iPhone.
 - Every figure marked "estimated" in section 13 of the design.
+- The public playlists on the Channels page were read and parsed on
+  2026-10-22 from a Mac outside the mainland network path (through a proxy),
+  not from a home connection in mainland China; whether their streams play on
+  a TV was not checked.
 
 ## Disclaimer
 
@@ -291,6 +311,10 @@ legal advice.
 > right to access them and for following the terms of the services you use and
 > the laws where you live. Do not use it to redistribute content to others. The
 > software is provided "as is", without warranty of any kind (MIT licence).
+>
+> The public playlists listed on the Channels page are third-party lists found on the
+> internet; their content is the responsibility of their maintainers. This project
+> does not provide or vouch for any live stream; add only what you are entitled to watch.
 
 - Add only sources you are entitled to watch, for your own household. Do not
   share your server or its streams with people outside it, and do not make it
