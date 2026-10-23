@@ -5,7 +5,8 @@
 # Self-hosting package ("Xiaozhi TV at home") — design
 
 Status: draft 2026-10-15, decided 2026-10-16 ("Decisions" below); public
-playlist presets added 2026-10-22 (section 8.2). Phases S1
+playlist presets added 2026-10-22 (section 8.2); YouTube local mode (S5b)
+implemented 2026-10-23 (section 8.4). Phases S1
 and S3 are implemented, the 0.x beta's code (section 15, with what is verified
 and what is not); S2 and S4–S6 are design. Follows
 [`2026-10-12-multi-tenant-design.md`](2026-10-12-multi-tenant-design.md)
@@ -791,6 +792,33 @@ The cookies are the user's own account's; the tutorial says to use a secondary
 account, export in a private window, and never share the file. `MAX_STREAMS`
 stays 2 per node.
 
+**As implemented (S5b, 2026-10-23, branch `desktop-ytlocal`).** The
+supervisor starts a fifth child, `ytnode` (`__ytnode` in the frozen core;
+`server/relay/ytnode.py --plain --bind 127.0.0.1 --port 47443` or a free port,
+`--tools-dir <data>/youtube/bin --remux --no-check`), only when
+`mode = "local"`; the relay gets `--ytlocal http://127.0.0.1:<port>` and the
+key in `secrets/ytnode-key`, and talks to it through an opener with no proxy
+at all (environment and macOS system settings both ignored). The proxy is the
+child's `TV_YT_PROXY` (not on the command line): yt-dlp `--proxy`; ffmpeg
+`http_proxy` (with loopback in `no_proxy`), or, for `socks5://` /
+`socks5h://`, a loopback HTTP CONNECT shim inside the node that tunnels through
+the socks proxy. H.264 + AAC formats are remuxed (`-c copy`), others
+transcoded as on the cloud node. yt-dlp and deno are looked up in
+`components.json` at every call, so installing and updating need no restart;
+cookies likewise. `server/selfhost/ytcomponents.py` downloads them (pinned
+yt-dlp 2026.10.21 and deno 2.9.8 with SHA-256 from the releases' published
+sums; updates of yt-dlp verified against that release's `SHA2-256SUMS`; the
+user's proxy or a mirror prefix). The console's Settings → YouTube
+(`server/relay/ytsettings.py`, admin only) rewrites `[youtube] mode` and
+`proxy` in `config.toml` and drops `run/refresh-request`; the supervisor
+re-reads the config and restarts only the children whose arguments changed.
+Proxy detection: `scutil --proxy` on macOS, the `Internet Settings` registry
+values on Windows, environment variables on Linux and in containers. Checked
+on a Mac through a local proxy: the component download (HTTP CONNECT), yt-dlp
+with deno reaching YouTube through `socks5h` (without cookies YouTube asked
+for sign-in every time), and ffmpeg fetching HTTPS media through the socks
+shim. Not run on Windows, Linux or in Docker.
+
 ### 8.5 What the tutorial says
 
 - This software plays only what you add. It ships no channels, streams or
@@ -1074,8 +1102,8 @@ sets; the cloud units run as before. Where it differs from the text above:
   checkout, where `tools/datadir.py` would put it when writable).
 - The relay ports (8099, 8100) and listen ports (8198, 8199) are fixed; the
   config file adds `[server] bind` and `[devices] xingzhi_port` /
-  `passport_port`. `max_streams`, `update_check`, `[youtube] proxy` and local
-  YouTube mode are accepted but do nothing yet.
+  `passport_port`. `max_streams` and `update_check` are accepted but do
+  nothing yet (`[youtube] proxy` and local YouTube mode: S5b, section 8.4).
 - The image is pushed only by a manual run of the workflow with "publish"
   ticked; Debian's ffmpeg is not pinned to a version yet.
 - Integrated with S3 (2026-10-16): the front serves `packaging/flash/` at
@@ -1158,7 +1186,8 @@ unverified until tried). Can start once S1's commands are fixed.
 ### Phase S5 — optional pieces (3–4.5 days)
 
 - S5a. Voice container (sherpa-onnx SenseVoice, `POST /asr`). (1.5–2 days)
-- S5b. YouTube local mode: loopback HTTP, proxy, tool download and update. (1–1.5 days)
+- S5b. YouTube local mode: loopback HTTP, proxy, tool download and update. (1–1.5 days) — implemented
+  2026-10-23 (section 8.4).
 - S5c. Remote-access recipes (Tailscale serve, Cloudflare Tunnel compose
   profile) and the away-from-home recipes; tested on one network. (0.5–1 day)
 

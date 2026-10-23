@@ -51,6 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--public-url", default="", help="手机访问的网站地址，例如 https://example.com")
     parser.add_argument("--cstone", type=Path,
                         help="YouTube 节点配置 JSON：{url, key, cert}；不给则只支持 B 站")
+    # 家庭服务器、电脑客户端的本机 YouTube 节点（server/selfhost 的监督进程给，[youtube] mode = "local"）。
+    parser.add_argument("--ytlocal", default="", help="本机 YouTube 节点的地址 http://127.0.0.1:端口")
+    parser.add_argument("--ytlocal-key-file", type=Path, help="本机 YouTube 节点的密钥文件")
+    parser.add_argument("--selfhost-data", type=Path,
+                        help="自建：数据目录（电脑版「设置 → YouTube」改 config.toml、导入 cookies、下载组件用）")
     parser.add_argument("--device-name", default="小智",
                         help="--now-playing / --events-out 那台设备在手机上显示的名字")
     parser.add_argument("--extra-device", action="append", default=[], metavar="名字:正在播放:事件",
@@ -89,10 +94,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"--extra-device {spec!r}：要写成 名字:正在播放文件:事件文件", file=sys.stderr)
             return 2
         extra.append((parts[0], Path(parts[1]), Path(parts[2])))
-    youtube = None
-    if args.cstone and args.cstone.is_file():
+    youtube, args.youtube_kind = None, ""
+    if args.ytlocal:
+        if args.ytlocal_key_file is None:
+            print("--ytlocal 要和 --ytlocal-key-file 一起用", file=sys.stderr)
+            return 2
+        node_key = args.ytlocal_key_file.read_text(encoding="utf-8").strip()
+        youtube, args.youtube_kind = YouTube(config={"url": args.ytlocal, "key": node_key}), "local"
+    elif args.cstone and args.cstone.is_file():
         config = json.loads(args.cstone.read_text(encoding="utf-8"))
         youtube = YouTube(config={k: config[k] for k in ("url", "key", "cert")})
+        args.youtube_kind = "node"
     if args.db is not None:
         return _serve_tenants(args, key, youtube)
     state = State(args.state)
@@ -154,6 +166,12 @@ def _serve_tenants(args, key: str, youtube) -> int:
                   main_channels=args.main_channels, public_url=args.public_url,
                   accounts=accounts, devices_dir=devices_dir, listen_secret=args.listen_secret,
                   log=lambda message: print(message, flush=True), selfhost=selfhost)
+    # 「设置 → YouTube」（server/relay/ytsettings.py）：现在用的是哪种 YouTube、数据目录在哪。
+    relay.youtube_kind = args.youtube_kind
+    relay.selfhost_data = args.selfhost_data if selfhost is not None else None
+    # 本机模式第一次用：组件还没装好就在后台下载（server/relay/ytsettings.py）。
+    from . import ytsettings
+    ytsettings.autostart(relay)
     relay.sync_devices(force=True)
     # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。
     from . import wifi as wifi_api

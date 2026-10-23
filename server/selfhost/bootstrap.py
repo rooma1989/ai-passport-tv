@@ -46,6 +46,10 @@ class Layout:
         self.wifi_key = self.secrets / "wifi-key"
         self.setup_code = self.secrets / "setup-code"
         self.youtube_node = self.secrets / "youtube-node.json"
+        # 本机 YouTube 节点（[youtube] mode = "local"）：中转和节点之间的密钥；组件在 youtube/bin/。
+        self.ytnode_key = self.secrets / "ytnode-key"
+        self.youtube = self.root / "youtube"
+        self.youtube_bin = self.youtube / "bin"
         self.db = self.root / "tv.db"
         self.devices = self.root / "devices"
         self.channels = self.root / "channels.txt"
@@ -92,6 +96,14 @@ def relay_key(layout: Layout) -> bool:
     if layout.relay_key.is_file() and len(layout.relay_key.read_text(encoding="utf-8").strip()) >= 16:
         return False
     _write_secret(layout.relay_key, secrets.token_urlsafe(32) + "\n")
+    return True
+
+
+def ytnode_key(layout: Layout) -> bool:
+    """本机 YouTube 节点的密钥：没有就生成（和中转的密钥一样，从不打印）；返回是不是新生成的。"""
+    if layout.ytnode_key.is_file() and len(layout.ytnode_key.read_text(encoding="utf-8").strip()) >= 16:
+        return False
+    _write_secret(layout.ytnode_key, secrets.token_urlsafe(32) + "\n")
     return True
 
 

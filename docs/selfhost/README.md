@@ -27,7 +27,7 @@ Please read the [disclaimer](#disclaimer) at the end first.
   second shows "server did not answer" (in Chinese) and retries until the first
   is switched off or disconnects. One Xingzhi and one AI Passport can watch at
   the same time. Several at once comes with version 1.0.
-- No voice container and no local YouTube mode yet (later versions).
+- No voice container yet (a later version).
 - Steps marked "unverified" are written from the official documentation and
   have not been tried by the author; so far only the plain-Python path has run,
   on one Apple-silicon Mac.
@@ -187,10 +187,9 @@ The server ships no channels. The administrator opens
 - A TV takes at most 128 channels; pick the ones you watch.
 
 Bilibili creators and series can be added in the phone remote's Subscriptions
-tab (per person). The YouTube setting is for households that already run their
-own YouTube node (`[youtube]` in `config.toml` and
-`secrets/youtube-node.json`); this project does not provide a way to reach
-YouTube.
+tab (per person). YouTube is optional and off by default; see
+[YouTube (optional)](#youtube-optional) below. This project does not provide a
+way to reach YouTube.
 
 With no channel at all, a bound TV shows "NO CHANNELS YET / ADD SOME / ON YOUR
 PHONE" and reconnects by itself once something is added.
@@ -237,6 +236,54 @@ The server's address must not change: a fixed IP from the router is the most
 reliable. A name like `computer.local` may work too, but has not been verified
 on the TVs.
 
+## YouTube (optional)
+
+YouTube is off by default; Bilibili and live channels work without it. Turning
+it on is for households that already have their own way to reach YouTube from
+this computer: **this project provides no proxy and gives no instructions for
+getting one.**
+
+1. In the console (signed in as the admin) open **Settings → YouTube** and
+   choose **This computer**, or set `[youtube] mode = "local"` and
+   `proxy = "…"` in `config.toml` and restart the server.
+2. Proxy: type the address your proxy program gives for this computer, for
+   example `http://127.0.0.1:<port>` or `socks5://127.0.0.1:<port>`, or press
+   **Detect**, which reads the system proxy (macOS network
+   settings, the Windows proxy setting, the `https_proxy` / `all_proxy`
+   environment variables on Linux) and fills in what it found. Leave it empty
+   when the proxy program routes everything by itself (TUN / enhanced mode) or
+   YouTube is reachable directly.
+3. Press **Save**. The first time, the server downloads its two YouTube
+   components, yt-dlp and deno (about 80 MB, through that proxy; you can also
+   enter a download mirror prefix: what replaces `https://github.com` in the
+   download address, so a GitHub accelerator that takes a whole address is
+   written `https://<accelerator>/https://github.com`), and checks each file
+   against the SHA-256 written in the program. Progress shows in the same section.
+4. Press **Test**: it resolves a public test video and answers in plain words
+   ("success in 12 s", "can't reach YouTube: check the proxy", "needs sign-in:
+   import cookies").
+5. **Cookies**: YouTube often asks proxy and data-centre addresses to "sign in
+   to confirm you're not a bot". Then import a `cookies.txt` (Netscape format):
+   use a **secondary account**, sign in to it in a private browser window, open
+   YouTube, export only youtube.com with a cookies.txt export extension, then
+   close the private window without signing out (signing out invalidates the
+   cookies). The server keeps only the youtube.com and google.com lines, stores
+   them in `<data>/youtube/cookies.txt` readable only by you, and shows only
+   how many there are. The file is that account's login: do not share it.
+6. YouTube changes often. When videos stop playing, press **Check for updates**
+   and **Update yt-dlp** (the new version is verified against the release's
+   own `SHA2-256SUMS`).
+
+Changes apply without restarting the server: saving restarts only the parts that changed
+(a new proxy restarts the YouTube helper alone). YouTube videos, creators and
+playlists (series) then work as on the cloud service. "Own node" is for a
+YouTube node you run yourself (`secrets/youtube-node.json`).
+
+In Docker, `127.0.0.1` is the container itself: give the proxy as the host's
+LAN address (and let the proxy program accept LAN connections), and Detect
+only sees the container's environment variables. The components go into
+`/data/youtube/bin/` (linux amd64 or arm64; 32-bit ARM is not supported).
+
 ## Family and guests
 
 As on the cloud host: Me → let another phone sign in (same account, the
@@ -249,7 +296,8 @@ recommendation.
 - The data folder is everything you have (except `run/`, which needs no
   backup). The server backs up the database every night after 3 a.m. into
   `backups/` and keeps 14 days (`backup_keep_days` in `config.toml`).
-  **`secrets/` holds keys**: keep backups like a password and do not share them.
+  **`secrets/` holds keys** (and `youtube/cookies.txt` a YouTube login): keep backups like a
+  password and do not share them. `youtube/bin/` need not be backed up (it is downloaded again).
 - Restore: stop the server, replace the data folder with the backup, start.
 - Update: without Docker, `git pull` and restart; with Docker, `git pull` and
   `docker compose up -d --build` (once the image is published:
@@ -267,6 +315,7 @@ take effect on restart. The common keys:
 | `[server] public_port` | 0 | A port for a tunnel (Cloudflare Tunnel, Tailscale serve), e.g. 8081; it has no admin backend, setup page or key sign-in |
 | `[devices] allow_internet` | false | Accept TVs from public addresses (only for port forwarding) |
 | `[accounts] signup_via_device` | "lan" | Self-registration by scanning an unbound TV: home network only / tunnel too / off |
+| `[youtube] mode`, `proxy` | "off", empty | YouTube: off / `local` (this machine, through `proxy`) / `node` (your own node); the console's Settings → YouTube rewrites these two lines and applies them without a restart |
 
 ## Common problems
 
@@ -298,6 +347,9 @@ take effect on restart. The common keys:
   2026-10-22 from a Mac outside the mainland network path (through a proxy),
   not from a home connection in mainland China; whether their streams play on
   a TV was not checked.
+- YouTube local mode in Docker, on Linux and on Windows (run only on a Mac: the component
+  download and the proxy path were tried there; with no cookies YouTube asked for sign-in every
+  time through the proxy, so a whole video was not played through it).
 
 ## Disclaimer
 

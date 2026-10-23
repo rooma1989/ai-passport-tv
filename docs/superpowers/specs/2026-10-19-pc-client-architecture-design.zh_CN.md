@@ -506,7 +506,8 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
   `state` 是 `error`，问题里有一条 `config` 说是哪一项，电视服务不启动；`stop` 之后退出码是 1。
 - **Windows 上的窗口。** 核心启动的每个程序（一直到 ffmpeg）都带 `CREATE_NO_WINDOW`，不管谁启动核心都不会弹出控制台窗口。
 - **同一个可执行文件的子命令**（内部用，给监督进程）：`__relay`、`__tv`、`__front`、`__channel-check`、`__selfhost`、
-  `__tenancy-admin`（应急管理，`--db <数据目录>/tv.db`）、`__certs`。留给以后的阶段：`__gate`、`__worker`、`__hub-agent`、
+  `__tenancy-admin`（应急管理，`--db <数据目录>/tv.db`）、`__ytnode`（本机 YouTube 节点，只在
+  `[youtube] mode = "local"` 时）、`__certs`。留给以后的阶段：`__gate`、`__worker`、`__hub-agent`、
   `__asr`。
 - **锁。** 核心占着 `<数据目录>/run/core.lock`；托盘用自己的 `<数据目录>/run/tray.lock` 保证只开一个。
 
@@ -555,7 +556,9 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
  "network": {"id": "<16 位十六进制，或空>", "trusted": null, "profile": "", "lan_open": true},
  "ffmpeg": {"state": "ready | fetching | missing | failed", "path": "…", "source": "given | system | fetched",
             "done": 0, "total": 0, "error": ""},
- "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": false},
+ "voice": {"mode": "off"},
+ "youtube": {"mode": "off | local | node", "ready": false, "state": "idle", "done": 0, "total": 0, "error": ""},
+ "hub": {"state": "off"}, "update": {"available": false},
  "settings": {"keep_awake": "watching", "autostart": true}}
 ```
 
@@ -564,7 +567,13 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
 不合法；这时 `state` 是 `error`）、`network_away`（不在家里的网络上：局域网端口在 127.0.0.1）、`network_public`
 （Windows：端口开着时网络被标成公用）。托盘显示第一个问题的 `message`。只听本机或不知道局域网地址时 `lan_url` 是空串。
 
-托盘上的开关存在 `<数据目录>/desktop.json`（核心经接口写），不放进 `config.toml`：那是用户手改的文件，程序从不改写。
+托盘上的开关存在 `<数据目录>/desktop.json`（核心经接口写），不放进 `config.toml`：那是用户手改的文件。唯一的例外
+（2026-10-23）：电脑版「设置 → YouTube」原地改 `[youtube]` 的 `mode` 和 `proxy` 两行（别的行和注释不动；改完能读通才写回），
+再请监督进程更新子进程（`run/refresh-request`，见自建设计 8.4）。
+
+`youtube`（2026-10-23）：`mode` 是 `config.toml` 的 `[youtube] mode`；`ready` 是 `<数据目录>/youtube/bin/` 里 yt-dlp 和
+deno 装好没有；`state`（`idle | working | done | failed`）、`done`、`total`、`error` 是组件下载的进度（下载在中转里做，
+写进 `run/youtube-components.json`）。
 
 ### 5.14 更新
 
@@ -882,7 +891,7 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
 | S2（gate-lite） | 未做 | 仍然需要（6.3），另加 Windows 的交接 |
 | S3（公开固件、网页刷机） | 已完成 | 沿用；`localhost` 刷机页在客户端里能用；1.0 加内置刷机 |
 | S4（静态网站和教程） | 未做 | 围绕客户端下载重写（P10）；Docker 那几页作为「进阶」保留 |
-| S5（语音容器、YouTube 本机模式、外网访问做法） | 未做 | 语音变成客户端的可选下载（5.9）；YouTube 本机模式不变；对客户端用户，外网访问做法由中继取代 |
+| S5（语音容器、YouTube 本机模式、外网访问做法） | YouTube 本机模式已做（S5b，2026-10-23），其余未做 | 语音变成客户端的可选下载（5.9）；YouTube 本机模式在客户端里和家庭服务器一样（自建设计 8.4，电脑版「设置 → YouTube」）；对客户端用户，外网访问做法由中继取代 |
 | S6（真机加固） | 未做 | 变成 P11，覆盖 Windows/macOS 组合 |
 
 ## 12. 代码改动

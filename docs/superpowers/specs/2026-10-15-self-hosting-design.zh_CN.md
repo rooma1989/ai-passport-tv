@@ -4,7 +4,7 @@
 
 # 自建服务包（「小智电视」在家里跑）—— 设计
 
-状态：2026-10-15 草案，2026-10-16 已决定（见下面「决定」）；2026-10-22 加了公开播放列表预设（第 8.2 节）。阶段 S1 和 S3 已实现，就是 0.x 测试版的代码（第 15 节，写明了哪些验证过、哪些没有）；S2、S4–S6 仍是设计。承接
+状态：2026-10-15 草案，2026-10-16 已决定（见下面「决定」）；2026-10-22 加了公开播放列表预设（第 8.2 节）；2026-10-23 实现了 YouTube 本机模式（S5b，第 8.4 节）。阶段 S1 和 S3 已实现，就是 0.x 测试版的代码（第 15 节，写明了哪些验证过、哪些没有）；S2、S4–S6 仍是设计。承接
 [`2026-10-12-multi-tenant-design.zh_CN.md`](2026-10-12-multi-tenant-design.zh_CN.md)
 （账号、绑定、PC 控制台、总后台：阶段 1–3 已完成；阶段 4 媒体网关没做）、
 [`2026-10-12-phone-audio-design.zh_CN.md`](2026-10-12-phone-audio-design.zh_CN.md)、
@@ -615,6 +615,21 @@ UP 主和剧集和云主机上一样，而且是从不会被 B 站回 412 的家
 
 cookies 是用户自己账号的；教程写明用小号、在无痕窗口导出、绝不分享这个文件。每个节点 `MAX_STREAMS` 仍是 2。
 
+**实际实现（S5b，2026-10-23，分支 `desktop-ytlocal`）。** 只有 `mode = "local"` 时监督进程才起第五个子进程 `ytnode`
+（打包版的 `__ytnode`；`server/relay/ytnode.py --plain --bind 127.0.0.1 --port 47443`（被占时换一个空端口）
+`--tools-dir <数据目录>/youtube/bin --remux --no-check`）；中转带 `--ytlocal http://127.0.0.1:<端口>` 和
+`secrets/ytnode-key` 里的密钥，经一个完全不用代理的 opener 连它（环境变量和 macOS 的系统代理都不看）。代理在子进程的
+环境变量 `TV_YT_PROXY` 里（不在命令行上）：yt-dlp 用 `--proxy`；ffmpeg 用 `http_proxy`（`no_proxy` 里有回环地址），
+`socks5://`、`socks5h://` 时节点里开一个只听回环的 HTTP CONNECT 转接口，经 socks 代理转出去。H.264 + AAC 的格式只换封装
+（`-c copy`），别的照云端节点转码。yt-dlp 和 deno 每次调用都按 `components.json` 现找，安装、更新都不用重启；cookies 也是。
+下载由 `server/selfhost/ytcomponents.py` 做（固定 yt-dlp 2026.10.21 和 deno 2.9.8，SHA-256 取自两个发布页公布的校验值；
+更新 yt-dlp 时按那个版本自己的 `SHA2-256SUMS` 核对；经用户的代理或镜像前缀）。电脑版「设置 → YouTube」
+（`server/relay/ytsettings.py`，只给管理员）改 `config.toml` 的 `[youtube] mode` 和 `proxy`，再放一个
+`run/refresh-request`；监督进程重读设置，只重启参数变了的子进程。代理自动检测：macOS 用 `scutil --proxy`，Windows 读
+`Internet Settings` 注册表，Linux 和容器里看环境变量。在 Mac 上经本机代理试过：组件下载（HTTP CONNECT）、yt-dlp 加 deno 经
+`socks5h` 到达 YouTube（不带 cookies 时 YouTube 每次都要求登录）、ffmpeg 经 socks 转接口取 HTTPS 媒体。没有在 Windows、
+Linux、Docker 上跑过。
+
 ### 8.5 教程怎么说
 
 - 这个软件只播放你自己加进去的东西。它不带任何频道、直播流或账号。
@@ -839,8 +854,8 @@ HTTP 从家庭服务器取镜像，并用编进固件的项目公钥在应用层
 - `PUID`/`PGID` 变成 compose 的 `user:`，而不是用 root 入口再降权，所以容器可以 `cap_drop: ALL`。
 - 纯 Python 方式的数据文件夹是「每用户数据目录」下的 `selfhost`（绝不是代码目录；`tools/datadir.py` 在代码目录可写时会选它）。
 - 中转的端口（8099、8100）和「用手机听」的端口（8198、8199）是固定的；设置文件多了 `[server] bind` 和
-  `[devices] xingzhi_port` / `passport_port`。`max_streams`、`update_check`、`[youtube] proxy` 和本机 YouTube 模式
-  能写、但还不起作用。
+  `[devices] xingzhi_port` / `passport_port`。`max_streams`、`update_check`
+  能写、但还不起作用（`[youtube] proxy` 和本机 YouTube 模式：S5b，第 8.4 节）。
 - 镜像只有手动运行工作流并勾选「publish」时才推送；Debian 的 ffmpeg 还没有固定版本。
 - 和 S3 接上（2026-10-16）：前端在 `/flash/` 提供 `packaging/flash/`，在 `/flash/firmware/` 提供选中的那套固件，两个端口都给
   （静态文件，不改任何东西）。固件先用数据文件夹的 `firmware/`（`./run.sh --fetch-firmware` 用
@@ -901,7 +916,7 @@ S1 的命令定下来就可以开始。
 ### 阶段 S5 —— 可选部分（3–4.5 天）
 
 - S5a. 语音容器（sherpa-onnx SenseVoice，`POST /asr`）。（1.5–2 天）
-- S5b. YouTube 本地模式：回环 HTTP、代理、工具下载和更新。（1–1.5 天）
+- S5b. YouTube 本地模式：回环 HTTP、代理、工具下载和更新。（1–1.5 天）——2026-10-23 已实现（第 8.4 节）。
 - S5c. 外网访问的做法（Tailscale serve、Cloudflare Tunnel 的 compose profile）和出门在外的做法；在一个网络上试过。（0.5–1 天）
 
 三者互不相关。

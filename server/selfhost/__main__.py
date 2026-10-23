@@ -10,6 +10,7 @@
   xingzhi   python3 -m server.tv_server live --port 8098   星智 Cube 1.54（240x180，15 帧）
   passport  python3 -m server.tv_server live --port 8097   AI Passport（320x180，12 帧）
   front     python3 -m server.front --lan-port 8080 …      手机、电脑打开的网页
+  ytnode    python3 -m server.relay.ytnode --plain …       只在 [youtube] mode = "local" 时：127.0.0.1 上的 YouTube 节点
 
 0.x 测试版每个型号一次服务一台设备（设计的 Q1 选项 A）；同一型号的第二台要等第一台断开。
 
@@ -80,6 +81,38 @@ def _addresses(config, accounts, in_container: bool, info=None) -> tuple[str, st
     return detected, device, public
 
 
+YTNODE_PORT = 47443
+_ytnode_ports: dict = {}
+
+
+def ytnode_port(layout, free=None) -> int:
+    """本机 YouTube 节点的端口：47443 空着就用它，否则随便一个空的。同一个数据目录在这个进程里只选一次
+    （子进程的参数不变，「设置 → YouTube」只改代理时其余子进程不用重启）。"""
+    key = str(layout.root)
+    if key not in _ytnode_ports:
+        import socket
+        if free is None:
+            def free(port):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    sock.bind(("127.0.0.1", port))
+                    return sock.getsockname()[1]
+                except OSError:
+                    return 0
+                finally:
+                    sock.close()
+        _ytnode_ports[key] = free(YTNODE_PORT) or free(0)
+    return _ytnode_ports[key]
+
+
+def ytnode_child_args(layout, config, ffmpeg: str, port: int) -> list[str]:
+    """本机 YouTube 节点的参数（命令开头由调用方加）。代理不放在命令行上（可能带密码）：在环境变量 TV_YT_PROXY。"""
+    from .ytlocal import cookies_path
+    return ["--plain", "--bind", "127.0.0.1", "--port", str(port), "--key-file", str(layout.ytnode_key),
+            "--tools-dir", str(layout.youtube_bin), "--ffmpeg", ffmpeg,
+            "--cookies", str(cookies_path(layout.root, config.youtube_cookies)), "--remux", "--no-check"]
+
+
 def build_children(layout, config, ffmpeg: str, device_address: str, public_url: str, log,
                    in_container: bool = False, firmware: Path | None = None, desktop: bool = False) -> list:
     """firmware：网页刷机用的固件文件夹（bootstrap.firmware_dir），没有时 None。
@@ -104,8 +137,17 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         relay += ["--public-url", public_url]
     if config.device_address or device_address:
         relay += ["--device-address", config.device_address or device_address]
+    # 电脑版「设置 → YouTube」要知道数据目录（改 config.toml、存 cookies、下载组件）。
+    relay += ["--selfhost-data", str(layout.root)]
+    local_youtube = config.youtube_mode == "local"
     if config.youtube_mode == "node" and layout.youtube_node.is_file():
         relay += ["--cstone", str(layout.youtube_node)]
+    elif local_youtube:
+        from . import bootstrap
+        if bootstrap.ytnode_key(layout):
+            log("生成了本机 YouTube 节点的密钥（secrets/ytnode-key）。")
+        port = ytnode_port(layout)
+        relay += ["--ytlocal", f"http://127.0.0.1:{port}", "--ytlocal-key-file", str(layout.ytnode_key)]
     # 总后台「设备」页的固件一栏：这次带的固件版本、刷机页的地址（server/relay/admin.py 的 firmware_info）。
     relay_env = dict(base_env, TV_FLASHER_URL="/flash/")
     if firmware is not None:
@@ -143,6 +185,12 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
     if firmware is not None:
         front += ["--firmware-dir", str(firmware)]
     children.append(child("front", front, base_env))
+    if local_youtube:
+        layout.youtube_bin.mkdir(parents=True, exist_ok=True)
+        # 代理在环境变量里（ytnode 读 TV_YT_PROXY）；回环地址照样不走代理（base_env 的 no_proxy）。
+        node_env = dict(base_env, TV_YT_PROXY=config.youtube_proxy)
+        argv = child_command("server.relay.ytnode", desktop) + ytnode_child_args(layout, config, ffmpeg, port)
+        children.append(child("ytnode", argv, node_env))
     return children
 
 
@@ -204,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
               "或者用 --ffmpeg 指定它的路径。", file=sys.stderr)
         return 1
     if config.youtube_mode == "local":
-        log("提示：[youtube] mode = \"local\" 这一版还不支持，当作 \"off\"。")
+        log("YouTube：本机模式（组件在 youtube/bin/，设置在电脑版「设置 → YouTube」）。")
     if config.max_streams:
         log("提示：0.x 测试版每个型号一次只服务一台小电视，max_streams 还不起作用。")
     if bootstrap.relay_key(layout):
@@ -221,7 +269,23 @@ def main(argv: list[str] | None = None) -> int:
     for line in banner.flash_lines(config.lan_port, firmware, in_container):
         log(line)
     children = build_children(layout, config, ffmpeg, device_address, public_url, log, in_container, firmware)
-    return Supervisor(layout, children, config.backup_keep_days, log).run()
+    running = {"config": config}
+
+    def rebuild():
+        """「设置 → YouTube」改了 config.toml（run/refresh-request）：重读，再按新的设置造子进程。端口和 bind 要重启
+        服务器才生效（容器的端口映射也是按启动时的）。"""
+        import dataclasses
+        try:
+            fresh = config_module.load(layout.config)
+        except config_module.ConfigError as error:
+            log(f"重读设置文件出错，还用原来的设置：{error}")
+            fresh = running["config"]
+        fixed = ("bind", "lan_port", "xingzhi_port", "passport_port", "public_port")
+        running["config"] = dataclasses.replace(fresh, **{name: getattr(config, name) for name in fixed})
+        return build_children(layout, running["config"], ffmpeg, device_address, public_url, log, in_container,
+                              firmware)
+
+    return Supervisor(layout, children, config.backup_keep_days, log, pending=rebuild).run()
 
 
 if __name__ == "__main__":

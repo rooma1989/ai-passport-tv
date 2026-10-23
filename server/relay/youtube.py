@@ -2,6 +2,10 @@
 
 阿里云这边负责认链接、调用节点的 JSON 接口、把节点的 MPEG-TS 流原样转给电视服务。
 节点用自签证书，这里只信任那一张证书；每个请求带 X-Key。
+
+家庭服务器、电脑客户端的本机模式（[youtube] mode = "local"）：同一个节点作为监督进程的子进程跑在
+127.0.0.1 上，明文 HTTP、不要证书（config 里没有 cert，地址只许是回环）。这条连接永远不走代理——
+不看环境变量，也不看系统代理设置（macOS 上 urllib 会去读系统代理）。
 """
 
 from __future__ import annotations
@@ -134,23 +138,45 @@ class StreamProc:
             pass
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def is_local_url(url: str) -> bool:
+    """本机节点的地址：http://127.0.0.1:端口（或 localhost、[::1]）。"""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        return parts.scheme == "http" and parts.hostname in LOOPBACK_HOSTS and parts.port is not None
+    except ValueError:
+        return False
+
+
 class YouTube:
     def __init__(self, fetch_json=None, config: dict | None = None):
-        """config：{"url": "https://ip:port", "key": "…", "cert": "/path/cstone.pem"}。"""
+        """config：云端 {"url": "https://ip:port", "key": "…", "cert": "/path/cstone.pem"}；
+        本机模式 {"url": "http://127.0.0.1:端口", "key": "…"}（没有 cert）。"""
         self.config = config
         self._context = None
-        if config:
+        self.local = bool(config) and not config.get("cert")
+        if config and self.local and not is_local_url(config["url"]):
+            raise ValueError("没有证书的 YouTube 节点只能在本机（http://127.0.0.1:端口）")
+        if config and not self.local:
             self._context = ssl.create_default_context(cafile=config["cert"])
+        # 本机节点：不经任何代理（ProxyHandler({}) 盖掉环境变量和系统代理）。
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if self.local else None
         self._fetch = fetch_json or (self._fetch_json if config else None)
 
     def _request(self, path: str, params: dict) -> urllib.request.Request:
         url = f"{self.config['url'].rstrip('/')}{path}?{urllib.parse.urlencode(params)}"
         return urllib.request.Request(url, headers={"X-Key": self.config["key"]})
 
+    def _urlopen(self, request: urllib.request.Request, timeout: float):
+        if self._opener is not None:
+            return self._opener.open(request, timeout=timeout)
+        return urllib.request.urlopen(request, timeout=timeout, context=self._context)
+
     def _fetch_json(self, path: str, params: dict, timeout: float = JSON_TIMEOUT_S) -> dict:
         try:
-            with urllib.request.urlopen(self._request(path, params), timeout=timeout,
-                                        context=self._context) as answer:
+            with self._urlopen(self._request(path, params), timeout) as answer:
                 return json.loads(answer.read(MAX_ANSWER_BYTES))
         except urllib.error.HTTPError as error:
             raise NodeError(error.code, error.read(2000).decode("utf-8", "replace")) from None
@@ -264,12 +290,17 @@ class YouTube:
         """节点最近一次解析 YouTube 的结果：{"state": ok|login|error|unknown, "at", "version"}。"""
         return self._call("/yt/health")
 
+    def check(self, timeout: float) -> dict:
+        """不走缓存解析一次测试视频（设置页的「测试」，本机节点才有）：
+        {"state": ok|login|network|slow|error|missing, "seconds", "error", "version"}。"""
+        return self._call("/yt/check", _timeout=timeout)
+
     def open(self, video_id: str, offset: float) -> StreamProc:
         if self.config is None:
             raise SourceError("YouTube 还没配置（缺少 cstone 节点）")
         request = self._request("/yt/stream", {"id": video_id, "ss": int(offset)})
         try:
-            response = urllib.request.urlopen(request, timeout=STREAM_TIMEOUT_S, context=self._context)
+            response = self._urlopen(request, STREAM_TIMEOUT_S)
         except urllib.error.HTTPError as error:
             raise SourceError(f"youtube stream {video_id}: {error.code}",
                               permanent=error.code == 404) from None

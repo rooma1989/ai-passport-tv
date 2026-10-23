@@ -11,6 +11,10 @@
   它的整个作业（连同 ffmpeg 孙进程），监督进程死了作业句柄一关，系统把它们全结束。
 - 停止不靠信号：本机控制接口（control.py）设 stopping；托盘关掉给监督进程的标准输入管道也一样（watch_stdin）。
 - 换了网络（受信任的网络，network.py）：rebuild_requested —— 停掉子进程，用 pending 按新的地址重新造一遍再起。
+
+电脑版「设置 → YouTube」（server/relay/ytsettings.py）改了 config.toml 后在 run/ 里放一个 refresh-request 文件
+（Docker 和电脑客户端都一样）：监督进程先调 reload（电脑客户端重读设置；没有时 pending 自己读），再用 pending
+重新造子进程，只重启参数变了的（加上新出现的、停掉不再要的）：只改了代理就只重启 ytnode，电视不断。
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import time
 from pathlib import Path
 
 from . import bootstrap
+from .ytlocal import REFRESH_REQUEST
 
 # 子进程退出后等多久再起：越来越长，最多 RESTART_MAX_S；跑够 STABLE_S 秒才算好了，下次从头算。
 RESTART_MIN_S = 2.0
@@ -178,14 +183,69 @@ class Supervisor:
     tick：每半秒调一次（电脑客户端更新状态）。"""
 
     def __init__(self, layout: bootstrap.Layout, children: list[Child], keep_days: int, log=print,
-                 pending=None, tick=None):
+                 pending=None, tick=None, reload=None):
         self.layout, self.children, self.keep_days, self.log = layout, children, keep_days, log
-        self.pending, self.tick = pending, tick
+        self.pending, self.tick, self.reload = pending, tick, reload
         self.stopping = threading.Event()
         self.restart_requested = threading.Event()
         self.rebuild_requested = threading.Event()
+        self.refresh_requested = threading.Event()
         self.started = False
         self._setup_seen = layout.setup_code.exists()
+        self.refresh_file = layout.run / REFRESH_REQUEST
+        # 上次没处理完的请求：这次启动本来就按新的设置造子进程。
+        try:
+            self.refresh_file.unlink()
+        except OSError:
+            pass
+
+    def _take_refresh_request(self) -> None:
+        """run/refresh-request 在：删掉它，在后台 reload（电脑客户端重新识别地址要一两秒），再设 refresh_requested。"""
+        try:
+            self.refresh_file.unlink()
+        except OSError:
+            return
+        self.log("设置改了：按新的设置更新子进程…")
+        if self.reload is None:
+            self.refresh_requested.set()
+            return
+
+        def work() -> None:
+            try:
+                self.reload()
+            except Exception as error:      # noqa: BLE001 —— 重读失败也照常按原来的参数更新
+                self.log(f"重读设置失败：{type(error).__name__}")
+            self.refresh_requested.set()
+
+        threading.Thread(target=work, daemon=True, name="refresh").start()
+
+    def _refresh_children(self) -> None:
+        """按 pending 重新造的子进程：参数（命令、环境、工作目录）没变的留着照跑，变了的重启，新的起，没了的停。"""
+        ready = self.pending() if self.pending is not None else None
+        if ready is None:
+            return
+        old = {child.name: child for child in self.children}
+        kept, stopped = [], []
+        for child in ready:
+            previous = old.pop(child.name, None)
+            if previous is not None and (previous.argv, previous.env, previous.cwd) == (child.argv, child.env, child.cwd):
+                kept.append(previous)
+                continue
+            if previous is not None:
+                stopped.append(previous)
+            kept.append(child)
+        stopped += list(old.values())
+        for child in stopped:
+            child.stop()
+        deadline = time.monotonic() + STOP_WAIT_S
+        for child in stopped:
+            child.wait_or_kill(deadline)
+        started = [c for c in kept if c.process is None]
+        for child in started:
+            child.start()
+        self.children = kept
+        changed = sorted({c.name for c in stopped} | {c.name for c in started})
+        self.log("更新了子进程：" + ("、".join(changed) if changed else "没有要重启的"))
 
     def _write_status(self) -> None:
         status = {"at": time.time(), "children": {c.name: c.running for c in self.children},
@@ -248,6 +308,13 @@ class Supervisor:
                     for child in self.children:
                         child.delay, child.next_start = RESTART_MIN_S, 0.0
                         child.start()
+            if self.refresh_file.exists():
+                self._take_refresh_request()
+            if self.refresh_requested.is_set():
+                self.refresh_requested.clear()
+                # 还没起的时候不用管：pending 第一次造子进程时就用新的设置。
+                if self.started:
+                    self._refresh_children()
             if self.restart_requested.is_set() and self.started:
                 self.restart_requested.clear()
                 self.log("正在重启所有子进程…")

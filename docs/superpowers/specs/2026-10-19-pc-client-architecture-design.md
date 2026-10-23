@@ -667,6 +667,7 @@ core is `python3 -m server.selfhost --desktop`.
 - **Sub-commands** of the same executable (internal, for the supervisor):
   `__relay`, `__tv`, `__front`, `__channel-check`, `__selfhost`,
   `__tenancy-admin` (break-glass administration on `--db <data>/tv.db`),
+  `__ytnode` (the local YouTube node, only with `[youtube] mode = "local"`),
   `__certs`. Reserved for later phases: `__gate`, `__worker`, `__hub-agent`,
   `__asr`.
 - **Locks.** The core holds `<data>/run/core.lock`; the tray uses its own
@@ -720,7 +721,9 @@ The status (`GET /local/v1/status`), every field always present:
  "network": {"id": "<16 hex digits, or empty>", "trusted": null, "profile": "", "lan_open": true},
  "ffmpeg": {"state": "ready | fetching | missing | failed", "path": "…", "source": "given | system | fetched",
             "done": 0, "total": 0, "error": ""},
- "voice": {"mode": "off"}, "hub": {"state": "off"}, "update": {"available": false},
+ "voice": {"mode": "off"},
+ "youtube": {"mode": "off | local | node", "ready": false, "state": "idle", "done": 0, "total": 0, "error": ""},
+ "hub": {"state": "off"}, "update": {"available": false},
  "settings": {"keep_awake": "watching", "autostart": true}}
 ```
 
@@ -735,7 +738,17 @@ loopback only or the LAN address is unknown.
 
 Settings the tray toggles live in `<data>/desktop.json` (written by the core
 through the API), not in `config.toml`, which stays the user's hand-edited
-file and is never rewritten.
+file. The one exception (2026-10-23): the console's Settings → YouTube rewrites
+the `mode` and `proxy` lines of `[youtube]` in place (every other line and
+comment kept; the result must parse before it is written), then asks the
+supervisor to refresh its children (`run/refresh-request`, see the
+self-hosting design 8.4).
+
+`youtube` (2026-10-23): `mode` is `[youtube] mode` from `config.toml`, `ready`
+whether yt-dlp and deno are installed in `<data>/youtube/bin/`, and `state`
+(`idle | working | done | failed`), `done`, `total`, `error` the progress of a
+component download, which the relay runs and reports in
+`run/youtube-components.json`.
 
 ### 5.14 Updates
 
@@ -1157,7 +1170,7 @@ cannot read them and carries no video or audio."
 | S2 (gate-lite) | Not built | Still needed (6.3), plus the Windows hand-off |
 | S3 (public firmware, web flasher) | Done | Reused; `localhost` flasher works in the client; built-in flashing in 1.0 |
 | S4 (static site and tutorial) | Not built | Rewritten around the client download (P10); Docker pages kept as "advanced" |
-| S5 (voice container, YouTube local mode, remote-access recipes) | Not built | Voice becomes the client's optional download (5.9); YouTube local mode unchanged; remote-access recipes replaced by the hub for client users |
+| S5 (voice container, YouTube local mode, remote-access recipes) | YouTube local mode built (S5b, 2026-10-23); the rest not built | Voice becomes the client's optional download (5.9); YouTube local mode runs in the client as on the household server (self-hosting design 8.4, console Settings → YouTube); remote-access recipes replaced by the hub for client users |
 | S6 (hardening on real machines) | Not built | Becomes P11 with a Windows/macOS matrix |
 
 ## 12. Code changes

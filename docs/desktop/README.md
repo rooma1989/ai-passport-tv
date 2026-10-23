@@ -225,6 +225,48 @@ Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
   `~/Library/LaunchAgents/io.github.ai-passport-tv.XiaozhiTV.plist`. Both **keep
   the data folder**; delete it by hand when you are sure.
 
+## YouTube (optional)
+
+YouTube is off by default; Bilibili and live channels work without it. Turning
+it on is for households that already have their own way to reach YouTube from
+this computer: **this project provides no proxy and gives no instructions for
+getting one.**
+
+1. In the console (signed in as the admin) open **Settings → YouTube** and
+   choose **This computer**.
+2. Proxy: type the address your proxy program gives for this computer, for
+   example `http://127.0.0.1:<port>` or `socks5://127.0.0.1:<port>`, or press
+   **Detect**, which reads the system proxy (macOS network
+   settings, the Windows proxy setting, the `https_proxy` / `all_proxy`
+   environment variables on Linux) and fills in what it found. Leave it empty
+   when the proxy program routes everything by itself (TUN / enhanced mode) or
+   YouTube is reachable directly.
+3. Press **Save**. The first time, the client downloads its two YouTube
+   components, yt-dlp and deno (about 80 MB, through that proxy; you can also
+   enter a download mirror prefix: what replaces `https://github.com` in the
+   download address, so a GitHub accelerator that takes a whole address is
+   written `https://<accelerator>/https://github.com`), and checks each file
+   against the SHA-256 written in the program. Progress shows in the same section.
+4. Press **Test**: it resolves a public test video and answers in plain words
+   ("success in 12 s", "can't reach YouTube: check the proxy", "needs sign-in:
+   import cookies").
+5. **Cookies**: YouTube often asks proxy and data-centre addresses to "sign in
+   to confirm you're not a bot". Then import a `cookies.txt` (Netscape format):
+   use a **secondary account**, sign in to it in a private browser window, open
+   YouTube, export only youtube.com with a cookies.txt export extension, then
+   close the private window without signing out (signing out invalidates the
+   cookies). The client keeps only the youtube.com and google.com lines, stores
+   them in `<data>/youtube/cookies.txt` readable only by you, and shows only
+   how many there are. The file is that account's login: do not share it.
+6. YouTube changes often. When videos stop playing, press **Check for updates**
+   and **Update yt-dlp** (the new version is verified against the release's
+   own `SHA2-256SUMS`).
+
+Changes apply without quitting: saving restarts only the parts that changed
+(a new proxy restarts the YouTube helper alone). YouTube videos, creators and
+playlists (series) then work as on the cloud service. "Own node" is for a
+YouTube node you run yourself (`secrets/youtube-node.json`).
+
 ## Common problems
 
 - **Bilibili videos, creators or series never start (stuck on loading)**: open
@@ -292,6 +334,8 @@ Developer notes (code map, building, CI, the interface with the core):
 - "Keep this computer awake" on Windows; on macOS the idle-sleep assertion was
   confirmed to appear in the system.
 - The Linux tray (GNOME has no tray area by default).
+- YouTube local mode on Windows and Linux (written for them, run only on a Mac), and how often YouTube
+  asks for sign-in with imported cookies (on the Mac, through a proxy, it asked every time without).
 
 ## Disclaimer
 

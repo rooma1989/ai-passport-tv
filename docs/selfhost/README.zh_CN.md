@@ -20,7 +20,7 @@
 
 - **每个型号一次只服务一台小电视。** 家里有两台星智 Cube 时，第二台会显示「服务器没有回应」并自己重试，等第一台关掉或
   断开后才连得上。一台星智加一台 AI Passport 可以同时看。几台同时看要等 1.0 版。
-- 没有语音控制容器、没有本机 YouTube 模式（以后的版本）。
+- 还没有语音控制容器（以后的版本）。
 - 打了「未验证」的步骤是照官方文档写的，作者还没有亲手试过；目前只在一台 Apple 芯片的 Mac 上不用 Docker 跑通过。
 
 ## 你需要什么
@@ -145,8 +145,8 @@ docker compose logs tv        # 在这里找「设置码」
 - **加一个台**：名字加直播地址（`http(s)://…`）。
 - 小电视最多收 128 个台，挑常看的就好。
 
-也可以在手机遥控的「订阅」里添加 B 站 UP 主和剧集（每个人自己的）。YouTube 的设置只给已经有自己的 YouTube 节点的
-家庭用（`config.toml` 的 `[youtube]` 和 `secrets/youtube-node.json`），本项目不提供访问办法。
+也可以在手机遥控的「订阅」里添加 B 站 UP 主和剧集（每个人自己的）。YouTube 是可选的、默认关着，见下面的
+[YouTube（可选）](#youtube可选)；本项目不提供访问办法。
 
 一个台都没有时，已绑定的小电视显示「NO CHANNELS YET / ADD SOME / ON YOUR PHONE」，加了台以后它会自己重连。
 
@@ -172,6 +172,33 @@ docker compose logs tv        # 在这里找「设置码」
 
 服务器的地址要一直不变：在路由器里给它固定 IP 最稳。也可以试 `电脑名.local` 这样的名字，但还没在小电视上验证过。
 
+## YouTube（可选）
+
+YouTube 默认关着；B 站和直播频道不用它也能看。打开它是给已经有办法从这台电脑访问 YouTube 的家庭用的：**本项目不提供
+代理，也不介绍怎么获得代理。**
+
+1. 在电脑版（用管理员登录）打开 **设置 → YouTube**，选 **本机**；或者在 `config.toml` 里写 `[youtube] mode = "local"`
+   和 `proxy = "…"`，再重启服务器。
+2. 代理：填你的代理软件给这台电脑的地址，例如 `http://127.0.0.1:端口` 或 `socks5://127.0.0.1:端口`；或者点
+   **自动检测**，它读系统代理（macOS 的网络代理设置、Windows 的代理设置、Linux 的 `https_proxy` / `all_proxy`
+   环境变量）并把找到的填进去。代理软件开着 TUN（增强）模式、或者本来就能直连 YouTube 时，留空。
+3. 点 **保存**。第一次会下载两个 YouTube 组件 yt-dlp 和 deno（约 80 MB，经这个代理；也可以填一个下载镜像前缀：用来替换下载地址里的 `https://github.com`，
+   要整个网址的 GitHub 加速站写成 `https://加速站/https://github.com`），
+   每个文件都按程序里写死的 SHA-256 核对。进度就显示在这一节里。
+4. 点 **测试**：解析一个公开的测试视频，用大白话告诉你结果（「成功：12 秒」「连不上 YouTube：检查代理」「需要登录：
+   导入 cookies」）。
+5. **Cookies**：YouTube 常常要求代理、机房的地址「登录证明不是机器人」。这时导入一个 `cookies.txt`（Netscape 格式）：
+   用一个**小号**，在浏览器的无痕（隐私）窗口里登录小号、打开 YouTube，用导出 cookies.txt 的扩展只导出 youtube.com，
+   然后直接关掉无痕窗口（不要退出登录，退出会让 cookies 作废）。服务器只留 youtube.com 和 google.com 的条目，存在
+   `<数据目录>/youtube/cookies.txt`（只有你能读），页面上只显示条数。这个文件就是小号的登录凭据：不要发给别人。
+6. YouTube 改版很勤。视频放不出来时，点 **检查更新**、**更新 yt-dlp**（新版本按它发布页自己的 `SHA2-256SUMS` 核对）。
+
+改了不用重启服务器：保存后只重启变了的部分（只改代理就只重启 YouTube 的那个小服务）。之后 YouTube 视频、频道（UP 主）
+和播放列表（剧集）和云端一样用。「自己的节点」给自己架了 YouTube 节点的人用（`secrets/youtube-node.json`）。
+
+Docker 里的 `127.0.0.1` 是容器自己：代理要写主机的局域网地址（并让代理软件允许局域网连接），「自动检测」也只看得到容器
+里的环境变量。组件放在 `/data/youtube/bin/`（Linux 的 amd64 或 arm64；32 位 ARM 不支持）。
+
 ## 家人和客人
 
 和云端一样：「我的 → 让另一部手机登录」（同一个账号，最简单）、邀请（各自的账号）、客人扫小电视的二维码当访客。
@@ -180,7 +207,8 @@ docker compose logs tv        # 在这里找「设置码」
 ## 备份和更新
 
 - 整个数据文件夹就是你的全部东西（不用备份里面的 `run/`）。服务器每天凌晨 3 点后备份一次数据库到 `backups/`，留 14 天
-  （`config.toml` 的 `backup_keep_days`）。**`secrets/` 里是密钥**，备份文件要像密码一样保管，不要发给别人。
+  （`config.toml` 的 `backup_keep_days`）。**`secrets/` 里是密钥**（`youtube/cookies.txt` 是 YouTube 的登录），备份文件要像密码一样保管，不要发给别人。
+  `youtube/bin/` 不用备份（会重新下载）。
 - 恢复：停掉服务器，把数据文件夹换成备份，再启动。
 - 更新：不用 Docker 时 `git pull` 后重启；Docker：`git pull` 后 `docker compose up -d --build`（镜像发布后改成
   `docker compose pull && docker compose up -d`）。
@@ -196,6 +224,7 @@ docker compose logs tv        # 在这里找「设置码」
 | `[server] public_port` | 0 | 给隧道（Cloudflare Tunnel、Tailscale serve）用的端口，例如 8081；隧道端口上没有总后台、设置页和密钥登录 |
 | `[devices] allow_internet` | false | 允许公网地址的设备连进来（只在端口转发时需要） |
 | `[accounts] signup_via_device` | "lan" | 扫未绑定小电视的码自己注册：只在家里网络 / 隧道也行 / 不允许 |
+| `[youtube] mode`、`proxy` | "off"、空 | YouTube：关闭 / `local`（这台机器经 `proxy` 取）/ `node`（自己的节点）；电脑版「设置 → YouTube」会改这两行并且不用重启就生效 |
 
 ## 常见问题
 
@@ -214,6 +243,8 @@ docker compose logs tv        # 在这里找「设置码」
 - 第 13 节标「估计」的所有数字。
 - 「频道表」页的公开播放列表是 2026-10-22 在一台走代理的 Mac 上读取、解析过的，没有从国内的家庭网络试过；
   里面的源在小电视上能不能放没有试。
+- YouTube 本机模式在 Docker、Linux、Windows 上的实际运行（只在 Mac 上跑过：试过组件下载和经代理的路径；不带 cookies
+  经代理时 YouTube 每次都要求登录，所以没有经它完整放过一个视频）。
 
 ## 免责声明
 
