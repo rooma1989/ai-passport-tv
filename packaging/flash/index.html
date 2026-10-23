@@ -80,6 +80,10 @@
   label.agree { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; cursor: pointer; color: var(--paper-hi); }
   label.agree input { margin-top: 6px; accent-color: var(--red); }
 
+  .wifi { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-top: 8px; }
+  .wifi img { width: 168px; height: 168px; background: var(--paper-hi); flex: none; }
+  .wifi > div { flex: 1 1 220px; min-width: 0; }
+  #wifiUrl { font: 15px var(--mono); overflow-wrap: anywhere; }
   .progress { margin-top: 16px; }
   .stage { font: 15px var(--serif); color: var(--paper-hi); }
   .meter { height: 6px; margin-top: 8px; background: var(--rule); overflow: hidden; }
@@ -216,18 +220,33 @@
       <p data-lang="zh" id="restartZh"></p>
       <p data-lang="en" id="restartEn"></p>
     </div>
+    <!-- 页面由家庭服务器或电脑客户端打开（/flash/）时，flasher.js 从 /tv/api/setup/info 填上真实的地址 -->
+    <div class="note ok hidden" id="wifiBox">
+      <h3 data-lang="zh">用手机扫码，打开声音配网页</h3>
+      <h3 data-lang="en">Scan with the phone to open the sound setup page</h3>
+      <div class="wifi">
+        <img id="wifiQr" alt="" width="168" height="168">
+        <div>
+          <p><a id="wifiUrl" href="#" rel="noopener noreferrer"></a></p>
+          <p data-lang="zh">手机先连上家里的 Wi-Fi，再用相机扫这个码（或者在手机浏览器里输入上面的地址）。「服务器」一栏会自动填好 <code id="wifiAddrZh"></code>，不用改。</p>
+          <p data-lang="en">Join the home Wi-Fi with the phone first, then scan this code with its camera (or type the address above into the phone's browser). The "Server" field is filled in with <code id="wifiAddrEn"></code>; leave it as it is.</p>
+        </div>
+      </div>
+    </div>
     <p data-lang="zh">重启后屏幕进入「设置」，等你告诉它连哪个 Wi-Fi、找哪台服务器：</p>
     <p data-lang="en">After the restart the device opens its setup screens and waits for a Wi-Fi network and a server:</p>
     <ol data-lang="zh">
-      <li><b>声音配网（推荐）</b>：手机连上家里的 Wi-Fi，打开家庭服务器的 <code>http://&lt;服务器地址&gt;:8080/tv/wifi</code>（首次设置页里的「设置一台电视」会带你过去），填 Wi-Fi 名和密码，「服务器」一栏填家庭服务器的地址（<b>不用加端口</b>），把手机靠近设备点「发送」。设备听到后会自己连网、重启。</li>
+      <li><b>声音配网（推荐）</b>：手机连上家里的 Wi-Fi，打开家庭服务器的 <code id="wifiCodeZh">http://&lt;服务器地址&gt;:8080/tv/wifi</code>（首次设置页里的「设置一台电视」会带你过去），填 Wi-Fi 名和密码，「服务器」一栏填家庭服务器的地址（<b>不用加端口</b>），把手机靠近设备点「发送」。设备听到后会自己连网、重启。</li>
       <li><b>热点配网（备用）</b>：在设备的设置页里翻到热点那一页，手机用相机扫码连上设备的热点，浏览器打开 <code>192.168.4.1</code>，填 Wi-Fi 和服务器地址。</li>
       <li><b>绑定</b>：连上服务器后，屏幕显示「绑定这台电视」和一个二维码。用已经登录家庭服务器的手机扫它（或输入屏幕上的码），设备就归你了，开始播你的频道。</li>
     </ol>
     <ol data-lang="en">
-      <li><b>Sound setup (recommended)</b>: with the phone on your home Wi-Fi, open the household server's <code>http://&lt;server address&gt;:8080/tv/wifi</code> ("Set up a TV" on the first-run page leads there), enter the Wi-Fi name and password, put the household server's address in "Server" (<b>no port needed</b>), hold the phone near the device and press Send. The device joins and restarts.</li>
+      <li><b>Sound setup (recommended)</b>: with the phone on your home Wi-Fi, open the household server's <code id="wifiCodeEn">http://&lt;server address&gt;:8080/tv/wifi</code> ("Set up a TV" on the first-run page leads there), enter the Wi-Fi name and password, put the household server's address in "Server" (<b>no port needed</b>), hold the phone near the device and press Send. The device joins and restarts.</li>
       <li><b>Hotspot (fallback)</b>: on the device's setup screens, find the hotspot page, join it by scanning with the phone's camera, open <code>192.168.4.1</code> and enter Wi-Fi and server address.</li>
       <li><b>Bind</b>: once connected, the screen shows "bind this TV" with a QR code. Scan it with a phone signed in to the household server (or type the code) and the device is yours; it starts playing your channels.</li>
     </ol>
+    <p class="muted" data-lang="zh">手机打不开配网页：看看手机上是不是开着 VPN 或代理（加速器、科学上网一类的软件），关掉再试；手机和这台服务器要连同一个家里的网络。</p>
+    <p class="muted" data-lang="en">The phone cannot open the setup page: if a VPN or proxy app is on, turn it off and retry; the phone and this server must be on the same home network.</p>
     <p class="muted" data-lang="zh">以后更新固件：回到这个页面再刷一次，选「更新固件」，设置和绑定都保留。</p>
     <p class="muted" data-lang="en">To update later, flash again here and choose Update; settings and binding stay.</p>
   </section>

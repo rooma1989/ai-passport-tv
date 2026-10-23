@@ -14,6 +14,7 @@ import dataclasses
 import ipaddress
 import os
 import sys
+import threading
 from pathlib import Path
 
 
@@ -126,6 +127,7 @@ def _run_locked(args, layout, logs_dir, log) -> int:
             log("生成了中转密钥（secrets/relay-key）。")
         accounts = bootstrap.database(layout)
         code = bootstrap.setup_code(layout, accounts)
+        started = config
         config = dataclasses.replace(config, lan_port=lan_port)
         detected, device_address, public_url = _addresses(config, accounts, False)
         accounts.close()
@@ -150,32 +152,84 @@ def _run_locked(args, layout, logs_dir, log) -> int:
         else:
             log(f"ffmpeg（{ffmpeg.source}）：{ffmpeg.path}")
 
+        running = {"config": config}
+
         def pending():
             if ffmpeg.state != "ready":
                 return None
             bind = state.bind
-            return build_children(layout, dataclasses.replace(config, bind=bind), ffmpeg.path, addresses["device"],
-                                  addresses["public"], log, False, firmware, desktop=True)
+            return build_children(layout, dataclasses.replace(running["config"], bind=bind), ffmpeg.path,
+                                  addresses["device"], addresses["public"], log, False, firmware, desktop=True)
 
         supervisor = Supervisor(layout, [], config.backup_keep_days, log, pending=pending)
         state.supervisor = supervisor
+        watch = None
+        refreshing = threading.Lock()     # 看网络的线程和控制接口的「重启」都会调 refresh
+
+        def refresh(info=None) -> bool:
+            """重新算三个地址（info：已经识别好的 netident.LanInfo，None 就现在识别）。返回给子进程的参数
+            （设备地址、网站地址）变了没有。"""
+            from ..tenancy.accounts import Accounts
+            with refreshing:
+                accounts = Accounts(layout.db)
+                try:
+                    found, device, public = _addresses(running["config"], accounts, False, info)
+                finally:
+                    accounts.close()
+                state.lan_address = found
+                if watch is not None:
+                    watch.current = found
+                changed = (device, public) != (addresses["device"], addresses["public"])
+                addresses.update(device=device, public=public)
+                return changed
+
+        def reload():
+            """控制接口的 POST restart：重读 config.toml、重新识别地址，再按新的参数重建子进程
+            （以前只是用旧的参数重启，改了 device_address 要退出程序）。端口和 bind 要退出程序再打开才生效：
+            监督进程、受信任的网络和托盘都按启动时的端口在用。"""
+            try:
+                fresh = config_module.load(layout.config)
+            except config_module.ConfigError as error:
+                log(f"重读设置文件出错，还用原来的设置：{error}")
+                fresh = None
+            if fresh is not None:
+                if args.bind:
+                    fresh = dataclasses.replace(fresh, bind=args.bind)
+                fixed = ("bind", "lan_port", "xingzhi_port", "passport_port", "public_port")
+                if any(getattr(fresh, name) != getattr(started, name) for name in fixed):
+                    log("设置文件里的端口或 bind 改了：要退出小智电视再打开才生效")
+                running["config"] = dataclasses.replace(fresh, **{name: getattr(running["config"], name)
+                                                                  for name in fixed})
+            try:
+                refresh()
+            except Exception as error:      # noqa: BLE001 —— 地址问不到就用原来的
+                log(f"重新查本机地址失败：{type(error).__name__}")
+            log(f"重启：小智电视上的服务器地址填 {addresses['device'] or '（还不知道）'}")
+
+        state.reload = reload
         if network is not None:
+            from .network import AddressWatch
+
             def network_changed():
                 # 换了网络：家里的地址可能也换了（另一个路由器），重新问一次再按新的 bind 重启子进程。
-                from ..tenancy.accounts import Accounts
                 try:
-                    accounts = Accounts(layout.db)
-                    try:
-                        found, device, public = _addresses(config, accounts, False)
-                    finally:
-                        accounts.close()
-                    state.lan_address = found
-                    addresses.update(device=device, public=public)
+                    refresh()
                 except Exception as error:      # noqa: BLE001 —— 地址问不到就用原来的
                     log(f"重新查本机地址失败：{type(error).__name__}")
                 supervisor.rebuild_requested.set()
 
+            def address_changed(info):
+                # 同一个网络里换了地址（DHCP），或换了 Wi-Fi 但端口开关没变：参数变了才重建子进程。
+                try:
+                    if refresh(info):
+                        supervisor.rebuild_requested.set()
+                except Exception as error:      # noqa: BLE001
+                    log(f"重新查本机地址失败：{type(error).__name__}")
+
             network.on_change = network_changed
+            watch = AddressWatch(detected, signal=lambda: network.current_id, log=log)
+            watch.on_change = address_changed
+            network.watchers.append(watch)
             network.start()
         if watch_stdin(supervisor.stopping):
             log("托盘关掉标准输入时停止。")

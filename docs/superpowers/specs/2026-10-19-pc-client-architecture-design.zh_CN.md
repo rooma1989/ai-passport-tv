@@ -446,6 +446,17 @@ LGPL 版。
   以后，认不出的路由器（没联网、有的 VPN）算不在家；「这不是我家的网络」也会记下。列表存在 `desktop.json`；`config.toml`
   里 `bind = "127.0.0.1"` 时什么都不开放。Windows 网络类型也由核心查（一分钟一次），变成问题 `network_public`，只在端口
   开着时报。
+- **局域网地址（`desktop-addr`）：** `server/netident.py` 用系统自带的命令列出 IPv4 地址和默认路由（macOS `ifconfig`、
+  `netstat -rn -f inet`；Linux `ip -4 -o addr` / `ip -4 route show default`，没有就读 `/proc/net/route` 和 `hostname -I`；
+  Windows 一次 PowerShell（`Get-NetAdapter -Physical`、`Get-NetIPAddress`、`Get-NetRoute`，输出 UTF-8），不行就按结构读
+  `ipconfig`，不认字），选带着家里路由器（某条默认路由的下一跳在它的网段里）的那张网卡上的地址，私有地址和物理网卡优先。
+  从不选：198.18.0.0/15（代理的 TUN 模式）、100.64.0.0/10（Tailscale）、链路本地、回环、隧道（`utun`、`tun`、`wg`、点对点、
+  wintun 的名字）；虚拟网卡和网桥（Docker、libvirt、VMware、VirtualBox、Hyper-V、网络共享）只在带着路由器时选。原来的 UDP
+  探测留作最后的办法，结果落在这些网段里时不用。第一次设置时记进数据库的 `device_address`、`public_url` 落在这些网段里、
+  或者已经不是这台电脑的地址时不用（`.local` 名字照用）；`config.toml` 写的总是优先，设置页也不再记下这种地址。运行中，
+  看受信任网络的线程也看地址：每 15 秒一次便宜的检查（UDP 探测和路由器身份，不起进程），变了、以及每 5 分钟完整列一次，
+  新地址连续两次一样才算数；设备地址或网站地址变了就重建子进程。`POST /local/v1/restart` 先重读 `config.toml`（端口和
+  `bind` 除外）和地址，再重建子进程。
 
 ### 5.12 不签名的测试版：用户会看到什么、教程怎么写
 
@@ -523,7 +534,7 @@ agent-day、CI 里多一套 Rust 工具链、Windows 上要 WebView2（当前的
 | `POST /local/v1/network/trust` | `{"id": "<状态里的 network.id>", "trusted": true \| false}` | `{"network": {…}}`（5.11）：`true` 记下家里的网络（在那里开放端口），`false` 是「这不是我家的网络」（在那里不开放）。id 不是 16 位十六进制时 `400 bad_request`；核心不管网络时（`bind = "127.0.0.1"`、`config.toml` 不合法）`409 not_available` |
 | `POST /local/v1/ffmpeg/fetch` | `{"mirror": "<基础网址>"}`（可选） | `202`，开始下载（ffmpeg 缺失或上次失败时）；否则 `409 busy` 或 `409 ready`。进度在状态里 |
 | `POST /local/v1/diagnostics` | `{"dest_dir": "<文件夹>"}`（可选；默认桌面，没有桌面就 `<数据目录>/exports`） | `{"path": "<压缩包>", "size": n}`（5.15；不含秘密，地址截短） |
-| `POST /local/v1/restart` | – | `202`；所有子进程停了再起 |
+| `POST /local/v1/restart` | – | `202`；重读 `config.toml`（端口和 `bind` 除外）和局域网地址，再按它们重建所有子进程 |
 | `POST /local/v1/stop` | – | `202`；核心停止，退出码 0 |
 | `/local/v1/remote/*`、`/flash/*`、`/update/*` | – | `501 not_implemented`，等 P5、P7、P8 |
 

@@ -270,6 +270,36 @@ class ControlApiTests(unittest.TestCase):
         headers = {"Authorization": f"Bearer {self.server.token}", "Content-Length": str(control.BODY_MAX + 1)}
         self.assertEqual(self.raw("POST", "/local/v1/power", headers, b"x" * (control.BODY_MAX + 1))[0], 413)
 
+    def test_restart_rereads_settings_then_rebuilds(self):
+        """POST restart: desktop_main's reload (config.toml, the LAN address) runs first, then the children are
+        made again from the new values; without a reload hook the old restart (same values)."""
+        class FakeSupervisor:
+            started = True
+
+            def __init__(self):
+                self.restart_requested, self.rebuild_requested = threading.Event(), threading.Event()
+
+        order = []
+        sup = self.desktop.supervisor = FakeSupervisor()
+        self.assertEqual(control.call(self.info, "POST", "restart")[0], 202)
+        self.assertTrue(sup.restart_requested.is_set())
+        self.assertFalse(sup.rebuild_requested.is_set())
+        sup = self.desktop.supervisor = FakeSupervisor()
+        self.desktop.reload = lambda: order.append("reload" if not sup.rebuild_requested.is_set() else "late")
+        self.assertEqual(control.call(self.info, "POST", "restart")[0], 202)
+        self.assertTrue(sup.rebuild_requested.wait(5))
+        self.assertEqual(order, ["reload"])
+        self.assertFalse(sup.restart_requested.is_set())
+        # A failing reload still restarts.
+        sup = self.desktop.supervisor = FakeSupervisor()
+        self.desktop.reload = mock.Mock(side_effect=OSError)
+        self.desktop.log = logged = mock.Mock()
+        self.assertEqual(control.call(self.info, "POST", "restart")[0], 202)
+        self.assertTrue(sup.rebuild_requested.wait(5))
+        self.assertIn("OSError", logged.call_args[0][0])
+        self.desktop.supervisor = None
+        self.desktop.reload = None
+
     def test_stop_without_a_supervisor_sets_the_event(self):
         self.assertEqual(control.call(self.info, "POST", "stop")[0], 202)
         self.assertTrue(self.desktop.stop_event.is_set())

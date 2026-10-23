@@ -228,6 +228,28 @@ test('browser support', () => {
   assert.equal(core.browserSupport({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) Safari' }, true).reason, 'mobile');
 });
 
+// ---- the household server ----
+
+test('the sound setup link comes only from a well-formed server answer', () => {
+  const good = { ok: true, pending: false, device_address: '192.168.1.118', wifi_url: 'http://192.168.1.118:8080/tv/wifi' };
+  assert.deepEqual(core.serverWifiLink(good), { url: good.wifi_url, address: '192.168.1.118' });
+  assert.deepEqual(core.serverWifiLink({ ...good, device_address: 'nas.local', wifi_url: 'http://nas.local/tv/wifi' }),
+    { url: 'http://nas.local/tv/wifi', address: 'nas.local' });
+  // The static site, a cloud relay, an old server without wifi_url, no address yet: the generic text stays.
+  for (const bad of [null, undefined, 'x', {}, { ok: false }, { ...good, ok: 'yes' }, { ...good, wifi_url: undefined },
+    { ...good, wifi_url: '' }, { ...good, device_address: '' },
+    { ...good, wifi_url: 'https://192.168.1.118:8080/tv/wifi' },          // only the LAN page over plain HTTP
+    { ...good, wifi_url: 'http://192.168.1.118:8080/tv/wifi?x=1' },
+    { ...good, wifi_url: 'javascript:alert(1)//192.168.1.118' },
+    { ...good, wifi_url: 'http://evil.example:8080/tv/wifi' },            // must be the device address
+    { ...good, wifi_url: 'http://192.168.1.118:99999/tv/wifi' },
+    { ...good, device_address: '<b>', wifi_url: 'http://<b>/tv/wifi' }]) {
+    assert.equal(core.serverWifiLink(bad), null, JSON.stringify(bad));
+  }
+  assert.equal(core.SETUP_INFO_PATH, '/tv/api/setup/info');
+  assert.equal(core.WIFI_QR_PATH, '/tv/api/setup/wifi-qr.svg');
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try {

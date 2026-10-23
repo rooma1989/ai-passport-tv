@@ -19,6 +19,7 @@ const state = {
   manifest: null, sums: null, transport: null, loader: null,
   chip: '', policy: null, build: null, flashBytes: 0, mac: '',
   installed: { kind: 'unknown', app: null }, busy: false, done: false,
+  wifi: null,           // { url, address } from the household server; null on the static site
 };
 
 // ---- language ------------------------------------------------------------
@@ -369,6 +370,39 @@ function renderDone() {
     : 'Hold the power button about 2 s to switch off, then about 0.5 s to switch on. It has a battery; unplugging does not restart it.';
 }
 
+// The household server (or the PC client) serving this page knows its LAN
+// address: show the real sound setup link and a QR code for the phone instead
+// of "<server address>". Same origin only (CSP connect-src/img-src 'self').
+async function loadServerInfo() {
+  let info = null;
+  try {
+    const response = await fetch(core.SETUP_INFO_PATH, { cache: 'no-store', credentials: 'omit' });
+    const type = response.headers.get('content-type') || '';
+    if (response.ok && type.includes('application/json')) info = await response.json();
+  } catch (_) { /* the static site: no such API */ }
+  state.wifi = core.serverWifiLink(info);
+  renderWifi();
+}
+
+function renderWifi() {
+  const wifi = state.wifi;
+  if (!wifi) return;
+  $('wifiCodeZh').textContent = wifi.url;
+  $('wifiCodeEn').textContent = wifi.url;
+  $('wifiAddrZh').textContent = wifi.address;
+  $('wifiAddrEn').textContent = wifi.address;
+  const link = $('wifiUrl');
+  link.href = wifi.url;
+  link.textContent = wifi.url;
+  const qr = $('wifiQr');
+  if (!qr.getAttribute('src')) {
+    qr.alt = t('声音配网页的二维码', 'QR code of the sound setup page');
+    qr.addEventListener('error', () => qr.classList.add('hidden'), { once: true });
+    qr.src = core.WIFI_QR_PATH;
+  }
+  $('wifiBox').classList.remove('hidden');
+}
+
 function failed(error, phase) {
   const message = error instanceof core.FlasherError ? t(error.zh, error.en)
     : (error && error.message) || String(error);
@@ -411,6 +445,7 @@ function renderAll() {
   renderLog();
   if (state.policy && state.build) { renderFacts(); renderPlan(); }
   if (state.done) renderDone();
+  if (state.wifi) $('wifiQr').alt = t('声音配网页的二维码', 'QR code of the sound setup page');
   const box = $('refuse');
   if (!box.classList.contains('hidden') && box.dataset.zh) {
     box.firstChild.textContent = t(box.dataset.zh, box.dataset.en);
@@ -438,6 +473,7 @@ async function start() {
 
   const support = core.browserSupport(navigator, window.isSecureContext);
   if (!support.ok) showUnsupported(support.reason);
+  loadServerInfo();     // not awaited: the static site answers 404 and nothing changes
   try {
     await loadManifest();
     renderVersion();

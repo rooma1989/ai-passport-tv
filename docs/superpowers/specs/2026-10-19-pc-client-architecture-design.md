@@ -572,6 +572,28 @@ does not answer; useful only for wired desktops with WoL enabled.
   `config.toml` with `bind = "127.0.0.1"` never opens anything. The Windows
   category check also runs in the core (once a minute) and becomes the problem
   `network_public`, only while the ports are open.
+- **The LAN address (`desktop-addr`):** `server/netident.py` lists the IPv4
+  addresses and default routes with the OS's own commands (macOS `ifconfig` and
+  `netstat -rn -f inet`; Linux `ip -4 -o addr` / `ip -4 route show default`,
+  else `/proc/net/route` and `hostname -I`; Windows one PowerShell call with
+  `Get-NetAdapter -Physical`, `Get-NetIPAddress`, `Get-NetRoute`, UTF-8 output,
+  else `ipconfig` read by its structure, not its words) and picks the address on
+  the card that carries the home router (a default route's next hop in its
+  subnet), preferring RFC 1918 and physical cards. Never chosen: 198.18.0.0/15
+  (proxies in TUN mode), 100.64.0.0/10 (Tailscale), link-local, loopback, tunnels
+  (`utun`, `tun`, `wg`, point-to-point, wintun names); virtual cards and bridges
+  (Docker, libvirt, VMware, VirtualBox, Hyper-V, Internet Sharing) only when they
+  carry the router. The old UDP probe is the last fallback and is refused in
+  those ranges. A `device_address` or `public_url` stored in the database at
+  first-run setup is ignored when it is in those ranges or no longer one of this
+  computer's addresses (`.local` names are kept); `config.toml` always wins, and
+  the setup page no longer records such an address. While running, the
+  trusted-network thread also watches the address: a cheap check every 15 s (the
+  UDP probe and the router id, no process started), a full listing when it
+  changes and every 5 minutes, a new address counted after two equal readings;
+  when the device or site address changes the children are rebuilt.
+  `POST /local/v1/restart` re-reads `config.toml` (all but ports and `bind`) and
+  the address before rebuilding the children.
 
 ### 5.12 Unsigned beta: what users see and the tutorial
 
@@ -677,7 +699,7 @@ Answers are JSON: `{"ok": true, …}` or `{"ok": false, "error": "<code>",
 | `POST /local/v1/network/trust` | `{"id": "<status network.id>", "trusted": true \| false}` | `{"network": {…}}` (5.11): `true` remembers the home network (the ports open there), `false` "not my home network" (closed there). `400 bad_request` for an id that is not 16 hex digits; `409 not_available` when the core does not manage networks (`bind = "127.0.0.1"`, a refused `config.toml`) |
 | `POST /local/v1/ffmpeg/fetch` | `{"mirror": "<base URL>"}` (optional) | `202` and the download starts (when ffmpeg is missing or the last try failed); `409 busy` or `409 ready` otherwise. Progress is in the status |
 | `POST /local/v1/diagnostics` | `{"dest_dir": "<folder>"}` (optional; default the Desktop, else `<data>/exports`) | `{"path": "<zip>", "size": n}` (5.15; no secrets, addresses shortened) |
-| `POST /local/v1/restart` | – | `202`; every child is stopped and started again |
+| `POST /local/v1/restart` | – | `202`; `config.toml` (except ports and `bind`) and the LAN address are read again, then every child is stopped and made again from them |
 | `POST /local/v1/stop` | – | `202`; the core stops and exits 0 |
 | `/local/v1/remote/*`, `/flash/*`, `/update/*` | – | `501 not_implemented` until P5, P7, P8 |
 

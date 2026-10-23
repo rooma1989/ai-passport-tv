@@ -61,7 +61,8 @@ class RouteTests(unittest.TestCase):
     def test_public_port_refuses_admin_setup_key_and_signup(self):
         for path, query in (("/tv/admin", ""), ("/tv/admin/", ""), ("/tv/api/admin/channels", ""),
                             ("/tv/%61dmin", ""), ("/tv/ADMIN", ""), ("/tv/setup", ""), ("/tv/api/setup", ""),
-                            ("/tv/api/setup/info", ""), ("/tv/", "k=secret"), ("/tv/", "x=1&k="),
+                            ("/tv/api/setup/info", ""), ("/tv/api/setup/wifi-qr.svg", ""),
+                            ("/tv/API/SETUP/wifi-qr.svg", ""), ("/tv/", "k=secret"), ("/tv/", "x=1&k="),
                             ("/tv/api/bind/register", ""), ("/tv/x/../admin", "")):
             self.assertEqual(front.route(path, query, True, OPTIONS).kind, "refuse", (path, query))
         for path in ("/tv/", "/tv/api/state", "/TV/R/ABC", "/tv/console", "/TV/W", "/tv/listen/xingzhi/x"):
