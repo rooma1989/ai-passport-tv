@@ -1,255 +1,318 @@
 English | [简体中文](README.zh_CN.md)
 
-# Live TV on the AI Passport
+# Xiaozhi TV
 
-Turns a FoloToy AI Passport into a small network television. Three buttons on the device are enough to change channels, adjust volume and brightness, and choose which channels it offers.
+Xiaozhi TV turns a small ESP32 gadget into a tiny television for the family.
+A computer at home does the heavy work, the gadget shows the picture, and a
+phone is the remote control.
 
-As with the official firmware, the device's factory identity is preserved; flashing does not touch it.
+It works on two devices:
 
-> ⚡ **Image Quality & Smoothness Upgrades & Compatibility Notice**:
-> - **Noticeably Improved Picture Quality & Smoothness**: Upgraded to 320×180 native 1:1 widescreen presentation, with 12kB dual-packet transmission, intelligent edge filtering, and adaptive streaming for sharper visuals, smoother playback, and greater resistance to network jitter.
-> - ⚠️ **Firmware and Server Must Be Updated Together**: The protocol and video pipeline have been completely upgraded in tandem. **After flashing the new firmware, you must download and run the matching new version of the server program.** Older server versions and new firmware are not compatible.
+- **Xingzhi Cube 1.54** (ESP32-S3), the cube sold as a "Xiaozhi AI" toy
+- **FoloToy AI Passport** (ESP32-C3)
+
+> **This is a beta (v0.2.0-beta).** It works at home, but some steps have not
+> been tried on every kind of computer yet. See [About this beta](#about-this-beta).
+
+## What it is made of
+
+| Part | What it does |
+| --- | --- |
+| **Firmware** on the device | Shows the picture, plays the sound, has buttons for channel and volume |
+| **PC client** on a computer that stays on | Fetches what you want to watch, converts it and sends it to the devices over your home Wi-Fi. Windows, macOS (Apple silicon and Intel) and Linux. It lives as a small TV icon in the tray or menu bar |
+| **Phone remote** in the phone's browser | Channels, creators and series, picking an episode, casting a video, listening on the phone, the device's Wi-Fi. Add it to the home screen and it works like an app |
+
+Video stays on your home network. It does not pass through a cloud server.
+
+**The project ships no channels, live-stream addresses, playlists, accounts or
+cookies.** The channel list starts empty. You add what you want to watch.
 
 ## What you need
 
 | Thing | Notes |
 | --- | --- |
-| **An AI Passport** | Same hardware, different firmware |
-| **A computer** | Any ordinary laptop or desktop — Windows, macOS or Linux. Called "the computer" below |
-| **The same WiFi** | The device and the computer on one network |
-| **A USB cable** | For flashing; unplug it afterwards |
+| **A device** | A Xingzhi Cube 1.54 or a FoloToy AI Passport |
+| **A computer that stays on** | Windows 10/11 (64-bit), or macOS 12 or later. Linux works too (less tested). It must be on while you watch |
+| **Home Wi-Fi** | The computer, the device and the phones on the same home network |
+| **A USB data cable** | Only for flashing the device. Some cables only charge; use one that carries data |
+| **Chrome or Edge** | On the computer, for flashing. Safari and Firefox cannot flash |
+| **A phone** | Any smartphone with a camera and a browser |
 
-The computer stays on while you watch. It is what converts the television signal into something the device can display. Switch it off and the device sits on the waiting screen. Nothing has to be installed on it beforehand -- the download in the next step brings what it needs.
+## Downloads
 
-## How it works
+Everything is on the **[Releases page](https://github.com/rooma1989/ai-passport-tv/releases)**.
+The newest version is at
+**[releases/latest](https://github.com/rooma1989/ai-passport-tv/releases/latest)**;
+for now that is a beta.
 
-The device cannot decode video on its own, and no amount of firmware work changes that. So the computer does the real work: it pulls one channel from the internet, converts it into pictures and sound the device can use directly, and sends them over the local network. The device draws the pictures and plays the sound.
+| Your computer | File |
+| --- | --- |
+| Windows 10/11 | `XiaozhiTV-0.2.0-beta-windows-x64-setup.exe` (installer, recommended), or `XiaozhiTV-0.2.0-beta-windows-x64.zip` (no install) |
+| Mac with Apple silicon (M1, M2, M3, M4...) | `XiaozhiTV-0.2.0-beta-macos-arm64.dmg` |
+| Mac with an Intel processor | `XiaozhiTV-0.2.0-beta-macos-x86_64.dmg` |
+| Linux x86_64 (less tested) | `xiaozhi-tv-0.2.0-beta-linux-x86_64.tar.gz` (read `README-linux.txt` inside) |
 
-That explains a few things:
+Not sure which Mac you have? Apple menu > About This Mac. "Chip Apple M..." is
+Apple silicon, "Processor Intel..." is Intel.
 
-- **Changing channel takes several seconds.** The computer starts converting again from scratch.
-- **The computer has to stay on.** It is the actual signal source.
-- **Channels come from public community streams**, fetched by the computer. They go dead, and they come back.
+`SHA256SUMS-desktop` lists checksums for these files, if you want to check
+the download. You do not need the other files on the page to get started:
+the PC client already carries the device firmware.
+
+## Getting ready: install the PC client
+
+The step-by-step tutorial with every screen is in
+[`docs/desktop/README.md`](docs/desktop/README.md). The short version:
+
+1. **Install it.**
+   - **Windows**: double-click the `setup.exe`. Answer "Yes" when Windows asks
+     to allow changes.
+   - **Mac**: open the `.dmg` and **drag "Xiaozhi TV" into Applications**. Then
+     open it from Applications.
+2. **Get past the warning.** This beta is not signed yet, so the system warns
+   you the first time. The file is not damaged.
+   - **Windows** ("Windows protected your PC"): click **More info**, then
+     **Run anyway**.
+   - **Mac** ("Xiaozhi TV" Not Opened): click **Done**.
+     **Do not click Move to Trash**, that deletes the program.
+     Then open **System Settings > Privacy & Security**, scroll down,
+     find the line about "Xiaozhi TV", click **Open Anyway** and enter your
+     password. (On macOS 12 to 14 you can also Control-click the app in
+     Applications and pick Open.)
+   - When the Mac asks whether Xiaozhi TV may find devices on your local
+     network, click **Allow**.
+3. **First run.** A small TV icon appears in the notification area (Windows)
+   or the menu bar (Mac). The first time, it downloads a video component
+   (ffmpeg, a few tens of MB). Then the **setup page opens in the browser**.
+   Type a name for your home and your own name, and become the administrator.
+4. **Connect your phone.** Click the TV icon > **Connect a phone**. A QR code
+   appears. With the phone on the home Wi-Fi, scan it with the phone's camera
+   and sign in. Then use "Add to Home Screen" so the remote is one tap away.
+   Each family member can scan their own code.
+
+The menus are in Chinese; the tutorial gives the English meaning of each item.
 
 ## Step 1: Flash the firmware
 
-**The easy way needs no software installed** — it runs in the browser:
+The device needs the Xiaozhi TV firmware once.
 
-1. Open <https://zpdeng1020-coder.github.io/ai-passport-tv/flash/> in **Chrome or Edge**
-2. Plug the device in
-3. Press the button and pick the device's serial port when asked
-4. **Hold the power button for about 2 seconds to switch off, then hold it for about half a second to switch on again**
+1. Plug the device into **the computer running the PC client** with the USB
+   data cable.
+2. Click the TV icon > **Set up a TV**. The flasher opens in the browser. Use
+   **Chrome or Edge**.
+3. Click connect and pick the device's port. The page recognises the device by
+   itself.
+4. Follow the page and wait until it says the write is done.
 
-The device has a battery, so unplugging the cable will not restart it. Skip step 4 and the screen stays dark.
+**Read this before you flash:**
 
-That page writes only the region the firmware occupies and **never erases the device**; it checks the write range itself and refuses to start if the range would reach the identity data.
+- **Xingzhi Cube: the original Xiaozhi AI firmware is erased.** The first time,
+  the whole chip is wiped. After that the cube is a TV and no longer the
+  Xiaozhi AI chat toy. This flasher cannot bring the old firmware back. The
+  page asks you to tick a box before it erases. Later updates do not erase it
+  again.
+- **AI Passport: never erased.** It holds factory identity data that cannot be
+  recovered once lost. The flasher only writes the firmware area and checks
+  the range itself.
+- **AI Passport with the Muse dual setup:** not supported by this public build.
+  The flasher refuses such a device. See
+  [`docs/boards/passport-muse-dual.md`](docs/boards/passport-muse-dual.md).
 
----
+**After flashing, start the device by hand**:
 
-Or flash it by hand — same result:
+- **AI Passport**: hold the power button for about 2 seconds to switch off,
+  then hold it for about half a second to switch on again. It has a battery,
+  so pulling the cable does not restart it. Without this step the screen stays
+  dark.
+- **Xingzhi Cube**: tap the bottom key (the reset key).
 
-1. Download **`FoloToy-AI-Passport-tv.bin`** from this repository's **Releases** page.
+Other ways to flash, for people who know what they are doing:
 
-   It contains the bootloader, the partition table and the application, and is written in one go from address `0` — you do not have to work out offsets.
+- **Web flasher on your own site**: `xiaozhi-tv-flasher.zip` from the release
+  is the flasher page plus firmware. Unpack it as `/flash/` on any https site.
+- **By hand with esptool**: the release has `FoloToy-AI-Passport-tv.bin` and
+  `Xingzhi-Cube-154-tv-public.bin`, full images written at address `0`.
+  Details are in [`docs/boards/xingzhi-cube-154.md`](docs/boards/xingzhi-cube-154.md)
+  and [`docs/desktop/README.md`](docs/desktop/README.md). **Never run
+  `erase-flash` on an AI Passport.**
 
-2. Install a flashing tool. With Python, this is the short way:
+## Step 2: Wi-Fi and binding
 
-   ```sh
-   pip install esptool
-   ```
+After flashing, the device shows a setup screen with a QR code.
 
-3. Plug the device in and flash it:
+1. **Wi-Fi by sound** (easiest): scan the QR code on the device's screen with
+   the phone. A page opens. Type your home Wi-Fi name and password. The server
+   field is already filled with the computer's address. Turn the phone's volume
+   up, hold it close to the device (within half a metre) and tap **Send**. The
+   device listens, joins the Wi-Fi and restarts.
+2. **Hotspot** (if sound does not work): page through the setup screens with
+   ▲ / ▼ until one shows the device's hotspot name and a setup address. Join
+   that hotspot with the phone, open the address (usually `192.168.4.1`) and
+   fill in your Wi-Fi and the server address.
+3. **Bind it to your account**: the device now shows "BIND THIS TV" and a code.
+   Double-click a key to open the status page (see [Buttons](#buttons)) and scan
+   its QR code with your signed-in phone. Or, in the remote, open **Me > Bind a
+   new device** and type the code.
 
-   ```sh
-   esptool.py --chip esp32c3 --port <your serial port> write_flash 0x0 FoloToy-AI-Passport-tv.bin
-   ```
+To set up Wi-Fi again later, open the status page and hold the top key (up).
+Owners can also manage a device's saved Wi-Fi networks from the phone
+(**Me > My devices > Wi-Fi**).
 
-   On macOS `<your serial port>` looks like `/dev/cu.usbmodem101`, on Windows like `COM3`, on Linux like `/dev/ttyUSB0`. List the serial ports before and after plugging the device in; the new one is it.
+## Step 3: Add channels and creators
 
-> **Never use `erase-flash`.** The device holds factory-written identity data that cannot be recovered once erased. The command above writes from `0` to about `0x182000` (1.5 MB), while that identity data sits at `0x356000` — the distance between them is what makes it safe. `erase-flash` clears the whole chip, including that region.
->
-> ⚠️ **Important Reminder**: After flashing the new firmware, be sure to download and run the **matching new version of the server program** in Step 2. The new firmware and older server versions are not compatible.
+- **Channels**: click the TV icon > **Open the console**. In the channel table,
+  import **your own** M3U playlist (an address or a file), check which entries
+  play, and save the ones you want. A device holds up to 128 channels.
+- **Creators and series**: on the phone, open **Subscriptions** and paste a
+  Bilibili creator, series or collection link. Each one becomes a channel that
+  plays the newest or next episode and remembers where you stopped.
 
-## Step 2: Start the service
+A device with nothing to play shows "NO CHANNELS YET". It picks up new channels
+by itself.
 
-One program runs on the computer. It does two jobs: it pulls a television channel off the internet and converts it into something the device can display, and it serves a small web page for choosing which channels are offered. There are two ways to get it, and they do exactly the same thing.
+## Watching
 
-### Download one file
+### The phone remote
 
-Go to this repository's **Releases** page and take the one for your computer:
+The bottom bar has four tabs: **Remote**, **Cast**, **Subscriptions**, **Me**.
 
-| Your computer | Download |
+- **Remote**: change channel, volume and brightness; pause, seek and skip on
+  videos; previous and next episode on a series.
+- **Listen on the phone**: the device's sound plays on the phone or on
+  Bluetooth headphones paired with it, even with the phone locked. The device
+  keeps showing the picture with its speaker muted. Good for watching late at
+  night.
+- **Cast**: paste a Bilibili video link and the device plays it, then goes
+  back to its channel.
+- **Subscriptions**: your creators and series, with an episode picker.
+- **Me**: your devices (Wi-Fi, guest code, rename, unbind), binding a new
+  device, signing in another phone or the computer, inviting family.
+
+**Voice control**: the firmware can take spoken commands (hold OK and speak),
+but it needs a speech recogniser on the server. The PC client in this beta does
+not include one yet.
+
+### Buttons
+
+| What you want | AI Passport | Xingzhi Cube |
+| --- | --- | --- |
+| Volume | Click ▲ or ▼ | Click the top or second key |
+| Change channel | Hold ▲ or ▼ | Hold the top or second key |
+| Channel list | Click OK | Click the third key (BOOT) |
+| Status page | Double-click OK | Double-click the top or second key |
+| Brightness | Double-click ▲ or ▼ | Hold the third key |
+| Wi-Fi setup again | On the status page, hold ▲ | On the status page, hold the top key |
+| Sound only (the pet instead of the picture) | On the status page, click OK | On the status page, click OK |
+| Power | Hold the power button | Hold the bottom key |
+
+Board details: [`docs/boards/xingzhi-cube-154.md`](docs/boards/xingzhi-cube-154.md).
+
+## About this beta
+
+- **One device per model at a time.** A Xingzhi Cube and an AI Passport can
+  play together; two of the same model cannot yet.
+- **Remote control at home only.** The phone must be on the home Wi-Fi.
+  Control from outside the home (a cloud channel) is planned for v0.3.0-beta.
+- **Not signed yet.** Windows and macOS warn the first time (see above).
+- **The computer must stay on.** The client stops idle sleep while someone
+  watches, but closing a laptop lid still puts it to sleep.
+- **Keep the computer's address the same.** If the router gives it a new
+  address, the devices lose it. A fixed address (DHCP reservation) in the
+  router helps.
+- **Not everything has been tried by hand yet**, for example a real Windows
+  PC and an Intel Mac from start to finish. The tutorial lists what is not
+  verified. Please report problems on GitHub; the tray's "Export diagnostics"
+  makes a zip without passwords or keys.
+
+Common problems and fixes:
+[`docs/desktop/README.md`](docs/desktop/README.md#common-problems).
+
+## Advanced: NAS, Docker, no screen
+
+No computer that stays on, but a NAS or a mini PC? The same server runs as the
+**household server**, in Docker, in NAS containers or with plain Python, without
+the tray: [`docs/selfhost/README.md`](docs/selfhost/README.md).
+
+## Legacy single-user server
+
+Earlier releases had a single-user server (`tv-server-*` downloads, or
+`./run.sh` / `run.bat` without options). It serves one device, has no accounts
+and no phone sign-in, and the device is pointed at it by typing the computer's
+address with port 8096 on the hotspot page. It is kept for one more release for
+people already using it. **New installs should use the PC client.** How it
+works: [`server/README.md`](server/README.md).
+
+## For developers
+
+**Repository map**
+
+| Path | What is there |
 | --- | --- |
-| **Windows** | `tv-server-windows-amd64.exe` |
-| **Mac** (M-series chip) | `tv-server-macos-arm64.zip` |
-| **Linux** | `tv-server-linux-x86_64.zip` |
+| `main/`, `components/bsp/` | Device firmware (ESP-IDF) and board support for both devices |
+| `server/` | The media server, the relay (accounts, phone remote, console) and the household server (`server/selfhost/`) |
+| `desktop/`, `packaging/desktop/` | The PC client's tray and its installers |
+| `packaging/flash/` | The web flasher |
+| `tests/`, `tools/` | Host tests and build, check and lab scripts |
+| `docs/` | Documentation, design specs and the changelog |
 
-The Mac and Linux downloads are archives -- **unzip them before running**. The archive is what keeps the "executable" marking on the file: sent as a bare download that marking is lost on the way, and the system refuses to open it.
-
-> **Intel Macs have no ready-made file** — use the "run it from the source" route below. The build machines are all Apple silicon and cannot produce an Intel binary. Saying so is better than offering a download that will not start.
-
-Put it in an empty folder and double-click it. **Nothing needs to be installed first** — the first run fetches the video converter it needs (about 21–31 MB, once, and never again).
-
-The first time you open it, the system stops it. That is not a sign of a damaged file: this project has no code-signing certificate, so the system cannot identify it. To get past it:
-
-**Windows**: click "More info", then "Run anyway".
-
-**macOS**: a dialog appears saying "tv-server-macos-arm64" was not opened. The buttons are in your system language; the labels below are the English ones, and the left-hand and right-hand buttons are the same two whichever language they are in.
-
-1. Click the **left-hand** of the two buttons ("Done"). **Do not click the right-hand one** ("Move to Trash"): that deletes the program, it does not get past the block.
-2. Open **System Settings → Privacy & Security**, scroll down, and find the entry saying "tv-server-macos-arm64" was blocked to protect the Mac.
-3. Click **Open Anyway** — the only button on that row — and confirm once.
-
-You only have to do this the first time; after that it opens normally.
-
-### Or run it from the source
-
-With Python and ffmpeg already installed, clone the repository and run:
+**Build the firmware** (ESP-IDF 5.5.3):
 
 ```sh
-./run.sh          # macOS / Linux
+./tools/validate.sh --prototype   # AI Passport TV image
+./tools/validate.sh --xingzhi     # Xingzhi Cube TV image
 ```
 
-On Windows, double-click `run.bat`. Anything missing is reported with the install command for your system.
+The images land in `build/` (`FoloToy-AI-Passport-prototype-public.bin`,
+`Xingzhi-Cube-154-tv-public.bin`). Wi-Fi and the server address are set on the
+device, so nothing private is compiled in.
 
-### What you will see
-
-**The program's own messages are in Chinese** — it is written for people who read Chinese, and the Chinese README is the main one. What follows is that output rendered in English so you know what to look for; the real lines say the same things in Chinese, and the parts worth copying — addresses, ports, paths — are identical either way.
-
-```
-Data directory: /Users/you/Downloads/ai-passport-tv
-Channel page: http://127.0.0.1:8097
-  Open this in a browser on this computer to choose and reorder channels.
-
-Listening on 192.168.1.20:8096
-
-Server address to enter on the device:
-    my-laptop.local:8096
-```
-
-The line worth copying is the one under the last heading — the `name:port` pair. **Note it down**, because it goes into the device in the next step. It is this computer's own name, so it keeps working when the router hands out a different address. There is a fallback address on the following lines, in the form `192.168.x.x:8096`, for a network where the name does not resolve.
-
-The first line names the folder where the channel list is kept: the program's own folder, or the per-user location when that folder cannot be written to. The channel page address is what you open later to change which channels are offered.
-
-### If the device cannot connect, check the firewall first
-
-**Windows blocks incoming connections by default.** The channel page opens fine in a browser on that computer while the device cannot reach the server at all — and the device only says it cannot connect, which says nothing about a firewall. This is the most common thing to go wrong.
-
-The first time you run it, Windows usually asks whether to allow the program through the firewall: tick **private networks**. If that prompt was dismissed, or never appeared, add the rule by hand:
-
-```powershell
-# In an administrator PowerShell
-New-NetFirewallRule -DisplayName "AI Passport TV" -Direction Inbound -Protocol TCP -LocalPort 8096 -Action Allow -Profile Private
-```
-
-macOS and Linux normally need nothing here.
-
-## Step 3: Connect the device
-
-On its first boot the device enters setup by itself, showing colour bars and a network name like `FoloToy-XXXX`.
-
-1. **Join that network from a phone** (no password). The phone may warn that there is no internet access — choose to stay connected.
-2. **Open `192.168.4.1` in a browser.**
-3. Fill in two things:
-   - your **home WiFi name and password**
-   - the **server address**: the line you noted down, e.g. `my-laptop.local:8096`
-4. Press connect. The device restarts, the hotspot disappears, and a picture appears after a few seconds.
-
-If it does not enter setup by itself, or you need to change the address later: **double-click ↑** for the status page, then **hold ↑** on that page.
-
-## Day-to-day use
-
-Three buttons:
-
-| Action | What it does |
-| --- | --- |
-| **Short press ↑ / ↓** | Adjust volume, in steps of 10% |
-| **Long press ↑ / ↓** | Change channel |
-| **Short press OK** | Open the channel list (↑↓ to move, OK to choose) |
-| **Long press OK** | Brightness page |
-| **Double-click ↑ / ↓** | Brightness up / down, a step at a time |
-| **Double-click OK** | Status page: current channel, WiFi signal, battery |
-| **Short press OK on the status page** | Sound only (the pet instead of the picture), and back |
-| **Hold ↑ on the status page** | Enter setup again |
-
-Volume and brightness are remembered across power cycles.
-
-## Changing channels
-
-The channel list can be changed without reflashing anything.
-
-Starting the service prints a "channel page" address, like `http://127.0.0.1:8097`. **Open it in the browser on that same computer.** You will see:
-
-- on the left, channels found in the live-stream source
-- on the right, the channels the device currently has
-
-Add, remove and reorder, then save. The service restarts itself, the device reconnects, and the new list takes effect.
-
-There is also a button that checks every channel and marks the ones that no longer play. On the page it is labelled in Chinese, like the rest of the interface — it is the one next to Save. Public streams do die; press it now and then and drop the dead ones.
-
-The channel list is a plain text file, `channels.txt`. Editing it by hand works just as well — restart the service afterwards. The two ways are equivalent.
-
-## When something goes wrong
-
-**The device says it cannot reach the server**
-
-The service is not running, or the address is wrong. Double-click ↑, then hold ↑, and enter it again. Prefer the computer's name (`my-laptop.local:8096`) over its IP address.
-
-**The picture freezes, or it stays on "connecting"**
-
-Look at the service window on the computer for an error. Streams do go dead — use the channel page's check button, or try another channel.
-
-**The device leaves a channel you were watching**
-
-It only does this to a channel that has never shown a picture since it was switched on — an entry that is dead rather than one having a bad moment. A channel that has played once stays where it is and keeps retrying, however long the stutter lasts. Pick it again from the channel list when you want it; if it plays, it is protected from then on.
-
-If a channel leaves and nothing better arrives, the streams in the list have gone stale. Use the channel page's check button to drop the dead ones.
-
-**The setup page will not open**
-
-The phone may have switched back to the home WiFi after joining `FoloToy-XXXX`. Turn off auto-join, or switch back manually.
-
-**Changing channel is slow**
-
-That is expected. Every channel change means the computer starts pulling and converting again. Network streams are the slowest case.
-
-## How far this has been tested
-
-Saying what has actually been run, and what has not, is more useful than a general assurance.
-
-**Run for real**
-
-- **Windows 11, end to end**: the downloaded `.exe` was started on a machine with no Python and no ffmpeg. It fetched ffmpeg itself, brought up both services, and served all 127 channels. That was a real machine, not a simulation.
-- **macOS, end to end**: built, started, streamed, and the channel list was saved and picked up after the automatic restart.
-- The server is built by CI on Linux, macOS and Windows, and each build is started once as a smoke test before it is published.
-
-**Not verified**
-
-- **Nobody has used this on Linux.** The build and the tests pass there in CI, but a CI runner is not a desktop and no one has clicked through it.
-- **The Intel macOS build has never run on an Intel Mac**; it is only built in CI.
-- Apple's system may block an unsigned program, and how that looks varies by macOS version and settings. The paragraph above describes the common case.
-
-**To be expected**
-
-- Public streams go dead. That is the normal state of things, not a fault — use the channel page's check button to drop the dead ones.
-- Changing channel takes several seconds, because the computer starts converting again from the beginning.
-
-## Building the firmware yourself
-
-Requires ESP-IDF 5.5.3. From the repository root:
+**Checks and tests**:
 
 ```sh
-./tools/validate.sh --prototype
+./tools/validate.sh --static      # repository checks and host tests, no ESP-IDF needed
+./tools/validate.sh               # the complete gate
+python3 tools/check_repo.py       # links, language pairs, secrets
 ```
 
-This builds, verifies, and writes the result to `build/FoloToy-AI-Passport-prototype-public.bin` — the full image flashed in step 1.
+**CI** (`.github/workflows/`): static checks and host tests, firmware builds,
+the PC client core and installers, the Docker image and the legacy server. A
+version tag builds and publishes the release.
 
-All configuration happens on the device's own setup page; nothing is compiled in.
+**Where to read next**
 
-## Licence
+- [`AGENTS.md`](AGENTS.md): conventions, validation and safety rules (start here)
+- [`docs/README.md`](docs/README.md): hardware contract and the documentation index
+- [`docs/assets/architecture-index.md`](docs/assets/architecture-index.md): which file does what
+- [`docs/desktop/developer.md`](docs/desktop/developer.md): PC client code map, building and the control API
+- [PC client design](docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md)
+  and [self-hosting design](docs/superpowers/specs/2026-10-15-self-hosting-design.md)
+- [`docs/CHANGELOG.md`](docs/CHANGELOG.md): what changed
+- [`docs/fork-guide.md`](docs/fork-guide.md): how this fork relates to upstream
 
-Based on the [official FoloToy AI Passport firmware](https://github.com/folotoy/ai-passport) (MIT). The hardware design belongs to FoloToy.
+## Credits and licence
 
-The server needs [ffmpeg](https://ffmpeg.org/), a separate program you install yourself. Channel addresses come from public community streams; this repository hosts no content and makes no promise about their availability.
+This project is a fork of
+[zpdeng1020-coder/ai-passport-tv](https://github.com/zpdeng1020-coder/ai-passport-tv),
+which is based on the
+[official FoloToy AI Passport firmware](https://github.com/folotoy/ai-passport).
+Thanks to both. The AI Passport hardware design belongs to FoloToy. Xingzhi
+Cube and Xiaozhi AI are other makers' products; this project is not affiliated
+with them.
 
-For personal use at home.
+The code is under the MIT licence: see [`LICENSE`](LICENSE). Third-party parts
+keep their own licences; the PC client lists them in
+[`packaging/desktop/NOTICE.txt`](packaging/desktop/NOTICE.txt) and the Docker
+image in [`packaging/docker/NOTICE`](packaging/docker/NOTICE).
+[FFmpeg](https://ffmpeg.org/) is not part of the PC client download: the client
+fetches it on first run from its publisher (GPL builds).
+
+## Disclaimer
+
+Xiaozhi TV is open-source software for private, non-commercial use in your own
+home. It does not include, host, sell or recommend any channel, stream, video,
+account or proxy. Everything it plays is fetched by your own computer from
+sources you add yourself. You are responsible for having the right to watch
+them and for following the terms of the services you use and the laws where
+you live. Do not use it to share content with people outside your household.
+The software is provided "as is", without warranty of any kind (MIT licence).
+More in [`docs/selfhost/README.md`](docs/selfhost/README.md#disclaimer).
