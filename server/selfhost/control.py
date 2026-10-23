@@ -152,7 +152,20 @@ class Actions:
         supervisor = self.desktop.supervisor
         if supervisor is None or not supervisor.started:
             raise _not_ready()
-        supervisor.restart_requested.set()
+        reload = getattr(self.desktop, "reload", None)
+        if reload is None:
+            supervisor.restart_requested.set()
+            return 202, {"ok": True}
+
+        def reload_and_rebuild():
+            # 重读设置、重新识别地址（Windows 上起一次 PowerShell，一两秒）：不让托盘的请求等着。
+            try:
+                reload()
+            except Exception as error:      # noqa: BLE001 —— 重读失败也照常重启
+                getattr(self.desktop, "log", print)(f"重读设置失败：{type(error).__name__}")
+            supervisor.rebuild_requested.set()
+
+        threading.Thread(target=reload_and_rebuild, daemon=True, name="restart").start()
         return 202, {"ok": True}
 
     def stop(self, _body: dict) -> tuple[int, dict]:

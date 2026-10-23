@@ -350,6 +350,25 @@ class FlasherPageTests(unittest.TestCase):
         for phrase in ("/tv/wifi", "192.168.4.1", "绑定", "不用加端口"):
             self.assertIn(phrase, page, phrase)
 
+    def test_after_flashing_shows_the_household_servers_real_link(self) -> None:
+        """Served by the household server or the PC client (/flash/): the real sound setup link and a QR
+        code from /tv/api/setup/info (server/relay/setup.py); on the static site the generic text stays."""
+        page = self.text("index.html")
+        script = self.code(self.text("flasher.js"))
+        core = self.text("flasher-core.js")
+        for element in ('id="wifiBox"', 'id="wifiQr"', 'id="wifiUrl"', 'id="wifiCodeZh"', 'id="wifiCodeEn"'):
+            self.assertIn(element, page)
+        self.assertRegex(page, r'class="note ok hidden" id="wifiBox"', "hidden until the server answers")
+        self.assertIn("http://&lt;服务器地址&gt;:8080/tv/wifi", page, "the static site's generic text")
+        self.assertIn("'/tv/api/setup/info'", core)
+        self.assertIn("'/tv/api/setup/wifi-qr.svg'", core)
+        self.assertIn("fetch(core.SETUP_INFO_PATH", script)
+        self.assertIn("core.serverWifiLink(info)", script)
+        self.assertIn("img-src 'self'", page, "the QR code is a same-origin SVG image, no QR library")
+        self.assertNotIn("innerHTML", script)
+        self.assertIn("VPN", page)
+        self.assertIn("代理", page)
+
     def test_the_page_says_which_browsers_work(self) -> None:
         page = self.text("index.html")
         for phrase in ("Chrome", "Edge", "手机", "Safari", "Firefox"):

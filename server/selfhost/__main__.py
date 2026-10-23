@@ -27,6 +27,7 @@ import argparse
 import os
 import shutil
 import sys
+import urllib.parse
 from pathlib import Path
 
 # 这台电脑的型号 → (端口设置项, 画面, 帧率, 起始字节率, 「用手机听」端口, 路线)。
@@ -52,17 +53,29 @@ def _find_ffmpeg(given: str | None) -> str | None:
     return None
 
 
-def _addresses(config, accounts, in_container: bool) -> tuple[str, str, str]:
+def _addresses(config, accounts, in_container: bool, info=None) -> tuple[str, str, str]:
     """(本机局域网地址, 设备该连的地址, 网站地址)。容器里（桥接网络）看不到局域网地址，留空，
-    等第一次设置时由浏览器用的地址补上（server/relay/setup.py）。"""
+    等第一次设置时由浏览器用的地址补上（server/relay/setup.py）。
+
+    先后：config.toml 写的 > 第一次设置时记在数据库里的 > 自动识别的（netident.lan_info：物理网卡上带着
+    家里路由器的地址，不是代理 TUN、Tailscale、虚拟机网卡的）。数据库里记下的 IPv4 落在这些排除的网段里
+    （以前的版本会把 198.18.0.1 记进去），或者这台电脑现在已经没有这个地址了（换了 DHCP 地址、换了路由器），
+    就不用它，改用识别的；xxx.local 名字照用。info：已经问过的 netident.LanInfo（测试、定时重查用）。
+    """
     from .. import netident
-    detected = ""
-    if not in_container and config.bind != "127.0.0.1":
-        detected = netident.lan_address() or ""
-    if config.bind == "127.0.0.1":
-        detected = ""
-    device = config.device_address or accounts.meta("device_address", "") or detected
-    public = config.public_url.rstrip("/") or accounts.meta("public_url", "") or \
+    if info is None:
+        info = netident.lan_info() if not in_container and config.bind != "127.0.0.1" else netident.LanInfo()
+    detected = "" if config.bind == "127.0.0.1" else info.address
+    local = info.local if not in_container else None
+    stored = accounts.meta("device_address", "")
+    if not netident.stored_address_ok(stored, local):
+        stored = ""
+    device = config.device_address or stored or detected
+    stored_public = accounts.meta("public_url", "")
+    host = urllib.parse.urlsplit(stored_public).hostname or "" if stored_public else ""
+    if not netident.stored_address_ok(host, local):
+        stored_public = ""
+    public = config.public_url.rstrip("/") or stored_public or \
         (f"http://{detected}:{config.lan_port}" if detected else "")
     return detected, device, public
 

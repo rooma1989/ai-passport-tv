@@ -11,6 +11,8 @@
 - 同一个网段 10 分钟里最多错 5 次；码有 10 位（约 50 位熵），限流只是防刷。
 - wifi.html（声波配网）的服务器栏：自建时用记下的设备地址，而不是页面自己的主机名——经隧道打开时
   那是隧道的名字，设备连不到。
+- /tv/api/setup/info 和 /tv/api/setup/wifi-qr.svg：设备地址、声波配网页的网址和它的二维码，给刷机页
+  （/flash/）的「刷完之后」用。只读，只透露局域网地址；前端的公开端口上不转。
 """
 
 from __future__ import annotations
@@ -24,9 +26,10 @@ import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import netident
 from ..tenancy import db
 from ..tenancy.tickets import RateLimit
-from . import console
+from . import console, qr
 
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 SETUP_PAGE = (_ASSET_DIR / "setup.html").read_bytes()
@@ -38,6 +41,8 @@ NAME_MAX = 20
 # 设备地址：IPv4 或主机名（.local），不带端口——设备按自己的型号补端口（8098 / 8097）。
 _ADDRESS = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 DEVICE_ADDRESS_META = "device_address"
+# 声波配网页地址的二维码（SVG），刷机页用。
+WIFI_QR = "/api/setup/wifi-qr.svg"
 # 电脑客户端托盘的「打开电脑版」：控制接口（server/selfhost/control.py）给本机浏览器的一次性登录链接。
 LOCAL_LOGIN = "/local-login"
 _LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
@@ -88,7 +93,10 @@ def lan_host(host_header: str | None) -> str:
         address = ipaddress.ip_address(host)
     except ValueError:
         return ""
-    if address.version == 4 and address.is_private and not address.is_loopback and not address.is_link_local:
+    # 198.18.0.0/15 在 Python 看来也是私有地址，但那是代理软件 TUN 网卡的（netident.EXCLUDED_NETWORKS）：
+    # 这台电脑的浏览器经 TUN 地址打开时不能记下它，设备和手机都连不到。
+    if address.version == 4 and address.is_private and not address.is_loopback and not address.is_link_local \
+            and not netident.excluded(host):
         return host
     return ""
 
@@ -98,8 +106,26 @@ def device_address(relay) -> str:
     selfhost = relay.selfhost
     if selfhost is None:
         return ""
-    given = selfhost.device_address or (relay.accounts.meta(DEVICE_ADDRESS_META, "") if relay.accounts else "")
+    given = selfhost.device_address
+    if not given and relay.accounts:
+        # 数据库里记下的（第一次设置时浏览器用的地址）：以前的版本可能把代理 TUN 的 198.18.0.1 记了进去。
+        given = relay.accounts.meta(DEVICE_ADDRESS_META, "")
+        given = "" if netident.excluded(given) else given
     return given if _ADDRESS.match(given or "") else ""
+
+
+def wifi_url(handler, relay) -> str:
+    """手机打开声波配网页的地址：http://<设备地址>:<端口>/tv/wifi。端口取这次请求的 Host（浏览器连局域网
+    端口用的那个；Docker 把 8080 映射成别的端口时也对），没写端口就是 80。不知道设备地址时空串。"""
+    address = device_address(relay)
+    if not address:
+        return ""
+    netloc = urllib.parse.urlsplit("//" + (handler.headers.get("Host") or "").strip())
+    try:
+        port = netloc.port or 80
+    except ValueError:
+        port = 80
+    return f"http://{address}{'' if port == 80 else f':{port}'}/tv/wifi"
 
 
 def wifi_page(relay, page: bytes) -> bytes:
@@ -123,7 +149,18 @@ def get(handler, relay, path: str) -> bool:
             handler._send(200, SETUP_PAGE, "text/html; charset=utf-8", console.PAGE_HEADERS)
         return True
     if path == "/api/setup/info":
-        handler._json({"ok": True, "pending": pending(relay), "device_address": device_address(relay)})
+        handler._json({"ok": True, "pending": pending(relay), "device_address": device_address(relay),
+                       "wifi_url": wifi_url(handler, relay)})
+        return True
+    if path == WIFI_QR:
+        # 刷机页「刷完之后」的二维码（packaging/flash/）：只含局域网地址，设置页本来就显示它；只读，
+        # 前端的公开端口上 /api/setup/ 整个不转（server/front.py）。
+        link = wifi_url(handler, relay)
+        if not link:
+            handler._not_found()
+        else:
+            handler._send(200, qr.svg(link).encode("ascii"), "image/svg+xml",
+                          {"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
         return True
     if path == LOCAL_LOGIN:
         _local_login(handler, relay)

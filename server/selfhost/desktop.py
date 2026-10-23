@@ -407,6 +407,9 @@ class Desktop:
         self.ffmpeg, self.settings, self.clock = ffmpeg, settings, clock
         self.started = clock()
         self.supervisor = None
+        # 控制接口的 POST restart 先调它（desktop_main：重读 config.toml、重新识别地址），再重建子进程；None 时
+        # 只是用原来的参数重启子进程。
+        self.reload = None
         # 没有监督进程时（设置文件有错，只开着控制接口报告）/stop 设这个。
         self.stop_event = threading.Event()
         self.control_port = 0

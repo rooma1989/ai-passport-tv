@@ -217,7 +217,19 @@ Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
   client running? Same router? On Windows, is the home network Private? Is
   another device of the same model watching (one at a time in the beta)?
 - **The phone cannot open the remote**: the phone must be on the home Wi-Fi
-  (not mobile data), on the same network as the computer.
+  (not mobile data), on the same network as the computer. A VPN or proxy app
+  on the phone can also keep it from reaching the computer: turn it off.
+- **The address shown is wrong (198.18.x.x, 100.x.x.x, a VPN's address)**: the
+  client picks the address of the computer's Wi-Fi or Ethernet card that has the
+  home router, and ignores VPN, proxy (TUN mode), Tailscale, Docker and virtual
+  machine adapters; a wrong address stored by an older version is detected
+  again. If it is still wrong, write the right one in the data folder's
+  `config.toml` (`[server] device_address = "192.168.1.20"`, no port) and click
+  "Restart the TV service": the restart re-reads `config.toml` and the
+  computer's address (ports and `bind` still need the client to be quit and
+  opened again). A new address from the router (DHCP) is noticed while the
+  client runs, within about half a minute (up to about five minutes while a
+  VPN or proxy is on).
 - **The tray says a port is in use**: 8097 and 8098 are fixed by the device
   firmware; the menu names the program holding it; close it and click
   "Restart the TV service".

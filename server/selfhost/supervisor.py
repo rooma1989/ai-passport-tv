@@ -240,7 +240,7 @@ class Supervisor:
                 self.rebuild_requested.clear()
                 # 还没起的时候不用管：pending 第一次造子进程时就用新的参数。
                 if self.started and self.pending is not None:
-                    self.log("网络变了：按新的地址重启所有子进程…")
+                    self.log("按新的地址和设置重启所有子进程…")
                     self._stop_children()
                     ready = self.pending()
                     if ready is not None:

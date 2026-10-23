@@ -139,6 +139,39 @@ class SetupPendingTests(RelayHarness):
                                ("my-nas.local:8080", "my-nas.local")):
             self.assertEqual(setup.lan_host(host), expected)
 
+    def test_a_tun_address_is_never_recorded_or_used(self):
+        # A proxy in TUN mode (Clash, Surge): the browser on this computer could open 198.18.0.1.
+        self.assertEqual(setup.lan_host("198.18.0.1:8080"), "")
+        self.assertEqual(setup.lan_host("100.101.102.103:8080"), "", "Tailscale")
+        self.setup_admin({"Host": "198.18.0.1:8080"})
+        self.assertEqual(self.accounts.meta("device_address"), "")
+        # Stored by an older version: not handed to the sound setup page.
+        self.accounts.set_meta("device_address", "198.18.0.1")
+        self.assertEqual(self.request("GET", "/tv/api/setup/info")[2]["device_address"], "")
+        _, _, page = self.request("GET", "/tv/wifi")
+        self.assertNotIn(b"198.18.0.1", page)
+
+    def test_setup_info_gives_the_wifi_link_and_its_qr_code(self):
+        status, _, answer = self.request("GET", "/tv/api/setup/info", headers={"Host": "localhost:8080"})
+        self.assertEqual((status, answer["wifi_url"]), (200, ""), "no address known yet")
+        self.assertEqual(self.request("GET", "/tv/api/setup/wifi-qr.svg")[0], 404)
+        self.relay.selfhost.device_address = "192.168.1.118"
+        # The flasher on the PC opens localhost:<LAN port>; the link names the LAN address and that port.
+        answer = self.request("GET", "/tv/api/setup/info", headers={"Host": "localhost:8081"})[2]
+        self.assertEqual((answer["device_address"], answer["wifi_url"]),
+                         ("192.168.1.118", "http://192.168.1.118:8081/tv/wifi"))
+        answer = self.request("GET", "/tv/api/setup/info", headers={"Host": "nas.local"})[2]
+        self.assertEqual(answer["wifi_url"], "http://192.168.1.118/tv/wifi")
+        status, response, body = self.request("GET", "/tv/api/setup/wifi-qr.svg", headers={"Host": "localhost:8080"})
+        self.assertEqual((status, response.getheader("Content-Type")), (200, "image/svg+xml"))
+        self.assertTrue(body.startswith(b"<svg"), body[:40])
+        self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
+        from server.relay import qr
+        self.assertEqual(body.decode(), qr.svg("http://192.168.1.118:8080/tv/wifi"))
+        # Still answered once there is an admin (the flasher is used later too).
+        self.setup_admin({"Host": "192.168.1.118:8080"})
+        self.assertEqual(self.request("GET", "/tv/api/setup/wifi-qr.svg")[0], 200)
+
     def test_wifi_page_gets_the_device_address(self):
         _, _, page = self.request("GET", "/tv/wifi")
         self.assertFalse(b"<meta name=\"tv-device-address\"" in page, "nothing to inject before an address is known")
@@ -155,6 +188,12 @@ class CloudHostUnchangedTests(RelayHarness):
     def setUp(self):
         super().setUp()
         self.admin = self.accounts.create_user("管理员", "admin")
+
+    def test_no_setup_info_or_wifi_qr(self):
+        for path in ("/tv/api/setup/info", "/tv/api/setup/wifi-qr.svg"):
+            status, response, _ = self.request("GET", path)
+            self.assertNotEqual(response.getheader("Content-Type"), "image/svg+xml", path)
+            self.assertIn(status, (401, 403, 404), path)
 
     def test_cookie_is_always_secure(self):
         status, response, _ = self.request("GET", f"/tv/?k={KEY}", headers={"X-Forwarded-Proto": "http"})

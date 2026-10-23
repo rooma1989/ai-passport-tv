@@ -312,3 +312,26 @@ export function browserSupport(nav, secure) {
   if (!secure) return { ok: false, reason: 'insecure' };
   return { ok: true, reason: '' };
 }
+
+// ---- the household server ------------------------------------------------
+
+// When the page is served by the household server or the PC client (at
+// /flash/), /tv/api/setup/info names the address the devices and phones use
+// and the sound setup page's link (server/relay/setup.py). On the static site
+// there is no such API, and anything that does not look exactly like that
+// answer keeps the page's generic text: null.
+export const SETUP_INFO_PATH = '/tv/api/setup/info';
+export const WIFI_QR_PATH = '/tv/api/setup/wifi-qr.svg';
+const HOST = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+
+export function serverWifiLink(info) {
+  if (!info || info.ok !== true || typeof info.wifi_url !== 'string' || typeof info.device_address !== 'string') {
+    return null;
+  }
+  const address = info.device_address;
+  if (!HOST.test(address)) return null;
+  const match = /^http:\/\/([A-Za-z0-9.-]+)(?::(\d{1,5}))?\/tv\/wifi$/.exec(info.wifi_url);
+  if (!match || match[1] !== address) return null;
+  if (match[2] !== undefined && !(Number(match[2]) >= 1 && Number(match[2]) <= 65535)) return null;
+  return { url: info.wifi_url, address };
+}
