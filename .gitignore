@@ -84,5 +84,5 @@ packaging/docker/data/
 packaging/docker/firmware/*
 !packaging/docker/firmware/.keep
 
-# Local UI screenshots from manual checks
+# UI screenshots taken while developing (not part of the repository).
 .shots/

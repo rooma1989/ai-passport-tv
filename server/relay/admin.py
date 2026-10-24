@@ -578,6 +578,8 @@ def _delete_user(relay, user: dict, body: dict, caller, ip: str) -> dict:
         return {"ok": False, "error": str(error)}
     with relay._cache_lock:
         relay._users.pop(user["id"], None)
+    if getattr(relay, "bili_accounts", None) is not None:
+        relay.bili_accounts.forget(user["id"])      # 他的 B 站登录（bililogin.py）也删掉
     for device_id in unbound:
         _kick(relay, device_id)
     relay.sync_devices()

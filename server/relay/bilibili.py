@@ -2,10 +2,15 @@
 
 B 站对阿里云这个地址的视频网页和带签名（wbi）的列表接口返回 412，yt-dlp 的 B 站解析因此不可用；
 下面这几个接口实测可用（见设计文档「验证结果」）。
+
+家庭服务器 / 电脑客户端上，用户在「设置 → B 站账号」扫码登录后（bililogin.py），取播放地址时带上他的
+cookies（login 参数）：电脑上看要更高的清晰度（wbi 签名的 /x/player/wbi/playurl），大会员能放会员剧集。
+不登录时走原来不带签名的 html5 接口，和以前一样；带 cookies 的请求出错时退回不登录的请求。
 """
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import re
@@ -58,6 +63,24 @@ class SourceError(RuntimeError):
 
 # 最早只有 B 站时的名字，保留给已有代码。
 BilibiliError = SourceError
+
+
+class MemberOnly(SourceError):
+    """番剧的这一集要大会员：没登录（或不是大会员）时 B 站只给几分钟试看。"""
+
+    def __init__(self, message: str):
+        super().__init__(message, permanent=True, reason="vip")
+
+
+# 「账号未登录」：带的 cookies 被 B 站拒绝了（过期、在别处退出了）。
+CODE_NOT_LOGGED_IN = -101
+
+
+class LoginRejected(SourceError):
+    """带登录 cookies 的请求被拒绝（code -101）：登录失效了，调用方退回不登录。"""
+
+    def __init__(self, message: str):
+        super().__init__(message, permanent=False, reason="login")
 
 
 def _urls(text: str):
@@ -374,6 +397,67 @@ def _resolve(url: str) -> str:
 QUALITIES = (16, 32, 64)
 DEFAULT_QUALITY = 16
 SELFHOST_QUALITY = 64
+# 登录了的人在电脑上看（watch.py 的片源）：普通账号 1080P（80），大会员 1080P+（112，高码率）。
+# 小电视那块屏很小，还是用上面的 quality（自建 720p），登录只是让会员剧集能放。
+PC_QUALITY = 80
+PC_QUALITY_VIP = 112
+# 不登录时 html5 平台最高给到 720p；比它高的清晰度要登录、用 FLV（fnval=0）。
+HTML5_MAX_QUALITY = 64
+
+# ---- wbi 签名（网页版播放器现在用的 /x/player/wbi/playurl 要它） ----
+# 算法见 bilibili-API-collect 的 docs/misc/sign/wbi.md：导航接口（/x/web-interface/nav）给的两张图片的文件名
+# 拼起来按这张表打乱、取前 32 个字符是 mixin key；参数加上 wts（秒）、按名字排序、去掉值里的 !'()*、
+# 编码后接上 mixin key 取 MD5 就是 w_rid。tests/test_relay_bililogin.py 有文档里的例子。
+_MIXIN_KEY_ENC_TAB = (46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
+                      33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
+                      61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
+                      36, 20, 34, 44, 52)
+_WBI_KEY = re.compile(r"^[0-9a-f]{32}$")
+_WBI_DROP = str.maketrans("", "", "!'()*")
+# wbi 的两个 key 每天换一次；取一次用这么久。
+WBI_KEYS_S = 3600
+
+
+def _query(params: dict) -> str:
+    """和网页版一样的编码（encodeURIComponent：空格是 %20，斜杠也编码）；签名和真发出去的是同一个串。"""
+    return urllib.parse.urlencode(params, quote_via=urllib.parse.quote, safe="")
+
+
+def mixin_key(img_key: str, sub_key: str) -> str:
+    raw = img_key + sub_key
+    return "".join(raw[i] for i in _MIXIN_KEY_ENC_TAB)[:32]
+
+
+def wbi_sign(params: dict, img_key: str, sub_key: str, now: float) -> dict:
+    """带签名的参数（加了 wts、w_rid），按名字排好序。"""
+    signed = {key: str(value).translate(_WBI_DROP) for key, value in params.items()}
+    signed["wts"] = str(int(now))
+    signed = dict(sorted(signed.items()))
+    query = _query(signed)
+    signed["w_rid"] = hashlib.md5((query + mixin_key(img_key, sub_key)).encode("utf-8")).hexdigest()
+    return signed
+
+
+def wbi_keys(nav: dict) -> tuple[str, str] | None:
+    """导航接口的 data → (img_key, sub_key)：wbi_img 里两张图片的文件名（不带扩展名）。没登录时也有。"""
+    images = (nav or {}).get("wbi_img") if isinstance(nav, dict) else None
+    if not isinstance(images, dict):
+        return None
+    keys = []
+    for name in ("img_url", "sub_url"):
+        stem = str(images.get(name) or "").rsplit("/", 1)[-1].split(".", 1)[0]
+        if not _WBI_KEY.match(stem):
+            return None
+        keys.append(stem)
+    return keys[0], keys[1]
+
+
+def _single_url(play: dict) -> str:
+    """播放地址：只认只有一段的（FLV 老视频会分成好几段，只放第一段就放不完）。"""
+    durl = play.get("durl") or []
+    if len(durl) != 1 or not isinstance(durl[0], dict) or not durl[0].get("url"):
+        return ""
+    return str(durl[0]["url"])
 
 
 def _count(data, *keys) -> int:
@@ -388,15 +472,21 @@ def _count(data, *keys) -> int:
 
 
 class Bilibili:
-    def __init__(self, fetch_json=None, resolve=None, quality: int = DEFAULT_QUALITY):
+    def __init__(self, fetch_json=None, resolve=None, quality: int = DEFAULT_QUALITY, clock=time.time):
         self.quality = quality if quality in QUALITIES else DEFAULT_QUALITY
         self._fetch = fetch_json or _fetch_json
         self._resolve = resolve or _resolve
+        self._clock = clock
         self._cookie = ""
         # 每个 UP 主（mid）一共有多少个投稿：取投稿列表时 B 站顺带给的（upload_total）。
         self._totals: dict[str, int] = {}
+        # wbi 签名的两个 key 和取到的时刻（monotonic）。
+        self._wbi: tuple[float, str, str] | None = None
 
-    def _call(self, path: str, _timeout: float | None = None, **params) -> dict:
+    def _call(self, path: str, _timeout: float | None = None, _login=None, _signed: bool = False,
+              **params) -> dict:
+        """_login：用户的 B 站登录（bililogin.Login），带上他的 cookies，不用匿名的 buvid3；
+        _signed：wbi 签名（只和 _login 一起用：网页版播放器登录后取高清晰度就是这样）。"""
         # 只有语音搜索给 _timeout：取 buvid3 和搜索两次请求加起来不超过它（设备只等 8 秒）；
         # 其余用默认的 TIMEOUT_S。
         fetch = self._fetch
@@ -409,24 +499,53 @@ class Bilibili:
                     raise TimeoutError("timed out")
                 return self._fetch(url, cookie, timeout=left)
         try:
-            if not self._cookie:
-                spi = fetch(f"{API}/x/frontend/finger/spi", "")
-                self._cookie = f"buvid3={spi['data']['b_3']}"
-            url = f"{API}{path}?{urllib.parse.urlencode(params)}"
-            answer = fetch(url, self._cookie)
+            if _login is not None:
+                cookie = _login.header()
+                if _signed:
+                    img, sub = self._wbi_keys(cookie)
+                    params = wbi_sign(params, img, sub, self._clock())
+                url = f"{API}{path}?{_query(params)}"
+            else:
+                if not self._cookie:
+                    spi = fetch(f"{API}/x/frontend/finger/spi", "")
+                    self._cookie = f"buvid3={spi['data']['b_3']}"
+                cookie = self._cookie
+                url = f"{API}{path}?{urllib.parse.urlencode(params)}"
+            answer = fetch(url, cookie)
         except (OSError, ValueError, KeyError, TypeError) as error:
             # 出错后换一个 buvid3 再试，旧的可能已被风控。
-            self._cookie = ""
+            if _login is None:
+                self._cookie = ""
+            else:
+                self._wbi = None
             raise BilibiliError(f"{path}: {type(error).__name__}: {error}",
                                 reason="slow" if timed_out(error) else "") from None
         if not isinstance(answer, dict):
             answer = {}
         if answer.get("code") != 0:
-            self._cookie = ""
+            if _login is None:
+                self._cookie = ""
+            elif answer.get("code") == CODE_NOT_LOGGED_IN:
+                _login.rejected()
+                raise LoginRejected(f"{path}: 登录已失效")
+            else:
+                self._wbi = None
             raise BilibiliError(f"{path}: code={answer.get('code')} {answer.get('message', '')}",
                                 permanent=True)
         # 番剧（pgc）接口的内容在 result 里，其余在 data 里。
         return answer.get("data") or answer.get("result") or {}
+
+    def _wbi_keys(self, cookie: str) -> tuple[str, str]:
+        """wbi 的两个 key：导航接口给（没登录也给，code 是 -101），取一次用 WBI_KEYS_S 秒。"""
+        cached = self._wbi
+        if cached is not None and time.monotonic() - cached[0] < WBI_KEYS_S:
+            return cached[1], cached[2]
+        answer = self._fetch(f"{API}/x/web-interface/nav", cookie)
+        keys = wbi_keys(answer.get("data") if isinstance(answer, dict) else None)
+        if keys is None:
+            raise ValueError("导航接口没给 wbi key")
+        self._wbi = (time.monotonic(), keys[0], keys[1])
+        return keys
 
     def uploads(self, mid: str) -> list[Video]:
         """最新的 LIST_SIZE 个投稿（只取第一页）。UP 主一共有多少个投稿顺带记下（upload_total）。"""
@@ -460,30 +579,73 @@ class Bilibili:
         """UP 主一共有多少个投稿（最近一次取列表时 B 站说的）；不知道时为 0。中转只取最新的 LIST_SIZE 个。"""
         return self._totals.get(str(mid), 0)
 
-    def media_url(self, bvid: str) -> str:
+    def media_url(self, bvid: str, login=None, quality: int | None = None) -> str:
+        """播放地址。login：用户的 B 站登录（bililogin.Login），quality：要的清晰度（不给就是 self.quality）。
+        不登录时 quality 不起作用：html5 接口按 self.quality 给，和以前一样。"""
         episode = _EPISODE.match(bvid)
         if episode:
-            return self._episode_url(episode.group(1), episode.group(2))
+            return self._episode_url(episode.group(1), episode.group(2), login, quality)
         view = self._call("/x/web-interface/view", bvid=bvid)
         cid = view.get("cid")
         if not cid:
             raise BilibiliError(f"{bvid}: 没有 cid", permanent=True)
-        play = self._call("/x/player/playurl", bvid=bvid, cid=cid, qn=self.quality, fnval=1,
-                          platform="html5")
+        return self._ugc_url(bvid, cid, login, quality)
+
+    def _html5_url(self, bvid: str, cid, login=None, quality: int | None = None) -> str:
+        play = self._call("/x/player/playurl", _login=login, bvid=bvid, cid=cid,
+                          qn=min(quality or self.quality, HTML5_MAX_QUALITY), fnval=1, platform="html5")
         durl = play.get("durl") or []
         if not durl or not durl[0].get("url"):
             raise BilibiliError(f"{bvid}: 没有可播放的地址", permanent=True)
         return durl[0]["url"]
 
-    def _episode_url(self, part: str, cid: str) -> str:
-        if part.startswith("ep"):
+    def _ugc_url(self, bvid: str, cid, login=None, quality: int | None = None) -> str:
+        """普通视频（和多集视频的一 P）。登录了：要 720p 以上时用 wbi 签名的接口取 FLV（单段的才要），
+        否则带着 cookies 走 html5；带 cookies 的请求出错时退回不登录的 html5（和以前一样）。"""
+        if login is not None:
+            wanted = quality or self.quality
+            try:
+                if wanted > HTML5_MAX_QUALITY:
+                    play = self._call("/x/player/wbi/playurl", _login=login, _signed=True, bvid=bvid, cid=cid,
+                                      qn=wanted, fnval=0, fnver=0, fourk=0)
+                    url = _single_url(play)
+                    if url:
+                        return url
+            except LoginRejected:
+                return self._html5_url(bvid, cid)
+            except BilibiliError:
+                pass
+            try:
+                return self._html5_url(bvid, cid, login, wanted)
+            except BilibiliError:
+                pass
+        return self._html5_url(bvid, cid)
+
+    def _episode_url(self, part: str, cid: str, login=None, quality: int | None = None) -> str:
+        if not part.startswith("ep"):
+            return self._ugc_url(part, cid, login, quality)
+        play = None
+        if login is not None:
+            wanted = quality or self.quality
+            try:
+                if wanted > HTML5_MAX_QUALITY:
+                    play = self._call("/pgc/player/web/playurl", _login=login, ep_id=part[2:], cid=cid,
+                                      qn=wanted, fnval=0, fnver=0, fourk=0)
+                    if not play.get("is_preview") and not _single_url(play):
+                        play = None     # 分了好几段：要一个单段的 MP4
+                if play is None:
+                    play = self._call("/pgc/player/web/playurl", _login=login, ep_id=part[2:], cid=cid,
+                                      qn=min(wanted, HTML5_MAX_QUALITY), fnval=1)
+            except BilibiliError as error:
+                if isinstance(error, LoginRejected) or not error.permanent:
+                    play = None         # 登录失效、网络问题：退回不登录
+                else:
+                    raise
+        if play is None:
             play = self._call("/pgc/player/web/playurl", ep_id=part[2:], cid=cid, qn=self.quality, fnval=1)
-            # 会员集在没登录时只给几分钟试看。
-            if play.get("is_preview"):
-                raise BilibiliError(f"{part}: 只能试看（需要会员）", permanent=True)
-        else:
-            play = self._call("/x/player/playurl", bvid=part, cid=cid, qn=self.quality, fnval=1,
-                              platform="html5")
+        # 会员集在没登录（或不是大会员）时只给几分钟试看。
+        if play.get("is_preview"):
+            raise MemberOnly(f"{part}: 只能试看（需要大会员）")
         durl = play.get("durl") or []
         if not durl or not durl[0].get("url"):
             raise BilibiliError(f"{part}/{cid}: 没有可播放的地址", permanent=True)
@@ -504,22 +666,25 @@ class Bilibili:
             raise BilibiliError(f"{source}: 找不到这部番剧", permanent=True)
         return f"ss{season['season_id']}"
 
-    def series(self, source: str) -> tuple[str, list[Video]]:
-        """(剧名, 按顺序的各集)。番剧只留不要会员的集。"""
+    def series(self, source: str, login=None) -> tuple[str, list[Video]]:
+        """(剧名, 按顺序的各集)。番剧只留不要会员的集；login 是大会员的登录时，会员集也留着。"""
         try:
             if source.startswith("ss"):
-                return self._season(source[2:])
+                return self._season(source[2:], vip=bool(login is not None and login.vip))
             return self._multipart(source)
         except (KeyError, TypeError, ValueError) as error:
             raise BilibiliError(f"{source}: 剧集信息格式不对：{error}") from None
 
-    def _season(self, season_id: str) -> tuple[str, list[Video]]:
+    def _season(self, season_id: str, vip: bool = False) -> tuple[str, list[Video]]:
         season = self._call("/pgc/view/web/season", season_id=season_id)
         name = str(season.get("season_title") or season.get("title") or "")
         episodes = []
         for e in season.get("episodes") or []:
-            # status 2 是免费；13 是会员专享。
-            if e.get("status") != 2 or "会员" in str(e.get("badge") or ""):
+            # status 2 是免费；13 是会员专享（大会员登录了才留）；别的（付费、下架）都不要。
+            member = e.get("status") == 13 or "会员" in str(e.get("badge") or "")
+            if member and not vip:
+                continue
+            if not member and e.get("status") != 2:
                 continue
             title = str(e.get("show_title") or "") or f"第{e.get('title')}集 {e.get('long_title') or ''}"
             episodes.append(Video(bvid=f"ep{int(e['id'])}/{int(e['cid'])}", title=title.strip(),

@@ -52,6 +52,9 @@ _FRAGMENT_SECRET = re.compile(r"((?:setup|/r/)#)[^\s\"'<>]+")
 _SETUP_CODE = re.compile(r"(设置码[：:]\s*)\S+")
 _BEARER = re.compile(r"(Bearer\s+)\S+", re.IGNORECASE)
 _COOKIE = re.compile(r"(tvs=)[^;\s]+")
+# B 站登录的 cookie 和 refresh_token（server/relay/bililogin.py 本来就不往日志里写，这里再防一手）。
+_BILI_COOKIE = re.compile(r"((?:SESSDATA|bili_jct|DedeUserID__ckMd5|refresh_token|qrcode_key)[=\"':\s]+)[^;&\s\"']+",
+                          re.IGNORECASE)
 # 网址里的「用户:密码@」（带密码的代理，config.toml 的 [youtube] proxy 会进诊断包）。
 _URL_PASSWORD = re.compile(r"(://)[^/\s:@\"']+:[^/\s@\"']*@")
 
@@ -65,6 +68,7 @@ def redact(text: str, home: str | None = None) -> str:
     text = _SETUP_CODE.sub(r"\1***", text)
     text = _BEARER.sub(r"\1***", text)
     text = _COOKIE.sub(r"\1***", text)
+    text = _BILI_COOKIE.sub(r"\1***", text)
     text = _URL_PASSWORD.sub(r"\1***@", text)
     text = _IPV4.sub(lambda m: m.group(0) if m.group(1) in ("127.0.0", "0.0.0") else m.group(1) + ".x", text)
     text = _IPV6ISH.sub(lambda m: m.group(1) + ":…", text)

@@ -224,6 +224,40 @@
   .modal .pcode { margin: 4px 0 8px; font: 600 26px/1.3 var(--mono); color: var(--amber); letter-spacing: 4px; text-align: center; }
   .modal p.live { color: var(--amber); }
 
+  /* ---- 设置 → B 站账号；订阅 → 导入关注（bililogin.py） ---- */
+  .biliwho { display: flex; gap: 16px; align-items: center; margin: 4px 0 14px; }
+  .biliwho .cover { width: 56px; height: 56px; border-radius: 50%; overflow: hidden; background: var(--ink-deep);
+                    border: 1px solid var(--rule); flex: none; }
+  .biliwho .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .biliwho b { display: block; font: 18px var(--serif); color: var(--paper-hi); }
+  .biliwho span { font: 12px var(--mono); color: var(--dim); }
+  .biliwho span.vip { color: var(--amber); }
+  .biliqr { display: flex; gap: 28px; align-items: center; margin: 6px 0 12px; }
+  .biliqr .qrbox { width: 200px; height: 200px; flex: none; }
+  .biliqr ol { margin: 8px 0 14px; padding-left: 20px; color: var(--paper); font: 14px/1.8 var(--serif); }
+  .bilistate { margin: 0; font: 17px var(--serif); color: var(--paper-hi); }
+  .bilistate.ok { color: var(--amber); }
+  .bilistate.bad { color: var(--red); }
+  .biliacts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .followtools { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+  .followtools button { padding: 7px 12px; font-size: 14px; }
+  .followsum { font: 12px var(--mono); color: var(--dim) !important; }
+  .follows { max-height: min(46vh, 420px); overflow-y: auto; border: 1px solid var(--rule); background: var(--ink-deep); }
+  .follows .empty { padding: 18px; color: var(--faint); font-size: 13px; text-align: center; }
+  .frow { display: grid; grid-template-columns: 22px 40px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+          padding: 7px 12px; border-bottom: 1px solid var(--rule); cursor: pointer; }
+  .frow:last-child { border-bottom: 0; }
+  .frow:hover { background: var(--hover); }
+  .frow input { margin: 0; accent-color: var(--red); }
+  .frow .cover { width: 40px; height: 40px; border-radius: 50%; overflow: hidden; background: var(--ink); }
+  .frow .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .frow .n { min-width: 0; font: 15px var(--serif); color: var(--paper-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .frow .n small { display: block; font: 12px var(--sans); color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+  .frow .tag { font: 12px var(--mono); color: var(--faint); }
+  .frow.had { cursor: default; }
+  .frow.had .n { color: var(--dim); }
+  .modal.bfollow { width: min(620px, calc(100vw - 32px)); }
+
   /* ---- 设备的 Wi-Fi（弹窗） ---- */
   .modal.wide { width: min(560px, calc(100vw - 32px)); }
   .wifitab td { padding: 9px 10px 9px 0; }
@@ -430,6 +464,9 @@
             <input type="text" id="creatorLink" placeholder="B 站 UP 主 / YouTube 频道主页，或他们的任意视频链接">
             <button class="go" id="addCreator">添加</button>
           </div>
+          <div class="inline" id="biliImportRow" hidden>
+            <button class="ghost" id="biliImport">从 B 站导入我关注的 UP 主</button>
+          </div>
           <table><tbody id="creatorRows"></tbody></table>
           <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播（只轮播最新的 20 个）。<span id="subsHint">「在小电视上播放」换到右上角选的那台。</span></p>
         </div>
@@ -495,6 +532,13 @@
           <button class="ghost noguest" id="phoneLink2">让手机登录</button>
         </div>
         <p class="hint">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机要再扫一次邀请或小电视的码，或者在这里点「让手机登录」；电脑要再扫码）；访客不受影响，可以单独退出。</p>
+      </div>
+      <!-- B 站账号：家庭服务器和电脑客户端，每个人登录自己的（bililogin.py）；云端没有。 -->
+      <div class="block" id="biliBlock" hidden style="max-width: 760px">
+        <div class="h3">B 站账号 <small id="biliSum"></small></div>
+        <div id="biliBox"></div>
+        <p class="hint">登录信息只保存在这台电脑上；这类接口是 B 站网页版接口，正常使用没问题，介意风控可以用小号。</p>
+        <p class="hint">每个家人登录自己的账号，互相看不到、用不到。登录后：电脑上看最高 1080P（大会员 1080P+），小电视还是 720P（屏幕小，再高看不出来）；大会员能放会员剧集；「订阅」页可以导入你关注的 UP 主。</p>
       </div>
       <div class="block" id="ytBlock" hidden>
         <div class="h3">YouTube 节点</div>
@@ -696,6 +740,8 @@ function showLogin() {
   if (watching) stopWatch();
   me = null;
   data = null;
+  bili = null;          // 换了人登录电脑版：B 站账号重新读（bililogin.py）
+  biliCancel();
   $("app").hidden = true;
   $("login").hidden = false;
   newTicket(0);
@@ -804,7 +850,8 @@ function go(name) {
   $("devpick").hidden = !["remote", "cast", "subs"].includes(name);
   try { localStorage.setItem("console.page", name); } catch (error) {}
   if (name === "devices") loadDevices();
-  if (name === "settings") { loadSessions(); loadYouTube(); }
+  if (name === "settings") { loadSessions(); loadYouTube(); loadBili(); }
+  if (name !== "settings") biliCancel();
   if (name === "invites") loadInvites();
 }
 for (const b of document.querySelectorAll("#nav button")) b.onclick = () => go(b.dataset.page);
@@ -860,6 +907,7 @@ function render() {
   renderSubs();
   renderHistory();
   followEpisodes();
+  renderBiliGate();
 }
 
 function renderNotice() {
@@ -1478,6 +1526,7 @@ function closeOverlays() {
   $("shade").hidden = $("drawer").hidden = $("modal").hidden = true;
   eps = null;
   if (typeof closeWifi === "function" && wifiDev) closeWifi();
+  if (follow) { follow = null; $("modal").classList.remove("bfollow"); }
 }
 $("epClose").onclick = closeOverlays;
 $("shade").onclick = closeOverlays;
@@ -2144,6 +2193,250 @@ $("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
   toast(answer.ok ? "已退出 " + answer.count + " 个登录" : answer.error, !answer.ok);
   loadSessions();
 });
+
+// ---------- 设置 → B 站账号（家庭服务器和电脑客户端；接口见 server/relay/bililogin.py） ----------
+// 每个人扫码登录自己的 B 站账号。二维码 3 分钟过期；页面每 2.5 秒问一次结果，过期、连续出错或离开设置页就停。
+
+let bili = null, biliQr = null, biliRun = 0, biliLoading = false;
+function biliOn() { return !!(data && data.bili && me && me.role !== "guest"); }
+function renderBiliGate() {
+  $("biliBlock").hidden = !biliOn();
+  $("biliImportRow").hidden = !biliOn();
+  if (biliOn() && page === "settings" && !bili && !biliQr) loadBili();
+}
+async function loadBili(fresh) {
+  if (!biliOn()) { $("biliBlock").hidden = true; return; }
+  $("biliBlock").hidden = false;
+  if (biliQr) { renderBili(); return; }
+  if (biliLoading && !fresh) return;
+  biliLoading = true;
+  let answer;
+  try { answer = await call("GET", "api/bili/account" + (fresh ? "?fresh=1" : "")); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  finally { biliLoading = false; }
+  bili = answer;
+  renderBili();
+}
+function biliFace(face, cls) {
+  return thumb({ cover: face || "" }, "f", cls);
+}
+function renderBili() {
+  const box = $("biliBox");
+  box.replaceChildren();
+  const acts = el("div", "biliacts");
+  if (biliQr) {
+    $("biliSum").textContent = "扫码登录";
+    const wrap = el("div", "biliqr");
+    const qrb = el("div", "qrbox");
+    qrb.innerHTML = biliQr.svg;
+    if (biliQr.state === "expired" || biliQr.stopped) {
+      const over = el("div", "over");
+      over.append(el("span", "", biliQr.state === "expired" ? "二维码过期" : biliQr.text),
+                  button(biliQr.state === "expired" ? "换一个" : "再试一次", "", () => biliStart()));
+      qrb.appendChild(over);
+    }
+    const side = el("div");
+    const ol = el("ol");
+    ol.append(el("li", "", "打开手机上的哔哩哔哩 App"), el("li", "", "用 App 里的「扫一扫」扫左边的码"), el("li", "", "在手机上点「确认登录」"));
+    const cls = biliQr.state === "scanned" ? " ok" : (biliQr.state === "error" || biliQr.state === "expired") ? " bad" : "";
+    side.append(el("p", "bilistate" + cls, biliQr.text), ol, button("取消", "ghost", () => { biliCancel(); renderBili(); }));
+    wrap.append(qrb, side);
+    box.appendChild(wrap);
+    return;
+  }
+  if (!bili) { box.appendChild(el("p", "hint", "正在读取…")); return; }
+  if (!bili.login) {
+    $("biliSum").textContent = "没有登录";
+    box.appendChild(el("p", "", "没有登录：B 站按游客给清晰度（最高 720P），会员剧集只能试看、放不了。"));
+    acts.appendChild(button("扫码登录", "go", () => biliStart()));
+  } else {
+    $("biliSum").textContent = bili.invalid ? "登录已失效" : bili.vip ? (bili.vip_label || "大会员") : "已登录";
+    const who = el("div", "biliwho");
+    const text = el("div");
+    text.appendChild(el("b", "", bili.name || "（还没取到昵称）"));
+    const meta = [bili.vip ? (bili.vip_label || "大会员") : "普通账号"];
+    if (bili.level) meta.push("Lv" + bili.level);
+    meta.push("电脑上看最高 " + (bili.vip ? "1080P+" : "1080P") + "，小电视 720P");
+    text.appendChild(el("span", bili.vip ? "vip" : "", meta.join(" · ")));
+    who.append(biliFace(bili.face), text);
+    box.appendChild(who);
+    if (bili.invalid) {
+      box.appendChild(el("p", "bilistate bad", "登录已失效，请重新扫码"));
+      acts.append(button("重新扫码", "go", () => biliStart()), button("删除登录信息", "ghost", biliLogout));
+    } else {
+      acts.append(button("刷新", "ghost", (event) => busy(event.target, () => loadBili(true))),
+                  button("退出登录", "ghost", biliLogout));
+    }
+  }
+  box.appendChild(acts);
+  if (bili.error) box.appendChild(el("p", "bilistate bad", bili.error));
+}
+async function biliStart() {
+  const run = ++biliRun;
+  let answer;
+  try { answer = await call("POST", "api/bili/login/start", {}); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return; }
+  if (run !== biliRun) return;
+  if (!answer.ok) { toast(answer.error, true); return; }
+  biliQr = { svg: answer.svg, state: answer.state, text: answer.text, stopped: false };
+  renderBili();
+  biliPoll(run);
+}
+function biliCancel() {
+  biliRun++;
+  biliQr = null;
+}
+async function biliPoll(run) {
+  let errors = 0;
+  while (run === biliRun && biliQr) {
+    await sleep(2500);
+    if (run !== biliRun || !biliQr) return;
+    if (page !== "settings" || $("app").hidden) { biliCancel(); return; }
+    let answer;
+    try { answer = await call("POST", "api/bili/login/poll", {}); }
+    catch (error) {
+      if (error instanceof SignedOut) { signedOut(); return; }
+      answer = { state: "error", text: "网络不通" };
+    }
+    if (run !== biliRun || !biliQr) return;
+    if (answer.state === "done") {
+      biliQr = null;
+      bili = answer;
+      renderBili();
+      toast("B 站登录成功" + (answer.name ? "：" + answer.name : ""));
+      refresh();
+      return;
+    }
+    biliQr.state = answer.state;
+    biliQr.text = answer.text || "";
+    if (answer.state === "error") errors++; else errors = 0;
+    // 连着三次出错就停下（不一直问），等人点「再试一次」。
+    if (answer.state === "expired" || errors >= 3) { biliQr.stopped = true; renderBili(); return; }
+    renderBili();
+  }
+}
+async function biliLogout() {
+  if (!confirm("退出 B 站登录？这台电脑上存的登录信息会马上删掉，之后按游客的清晰度放。")) return;
+  try { bili = await call("POST", "api/bili/logout", {}); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  toast("已退出 B 站登录");
+  renderBili();
+  refresh();
+}
+
+// ---------- 订阅 → 从 B 站导入关注的 UP 主（GET api/bili/followings，POST api/bili/followings/import） ----------
+
+let follow = null;    // { items, picked: Set, q, max, count, total, note }
+function followLeft() { return follow ? Math.max(0, follow.max - follow.count) : 0; }
+$("biliImport").onclick = openFollow;
+async function openFollow() {
+  const b = data && data.bili;
+  if (!b || !b.login || b.invalid) {
+    toast(b && b.invalid ? "B 站登录已失效：先在「设置 → B 站账号」重新扫码" : "先在「设置 → B 站账号」扫码登录 B 站", true);
+    go("settings");
+    return;
+  }
+  follow = { items: null, picked: new Set(), q: "", max: 12, count: 0, total: 0, note: "" };
+  const box = $("modal");
+  box.classList.add("bfollow");
+  const q = el("input");
+  q.type = "search"; q.placeholder = "在关注里找（名字或签名）"; q.maxLength = 40; q.autocomplete = "off"; q.spellcheck = false;
+  q.oninput = () => { follow.q = q.value.trim().toLowerCase(); renderFollow(); };
+  const tools = el("div", "followtools");
+  tools.append(q, button("全选", "ghost", followAll), button("全不选", "ghost", () => { follow.picked.clear(); renderFollow(); }));
+  const sum = el("p", "followsum", "正在取你关注的 UP 主…");
+  sum.id = "followSum";
+  const list = el("div", "follows");
+  list.id = "followList";
+  const go2 = button("导入选中的", "go", followImport);
+  go2.id = "followGo"; go2.disabled = true;
+  const row = el("div", "row");
+  row.append(button("关闭", "ghost", closeOverlays), go2);
+  modal("从 B 站导入关注的 UP 主", tools, sum, list,
+        el("p", "", "最多 12 个 UP 主：每个 UP 主是小电视上的一个台，台名要放进小电视的设置包（大小有限），装不下更多。想换就先在「订阅」里删掉几个。每个 UP 主从最新的投稿开始轮播；没有投稿的不会加。"),
+        row);
+  let answer;
+  try { answer = await call("GET", "api/bili/followings"); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else sum.textContent = "网络不通"; return; }
+  if (!follow) return;
+  if (!answer.ok) {
+    sum.textContent = answer.error || "取不到关注列表";
+    if (answer.login === false) refresh();
+    return;
+  }
+  Object.assign(follow, { items: answer.items, max: answer.max, count: answer.count, total: answer.total });
+  renderFollow();
+}
+function followShown() {
+  const q = follow.q;
+  return follow.items.filter((f) => !q || f.name.toLowerCase().includes(q) || (f.sign || "").toLowerCase().includes(q));
+}
+function renderFollow() {
+  if (!follow || !follow.items) return;
+  const list = $("followList");
+  list.replaceChildren();
+  const shown = followShown();
+  if (!follow.items.length) list.appendChild(el("div", "empty", "你还没有关注任何 UP 主"));
+  else if (!shown.length) list.appendChild(el("div", "empty", "没有找到"));
+  for (const f of shown) {
+    const row = el("label", "frow" + (f.subscribed ? " had" : ""));
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = f.subscribed || follow.picked.has(f.mid);
+    box.disabled = f.subscribed;
+    box.onchange = () => {
+      if (box.checked && follow.picked.size >= followLeft()) {
+        box.checked = false;
+        toast(followLeft() ? "最多还能加 " + followLeft() + " 个 UP 主" : "UP 主已经满 12 个了，先在「订阅」里删掉几个", true);
+        return;
+      }
+      if (box.checked) follow.picked.add(f.mid); else follow.picked.delete(f.mid);
+      followSum();
+    };
+    const name = el("div", "n", f.name);
+    if (f.sign) name.appendChild(el("small", "", f.sign));
+    row.append(box, biliFace(f.face), name, el("span", "tag", f.subscribed ? "已订阅" : ""));
+    list.appendChild(row);
+  }
+  followSum();
+}
+function followSum() {
+  const had = follow.items.filter((f) => f.subscribed).length;
+  $("followSum").textContent = "关注了 " + follow.total + " 个（其中 " + had + " 个已订阅）· UP 主 " + follow.count + " / " + follow.max +
+    " · 选了 " + follow.picked.size + " 个，还能加 " + Math.max(0, followLeft() - follow.picked.size) + " 个" + (follow.note ? " · " + follow.note : "");
+  $("followGo").disabled = !follow.picked.size;
+}
+function followAll() {
+  if (!follow || !follow.items) return;
+  let cut = false;
+  for (const f of followShown()) {
+    if (f.subscribed || follow.picked.has(f.mid)) continue;
+    if (follow.picked.size >= followLeft()) { cut = true; break; }
+    follow.picked.add(f.mid);
+  }
+  if (cut) toast("只选了前 " + followLeft() + " 个：UP 主最多 " + follow.max + " 个", true);
+  renderFollow();
+}
+async function followImport() {
+  const btn = $("followGo");
+  const mids = Array.from(follow.picked);
+  await busy(btn, async () => {
+    toast("正在导入 " + mids.length + " 个 UP 主（每个要取一次投稿列表）…");
+    const answer = await call("POST", "api/bili/followings/import", { mids });
+    if (!follow) return;
+    if (!answer.ok) { toast(answer.error, true); return; }
+    const added = new Set(answer.added.map((a) => a.mid));
+    for (const f of follow.items) if (added.has(f.mid)) f.subscribed = true;
+    follow.count += answer.added.length;
+    follow.picked.clear();
+    const why = answer.skipped.map((x) => x.name + "（" + x.reason + "）");
+    follow.note = why.length ? "没加：" + why.slice(0, 4).join("、") + (why.length > 4 ? " 等 " + why.length + " 个" : "") : "";
+    toast(answer.added.length ? "导入了 " + answer.added.length + " 个 UP 主" + (why.length ? "，" + why.length + " 个没加" : "")
+          : "一个也没加：" + (why[0] || ""), !answer.added.length);
+    renderFollow();
+    refresh();
+  });
+}
 
 // ---------- 设置 → YouTube（家庭服务器和电脑客户端的管理员；接口见 server/relay/ytsettings.py） ----------
 
