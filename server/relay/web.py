@@ -79,6 +79,10 @@ YOUTUBE_HEALTH_S = 60
 CONFIG_SPARE_BYTES = 512
 # 剧集台的名字最多这么多个字符；手机上可以自己起名。
 SERIES_NAME_MAX = 20
+# 在电脑上看（直接看一个台）时的页面编号：页面自己随机生成，同一个页面换台只占一路。
+_VIEWER = re.compile(r"^[0-9a-f]{8,16}$")
+# 电脑上看到的位置大约比片源转出来的晚这么多秒（播放器从倒数第三段起放，见 console.html 的 WatchPlayer）。
+PC_BEHIND_S = 6.0
 # 没有设备时顶替的「设备」：不在线，什么事件也不写。
 NO_DEVICE = {"id": "", "name": "小电视", "now": None, "events": None, "channels": None, "groups": None,
              "remote": None, "owner": None, "model": "", "slot": "", "legacy": False}
@@ -160,6 +164,9 @@ class Relay:
         # 在电脑上看（watch.py）：只在自建 / 电脑客户端开；云端的小主机上行带宽不够，没有这个功能。
         self.watch = (watch_pc.WatchService(ffmpeg, watch_pc.derive_secret(key), log=lambda m: self.log(m))
                       if selfhost is not None and accounts is not None else None)
+        # 电脑上直接看 UP 主、剧集时各自的进度（和小电视的分开，只在内存里）：键是 (用户, 台)，
+        # 值是 {"bvid", "offset"（这一路从第几秒起）, "stream"（那一路，估计看到了哪里）}。
+        self._pc_cursor: dict[tuple, dict] = {}
         self.starter = starter
         self.pumper = pumper
         self._quick_failures: dict[tuple, int] = {}
@@ -990,9 +997,10 @@ class Relay:
         """(id, 显示名)：投屏台、UP 主、剧集，再接直播频道表。"""
         return self._rows_of(self._state_of(dev or self.target(LEGACY)))
 
-    def groups(self, dev: dict | None = None) -> list[dict]:
+    def groups(self, dev: dict | None = None, state: State | None = None) -> list[dict]:
+        """频道分组。state：按这份状态排（没有小电视的用户：自己的订阅），不给就按设备主人的。"""
         dev = dev or self.target(LEGACY)
-        state = self._state_of(dev)
+        state = state if state is not None else self._state_of(dev)
         overrides = self._overrides(state)
         grouped: dict[str, list[dict]] = {g: [] for g in channel_groups.GROUPS}
         for cid, name in self._rows_of(state, marked=False):
@@ -1100,7 +1108,7 @@ class Relay:
         return {"ok": True, "device": dev["id"], "name": dev["name"], "url": f"{path}live.m3u8?t={token}",
                 "bye": f"{path}bye?t={token}", "lead": info["lead"]}
 
-    def watch_start(self, caller: Caller = LEGACY, device: str | None = None) -> dict:
+    def watch_start(self, caller: Caller = LEGACY, device: str | None = None, viewer=None) -> dict:
         """电脑版「在电脑上看」：这台设备正在播的台的片源，转成 HLS 的地址（带短期令牌，watch.py）。
         只给设备的主人和成员：访客（扫访客码的）不行，别人的设备 404（_pick）。没开这个功能（云端）也 404。"""
         if self.watch is None:
@@ -1115,12 +1123,20 @@ class Relay:
         source = self._watch_source(dev, cid)
         if isinstance(source, str):
             return {"ok": False, "error": source}
+        if isinstance(viewer, str) and _VIEWER.match(viewer):
+            # 这个页面刚才在直接看一个台：改成跟随，那一路马上让出名额。
+            self.watch.close(self._pc_slot(caller, viewer))
         try:
-            stream = self.watch.open(dev["id"], source)
-        except watch_pc.Busy:
-            return {"ok": False, "error": f"已经有 {self.watch.max_streams} 路在电脑上看了，先关掉一路"}
+            stream = self.watch.open(dev["id"], source, user=caller.user)
+        except watch_pc.Busy as busy:
+            return {"ok": False, "error": self._watch_busy(busy)}
         return {"ok": True, "device": dev["id"], "sid": stream.sid, "channel": cid, "title": source.label,
                 "kind": source.key[0], "url": f"watch/{stream.sid}/{self.watch.token(stream)}/"}
+
+    def _watch_busy(self, busy: "watch_pc.Busy") -> str:
+        if busy.per_user:
+            return f"你已经在 {self.watch.max_per_user} 个地方在电脑上看了，先关掉一个"
+        return f"已经有 {self.watch.max_streams} 路在电脑上看了，先关掉一路"
 
     def _watch_source(self, dev: dict, cid: str):
         """设备正在播的 cid 的片源（watch.Source），或者给人看的原因（字符串）。
@@ -1133,22 +1149,205 @@ class Relay:
                 _, video, position, _ = self._current(dev)
             if video is None:
                 return "这个台还没开始放，过几秒再试"
-            key = ("video", cid, video.site, video.bvid)
-            if video.site == "youtube":
-                client = self.clients.get("youtube")
-                if client is None:
-                    return "YouTube 还没配置"
-                return watch_pc.Source(key, opener=lambda: client.open(video.bvid, position), paced=False,
-                                       label=video.title)
-            client = self.clients.get("bilibili")
-            return watch_pc.Source(key, url=lambda: client.media_url(video.bvid), user_agent=BILIBILI_UA,
-                                   referer=BILIBILI_REFERER, offset=position, label=video.title)
+            return self._video_source(("video", cid, video.site, video.bvid), video, position)
+        return self._live_source(cid)
+
+    def _video_source(self, key: tuple, video, position: float):
+        """一个视频（B 站、YouTube）的片源，从 position 秒起；YouTube 没配置时是原因（字符串）。"""
+        if video.site == "youtube":
+            client = self.clients.get("youtube")
+            if client is None:
+                return self._youtube_off("YouTube 还没配置")
+            return watch_pc.Source(key, opener=lambda: client.open(video.bvid, position), paced=False,
+                                   label=video.title, site="youtube", start=position)
+        client = self.clients.get("bilibili")
+        if client is None:
+            return "B 站还没配置"
+        return watch_pc.Source(key, url=lambda: client.media_url(video.bvid), user_agent=BILIBILI_UA,
+                               referer=BILIBILI_REFERER, offset=position, label=video.title, site="bilibili",
+                               start=position)
+
+    def _live_source(self, cid: str):
+        """全局频道表（main_channels）里的直播台：地址和 User-Agent；不在表里的是原因（字符串）。"""
         found = watch_pc.live_source(self.main_channels, cid)
         if found is None:
             return "找不到这个台的地址"
         url, agent = found
         name = next((n for c, n in channel_groups.read_table(self.main_channels) if c == cid), cid)
         return watch_pc.Source(("live", cid, url, agent), url=url, user_agent=agent, label=name)
+
+    # ---- 在电脑上看：直接看一个台（不经小电视） ----
+
+    @staticmethod
+    def _pc_slot(caller: Caller, viewer: str) -> str:
+        """直接看时这个页面占的位置：同一个页面换台只占一路；令牌绑的就是它（watch.WatchService）。"""
+        return f"pc{caller.user}-{viewer}"
+
+    def _pc_position(self, cursor: dict) -> float:
+        """电脑上大约看到了哪里：这一路的起点 + 转出来的秒数 − 播放器落后的那几秒。"""
+        stream = cursor.get("stream")
+        produced = stream.window.total_s if stream is not None else 0.0
+        return max(0.0, cursor["offset"] + produced - PC_BEHIND_S)
+
+    def watch_stop(self, caller: Caller, viewer) -> dict:
+        """页面上点了「关闭」：马上停掉这个页面直接看的那一路（跟随小电视的那一路是全家共用的，等它自己空闲停）。"""
+        if self.watch is None:
+            raise NotFound("watch")
+        if caller.guest or caller.user is None or not isinstance(viewer, str) or not _VIEWER.match(viewer):
+            return {"ok": False, "error": "请求格式不对"}
+        return {"ok": True, "stopped": self.watch.close(self._pc_slot(caller, viewer))}
+
+    def watch_direct(self, caller: Caller, device: str | None, body: dict) -> dict:
+        """电脑版「在电脑上看」一个台，不经小电视（没有小电视、小电视没在线、或者只想在电脑上看）。
+
+        body：viewer（页面编号）和下面之一——
+          channel：台 id。直播台要在全局频道表里；UP 主、剧集只能是自己订阅的（点名了别人的设备时
+                   不行：那台的频道表是主人的订阅）；cast 是点名设备的投屏位，没有设备时是自己最近投到电脑的。
+                   UP 主、剧集再可以带 episode（第几集 / 第几个，从 1 数）或 step（1 下一个，−1 上一个）。
+          url：视频链接，投到电脑（记进自己的投屏历史，不动任何设备的投屏位）。
+          video：{"site", "id"}，投屏历史里的一条，在电脑上重播。
+        进度：UP 主、剧集从小电视下次会播的地方起（只读），之后电脑上的进度另记（_pc_cursor），
+        不标看过、不存进度——小电视的剧集不会因为在电脑上看了而往后推。
+        """
+        if self.watch is None:
+            raise NotFound("watch")
+        if caller.guest or caller.user is None:
+            return {"ok": False, "error": "访客不能在电脑上看，请用家里人的账号登录"}
+        viewer = body.get("viewer")
+        if not isinstance(viewer, str) or not _VIEWER.match(viewer):
+            viewer = "0"
+        dev = self.find_device(device, caller) if device else None
+        account = self._account(caller)
+        cid, name, extra = "cast", table.CAST_LABEL, {}
+        if body.get("url") is not None or body.get("video") is not None:
+            found = self._pc_cast(account, body.get("url"), body.get("video"))
+            if isinstance(found, str):
+                return {"ok": False, "error": found}
+            source = self._video_source(("video", "pc", found.site, found.bvid), found, 0.0)
+        else:
+            cid = body.get("channel")
+            if not isinstance(cid, str) or not cid:
+                return {"ok": False, "error": "请求格式不对"}
+            if cid == table.CAST_ID:
+                source = self._pc_cast_channel(account, dev)
+            elif _relay_channel(cid):
+                if dev is not None and dev.get("owner") != caller.user:
+                    return {"ok": False, "error": f"这是{dev['name']}主人订阅的台，在电脑上只能看自己订阅的"}
+                source, name, extra = self._pc_subscription(caller, account, cid, body)
+            elif self.main_channels is not None and \
+                    cid in {c for c, _ in channel_groups.read_table(self.main_channels)}:
+                source = self._live_source(cid)
+                name = source.label if not isinstance(source, str) else cid
+            else:
+                return {"ok": False, "error": "没有这个台"}
+        if isinstance(source, str):
+            return {"ok": False, "error": source}
+        try:
+            stream = self.watch.open(self._pc_slot(caller, viewer), source, user=caller.user)
+        except watch_pc.Busy as busy:
+            return {"ok": False, "error": self._watch_busy(busy)}
+        cursor = self._pc_cursor.get((caller.user, cid))
+        if _relay_channel(cid) and cid != table.CAST_ID and source.key[0] == "video" and \
+                (cursor is None or cursor.get("stream") is not stream):
+            self._pc_cursor[(caller.user, cid)] = {"bvid": source.key[3], "offset": source.start, "stream": stream}
+        if source.key[0] == "video":
+            extra["video"] = {"site": source.key[2], "id": source.key[3]}
+        return {"ok": True, "sid": stream.sid, "channel": cid, "name": name, "title": source.label,
+                "kind": source.key[0], "url": f"watch/{stream.sid}/{self.watch.token(stream)}/", **extra}
+
+    def _pc_cast(self, account: State, text, video):
+        """投到电脑的视频：链接（取视频信息，记进投屏历史）或投屏历史里的一条。返回 Video 或原因。"""
+        if video is not None:
+            if not isinstance(video, dict) or not isinstance(video.get("site"), str) \
+                    or not isinstance(video.get("id"), str):
+                return "请求格式不对"
+            entry = account.history_entry(video["site"], video["id"])
+            if entry is None:
+                return "历史里没有这个视频"
+            if self.clients.get(video["site"]) is None:
+                return self._youtube_off("YouTube 还没配置好")
+            return Video(bvid=video["id"], title=entry.get("title", ""), duration=0, pubdate=0, site=video["site"])
+        text = text.strip() if isinstance(text, str) else ""
+        if not text:
+            return "请先粘贴视频链接"
+        site = _site_of(text)
+        if self.clients.get(site) is None:
+            return self._youtube_off("YouTube 还没配置好，暂时只能看 B 站视频")
+        try:
+            bvid = self.clients[site].video_id(text)
+            if bvid is None:
+                return "看不懂这个链接。请粘贴视频链接（App 里“分享 → 复制链接”）"
+            found = self.clients[site].video(bvid)
+        except SourceError as error:
+            self.log(f"投到电脑失败：{error}")
+            if error.permanent:
+                return "这个视频放不了（可能已删除、私享或需要会员）"
+            return f"{_SITE_NAMES[site].strip()}连不上：检查路由器或代理" if site == "bilibili" \
+                else f"{_SITE_NAMES[site].strip()}暂时取不到，请稍后再试"
+        account.remember(found, at=self.clock())
+        account.save()
+        self.log(f"投到电脑 {found.bvid} 《{found.title}》")
+        return found
+
+    def _pc_cast_channel(self, account: State, dev: dict | None):
+        """「我的投屏」台：点名设备时是那台的投屏位（从它存的进度起），没有设备时是自己最近投的那个。"""
+        if dev is not None:
+            slot = self._cast_of(dev)
+            with slot.lock:
+                video, position, done = slot.cast, slot.cast_position, slot.cast_done
+            if video is None:
+                return "还没有投过视频：到「投屏」页粘贴链接"
+            start = 0.0 if done else max(0.0, position - RESUME_BACK_S)
+            return self._video_source(("video", "cast", video.site, video.bvid), video, start)
+        with account.lock:
+            latest = dict(account.history[0]) if account.history else None
+        if latest is None:
+            return "还没有投过视频：到「投屏」页粘贴链接，点「投到电脑」"
+        video = Video(bvid=latest["id"], title=latest.get("title", ""), duration=0, pubdate=0, site=latest["site"])
+        return self._video_source(("video", "pc", video.site, video.bvid), video, 0.0)
+
+    def _pc_subscription(self, caller: Caller, account: State, cid: str, body: dict):
+        """自己订阅的 UP 主、剧集：(片源或原因, 台名, 回答里多给的 {episode, total, index})。"""
+        creator = account.get(cid)
+        if creator is None:
+            return "没有这个台", cid, {}
+        self.refresh_if_stale(cid, account)
+        with account.lock:
+            videos = list(creator.videos)
+            positions = dict(creator.positions)
+        if not videos:
+            return "这个台还没有视频（列表取不到，过一会儿再试）", creator.name, {}
+        ids = [v.bvid for v in videos]
+
+        def saved(video) -> float:
+            # 小电视存的进度（只读）：和 State.next_video 一样往回退一点接上前情。
+            return max(0.0, positions[video.bvid] - RESUME_BACK_S) if video.bvid in positions else 0.0
+
+        cursor = self._pc_cursor.get((caller.user, cid))
+        here = cursor["bvid"] if cursor is not None and cursor["bvid"] in ids else None
+        episode, step = body.get("episode"), body.get("step")
+        if isinstance(episode, int) and not isinstance(episode, bool):
+            if not 1 <= episode <= len(videos):
+                return f"没有第 {episode} 集", creator.name, {}
+            video = videos[episode - 1]
+            offset = self._pc_position(cursor) if here == video.bvid else saved(video)
+        elif isinstance(step, int) and not isinstance(step, bool) and step in (-1, 1):
+            base = here or (account.peek_video(cid) or videos[0]).bvid
+            video = videos[(ids.index(base) + step) % len(videos)]
+            offset = 0.0
+        elif here is not None:
+            video = videos[ids.index(here)]
+            offset = self._pc_position(cursor)
+        else:
+            video = account.peek_video(cid) or videos[0]
+            offset = saved(video)
+        if video.duration and offset >= video.duration - 5:
+            offset = 0.0
+        n = ids.index(video.bvid) + 1
+        extra = {"index": n, "total": len(videos), "series": creator.kind == "series"}
+        if creator.kind == "series":
+            extra["episode"] = n
+        return self._video_source(("video", cid, video.site, video.bvid), video, offset), creator.name, extra
 
     def youtube_state(self) -> str:
         """ok / login（cookies 过期）/ error / unknown / unreachable（节点连不上）。"""
@@ -1228,11 +1427,12 @@ class Relay:
     def summary(self, caller: Caller = LEGACY, device: str | None = None) -> dict:
         # device：电脑版点名看哪一台（不改手机选的那台）；别人的设备 NotFound。
         dev = self._pick(caller, device) if device else self.target(caller)
-        groups = self.groups(dev)
         try:
             account = self._account(caller)
         except NotFound:
             account = None
+        # 没有小电视的用户：频道表按自己的订阅排（电脑上看用），而不是空的。
+        groups = self.groups(dev, account if self.tenant and not dev["id"] and account is not None else None)
         creators, series, history = [], [], []
         if account is not None:
             with account.lock:
@@ -2042,7 +2242,14 @@ def _manage_handler(relay: Relay):
                 self._json(relay.listen(caller, device))
                 return
             if path == "/api/watch":
-                self._json(relay.watch_start(caller, device))
+                if any(body.get(k) is not None for k in ("channel", "url", "video")):
+                    # 直接看一个台（不经小电视），见 Relay.watch_direct。
+                    self._json(relay.watch_direct(caller, device, body))
+                else:
+                    self._json(relay.watch_start(caller, device, body.get("viewer")))
+                return
+            if path == "/api/watch/stop":
+                self._json(relay.watch_stop(caller, body.get("viewer")))
                 return
             if path == "/api/pet":
                 self._json(relay.set_pet(body.get("pet"), caller, device))

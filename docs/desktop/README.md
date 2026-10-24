@@ -207,6 +207,29 @@ The menu is in Chinese in the product; in order:
 
 Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
 
+## Watch on the PC, even without a TV
+
+The console's Remote page (tray → "Open the console") plays channels right in this computer's browser, with the
+source's own picture and sound:
+
+- **No TV, or the TV is offline**: the channel grid says "click to watch on this computer", and a click plays that
+  channel in the player at the top of the page. An account without a TV still gets the channel table (CCTV,
+  provincial channels…), its own creator and series subscriptions, Bilibili search and casting; the cast page's
+  button becomes "cast to this computer". When you get a TV later, enter the code on its screen on the Devices page.
+- **The TV is online**: above the grid, "on click: switch the TV ｜ watch on this computer" picks what a click does
+  (remembered in this browser). "Watch on this computer" plays on the PC without touching the TV. Ticking "follow the
+  TV" in the player switches to watching whatever the TV is showing.
+- The player has previous/next channel (within the tab you clicked in), next video/episode for creators and series,
+  and close. When a video ends the next one starts. When Bilibili or YouTube cannot be reached, the player says so
+  (for example "Bilibili cannot be reached: check the router or proxy").
+- **Separate progress**: creators and series start where the TV would play next; watching on the PC never marks the
+  TV's videos watched or moves its saved position. The PC's own place is kept in memory (forgotten when the client
+  restarts, which then starts from the TV's place again). Picking an episode on the PC also plays only on the PC.
+- Only channels from the global channel table and your own subscriptions (not the owner's channels on a shared TV);
+  people signed in with a guest code cannot use it.
+- Transcoding runs only while the player is open and stops at once on close; at most 3 streams on the computer and
+  2 per person (two computers or two pages).
+
 ## Data, updates and uninstalling
 
 | OS | Data (database, keys, channel table) | Logs |
@@ -336,6 +359,9 @@ Developer notes (code map, building, CI, the interface with the core):
 - The Linux tray (GNOME has no tray area by default).
 - YouTube local mode on Windows and Linux (written for them, run only on a Mac), and how often YouTube
   asks for sign-in with imported cookies (on the Mac, through a proxy, it asked every time without).
+- Watching a channel directly on the PC: seen in a browser on a Mac only with a local test source (a short test
+  video over local HTTP); real Bilibili and YouTube sources were exercised only with canned answers in unit tests,
+  and browsers on Windows have not been tried.
 
 ## Disclaimer
 

@@ -166,6 +166,16 @@
   .watchmsg.bad { color: var(--red); }
   .watchmsg button { pointer-events: auto; margin-top: 10px; }
   .watch .hint { max-width: calc(62vh * 16 / 9); }
+  .watchctl .ghost { padding: 5px 12px; font-size: 14px; }
+  .chcard.pcair { border-color: var(--red); }
+  .chcard.pcair .t, .chcard.pcair .n span { color: var(--paper-hi); }
+  /* 点台时：换小电视的台 ｜ 在电脑上看（小电视在线时才有） */
+  .tapmode { display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px; font: 14px var(--serif); color: var(--faint); }
+  .tapmode button { background: none; border: 0; padding: 2px 0 4px; color: var(--dim); font: 14px var(--serif); }
+  .tapmode button:hover { color: var(--paper); }
+  .tapmode button.on { color: var(--paper-hi); box-shadow: inset 0 -2px 0 var(--red); }
+  .notv { margin: 14px 0 0; padding: 10px 14px; border-left: 2px solid var(--amber); background: var(--ink-deep);
+          font: 14px/1.6 var(--serif); color: var(--paper); }
 
   /* ---- 表格（设备、订阅、投屏历史、登录列表、邀请） ---- */
   table { width: 100%; border-collapse: collapse; }
@@ -340,7 +350,10 @@
         <div class="watchhead">
           <div><b>在电脑上看</b><span id="watchWhat"></span></div>
           <div class="watchctl">
-            <label class="follow" title="小电视换台、换下一个视频时，电脑上也跟着换"><input type="checkbox" id="watchFollow" checked>跟随小电视换台</label>
+            <button class="ghost" id="watchPrevCh" title="这一组里的上一个台">上一台</button>
+            <button class="ghost" id="watchNextCh" title="这一组里的下一个台">下一台</button>
+            <button class="ghost" id="watchNextVid">下一个</button>
+            <label class="follow" id="watchFollowBox" title="小电视换台、换下一个视频时，电脑上也跟着换"><input type="checkbox" id="watchFollow" checked>跟随小电视换台</label>
             <button class="ghost" id="watchClose">关闭</button>
           </div>
         </div>
@@ -371,16 +384,18 @@
               <label class="dial"><span>亮度</span><input type="range" id="bri" min="0" max="4" step="1" value="0"><b id="briv">--</b></label>
               <div class="dial"><span>只听</span><em id="listenNote">只放声音，屏幕只显示宠物</em><button class="switch" id="listen">关</button></div>
             </div>
-            <div class="pets">
+            <div class="pets" id="pets">
               <div class="h3">宠物 <small id="petNote"></small></div>
               <div class="petgrid" id="petgrid"></div>
             </div>
           </div>
         </div>
         <div>
+          <div class="tapmode" id="tapmode" hidden><span>点台时：</span><button data-tap="tv">换小电视的台</button><span>｜</span><button data-tap="pc">在电脑上看</button></div>
           <div class="groups" id="groups"></div>
           <div class="grid" id="channels"></div>
-          <p class="hint">点一下，小电视就换到这个台。<button class="linkbtn noguest" id="adjust">调整分组</button></p>
+          <p class="hint"><span id="tapHint">点一下，小电视就换到这个台。</span><button class="linkbtn noguest" id="adjust">调整分组</button></p>
+          <p class="notv" id="noTv" hidden>还没有小电视？以后买了扫码绑定就行（「设备」页输入小电视屏幕上的绑定码）。现在点上面的台，就在这台电脑上看。</p>
           <p class="hint noguest">手机上还没有遥控？<button class="linkbtn" id="phoneLink1">让手机登录 ›</button></p>
         </div>
       </div>
@@ -416,7 +431,7 @@
             <button class="go" id="addCreator">添加</button>
           </div>
           <table><tbody id="creatorRows"></tbody></table>
-          <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播（只轮播最新的 20 个）。「在小电视上播放」换到右上角选的那台。</p>
+          <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播（只轮播最新的 20 个）。<span id="subsHint">「在小电视上播放」换到右上角选的那台。</span></p>
         </div>
         <div class="block">
           <div class="h3">剧集 <small id="seriesCount"></small></div>
@@ -454,7 +469,7 @@
       <div class="block" style="max-width: 760px">
         <div class="h3">粘贴即播 <small id="castTo"></small></div>
         <textarea id="castLink" placeholder="粘贴 B 站或 YouTube 视频链接"></textarea>
-        <div class="inline" style="margin-top: 10px"><button class="go" id="castGo">在小电视上播放</button></div>
+        <div class="inline" style="margin-top: 10px"><button class="go" id="castGo">在小电视上播放</button><button class="ghost" id="castPc" hidden title="不经小电视，在这台电脑上放（记进「放过的」）">投到电脑</button></div>
         <p class="hint" id="castYt" hidden>YouTube 还没开启：去<button class="linkbtn" id="castYtGo">「设置 → YouTube」</button>填代理即可</p>
       </div>
       <div class="block noguest">
@@ -839,6 +854,7 @@ function render() {
   renderDials();
   renderPets();
   renderWatch();
+  renderTapMode();
   renderGroups();
   renderChannels();
   renderSubs();
@@ -877,7 +893,10 @@ function renderPicker() {
     b.onclick = () => pick(d.id);
     box.appendChild(b);
   }
-  $("castTo").textContent = list.length ? "投到：" + deviceName() : "";
+  $("castTo").textContent = list.length ? "投到：" + deviceName() : data.watch ? "投到：这台电脑" : "";
+  $("castGo").hidden = !list.length && !!data.watch;
+  $("castPc").hidden = !data.watch;
+  $("castPc").className = list.length ? "ghost" : "go";
 }
 
 function pick(id) {
@@ -924,7 +943,8 @@ function renderScreen() {
     cls += " off"; ch = "— —"; grp = "";
     const none = !(data.devices || []).length;
     nm = none ? "还没有绑定小电视" : deviceName() + "没在线";
-    ti = none ? "到「设备」页输入小电视屏幕上的绑定码" : "打开小电视后这里会显示正在播的台";
+    ti = data.watch ? (none ? "现在点右边的台，就在这台电脑上看" : "现在点右边的台，就在这台电脑上看；打开小电视后这里会显示它正在播的台")
+      : none ? "到「设备」页输入小电视屏幕上的绑定码" : "打开小电视后这里会显示正在播的台";
   }
   screen.className = cls;
   $("ch").textContent = ch;
@@ -984,6 +1004,7 @@ $("seek").addEventListener("input", () => { dragging = true; $("pos").textConten
 $("seek").addEventListener("change", () => { dragging = false; control("api/seek", { position: Number($("seek").value) }); });
 
 function renderDials() {
+  $("dials").hidden = $("pets").hidden = !hasTv();      // 没有小电视：音量、亮度、宠物都用不上
   const d = data.now.online ? data.now.device : null;
   $("dials").className = "dials" + (d ? "" : " off");
   $("vol").disabled = $("bri").disabled = !d;
@@ -1057,12 +1078,28 @@ function renderPets() {
 }
 
 // ---------- 在电脑上看 ----------
-// 自建 / 电脑客户端才有（/api/state 的 watch）：中转把小电视正在播的台的片源转成 HLS（fMP4 段），
-// 这里用浏览器自带的 MediaSource 一段段接上放（server/relay/watch.py）。和小电视不同步：各自从片源取。
+// 自建 / 电脑客户端才有（/api/state 的 watch）：中转把片源转成 HLS（fMP4 段），这里用浏览器自带的
+// MediaSource 一段段接上放（server/relay/watch.py）。两种看法：
+// - 跟随（mode "follow"）：看选中的小电视正在播的台，小电视换台这里也跟着换；和小电视不同步，各自从片源取。
+// - 直接看（mode "direct"）：没有小电视、小电视没在线，或者「点台时：在电脑上看」——点哪个台就在电脑上放哪个，
+//   不动小电视（web.py 的 watch_direct）。UP 主和剧集从小电视下次会播的地方起，电脑上的进度另记，不标看过。
 
-let watching = null;      // {device, sid, key, player, busy}
+let watching = null;      // {mode, device, sid, key, player, busy, channel, group, name, title, kind, index, total, series, again}
+// 这个页面的编号：同一个页面换台只占一路（每个用户最多两路）；每次打开页面换一个。
+const viewer = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, "0")).join("");
+// 小电视在线时，点台是换小电视的台（"tv"）还是在电脑上看（"pc"）：每个浏览器记一份。
+let tapMode = "tv";
+try { tapMode = localStorage.getItem("console.tap") === "pc" ? "pc" : "tv"; } catch (error) {}
 
 function watchKey(now) { return [now.channel, now.title, now.episode].join("|"); }
+function hasTv() { return !!(data && (data.devices || []).length); }
+function tvOnline() { return !!(data && data.now.online && data.now.channel); }
+// 点台、点集、投屏是不是放到电脑上：能在电脑上看，并且没有小电视、小电视没在线，或者选了「在电脑上看」。
+function pcTap() { return !!(data && data.watch) && (!tvOnline() || tapMode === "pc"); }
+function groupOf(id) {
+  const g = data && data.groups.find((x) => x.channels.some((c) => c.id === id));
+  return g ? g.name : "";
+}
 
 function watchSay(text, bad, retry) {
   const box = $("watchMsg");
@@ -1070,17 +1107,21 @@ function watchSay(text, bad, retry) {
   box.replaceChildren();
   if (!text) return;
   box.appendChild(el("div", "", text));
-  if (retry) box.appendChild(button("重试", "ghost", () => startWatch(false, true)));
+  if (retry) box.appendChild(button("重试", "ghost", retryWatch));
+}
+function retryWatch() {
+  if (watching && watching.mode === "direct") startDirect(watching.again, { group: watching.group, again: true });
+  else startWatch(false, true);
 }
 
 // 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
 class WatchPlayer {
-  constructor(video, base, say) {
+  constructor(video, base, say, ended) {
     this.video = video; this.base = base; this.say = say;
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false;
     this.onWaiting = () => this.kick();
     // 放完了：视频播完，或者直播源断了。跟随小电视时，小电视换到下一个就会自动接上。
-    this.onEnded = () => { if (this.alive) this.say("这一段放完了", false, true); };
+    this.onEnded = () => { if (this.alive) ended(); };
     video.addEventListener("waiting", this.onWaiting);
     video.addEventListener("ended", this.onEnded);
   }
@@ -1111,14 +1152,14 @@ class WatchPlayer {
       if (this.alive) this.say(error.message || "放不了", true, true);
     }
   }
-  // 取一个文件：503（还在连片源）过一会儿再来；410 是这一路停了，正文是原因；404 是地址失效了。
+  // 取一个文件：503（还在连片源）过一会儿再来；410 是这一路停了，正文是原因（B 站连不上之类）；404 是地址失效了。
   async fetch(name, kind) {
     for (let round = 0; ; round++) {
       if (!this.alive) throw new Error("");
       const response = await fetch(this.base + name, { credentials: "same-origin", cache: "no-store" });
       if (response.ok) return response[kind]();
       if (response.status === 503 && round < 8) { await sleep(1000); continue; }
-      if (response.status === 410) throw new Error("片源断了：" + (await response.text()));
+      if (response.status === 410) throw new Error((await response.text()) || "片源断了");
       if (response.status === 404 && name.endsWith(".m4s")) return null;      // 落在窗口外了，跳过
       throw new Error(response.status === 404 ? "这一路已经停了" : "片源还没准备好");
     }
@@ -1196,12 +1237,27 @@ class WatchPlayer {
     v.load();
   }
 }
+function playerFor(answer) {
+  if (watching) watching.player.stop();
+  $("watch").hidden = false;
+  return new WatchPlayer($("watchVideo"), answer.url, watchSay, watchEnded);
+}
 
+// 一个视频放完了：直接看 UP 主、剧集时接着放下一个（下一集），像小电视一样；别的停在这里，可以重试。
+function watchEnded() {
+  if (watching && watching.mode === "direct" && watching.kind === "video" && /^(up|sr)\d\d$/.test(watching.channel)) {
+    startDirect({ channel: watching.channel, step: 1 }, { group: watching.group });
+    return;
+  }
+  watchSay(watching && watching.kind === "live" ? "直播断了" : "这一段放完了", false, true);
+}
+
+// 跟随小电视：看它正在播的台。
 async function startWatch(auto, again) {
   const device = deviceId(), key = watchKey(data.now);
   if (watching) watching.busy = true;
   let answer;
-  try { answer = await call("POST", "api/watch", withDevice({})); }
+  try { answer = await call("POST", "api/watch", withDevice({ viewer })); }
   catch (error) {
     if (watching) watching.busy = false;
     if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
@@ -1209,48 +1265,133 @@ async function startWatch(auto, again) {
   }
   if (!answer.ok) {
     if (watching && auto) { watching.key = key; watching.busy = false; watchSay(answer.error, true, true); }
-    else toast(answer.error, true);
+    else { if (watching) watching.busy = false; toast(answer.error, true); }
     return;
   }
-  if (watching && watching.sid === answer.sid && watching.device === device && !again) {
+  if (watching && watching.mode === "follow" && watching.sid === answer.sid && watching.device === device && !again) {
     watching.key = key; watching.busy = false; return;       // 还是同一个片源，接着放
   }
-  if (watching) watching.player.stop();
-  $("watch").hidden = false;
-  const player = new WatchPlayer($("watchVideo"), answer.url, watchSay);
-  watching = { device, sid: answer.sid, key, player, busy: false };
+  const player = playerFor(answer);
+  watching = { mode: "follow", device, sid: answer.sid, key, player, busy: false, channel: answer.channel, kind: answer.kind };
+  $("watchFollow").checked = true;
   $("watchWhat").textContent = deviceName() + " · " + (data.now.name || answer.channel) + (answer.title && answer.title !== data.now.name ? " · " + answer.title : "");
   renderWatch();
   player.start();
 }
 
+// 直接看：body 是 {channel[, episode | step]}、{url}（投到电脑）或 {video: {site, id}}（投屏历史）。
+async function startDirect(body, ctx) {
+  ctx = ctx || {};
+  if (watching) watching.busy = true;
+  let answer;
+  try { answer = await call("POST", "api/watch", withDevice(Object.assign({ viewer }, body))); }
+  catch (error) {
+    if (watching) watching.busy = false;
+    if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
+    return false;
+  }
+  if (!answer.ok) {
+    if (watching) watching.busy = false;
+    toast(answer.error, true);
+    return false;
+  }
+  if (page !== "remote") go("remote");
+  const same = watching && watching.mode === "direct" && watching.sid === answer.sid && !ctx.again;
+  const player = same ? watching.player : playerFor(answer);
+  // 重试用的请求：不再「下一个」，而是回到这一个（UP 主、剧集按第几个；投屏的按视频）。
+  const again = answer.index ? { channel: answer.channel, episode: answer.index }
+    : answer.channel === "cast" && answer.video ? { video: answer.video } : { channel: answer.channel };
+  watching = { mode: "direct", device: deviceId(), sid: answer.sid, key: "", player, busy: false, channel: answer.channel,
+               group: ctx.group || groupOf(answer.channel), name: answer.name, title: answer.title, kind: answer.kind,
+               index: answer.index || 0, total: answer.total || 0, series: !!answer.series, again };
+  $("watchFollow").checked = false;
+  const what = answer.series ? "第 " + answer.index + " / " + answer.total + " 集" + (answer.title ? " · " + answer.title : "")
+    : answer.title && answer.title !== answer.name ? answer.title : "";
+  $("watchWhat").textContent = "这台电脑 · " + (answer.name || answer.channel) + (what ? " · " + what : "");
+  render();
+  if (!same) {
+    player.start();
+    $("watch").scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  return true;
+}
+
 function stopWatch() {
-  if (watching) watching.player.stop();
+  if (watching) {
+    watching.player.stop();
+    // 直接看的那一路只给这个页面用：马上停，让出名额（跟随的那一路全家共用，没人看 20 秒后自己停）。
+    if (watching.mode === "direct") call("POST", "api/watch/stop", { viewer }).catch(() => {});
+  }
   watching = null;
   watchSay("");
   $("watch").hidden = true;
-  if (data) renderWatch();
+  if (data) render();
+}
+
+// 上一台 / 下一台：在点台时的那一组里挨着换。
+function stepChannel(delta) {
+  if (!watching || watching.mode !== "direct" || watching.busy) return;
+  const g = data.groups.find((x) => x.name === watching.group && x.channels.some((c) => c.id === watching.channel))
+    || data.groups.find((x) => x.channels.some((c) => c.id === watching.channel));
+  if (!g) return;
+  const list = g.channels, at = list.findIndex((c) => c.id === watching.channel);
+  const next = list[(at + delta + list.length) % list.length];
+  startDirect({ channel: next.id }, { group: g.name });
 }
 
 function renderWatch() {
   const can = !!data.watch;
-  $("watchbar").hidden = !can;
+  const online = tvOnline();
+  // 小电视在线时才有「在电脑上看它正在播的」；没在线时点台就是在电脑上看，这个按钮不要了。
+  $("watchbar").hidden = !can || !online;
   if (!can) { if (watching) stopWatch(); return; }
-  const online = data.now.online && !!data.now.channel;
   const open = $("watchOpen");
-  open.disabled = !online || !!watching;
-  open.textContent = watching ? "正在电脑上看" : online ? "在电脑上看" : "在电脑上看（" + deviceName() + "没在线）";
+  const following = watching && watching.mode === "follow";
+  open.disabled = !!following;
+  open.textContent = following ? "正在电脑上看" : watching ? "改成跟着小电视看" : "在电脑上看";
   if (!watching) return;
+  const direct = watching.mode === "direct";
+  $("watchPrevCh").hidden = $("watchNextCh").hidden = !direct;
+  const video = direct && watching.kind === "video" && /^(up|sr)\d\d$/.test(watching.channel);
+  $("watchNextVid").hidden = !video;
+  $("watchNextVid").textContent = watching.series ? "下一集" : "下一个";
+  $("watchFollowBox").hidden = !online;
   const d = data.now.device;
-  $("watchNote").textContent = "电脑上的画面和小电视不同步：两边各自从片源取，电脑上通常晚几秒到十几秒。"
-    + (d && d.audio_only === 1 ? "小电视现在「只听」，电脑上照样有画面。" : "")
-    + "只在开着这个画面时才转（多用一点这台电脑的 CPU 和网络），关掉约 20 秒后自动停。";
+  $("watchNote").textContent = direct
+    ? "直接在电脑上看，不动小电视。" + (video ? "从小电视下次会播的地方起；电脑上看的进度另记，不会把小电视那边标成看过。" : "")
+      + "只在开着这个画面时才转，关掉后马上停。"
+    : "电脑上的画面和小电视不同步：两边各自从片源取，电脑上通常晚几秒到十几秒。"
+      + (d && d.audio_only === 1 ? "小电视现在「只听」，电脑上照样有画面。" : "")
+      + "只在开着这个画面时才转（多用一点这台电脑的 CPU 和网络），关掉约 20 秒后自动停。";
   // 跟随：小电视换了台（或下一个视频）、电脑版换了设备，就重新要一次地址；还是同一个片源时不打断。
-  if ($("watchFollow").checked && online && !watching.busy &&
+  if (!direct && $("watchFollow").checked && online && !watching.busy &&
       (watchKey(data.now) !== watching.key || watching.device !== deviceId())) startWatch(true);
 }
 $("watchOpen").onclick = () => startWatch(false);
 $("watchClose").onclick = stopWatch;
+$("watchPrevCh").onclick = () => stepChannel(-1);
+$("watchNextCh").onclick = () => stepChannel(1);
+$("watchNextVid").onclick = () => { if (watching && !watching.busy) startDirect({ channel: watching.channel, step: 1 }, { group: watching.group }); };
+$("watchFollow").onchange = () => { if ($("watchFollow").checked && watching && watching.mode === "direct") startWatch(false); };
+
+function renderTapMode() {
+  const show = !!data.watch && tvOnline();
+  $("tapmode").hidden = !show;
+  for (const b of document.querySelectorAll("#tapmode button")) b.classList.toggle("on", b.dataset.tap === tapMode);
+  const pc = pcTap();
+  $("tapHint").textContent = !pc ? "点一下，小电视就换到这个台。"
+    : !hasTv() ? "点一下，在电脑上看。"
+    : !tvOnline() ? "点一下，在电脑上看（" + deviceName() + "没在线）。"
+    : "点一下，在电脑上看（不动小电视）。";
+  $("noTv").hidden = hasTv() || !me || me.role === "guest";
+}
+for (const b of document.querySelectorAll("#tapmode button")) {
+  b.onclick = () => {
+    tapMode = b.dataset.tap;
+    try { localStorage.setItem("console.tap", tapMode); } catch (error) {}
+    if (data) render();
+  };
+}
 
 function renderGroups() {
   const names = data.groups.map((g) => g.name);
@@ -1276,9 +1417,12 @@ function renderChannels() {
   for (const c of current.channels) {
     const air = !pending && c.id === data.now.channel && data.now.online;
     const going = pending && pending.kind === "switch" && c.id === pending.channel;
-    const card = el("button", "chcard" + (air ? " air" : "") + (going ? " pending" : ""));
+    const pc = watching && watching.mode === "direct" && watching.channel === c.id;
+    const card = el("button", "chcard" + (air ? " air" : "") + (going ? " pending" : "") + (pc ? " pcair" : ""));
+    if (pcTap()) card.title = "点一下，在电脑上看";
     const n = el("div", "n", pad(c.n));
-    n.appendChild(el("span", "", going ? "切换中…" : air ? "播放中" : sites[c.id] ? siteTag(sites[c.id]) : c.id === "cast" ? "投屏" : ""));
+    n.appendChild(el("span", "", going ? "切换中…" : pc ? "电脑上在放" : air ? (pcTap() ? "小电视在播" : "播放中")
+      : sites[c.id] ? siteTag(sites[c.id]) : c.id === "cast" ? "投屏" : ""));
     card.append(n, el("div", "t", c.name));
     if (adjusting && movable) {
       const select = el("select");
@@ -1299,6 +1443,7 @@ function renderChannels() {
       card.appendChild(select);
     } else {
       card.onclick = () => busy(card, async () => {
+        if (pcTap()) { if (!pc) await startDirect({ channel: c.id }, { group }); return; }
         if (air || going) return;
         const answer = await call("POST", "api/switch", withDevice({ channel: c.id }));
         if (answer.ok) startPending(c.id, c.name, answer.at, !movable);
@@ -1367,15 +1512,16 @@ function renderEpisodes(scroll) {
   list.replaceChildren(frag);
   $("epName").textContent = eps.name;
   $("epSum").textContent = "共 " + eps.total + " 集 · " + (eps.playing ? "正在播第 " + eps.playing + " 集" : "下次从第 " + eps.next + " 集播")
-    + " · 点一集，" + deviceName() + "就从这一集播";
+    + (pcTap() ? " · 点一集，在电脑上看这一集（不动小电视的进度）" : " · 点一集，" + deviceName() + "就从这一集播");
   if (scroll) { const cur = list.querySelector(".ep.cur"); if (cur) cur.scrollIntoView({ block: "center" }); }
 }
 $("epList").onclick = async (event) => {
   const row = event.target.closest(".ep");
   if (!row || !eps || epPending) return;
   const n = Number(row.dataset.n);
-  if (n === eps.playing) { toast("正在播这一集"); return; }
   const id = eps.id, name = eps.name;
+  if (pcTap()) { closeOverlays(); startDirect({ channel: id, episode: n }, { group: groupOf(id) }); return; }
+  if (n === eps.playing) { toast("正在播这一集"); return; }
   epPending = n;
   renderEpisodes(false);
   try {
@@ -1437,10 +1583,25 @@ function playButton(item) {
   b.title = target.ok ? "换到这个台：" + target.name : target.why;
   return b;
 }
+function pcButton(item) {
+  return button("在电脑上看", "linkbtn play", (event) => {
+    event.stopPropagation();
+    startDirect({ channel: item.id }, { group: groupOf(item.id) });
+  });
+}
+// 订阅的一行的按钮：有小电视时「在小电视上播放」；能在电脑上看时「在电脑上看」。
+function subButtons(item) {
+  const list = [];
+  if (hasTv()) list.push(playButton(item));
+  if (data.watch) list.push(pcButton(item));
+  return list;
+}
 function onAir(id) { return data.now && data.now.online && data.now.channel === id; }
 
 function renderSubs() {
   if (!me || me.role === "guest") return;
+  $("subsHint").textContent = (hasTv() ? "「在小电视上播放」换到右上角选的那台。" : "")
+    + (data.watch ? "「在电脑上看」不经小电视，直接在这台电脑上放。" : "");
   const ups = $("creatorRows");
   ups.replaceChildren();
   $("upCount").textContent = data.creators.length + " / 12";
@@ -1450,7 +1611,7 @@ function renderSubs() {
     const name = el("td", "t", c.name);
     name.appendChild(el("span", "sub", upMeta(c) + (onAir(c.id) ? " · 正在播" : "")));
     const a = el("td", "a");
-    a.append(playButton(c), removeButton("creators", c));
+    a.append(...subButtons(c), removeButton("creators", c));
     tr.append(name, a);
     ups.appendChild(tr);
   }
@@ -1465,7 +1626,7 @@ function renderSubs() {
     const name = el("td", "t", s.name);
     name.appendChild(el("span", "sub", siteTag(s.site) + " · 第 " + s.episode + " / " + s.total + " 集" + (onAir(s.id) ? " · 正在播" : "")));
     const a = el("td", "a");
-    a.append(playButton(s), button("选集 ›", "linkbtn", (event) => { event.stopPropagation(); openEpisodes(s.id); }), removeButton("series", s));
+    a.append(...subButtons(s), button("选集 ›", "linkbtn", (event) => { event.stopPropagation(); openEpisodes(s.id); }), removeButton("series", s));
     tr.append(name, a);
     rows.appendChild(tr);
   }
@@ -1667,11 +1828,15 @@ function renderHistory() {
   for (const h of data.history) {
     const tr = el("tr");
     const a = el("td", "a");
-    a.append(button("重播", "linkbtn", () => busy(a.firstChild, async () => {
+    const replay = button("重播", "linkbtn", () => busy(replay, async () => {
       const answer = await call("POST", "api/history/play", withDevice({ site: h.site, id: h.id }));
       if (answer.ok) { toast("马上播放《" + answer.title + "》"); startPending("cast", "我的投屏", answer.at, true); }
       else toast(answer.error, true);
-    })), button("删除", "linkbtn red", async () => {
+    }));
+    replay.title = "在小电视上重播";
+    if (hasTv()) a.append(replay);
+    if (data.watch) a.append(button("在电脑上看", "linkbtn", () => startDirect({ video: { site: h.site, id: h.id } }, { group: "" })));
+    a.append(button("删除", "linkbtn red", async () => {
       try {
         const answer = await call("DELETE", "api/history/" + h.site + "/" + encodeURIComponent(h.id));
         if (!answer.ok) toast(answer.error, true);
@@ -1682,6 +1847,11 @@ function renderHistory() {
     rows.appendChild(tr);
   }
 }
+// 投到电脑：不经小电视，在这台电脑上放，记进「放过的」（没有小电视时只有这个）。
+$("castPc").onclick = () => busy($("castPc"), async () => {
+  toast("正在取视频…");
+  if (await startDirect({ url: $("castLink").value }, { group: "" })) $("castLink").value = "";
+});
 $("castGo").onclick = () => busy($("castGo"), async () => {
   toast("正在取视频…");
   const answer = await call("POST", "api/cast", withDevice({ url: $("castLink").value }));

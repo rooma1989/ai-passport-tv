@@ -1,4 +1,10 @@
-"""在电脑上看：电脑版（/tv/console）里看选中的小电视正在播的台——片源的原画，有画面也有声音。
+"""在电脑上看：电脑版（/tv/console）里看片源的原画，有画面也有声音。两种看法：
+
+- 跟随小电视：看选中的小电视正在播的台（web.py 的 watch_start），小电视换台电脑上也跟着换。
+- 直接看一个台（web.py 的 watch_direct）：没有小电视、小电视没在线，或者在线但只想在电脑上看——
+  全局频道表里的直播台、自己订阅的 UP 主和剧集、投屏（有设备时是那台的投屏位，没有时是自己投到电脑的）。
+  电脑上看的进度和小电视的分开记（只在内存里，见 web.py 的 _pc_cursor）：从小电视下次会播的地方起，
+  但电脑上看不标「看过」、不存进度，免得在电脑上随便翻翻就把小电视的剧集往后推了。
 
 小电视上的画面是 320x180 / 240x180 的调色板小图，放大了没法看；电脑上给的是**片源本身**：中转按设备
 正在播的台找到片源（直播台：频道表里的地址和 User-Agent；UP 主、剧集、投屏：B 站的地址，带 Referer 和
@@ -13,7 +19,8 @@ WatchPlayer，几十行，不用第三方播放器）；没有 MediaSource 的�
   初始化段里没有 AudioSpecificConfig（ffmpeg 写头时还没见到第一个包），浏览器解不了。只有声音的源（电台）
   按 2 秒切段。
 - 不和小电视同步：视频从设备此刻的位置起播，直播从现在起播，之后各走各的（页面上写明）。
-- 花费：只在有人看时才有 ffmpeg，每台设备至多一路，全中转至多 MAX_STREAMS 路；IDLE_S 秒没人取列表或段就停
+- 花费：只在有人看时才有 ffmpeg，每台设备（跟随）或每个浏览器页面（直接看）至多一路，每个用户至多
+  MAX_PER_USER 路，全中转至多 MAX_STREAMS 路；IDLE_S 秒没人取列表或段就停
   （和 server/listen.py 一样）。ffmpeg 的输出是到中转的管道：中转没了（崩溃、被杀），ffmpeg 下一次写就失败
   退出，不会留下孤儿进程；也不往磁盘写临时文件。
 - 只在自建 / 电脑客户端（中转带 --selfhost）开：云端那台小主机上行只有 3 Mbps，一路 720p 就占满，所以云端
@@ -51,6 +58,8 @@ IDLE_S = 20.0
 TOKEN_LIFETIME_S = 4 * 3600
 # 全中转同时最多几路：每路一个 ffmpeg，要转码的源吃一个 CPU 核。
 MAX_STREAMS = 3
+# 每个用户同时最多几路（两台电脑、或者两个页面）。
+MAX_PER_USER = 2
 # 列表里留几段；按字节再封顶（4K 直播源复制过来一段可能十几 MB）。
 WINDOW_SEGMENTS = 8
 WINDOW_BYTES = 64 * 1024 * 1024
@@ -96,6 +105,10 @@ class Source:
     paced: bool = True
     opener: Callable[[], object] | None = field(default=None, compare=False)
     label: str = ""
+    # 片源在哪个网站（"bilibili"、"youtube"；直播台为空）：出错时说给人听的话按它来（explain）。
+    site: str = ""
+    # 视频从第几秒起（给人和进度估计看的；ffmpeg 只认 offset，YouTube 节点自己从 start 起，offset 为 0）。
+    start: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -354,14 +367,22 @@ class Window:
         self.next_seq = 0
         self.target = 2
         self.ended = False
+        # 一共出了多少秒（停了以后也留着）：估计电脑上看到了哪里（web.py 的 _pc_position）。
+        self.total_s = 0.0
 
     def add(self, duration: float, data: bytes) -> None:
         self.segments.append((self.next_seq, duration, data))
         self.next_seq += 1
+        self.total_s += duration
         self.target = max(self.target, math.ceil(duration))
         while len(self.segments) > self.keep or \
                 (len(self.segments) > 2 and sum(len(s[2]) for s in self.segments) > self.keep_bytes):
             self.segments.popleft()
+
+    def release(self) -> None:
+        """这一路不要了：放掉段占的内存。换一个新的 deque 而不是清空，正在读旧的那个的请求不受影响。"""
+        self.segments = collections.deque()
+        self.init = None
 
     def segment(self, seq: int) -> bytes | None:
         return next((data for n, _, data in self.segments if n == seq), None)
@@ -387,12 +408,16 @@ class Window:
 # ---------------------------------------------------------------- 一路
 
 class WatchStream:
-    """一台设备的一路：后台线程起 ffmpeg（必要时按编码重起一次）、把输出切成段放进 Window。"""
+    """一路：后台线程起 ffmpeg（必要时按编码重起一次）、把输出切成段放进 Window。
+
+    device 是这一路占的位置（slot）：跟随小电视时是设备 id，直接看一个台时是「pc<用户>-<页面>」；
+    令牌绑的是它和 sid。user 是开这一路的用户（每个用户的上限按它数）。"""
 
     def __init__(self, sid: str, device: str, source: Source, ffmpeg: str, log=print,
-                 clock=time.monotonic, popen=subprocess.Popen):
+                 clock=time.monotonic, popen=subprocess.Popen, user: int | None = None):
         self.sid = sid
         self.device = device
+        self.user = user
         self.source = source
         self.ffmpeg = ffmpeg
         self.log = log
@@ -476,7 +501,7 @@ class WatchStream:
                 if outcome == "ended":
                     self.window.ended = True
                 elif not self.stopped:
-                    self.error = detail or "片源打不开"
+                    self.error = explain(self.source.site, detail or "片源打不开")
                     # 已经有段的：列表收尾，播放器放完已有的就停。
                     self.window.ended = bool(self.window.segments)
                     self.log(f"在电脑上看 {self.device} 停了：{self.error}")
@@ -496,6 +521,8 @@ class WatchStream:
             try:
                 url = source.url() if callable(source.url) else source.url
             except Exception as error:  # noqa: BLE001 —— 取地址失败（B 站接口不通、视频下架……）
+                if getattr(error, "permanent", False):
+                    return "failed", f"放不了这个视频：{error}"
                 return "failed", f"取不到片源地址：{error}"
             if not str(url).startswith(("http://", "https://")):
                 return "failed", "片源地址不是 http(s)"
@@ -631,12 +658,42 @@ class WatchStream:
 
 # ffmpeg 收尾时的套话，不是原因。
 _GENERIC = ("Conversion failed", "Terminating thread", "Task finished", "Last message repeated")
+# 像是网络不通（而不是片源拒绝）的说法：B 站、YouTube 连不上多半是路由器或代理的事。
+_NETWORK = ("取不到片源地址", "Connection", "connection", "timed out", "Timeout", "timeout", "resolve",
+            "Name or service", "nodename", "unreachable", "refused", "Network", "SSL", "TLS", "URLError",
+            "Errno", "片源：")
+# 片源明确拒绝（放不了，不是网络的事）。
+_REFUSED = ("放不了这个视频", "403", "404", "410", "denied", "Forbidden")
+
+
+def explain(site: str, reason: str) -> str:
+    """给人看的出错原因：B 站、YouTube 连不上时说该去查哪里；原因本身（已去掉地址）放在括号里。"""
+    reason = re.sub(r"https?://\S+", "<地址>", (reason or "片源打不开").strip())[:200]
+    refused = any(word in reason for word in _REFUSED)
+    network = not refused and any(word in reason for word in _NETWORK)
+    if site == "bilibili":
+        if network:
+            return f"B 站连不上：检查路由器或代理（{reason}）"
+        if refused:
+            return f"B 站说这个放不了（{reason}）"
+    elif site == "youtube":
+        if network:
+            return f"YouTube 连不上：检查「设置 → YouTube」里的代理（{reason}）"
+        if refused:
+            return f"YouTube 说这个放不了（{reason}）"
+    elif network:
+        return f"直播源连不上（{reason}）"
+    return reason
 
 
 # ---------------------------------------------------------------- 管所有路
 
 class Busy(Exception):
-    pass
+    """满了：per_user 为真是这个用户自己的路数到了上限（MAX_PER_USER），否则是全中转的（MAX_STREAMS）。"""
+
+    def __init__(self, per_user: bool = False):
+        super().__init__("per user" if per_user else "relay")
+        self.per_user = per_user
 
 
 class WatchService:
@@ -644,7 +701,7 @@ class WatchService:
 
     def __init__(self, ffmpeg: str, secret: bytes, log=print, clock=time.monotonic, wall=time.time,
                  popen=subprocess.Popen, idle_s: float = IDLE_S, max_streams: int = MAX_STREAMS,
-                 background: bool = True):
+                 background: bool = True, max_per_user: int = MAX_PER_USER):
         self.ffmpeg = ffmpeg
         self.secret = secret
         self.log = log
@@ -653,25 +710,31 @@ class WatchService:
         self.popen = popen
         self.idle_s = idle_s
         self.max_streams = max_streams
+        self.max_per_user = max_per_user
         self.background = background
         self._by_device: dict[str, WatchStream] = {}
         self._lock = threading.Lock()
         self._reaper: threading.Thread | None = None
 
-    def open(self, device: str, source: Source) -> WatchStream:
-        """这台设备要看 source：同一个片源还在转就接着用，否则停掉旧的、起新的。"""
+    def open(self, device: str, source: Source, user: int | None = None) -> WatchStream:
+        """device 这个位置（设备 id，或直接看时的「pc<用户>-<页面>」）要看 source：同一个片源还在转就
+        接着用，否则停掉旧的、起新的。满了（全中转 max_streams 路，或这个用户 max_per_user 路）时 Busy。"""
         with self._lock:
             current = self._by_device.get(device)
             if current is not None and current.alive and current.source.key == source.key:
                 current.touch()
                 return current
+            others = [s for d, s in self._by_device.items() if d != device and s.alive]
+            if len(others) >= self.max_streams:
+                raise Busy()
+            if user is not None and sum(1 for s in others if s.user == user) >= self.max_per_user:
+                raise Busy(per_user=True)
             if current is not None:
                 current.stop()
+                current.window.release()
                 del self._by_device[device]
-            if sum(1 for s in self._by_device.values() if s.alive) >= self.max_streams:
-                raise Busy()
             stream = WatchStream(secrets.token_hex(8), device, source, self.ffmpeg, log=self.log,
-                                 clock=self.clock, popen=self.popen)
+                                 clock=self.clock, popen=self.popen, user=user)
             self._by_device[device] = stream
             self._ensure_reaper()
         self.log(f"在电脑上看 {device}：开始 {source.label or source.key[1]}")
@@ -693,6 +756,17 @@ class WatchService:
             return None
         return stream
 
+    def close(self, device: str) -> bool:
+        """关掉这个位置上的一路（页面上点了「关闭」）：不用等 IDLE_S，马上让出名额。"""
+        with self._lock:
+            stream = self._by_device.pop(device, None)
+        if stream is None:
+            return False
+        stream.stop()
+        stream.window.release()
+        self.log(f"在电脑上看 {device}：关了")
+        return True
+
     def streams(self) -> list[WatchStream]:
         with self._lock:
             return list(self._by_device.values())
@@ -708,6 +782,7 @@ class WatchService:
             if stream.alive:
                 self.log(f"在电脑上看 {device}：{int(self.idle_s)} 秒没人看，停了")
             stream.stop()
+            stream.window.release()
 
     def stop_all(self) -> None:
         with self._lock:

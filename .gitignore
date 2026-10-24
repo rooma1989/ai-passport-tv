@@ -83,3 +83,6 @@ packaging/docker/data/
 # checksums, images); only the placeholder that keeps the folder is tracked.
 packaging/docker/firmware/*
 !packaging/docker/firmware/.keep
+
+# Local UI screenshots from manual checks
+.shots/

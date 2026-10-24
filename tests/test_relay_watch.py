@@ -9,6 +9,14 @@ reads local files; nobody watching for IDLE_S seconds stops ffmpeg; and the
 fragmented MP4 that ffmpeg writes is cut into HLS segments with the right
 durations and CODECS. The last part also runs a real ffmpeg on a few seconds of
 generated video when ffmpeg is installed.
+
+Watching a channel directly (no TV, an offline TV, or "just on the PC"): a
+live channel needs to be in the global table, a creator or series channel must
+be the caller's own subscription (not the owner's, through a device they are a
+member of), "cast" is the named device's slot or, without a device, the
+caller's last video cast to the PC; the PC keeps its own position and never
+marks the TV's videos watched; a user has at most MAX_PER_USER streams; a user
+with no device gets a working /api/state; and failures say what to check.
 """
 
 from __future__ import annotations
@@ -317,6 +325,39 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(stream.error, "HTTP error 403 Forbidden for <地址>")
         self.assertFalse(stream.alive)
 
+    def test_per_user_limit_and_close(self):
+        self.service.max_per_user = 2
+        self.service.open("pc5-aaaaaaaa", self.source, user=5)
+        self.service.open("pc5-bbbbbbbb", self.source, user=5)
+        with self.assertRaises(watch.Busy) as caught:
+            self.service.open("pc5-cccccccc", self.source, user=5)
+        self.assertTrue(caught.exception.per_user)
+        other = watch.Source(("live", "ch001", "https://x/2.m3u8", "UA"), url="https://x/2.m3u8")
+        self.assertIsNotNone(self.service.open("pc5-aaaaaaaa", other, user=5), "the same page may switch channels")
+        self.service.open("pc6-aaaaaaaa", self.source, user=6)
+        with self.assertRaises(watch.Busy) as caught:
+            self.service.open("pc7-aaaaaaaa", self.source, user=7)
+        self.assertFalse(caught.exception.per_user, "3 streams on the relay")
+        self.assertTrue(self.service.close("pc5-bbbbbbbb"))
+        self.assertFalse(self.service.close("pc5-bbbbbbbb"))
+        self.service.open("pc7-aaaaaaaa", self.source, user=7)
+
+    def test_failures_say_what_to_check(self):
+        self.assertEqual(watch.explain("bilibili", "取不到片源地址：offline"),
+                         "B 站连不上：检查路由器或代理（取不到片源地址：offline）")
+        self.assertIn("B 站说这个放不了", watch.explain("bilibili", "HTTP error 403 Forbidden"))
+        self.assertIn("YouTube 连不上", watch.explain("youtube", "片源：youtube stream x: timed out"))
+        self.assertEqual(watch.explain("", "HTTP error 404 Not Found"), "HTTP error 404 Not Found")
+        self.assertNotIn("https://", watch.explain("bilibili", "Connection refused https://a/b?token=1"))
+
+        def broken():
+            raise bilibili.BilibiliError("offline")
+        source = watch.Source(("video", "up01", "bilibili", "BV1"), url=broken, site="bilibili")
+        stream = self.service.open(ALICE_DEVICE, source)
+        stream._thread.join(5)
+        self.assertTrue(stream.error.startswith("B 站连不上：检查路由器或代理"), stream.error)
+        self.assertEqual(self.popen.procs, [], "no ffmpeg without an address")
+
     def test_tokens(self):
         stream = self.service.open(ALICE_DEVICE, self.source)
         token = self.service.token(stream)
@@ -489,9 +530,184 @@ class RelayWatchTests(unittest.TestCase):
         self.assertIn("media-src 'self' blob:", policy)
 
 
+class DirectWatchTests(unittest.TestCase):
+    """Watching a channel on the PC without the TV (Relay.watch_direct)."""
+    selfhost = True
+    setUp_relay = RelayWatchTests.setUp
+    tearDown = RelayWatchTests.tearDown
+    online = RelayWatchTests.online
+    request = RelayWatchTests.request
+
+    def setUp(self):
+        self.setUp_relay()
+        self.carol = self.accounts.create_user("Carol")          # no device at all
+        self.dave = self.accounts.create_user("Dave")            # a member of Alice's device
+        self.accounts._run("INSERT INTO device_member(device_id, user_id, role) VALUES (?, ?, 'member')",
+                           (ALICE_DEVICE, self.dave))
+        for name, uid in (("carol", self.carol), ("dave", self.dave)):
+            self.cookies[name] = "tvs=" + self.accounts.new_session(uid, "pc")
+        self.as_carol = web.Caller(user=self.carol, role="user", name="Carol")
+        self.as_alice = web.Caller(user=self.alice, role="user", name="Alice")
+        self.as_dave = web.Caller(user=self.dave, role="user", name="Dave")
+        self.relay.add_creator("https://space.bilibili.com/42", self.as_carol)
+        self.relay.add_series("https://www.bilibili.com/bangumi/play/ss1", "", self.as_carol)
+        self.relay.add_creator("https://space.bilibili.com/43", self.as_alice)
+
+    def watch(self, who="carol", **body):
+        body.setdefault("viewer", "c0ffee00")
+        status, _, raw = self.request("POST", "/tv/api/watch", who, body)
+        return status, (json.loads(raw) if status == 200 else None)
+
+    def stream_of(self, answer):
+        found = next(s for s in self.relay.watch.streams() if s.sid == answer["sid"])
+        self.assertTrue(found.wait_ready(5))
+        return found
+
+    def args_of(self, answer):
+        stream = self.stream_of(answer)
+        proc = next(p for p in self.popen.procs if p.args == watch.ffmpeg_args(
+            "/opt/ff", stream.source, p.args[p.args.index("-i") + 1], watch.FIRST_MODE))
+        return proc.args
+
+    def test_no_device_console_state(self):
+        status, _, raw = self.request("GET", "/tv/api/state", "carol")
+        self.assertEqual(status, 200)
+        state = json.loads(raw)
+        self.assertEqual(state["devices"], [])
+        self.assertIs(state["watch"], True)
+        self.assertFalse(state["now"]["online"])
+        names = {c["id"]: c["name"] for g in state["groups"] for c in g["channels"]}
+        self.assertEqual(names.get("ch000"), "CCTV1", "the global table")
+        self.assertIn("up01", names, "her own subscription is a channel even without a TV")
+        self.assertIn("sr01", names)
+        self.assertIn("cast", names)
+        self.assertEqual([c["id"] for c in state["creators"]], ["up01"])
+        # The series drawer works without a device too.
+        status, _, raw = self.request("GET", "/tv/api/series/sr01/episodes", "carol")
+        self.assertTrue(json.loads(raw)["ok"])
+
+    def test_live_channel_from_the_global_table(self):
+        status, answer = self.watch(channel="ch000")
+        self.assertEqual(status, 200)
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual((answer["kind"], answer["name"], answer["channel"]), ("live", "CCTV1", "ch000"))
+        base = "/tv/" + answer["url"]
+        self.assertEqual(self.request("GET", base + "master.m3u8")[0], 200)
+        self.assertEqual(self.request("GET", base + "0.m4s")[0], 200)
+        args = self.args_of(answer)
+        self.assertEqual(args[args.index("-user_agent") + 1], "MyUA")
+        # The same page switching channels uses one stream; asking again for the same one joins it.
+        self.assertEqual(self.watch(channel="ch000")[1]["sid"], answer["sid"])
+        second = self.watch(channel="ch001")[1]
+        self.assertNotEqual(second["sid"], answer["sid"])
+        self.assertEqual(len(self.relay.watch.streams()), 1)
+        self.assertEqual(self.request("GET", base + "index.m3u8")[0], 404, "the old stream is gone")
+        self.assertIn("没有这个台", self.watch(channel="ch404")[1]["error"])
+
+    def test_creator_starts_where_the_tv_would_and_keeps_its_own_position(self):
+        state = self.relay.user_state(self.carol)
+        state.save_position("up01", "b", 130.0)
+        answer = self.watch(channel="up01")[1]
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual((answer["kind"], answer["title"], answer["index"], answer["total"]), ("video", "tb", 2, 3))
+        args = self.args_of(answer)
+        self.assertEqual(args[args.index("-i") + 1], "https://media.example/b.mp4")
+        self.assertEqual(args[args.index("-ss") + 1], "120")
+        self.assertEqual(args[args.index("-headers") + 1], "Referer: https://www.bilibili.com/\r\n")
+        # Closing and coming back: the PC's own position (start + what was produced), not the TV's.
+        stopped = json.loads(self.request("POST", "/tv/api/watch/stop", "carol", {"viewer": "c0ffee00"})[2])
+        self.assertEqual(stopped, {"ok": True, "stopped": True})
+        self.assertEqual(self.relay.watch.streams(), [])
+        again = self.watch(channel="up01")[1]
+        self.assertEqual(again["title"], "tb")
+        args = self.args_of(again)
+        self.assertEqual(args[args.index("-ss") + 1], str(int(120 + 4.5 - web.PC_BEHIND_S)))
+        # Next and previous video on the PC.
+        self.assertEqual(self.watch(channel="up01", step=1)[1]["title"], "tc")
+        self.assertEqual(self.watch(channel="up01", step=1)[1]["title"], "ta", "wraps around")
+        self.assertEqual(self.watch(channel="up01", step=-1)[1]["title"], "tc")
+        # The TV's state is untouched: nothing marked watched, its saved position stays.
+        creator = state.get("up01")
+        self.assertEqual(creator.watched, [])
+        self.assertEqual(creator.positions, {"b": 130.0})
+
+    def test_series_episode(self):
+        answer = self.watch(channel="sr01", episode=2)[1]
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual((answer["title"], answer["episode"], answer["total"], answer["series"]), ("第2集", 2, 3, True))
+        self.assertEqual(self.watch(channel="sr01", step=1)[1]["episode"], 3)
+        self.assertEqual(self.watch(channel="sr01")[1]["episode"], 3, "comes back to the PC's episode")
+        self.assertIn("没有第 9 集", self.watch(channel="sr01", episode=9)[1]["error"])
+        self.assertEqual(self.relay.user_state(self.carol).episode("sr01"), 1, "the TV still starts at episode 1")
+
+    def test_only_own_subscriptions_and_no_guests(self):
+        self.assertIn("没有这个台", self.watch(channel="up02")[1]["error"])
+        # Alice's up01 is a different creator; Carol's request plays Carol's.
+        self.assertEqual(self.watch(channel="up01")[1]["name"], "UP42")
+        self.assertEqual(self.watch("alice", channel="up01", viewer="a11ce000")[1]["name"], "UP43")
+        # Through Alice's device, Dave (a member) sees Alice's channel table: no up/sr channels on the PC.
+        status, answer = self.watch("dave", channel="up01", device=ALICE_DEVICE)
+        self.assertFalse(answer["ok"])
+        self.assertIn("主人订阅", answer["error"])
+        self.assertTrue(self.watch("dave", channel="ch000", device=ALICE_DEVICE)[1]["ok"])
+        self.assertEqual(self.watch("bob", channel="ch000", device=ALICE_DEVICE)[0], 404, "not Bob's device")
+        status, answer = self.watch("guest", channel="ch000")
+        self.assertFalse(answer["ok"])
+        self.assertIn("访客", answer["error"])
+        status, _, _ = self.request("POST", "/tv/api/watch", None, {"channel": "ch000"})
+        self.assertEqual(status, 404)
+        stopped = json.loads(self.request("POST", "/tv/api/watch/stop", "guest", {"viewer": "c0ffee00"})[2])
+        self.assertFalse(stopped["ok"])
+
+    def test_cast_to_the_pc(self):
+        self.assertIn("还没有投过", self.watch(channel="cast")[1]["error"])
+        answer = self.watch(url="https://www.bilibili.com/video/BV1xx411c7mD")[1]
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual((answer["channel"], answer["title"]), ("cast", "tBV1xx411c7mD"))
+        history = self.relay.user_state(self.carol).history
+        self.assertEqual(history[0]["id"], "BV1xx411c7mD", "remembered in her cast history")
+        self.assertEqual(self.watch(channel="cast")[1]["title"], "tBV1xx411c7mD", "no device: her last cast")
+        self.assertTrue(self.watch(video={"site": "bilibili", "id": "BV1xx411c7mD"})[1]["ok"])
+        self.assertIn("历史里没有", self.watch(video={"site": "bilibili", "id": "BV1zz"})[1]["error"])
+        self.assertIn("看不懂", self.watch(url="https://example.com/x")[1]["error"])
+        self.client.down = True
+        self.assertIn("B 站连不上", self.watch(url="https://www.bilibili.com/video/BV1xx411c7mE")[1]["error"])
+        self.client.down = False
+        # With a device: that device's cast slot.
+        self.relay.cast("https://www.bilibili.com/video/BV1yy411c7mD", self.as_alice, ALICE_DEVICE)
+        answer = self.watch("dave", channel="cast", device=ALICE_DEVICE)[1]
+        self.assertEqual(answer["title"], "tBV1yy411c7mD")
+
+    def test_per_user_limit(self):
+        self.assertTrue(self.watch(channel="ch000", viewer="aaaaaaaa")[1]["ok"])
+        self.assertTrue(self.watch(channel="ch001", viewer="bbbbbbbb")[1]["ok"])
+        answer = self.watch(channel="ch000", viewer="cccccccc")[1]
+        self.assertFalse(answer["ok"])
+        self.assertIn("2 个地方", answer["error"])
+        self.request("POST", "/tv/api/watch/stop", "carol", {"viewer": "bbbbbbbb"})
+        self.assertTrue(self.watch(channel="ch000", viewer="cccccccc")[1]["ok"])
+        # The relay-wide cap still holds.
+        self.assertTrue(self.watch("alice", channel="ch000", viewer="a11ce000")[1]["ok"])
+        answer = self.watch("dave", channel="ch000", viewer="dddddddd")[1]
+        self.assertIn("3 路", answer["error"])
+
+    def test_following_the_tv_frees_the_pages_direct_stream(self):
+        self.assertTrue(self.watch("alice", channel="ch001", viewer="a11ce000")[1]["ok"])
+        status, _, raw = self.request("POST", "/tv/api/watch", "alice", {"device": ALICE_DEVICE, "viewer": "a11ce000"})
+        answer = json.loads(raw)
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual([s.device for s in self.relay.watch.streams()], [ALICE_DEVICE])
+
+
 class CloudRelayTests(RelayWatchTests):
     """The cloud relay (no --selfhost): the feature does not exist."""
     selfhost = False
+
+    def test_direct_watching_does_not_exist(self):
+        status, _, _ = self.request("POST", "/tv/api/watch", "alice", {"channel": "ch000", "viewer": "c0ffee00"})
+        self.assertEqual(status, 404)
+        status, _, _ = self.request("POST", "/tv/api/watch/stop", "alice", {"viewer": "c0ffee00"})
+        self.assertEqual(status, 404)
 
     def test_owner_gets_a_url_that_plays(self):
         self.assertIsNone(self.relay.watch)
