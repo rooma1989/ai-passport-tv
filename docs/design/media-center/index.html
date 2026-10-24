@@ -1,0 +1,1244 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#1c1915">
+<!-- 原型不发任何网络请求：CSP 只许内联样式、内联脚本和 data: 图片。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>小智电视 · 家庭媒体中心（原型）</title>
+<style>
+/* 设计原型（docs/superpowers/specs/2026-10-24-media-center-ui-design.md）。颜色和字体沿用 console.html / remote.html，
+   只把 --dim / --faint 调亮了一档（小字对比度够 4.5:1）。所有封面、台标都是 SVG 画的占位图，数据是假的。 */
+:root {
+  --ink: #1c1915; --ink-deep: #0f0d0b; --side: #161310; --card: #25211b; --card-hi: #302a22; --rule: #3a342b; --rule-hi: #5a5042;
+  --paper: #e6dcc8; --paper-hi: #f2e9d6; --dim: #a19580; --faint: #857a68; --red: #d2553f; --red-hi: #e46a52;
+  --amber: #ffb547; --amber-soft: #f3dfb4; --r: 6px;
+  --serif: "Songti SC", "STSong", "Noto Serif SC", serif;
+  --mono: "Menlo", "SF Mono", ui-monospace, monospace;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: #0b0a08; color: var(--paper); font: 15px/1.5 var(--sans); }
+button, select, input { font: inherit; color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; text-align: inherit; }
+button:disabled { cursor: default; opacity: .45; }
+a { color: inherit; text-decoration: none; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+[hidden] { display: none !important; }
+svg { display: block; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+
+/* ---- 舞台：桌面铺满；「手机」时套一个 390×844 的框 ---- */
+#stage { height: 100vh; display: flex; }
+#stage.framed { align-items: center; justify-content: center; background: radial-gradient(circle at 50% 30%, #2a241d, #0b0a08 70%); }
+#app { position: relative; flex: 1; height: 100vh; overflow: hidden; background: var(--ink);
+       display: grid; grid-template-columns: 224px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+#stage.framed #app { flex: none; width: 410px; height: 864px; border: 10px solid #050403; border-radius: 48px;
+                     box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 1px #3a342b; }
+
+/* ---- 原型选项（不是产品的一部分） ---- */
+#proto { position: fixed; z-index: 50; left: 12px; bottom: 12px; width: 200px; padding: 10px 12px; border: 1px dashed var(--rule-hi);
+         background: rgba(15,13,11,.92); border-radius: 8px; font-size: 12px; color: var(--dim); display: grid; gap: 8px; }
+#proto b { color: var(--amber); font: 12px var(--mono); letter-spacing: 1px; }
+#proto .seg { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
+#proto .seg button { flex: 1; padding: 5px 0; text-align: center; color: var(--dim); }
+#proto .seg button[aria-pressed=true] { background: var(--paper-hi); color: var(--ink); }
+#proto select { width: 100%; background: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 5px; color: var(--paper); }
+#stage.framed ~ #proto, #proto.framed { left: 24px; top: 24px; bottom: auto; }
+#proto.mhide { display: none; }
+
+/* ---- 侧边导航 ---- */
+#side { grid-row: 1 / 3; background: var(--side); border-right: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; }
+.brand { padding: 22px 22px 14px; }
+.brand b { display: block; font: 700 22px/1 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
+.brand span { display: block; margin-top: 8px; font-size: 11px; color: var(--red); letter-spacing: 3px; }
+#nav { flex: 1; overflow-y: auto; padding: 6px 10px 150px; }
+#nav a { display: flex; align-items: center; gap: 12px; padding: 9px 12px; margin: 2px 0; border-radius: var(--r);
+         color: var(--dim); font: 16px var(--serif); letter-spacing: 1px; }
+#nav a:hover { background: var(--card); color: var(--paper-hi); }
+#nav a[aria-current=page] { background: var(--card-hi); color: var(--paper-hi); box-shadow: inset 3px 0 0 var(--red); }
+#nav a em { margin-left: auto; font: 11px var(--mono); font-style: normal; color: var(--ink); background: var(--amber); border-radius: 9px; padding: 0 6px; }
+#nav .sep { height: 1px; background: var(--rule); margin: 8px 12px; }
+
+/* ---- 主区和顶栏 ---- */
+#main { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.top { position: sticky; top: 0; z-index: 6; display: flex; align-items: center; gap: 14px; padding: 14px 32px 12px;
+       background: linear-gradient(var(--ink) 75%, rgba(28,25,21,0)); }
+.top h1 { margin: 0; font: 600 22px var(--serif); letter-spacing: 3px; color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iconbtn { width: 38px; height: 38px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--paper); }
+.iconbtn:hover { background: var(--card); }
+.sbox { flex: 1; max-width: 400px; margin-left: 12px; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px;
+        background: var(--card); border: 1px solid var(--rule); border-radius: 999px; color: var(--dim); }
+.sbox input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--paper-hi); }
+.sbox kbd { font: 11px var(--mono); color: var(--faint); border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; }
+.sbox:focus-within { border-color: var(--rule-hi); }
+.tchip { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px 0 12px; border: 1px solid var(--rule);
+         border-radius: 999px; color: var(--paper-hi); font: 14px var(--serif); white-space: nowrap; }
+.tchip:hover { border-color: var(--rule-hi); background: var(--card); }
+.tchip small { color: var(--dim); font: 12px var(--sans); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--amber); box-shadow: 0 0 6px rgba(255,181,71,.6); }
+.dot.off { background: var(--faint); box-shadow: none; }
+.me { width: 34px; height: 34px; flex: none; border-radius: 50%; background: #5b3a2e; color: var(--paper-hi); display: grid; place-items: center; font: 600 15px var(--serif); }
+#view { padding: 0 32px 40px; }
+
+/* ---- 通用 ---- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: var(--r); white-space: nowrap;
+       background: var(--card-hi); border: 1px solid var(--rule); color: var(--paper-hi); font: 16px var(--serif); letter-spacing: 1px; }
+.btn:hover { border-color: var(--rule-hi); }
+.btn.pri { background: var(--red); border-color: var(--red); color: #fff4e6; }
+.btn.pri:hover { background: var(--red-hi); }
+.btn small { font: 12px var(--sans); letter-spacing: 0; opacity: .85; }
+.btn.sm { height: 34px; padding: 0 12px; font-size: 14px; }
+.btn.ghost { background: none; }
+.split { display: inline-flex; }
+.split .btn:first-child { border-radius: var(--r) 0 0 var(--r); }
+.split .btn.caret { border-radius: 0 var(--r) var(--r) 0; padding: 0 10px; border-left: 1px solid rgba(15,13,11,.35); }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 18px; }
+.chips button, .chips a { height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--rule); color: var(--dim); font: 14px var(--serif); display: inline-flex; align-items: center; gap: 6px; }
+.chips button:hover, .chips a:hover { color: var(--paper-hi); border-color: var(--rule-hi); }
+.chips [aria-pressed=true] { background: var(--paper-hi); border-color: var(--paper-hi); color: var(--ink); }
+.chips em { font: 11px var(--mono); font-style: normal; opacity: .7; }
+.hint { color: var(--faint); font-size: 12px; margin: 8px 0 0; }
+.mono { font-family: var(--mono); }
+.h2 { display: flex; align-items: baseline; gap: 12px; margin: 30px 0 12px; }
+.h2 h2 { margin: 0; font: 600 19px var(--serif); letter-spacing: 2px; color: var(--paper-hi); }
+.h2 small { color: var(--faint); font-size: 12px; }
+.h2 .more { margin-left: auto; color: var(--dim); font-size: 13px; }
+.h2 .more:hover { color: var(--paper-hi); }
+.banner { display: flex; gap: 14px; align-items: center; margin: 4px 0 18px; padding: 14px 18px; border-radius: 8px; border: 1px solid var(--rule); background: var(--card); }
+.banner.warn { border-color: #6b3b2c; background: #2b1d17; }
+.banner b { display: block; font: 600 16px var(--serif); color: var(--paper-hi); }
+.banner p { margin: 2px 0 0; font-size: 13px; color: var(--dim); }
+.banner .btn { margin-left: auto; }
+.banner .ico { color: var(--amber); flex: none; }
+.banner.warn .ico { color: var(--red); }
+.empty { text-align: center; padding: 56px 20px; border: 1px dashed var(--rule); border-radius: 10px; color: var(--dim); }
+.empty b { display: block; margin: 14px 0 6px; font: 600 20px var(--serif); color: var(--paper-hi); letter-spacing: 2px; }
+.empty p { margin: 0 auto 18px; max-width: 420px; font-size: 14px; }
+.empty svg { margin: 0 auto; color: var(--faint); }
+
+/* ---- 卡片和货架 ---- */
+.shelf { display: flex; gap: 14px; overflow-x: auto; scroll-snap-type: x proximity; padding: 4px 4px 12px; margin: 0 -4px; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+.shelf > * { flex: none; scroll-snap-align: start; }
+.card { display: block; width: 252px; text-align: left; }
+.card.p { width: 150px; }
+.card .art { position: relative; display: block; width: 100%; border-radius: var(--r); overflow: hidden; aspect-ratio: 16 / 9; background: var(--card); transition: transform .15s, box-shadow .15s; }
+.card.p .art { aspect-ratio: 2 / 3; }
+.card .art > svg { width: 100%; height: 100%; }
+.card:hover .art, .card:focus-visible .art { transform: translateY(-2px); box-shadow: 0 0 0 2px var(--rule-hi), 0 10px 24px rgba(0,0,0,.4); }
+.card:focus-visible { outline: none; }
+.card:focus-visible .art { box-shadow: 0 0 0 3px var(--amber), 0 10px 24px rgba(0,0,0,.4); }
+.card .t { display: block; margin-top: 8px; font: 15px/1.35 var(--serif); color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .s { display: block; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .s2 { display: block; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pbar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(15,13,11,.6); }
+.pbar i { display: block; height: 100%; background: var(--red); }
+.badge { position: absolute; top: 8px; left: 8px; font: 11px/1 var(--sans); padding: 4px 6px; border-radius: 3px; background: rgba(15,13,11,.8); color: var(--paper-hi); }
+.badge.r { left: auto; right: 8px; }
+.badge.live { background: var(--red); color: #fff4e6; }
+.badge.new { background: var(--amber); color: var(--ink); }
+.badge.b { bottom: 10px; top: auto; }
+.logo-on { position: absolute; left: 8px; bottom: 10px; width: 52px; }
+.playov { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; transition: opacity .15s; background: rgba(15,13,11,.25); }
+.playov span { width: 46px; height: 46px; border-radius: 50%; background: rgba(15,13,11,.7); display: grid; place-items: center; color: var(--paper-hi); box-shadow: 0 0 0 1px rgba(242,233,214,.4); }
+.card:hover .playov, .card:focus-visible .playov { opacity: 1; }
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 24px 16px; }
+.pgrid .card, .wgrid .card { width: auto; }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 22px 16px; }
+.onb { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.onb a { display: block; padding: 20px; border: 1px dashed var(--rule-hi); border-radius: 10px; }
+.onb a:hover { background: var(--card); }
+.onb b { display: flex; align-items: center; gap: 8px; font: 600 17px var(--serif); color: var(--paper-hi); }
+.onb p { margin: 6px 0 0; font-size: 13px; color: var(--dim); }
+
+/* ---- 首页大图 ---- */
+.hero { position: relative; height: 360px; border-radius: 12px; overflow: hidden; margin-top: 4px; }
+.hero .bg { position: absolute; inset: 0; }
+.hero .bg svg { width: 100%; height: 100%; }
+.hero .shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(15,13,11,.94) 0, rgba(15,13,11,.6) 42%, rgba(15,13,11,0) 72%), linear-gradient(0deg, rgba(15,13,11,.6), transparent 40%); }
+.hero .copy { position: absolute; left: 40px; bottom: 34px; max-width: 480px; }
+.kicker { font-size: 12px; letter-spacing: 3px; color: var(--red); display: flex; align-items: center; gap: 8px; }
+.kicker .badge { position: static; }
+.hero h2 { margin: 8px 0 6px; font: 700 40px/1.15 var(--serif); letter-spacing: 5px; color: var(--paper-hi); }
+.meta { font-size: 13px; color: var(--dim); }
+.syn { margin: 10px 0 0; font: 15px/1.7 var(--serif); color: var(--paper); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+.hero .nav { position: absolute; right: 22px; bottom: 26px; display: flex; gap: 8px; align-items: center; }
+.hero .nav button.dotb { width: 8px; height: 8px; border-radius: 50%; background: rgba(242,233,214,.35); }
+.hero .nav button.dotb[aria-current=true] { background: var(--paper-hi); width: 22px; border-radius: 4px; }
+.hero .nav .iconbtn { background: rgba(15,13,11,.5); }
+.qchips { display: none; }
+
+/* ---- 直播：上面是选中的节目，下面是节目单网格 ---- */
+.lhead { display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 28px; align-items: center; margin: 4px 0 18px; }
+.lprev { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: var(--card); }
+.lprev > svg { width: 100%; height: 100%; }
+.lprev .logo-on { width: 64px; left: 12px; top: 12px; bottom: auto; }
+.linfo .ch { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
+.linfo .ch b { font: 600 13px var(--mono); color: var(--amber); }
+.linfo h2 { margin: 6px 0 4px; font: 700 28px/1.3 var(--serif); letter-spacing: 2px; color: var(--paper-hi); }
+.lprog { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; font: 12px var(--mono); color: var(--dim); max-width: 460px; }
+.lprog .trk { flex: 1; height: 4px; border-radius: 2px; background: var(--rule); overflow: hidden; }
+.lprog .trk i { display: block; height: 100%; background: var(--red); }
+.lnext { font-size: 13px; color: var(--dim); }
+.lnext b { color: var(--paper); font-weight: normal; font-family: var(--serif); }
+.guide { border: 1px solid var(--rule); border-radius: 10px; background: var(--ink-deep); overflow: hidden; }
+.gscroll { overflow: auto; max-height: 560px; position: relative; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+.ginner { position: relative; }
+.grow { display: flex; height: 62px; border-bottom: 1px solid #241f19; }
+.gch { position: sticky; left: 0; z-index: 3; flex: none; width: var(--chw); display: flex; align-items: center; gap: 10px; padding: 0 12px;
+       background: var(--side); border-right: 1px solid var(--rule); }
+.gch .no { font: 600 12px var(--mono); color: var(--amber); width: 18px; }
+.gch .lg { width: 46px; flex: none; }
+.gch span { font: 14px var(--serif); color: var(--paper); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gch.cur { box-shadow: inset 3px 0 0 var(--red); }
+.gprogs { position: relative; flex: none; }
+.gp { position: absolute; top: 5px; bottom: 5px; padding: 6px 10px; border-radius: 5px; background: var(--card); border: 1px solid #2f2922; overflow: hidden; text-align: left; }
+.gp b { display: block; font: 14px/1.3 var(--serif); font-weight: normal; color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gp small { display: block; font: 11px var(--mono); color: var(--faint); }
+.gp:hover { background: var(--card-hi); border-color: var(--rule-hi); }
+.gp.now { background: #33241c; border-color: #5c3628; }
+.gp.now small { color: var(--amber); }
+.gp.past { opacity: .5; }
+.gp .gpb { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--red); }
+.gp[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--amber); }
+.gp:focus-visible { outline-offset: -2px; }
+.gruler { position: sticky; top: 0; z-index: 4; display: flex; height: 34px; background: var(--side); border-bottom: 1px solid var(--rule); }
+.gcorner { position: sticky; left: 0; z-index: 5; flex: none; width: var(--chw); padding: 8px 12px; font-size: 12px; color: var(--dim); background: var(--side); border-right: 1px solid var(--rule); }
+.gticks { position: relative; flex: none; }
+.gticks span { position: absolute; top: 8px; font: 12px var(--mono); color: var(--dim); padding-left: 6px; border-left: 1px solid var(--rule); height: 26px; }
+.gnow { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--red); z-index: 2; pointer-events: none; }
+.gnow span { position: sticky; top: 6px; display: block; width: 44px; margin-left: -22px; padding: 2px 0; text-align: center; border-radius: 3px; background: var(--red); color: #fff4e6; font: 11px var(--mono); z-index: 6; }
+
+/* ---- 节目单（小电视的频道表） ---- */
+.lineup { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+.lgrp { border: 1px solid var(--rule); border-radius: 10px; margin-bottom: 14px; overflow: hidden; background: var(--ink-deep); }
+.lgrp > header { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; background: var(--side); font: 600 16px var(--serif); color: var(--paper-hi); }
+.lgrp > header small { font: 12px var(--sans); color: var(--faint); }
+.lrow { display: grid; grid-template-columns: 22px 34px 52px minmax(0, 1fr) auto 52px; gap: 12px; align-items: center; padding: 8px 14px; border-top: 1px solid #241f19; }
+.lrow .grip { color: var(--faint); cursor: grab; letter-spacing: -2px; }
+.lrow .no { font: 600 13px var(--mono); color: var(--amber); }
+.lrow .nm { font: 15px var(--serif); color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lrow .nm small { display: block; font: 12px var(--sans); color: var(--dim); }
+.tag { font-size: 11px; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--rule); color: var(--dim); white-space: nowrap; }
+.sw { width: 46px; height: 26px; border-radius: 13px; background: var(--rule); position: relative; flex: none; }
+.sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--paper); transition: left .15s; }
+.sw[aria-checked=true] { background: var(--red); }
+.sw[aria-checked=true]::after { left: 23px; background: #fff4e6; }
+.panel { border: 1px solid var(--rule); border-radius: 10px; padding: 16px; background: var(--ink-deep); margin-bottom: 14px; }
+.panel h3 { margin: 0 0 10px; font: 600 16px var(--serif); color: var(--paper-hi); }
+.meter { height: 8px; border-radius: 4px; background: var(--rule); overflow: hidden; margin: 8px 0 4px; }
+.meter i { display: block; height: 100%; background: var(--amber); }
+.src { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid #241f19; font-size: 14px; }
+.src:first-of-type { border-top: 0; }
+.src span { flex: 1; min-width: 0; }
+.src small { display: block; color: var(--faint); font-size: 12px; }
+
+/* ---- 详情 ---- */
+.dhero { position: relative; margin: -64px -32px 0; padding: 92px 32px 30px; overflow: hidden; }
+.dhero .bg { position: absolute; inset: -40px; filter: blur(30px) saturate(1.2); opacity: .55; }
+.dhero .bg svg { width: 100%; height: 100%; }
+.dhero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(28,25,21,.35), var(--ink) 92%); }
+.dbody { position: relative; z-index: 1; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 34px; align-items: end; }
+.dbody .dposter { grid-row: 1 / 3; }
+.dbody .wide { grid-column: 2; }
+.dposter { border-radius: 8px; overflow: hidden; aspect-ratio: 2 / 3; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
+.dposter.w { aspect-ratio: 16 / 9; }
+.dposter svg { width: 100%; height: 100%; }
+.dbody h2 { margin: 8px 0 6px; font: 700 40px/1.2 var(--serif); letter-spacing: 5px; color: var(--paper-hi); }
+.dbody .syn { -webkit-line-clamp: 3; max-width: 640px; }
+.lastw { margin-top: 12px; font-size: 13px; color: var(--dim); }
+.lastw b { color: var(--amber); font: 13px var(--mono); }
+.facts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.eps { display: grid; gap: 4px; }
+.ep { display: grid; grid-template-columns: 176px minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 10px; border-radius: 10px; text-align: left; width: 100%; }
+.ep:hover { background: var(--card); }
+.ep.cur { background: var(--card-hi); }
+.ep .art { position: relative; aspect-ratio: 16 / 9; border-radius: 5px; overflow: hidden; }
+.ep .art svg { width: 100%; height: 100%; }
+.ep b { display: block; font: 16px var(--serif); font-weight: normal; color: var(--paper-hi); }
+.ep span { font-size: 13px; color: var(--dim); }
+.ep .st { font: 12px var(--mono); color: var(--dim); text-align: right; }
+.ep .st.ok { color: var(--faint); }
+.ep .st.go { color: var(--amber); }
+.ep:disabled { opacity: .55; }
+
+/* ---- UP 主 ---- */
+.ups { display: flex; gap: 18px; overflow-x: auto; padding: 4px 4px 14px; margin: 0 -4px 6px; }
+.up { flex: none; width: 84px; text-align: center; }
+.up .av { position: relative; width: 72px; height: 72px; margin: 0 auto; border-radius: 50%; box-shadow: 0 0 0 2px var(--rule); }
+.up .av svg { border-radius: 50%; }
+.up[aria-pressed=true] .av { box-shadow: 0 0 0 3px var(--red); }
+.up .av em { position: absolute; right: -2px; top: -2px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--amber); color: var(--ink); font: 600 11px/20px var(--mono); font-style: normal; }
+.up span { display: block; margin-top: 8px; font: 13px var(--serif); color: var(--paper); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.up small { font-size: 11px; color: var(--faint); }
+.who { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.who svg { flex: none; border-radius: 50%; }
+.who .t { margin: 0; }
+
+/* ---- 片库 ---- */
+.srcbar { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 18px; }
+.srcbar .pill { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: var(--card); border: 1px solid var(--rule); font-size: 13px; color: var(--paper); }
+.srcbar .pill small { color: var(--faint); }
+.srcbar .pill.add { border-style: dashed; color: var(--dim); background: none; }
+
+/* ---- 搜索 ---- */
+.bigsearch { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 20px; border-radius: 12px; background: var(--card); border: 1px solid var(--rule-hi); margin: 4px 0 14px; color: var(--dim); }
+.bigsearch input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--paper-hi); font: 22px var(--serif); }
+.rlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 16px; }
+.ritem { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 8px; border-radius: 8px; text-align: left; width: 100%; }
+.ritem:hover { background: var(--card); }
+.ritem .art { position: relative; aspect-ratio: 16 / 9; border-radius: 5px; overflow: hidden; }
+.ritem .art svg { width: 100%; height: 100%; }
+.ritem .art.lg { aspect-ratio: auto; height: 46px; display: grid; place-items: center; background: none; }
+.ritem .art.lg svg { width: 72px; height: 44px; }
+.ritem b { display: block; font: 15px var(--serif); font-weight: normal; color: var(--paper-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ritem span { font-size: 12px; color: var(--dim); }
+.ritem mark { background: none; color: var(--amber); }
+
+/* ---- 设备 ---- */
+.devs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.dev { border: 1px solid var(--rule); border-radius: 12px; padding: 16px; background: var(--ink-deep); display: grid; gap: 12px; }
+.dev.off { opacity: .7; }
+.dev header { display: flex; align-items: center; gap: 10px; }
+.dev header b { font: 600 17px var(--serif); color: var(--paper-hi); }
+.dev header small { margin-left: auto; font-size: 12px; color: var(--dim); }
+.dev .model { font-size: 12px; color: var(--faint); }
+.tvbox { display: flex; justify-content: center; padding: 14px; border-radius: 8px; background: #0a0908; }
+.tvscr { width: 210px; border: 6px solid #2a2520; border-radius: 6px; background: #000; padding: 10px 12px; font-family: var(--mono); }
+.tvscr .n { font: 600 28px/1 var(--mono); color: var(--amber); text-shadow: 0 0 8px rgba(255,181,71,.35); }
+.tvscr .g { float: right; font-size: 10px; color: var(--red); }
+.tvscr .x { margin-top: 8px; font: 13px/1.35 var(--serif); color: var(--amber-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvscr .y { font: 11px/1.4 var(--serif); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvscr.dark .n, .tvscr.dark .x { color: #3a342b; text-shadow: none; }
+.dev .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dev.add { place-content: center; text-align: center; border-style: dashed; color: var(--dim); min-height: 260px; }
+.dev.add b { font: 600 17px var(--serif); color: var(--paper-hi); }
+
+/* ---- 设置 / 我的 ---- */
+.list { border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; margin-bottom: 18px; background: var(--ink-deep); max-width: 760px; }
+.list > h3 { margin: 0; padding: 12px 16px 6px; font: 600 13px var(--sans); color: var(--faint); letter-spacing: 1px; }
+.li { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 54px; padding: 10px 16px; border-top: 1px solid #241f19; text-align: left; }
+.li:first-of-type { border-top: 0; }
+.li > span { flex: 1; min-width: 0; font: 15px var(--serif); color: var(--paper-hi); }
+.li > span small { display: block; font: 12px var(--sans); color: var(--dim); }
+.li > em { font-style: normal; font-size: 13px; color: var(--dim); }
+.li .ico { color: var(--dim); }
+a.li:hover, button.li:hover { background: var(--card); }
+
+/* ---- 迷你播放条 ---- */
+#mini { grid-column: 2; position: relative; z-index: 7; display: flex; align-items: center; gap: 14px; height: 74px; padding: 0 20px; background: var(--ink-deep); border-top: 1px solid var(--rule); }
+.mprog { position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: var(--rule); }
+.mprog i { display: block; height: 100%; background: var(--red); }
+.mart { position: relative; width: 96px; aspect-ratio: 16 / 9; flex: none; border-radius: 4px; overflow: hidden; }
+.mart svg { width: 100%; height: 100%; }
+.mart .badge { top: 4px; left: 4px; font-size: 10px; padding: 2px 4px; }
+.mtx { min-width: 0; flex: 1; }
+.mtx b { display: block; font: 15px var(--serif); font-weight: normal; color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtx span { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.mctl { display: flex; align-items: center; gap: 4px; }
+.mctl .iconbtn.big { width: 46px; height: 46px; background: var(--paper-hi); color: var(--ink); }
+.mctl .iconbtn.big:hover { background: #fff; }
+#mini .tchip { margin-left: 8px; }
+#mini.idle .mtx b { color: var(--dim); }
+
+/* ---- 手机底栏 ---- */
+#tabs { display: none; }
+
+/* ---- 抽屉（播放到 / 遥控 / 添加） ---- */
+#scrim { position: absolute; inset: 0; z-index: 20; background: rgba(8,7,6,.62); }
+#sheet { position: absolute; z-index: 21; top: 0; right: 0; bottom: 0; width: 430px; max-width: 100%; display: flex; flex-direction: column;
+         background: var(--side); border-left: 1px solid var(--rule); box-shadow: -20px 0 60px rgba(0,0,0,.45); }
+.shh { display: flex; align-items: center; gap: 10px; padding: 18px 20px 12px; }
+.shh h2 { flex: 1; margin: 0; font: 600 20px var(--serif); letter-spacing: 2px; color: var(--paper-hi); }
+.shh p { margin: 0; }
+.shb { flex: 1; overflow-y: auto; padding: 0 20px 24px; }
+.grab { display: none; }
+.pending { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 10px; background: var(--card); margin-bottom: 14px; }
+.pending .mart { width: 84px; }
+.pending b { display: block; font: 15px var(--serif); font-weight: normal; color: var(--paper-hi); }
+.pending span { font-size: 12px; color: var(--dim); }
+.tg { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; min-height: 68px; padding: 12px; margin-bottom: 8px;
+      border: 1px solid var(--rule); border-radius: 12px; text-align: left; }
+.tg:hover { background: var(--card); }
+.tg[aria-checked=true] { border-color: var(--red); background: var(--card-hi); }
+.tg .ic { width: 44px; height: 44px; border-radius: 10px; background: var(--card); display: grid; place-items: center; color: var(--paper); }
+.tg b { display: flex; align-items: center; gap: 8px; font: 16px var(--serif); font-weight: normal; color: var(--paper-hi); }
+.tg span { display: block; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tg .last { font: 11px var(--sans); color: var(--amber); border: 1px solid #5a4a2c; border-radius: 3px; padding: 0 4px; }
+.tg.off { opacity: .55; }
+.tg .chk { color: var(--red); }
+.opt { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--rule); margin-top: 6px; font-size: 14px; }
+.opt span { flex: 1; }
+.opt small { display: block; color: var(--faint); font-size: 12px; }
+
+/* ---- 遥控 ---- */
+.rdevs { display: flex; gap: 8px; overflow-x: auto; margin: 0 0 14px; }
+.rdevs button { flex: none; display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--rule); color: var(--dim); font: 14px var(--serif); }
+.rdevs button[aria-pressed=true] { border-color: var(--red); color: var(--paper-hi); background: var(--card-hi); }
+.rscreen { padding: 16px 18px; border-radius: 10px; background: var(--ink-deep); border: 1px solid var(--rule); }
+.rscreen .r1 { display: flex; justify-content: space-between; align-items: baseline; }
+.rscreen .n { font: 600 44px/1 var(--mono); color: var(--amber); text-shadow: 0 0 10px rgba(255,181,71,.3); }
+.rscreen .g { font: 13px var(--mono); color: var(--red); }
+.rscreen .x { margin-top: 10px; font: 20px/1.35 var(--serif); color: var(--amber-soft); }
+.rscreen .y { margin-top: 2px; font: 14px/1.5 var(--serif); color: var(--dim); }
+.rscreen .lprog { margin: 10px 0 0; }
+.rpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
+.rpad button { height: 52px; border-radius: 10px; border: 1px solid var(--rule); display: flex; align-items: center; justify-content: center; gap: 6px; font: 15px var(--serif); color: var(--paper); }
+.rpad button:hover { border-color: var(--rule-hi); background: var(--card); }
+.rpad button.main { background: var(--paper-hi); color: var(--ink); border-color: var(--paper-hi); }
+.dial { display: grid; grid-template-columns: 30px 52px minmax(0, 1fr) 48px; gap: 10px; align-items: center; min-height: 48px; border-top: 1px dotted var(--rule); }
+.dial .ico { color: var(--dim); }
+.dial > span { font: 15px var(--serif); color: var(--paper); }
+.dial b { text-align: right; font: 600 13px var(--mono); color: var(--amber); }
+.dial .seg { display: flex; gap: 4px; }
+.dial .seg button { flex: 1; height: 34px; border-radius: 6px; border: 1px solid var(--rule); font: 13px var(--mono); color: var(--dim); }
+.dial .seg button, .rpad button, .chips button { text-align: center; }
+.dial .seg button[aria-pressed=true] { background: var(--amber); border-color: var(--amber); color: var(--ink); }
+.dial em { font-style: normal; font-size: 12px; color: var(--faint); }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 30px; background: transparent; margin: 0; }
+input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--rule); }
+input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--rule); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; margin-top: -8px; border-radius: 50%; background: var(--red); border: 0; }
+input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--red); border: 0; }
+.petgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 8px; }
+.petgrid button { display: grid; justify-items: center; gap: 2px; padding: 6px 0; border-radius: 8px; font-size: 11px; color: var(--dim); }
+.petgrid button:hover { background: var(--card); }
+.petgrid button[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--red); color: var(--amber); background: var(--card); }
+.rsec { margin-top: 10px; padding-top: 10px; border-top: 1px dotted var(--rule); }
+.rsec > b { font: 15px var(--serif); font-weight: normal; color: var(--paper); }
+.offbox { text-align: center; padding: 30px 10px; color: var(--dim); }
+.offbox b { display: block; font: 600 18px var(--serif); color: var(--paper-hi); margin: 10px 0 4px; }
+
+#toast { position: absolute; z-index: 40; left: 50%; bottom: 96px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; transition: .2s;
+         background: var(--paper-hi); color: var(--ink); padding: 10px 18px; border-radius: 999px; font: 14px var(--serif); white-space: nowrap; max-width: 92%; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+#toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* =================== 手机布局（.m）：窗口窄于 700px，或原型选了「手机」 =================== */
+.m#app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto auto; }
+.m #side { display: none; }
+.m .top { padding: 12px 16px 10px; padding-top: max(12px, env(safe-area-inset-top)); }
+.m .top h1 { font-size: 21px; }
+.m .sbox, .m .top .me, .m .top .kb { display: none; }
+.m .tchip { height: 36px; padding: 0 10px; font-size: 13px; max-width: 52%; }
+.m .tchip .lbl { display: none; }
+.m #view { padding: 0 16px 20px; }
+.m .shelf { margin: 0 -16px; padding: 4px 16px 12px; scroll-padding: 0 16px; gap: 12px; }
+.m .card { width: 224px; }
+.m .card.p { width: 116px; }
+.m .h2 { margin: 24px 0 10px; }
+.m .h2 h2 { font-size: 18px; }
+.m .hero { height: 420px; margin: 0 -16px; border-radius: 0; }
+.m .hero .shade { background: linear-gradient(0deg, rgba(15,13,11,.96) 0, rgba(15,13,11,.6) 45%, rgba(15,13,11,0) 75%); }
+.m .hero .copy { left: 18px; right: 18px; bottom: 44px; }
+.m .hero h2 { font-size: 30px; letter-spacing: 3px; }
+.m .hero .nav { left: 0; right: 0; bottom: 16px; justify-content: center; }
+.m .hero .nav .iconbtn { display: none; }
+.m .actions .btn { height: 48px; }
+.m .actions { flex-wrap: nowrap; }
+.m .actions .split { flex: 1; }
+.m .actions .split .btn:first-child { flex: 1; }
+.m .qchips { display: flex; overflow-x: auto; flex-wrap: nowrap; margin: 14px -16px 0; padding: 0 16px; }
+.m .qchips a { flex: none; height: 38px; }
+.m .banner { flex-wrap: wrap; }
+.m .banner .btn { margin-left: 0; }
+.m .onb { grid-template-columns: 1fr; }
+.m .lhead { grid-template-columns: 1fr; gap: 12px; }
+.m .lprev { display: none; }
+.m .linfo h2 { font-size: 22px; }
+.m .gscroll { max-height: none; }
+.m .gch { gap: 0; padding: 0 8px; justify-content: center; }
+.m .gch .no, .m .gch > span:not(.lg) { display: none; }
+.m .lineup { grid-template-columns: 1fr; }
+.m .lrow { grid-template-columns: 30px 46px minmax(0, 1fr) 48px; }
+.m .lrow .grip, .m .lrow .tag { display: none; }
+.m .dhero { margin: -60px -16px 0; padding: 80px 16px 20px; }
+.m .dbody { grid-template-columns: 112px minmax(0, 1fr); gap: 16px; }
+.m .dbody h2 { font-size: 24px; letter-spacing: 2px; margin-top: 0; }
+.m .dbody .wide { grid-column: 1 / -1; }
+.m .dbody .dposter { grid-row: auto; }
+.m .dbody .actions { flex-wrap: wrap; }
+.m .dbody .actions .split { flex: 1 1 100%; }
+.m .ep { grid-template-columns: 124px minmax(0, 1fr); gap: 12px; padding: 8px 0; }
+.m .ep .st { grid-column: 2; text-align: left; }
+.m .pgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 10px; }
+.m .wgrid { grid-template-columns: 1fr; }
+.m .rlist { grid-template-columns: 1fr; }
+.m .ritem { grid-template-columns: 104px minmax(0, 1fr) auto; padding: 8px 0; }
+.m .bigsearch { height: 50px; }
+.m .bigsearch input { font-size: 18px; }
+.m .devs { grid-template-columns: 1fr; }
+.m #mini { grid-column: 1; height: 62px; margin: 0 8px 8px; padding: 0 8px 0 6px; gap: 10px; border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
+.m .mprog { top: auto; bottom: 0; }
+.m .mart { width: 78px; }
+.m .mctl .hidem, .m #mini .tchip { display: none; }
+.m .mctl .iconbtn.big { width: 42px; height: 42px; }
+.m #tabs { display: grid; grid-template-columns: repeat(5, 1fr); background: var(--side); border-top: 1px solid var(--rule); padding-bottom: env(safe-area-inset-bottom); }
+.m #tabs a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 58px; font-size: 11px; color: var(--faint); }
+.m #tabs a[aria-current=page] { color: var(--amber); }
+.m #sheet { top: auto; left: 0; width: auto; max-height: 90%; border-left: 0; border-top: 1px solid var(--rule); border-radius: 18px 18px 0 0; box-shadow: 0 -20px 60px rgba(0,0,0,.45); }
+.m .grab { display: block; width: 40px; height: 5px; border-radius: 3px; background: var(--rule-hi); margin: 8px auto 0; }
+.m .shh { padding-top: 10px; }
+.m #toast { bottom: 150px; }
+.m.onremote #mini { display: none; }
+.m .rpad button { height: 58px; }
+.m .li { min-height: 58px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="app" class="d">
+    <aside id="side" aria-label="主导航">
+      <div class="brand"><b>小智电视</b><span>家庭媒体中心</span></div>
+      <nav id="nav"></nav>
+    </aside>
+    <div id="main">
+      <header class="top" id="top"></header>
+      <div id="view"></div>
+    </div>
+    <div id="mini" aria-label="正在播放"></div>
+    <nav id="tabs" aria-label="底部导航"></nav>
+    <div id="scrim" hidden></div>
+    <div id="sheet" role="dialog" aria-modal="true" aria-labelledby="shTitle" hidden></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+  </div>
+</div>
+<div id="proto" aria-label="原型选项">
+  <b>原型 · 不是产品界面</b>
+  <div class="seg" role="group" aria-label="布局">
+    <button data-view="desktop" aria-pressed="true">桌面</button><button data-view="phone" aria-pressed="false">手机</button>
+  </div>
+  <label>演示状态
+    <select id="demo">
+      <option value="normal">正常</option>
+      <option value="notv">没有小电视</option>
+      <option value="nosubs">没订阅、片库空</option>
+      <option value="biliblocked">连不上 B 站</option>
+    </select>
+  </label>
+  <span>方向键在界面里移动 · 回车播放 · Esc 关闭 · / 搜索</span>
+</div>
+<script>
+"use strict";
+/* ============================== 小工具 ============================== */
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const hsh = s => { let h = 2166136261; for (const c of String(s)) { h ^= c.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; } return h; };
+const hm = m => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const NOW = 20 * 60 + 12; // 原型的时钟固定在 20:12，截图每次一样
+const G0 = 19 * 60, G1 = 23 * 60 + 30;
+
+const IC = {
+  home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  live: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 3l4 4 4-4"/>',
+  guide: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 9v11M12 14h6M12 17h4"/>',
+  series: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+  up: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
+  lib: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  remote: '<rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17h4"/>',
+  set: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  play: '<path d="M7 4l13 8-13 8z" fill="currentColor" stroke="none"/>',
+  pause: '<path d="M7 4h4v16H7zM13 4h4v16h-4z" fill="currentColor" stroke="none"/>',
+  next: '<path d="M5 4l10 8-10 8zM17 4h2v16h-2z" fill="currentColor" stroke="none"/>',
+  prev: '<path d="M19 4 9 12l10 8zM5 4h2v16H5z" fill="currentColor" stroke="none"/>',
+  tv: '<rect x="2" y="5" width="20" height="13" rx="2"/><path d="M8 21h8"/>',
+  pc: '<rect x="4" y="4" width="16" height="11" rx="1"/><path d="M2 19h20"/>',
+  check: '<path d="M5 12l5 5 9-10"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  down: '<path d="M6 9l6 6 6-6"/>',
+  upc: '<path d="M6 15l6-6 6 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  vol: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9a4 4 0 0 1 0 6"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
+  moon: '<path d="M20 15A8 8 0 1 1 9 4a7 7 0 0 0 11 11z"/>',
+  ear: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="1"/><rect x="17" y="14" width="4" height="6" rx="1"/>',
+  back: '<path d="M15 5l-7 7 7 7"/>',
+  more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+  warn: '<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17v.5"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+  paw: '<circle cx="7" cy="9" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="9" r="2"/><path d="M8 17c0-3 2-5 4-5s4 2 4 5-2 3-4 3-4 0-4-3z"/>',
+  r30: '<path d="M4 12a8 8 0 1 0 3-6.2"/><path d="M4 4v5h5"/>',
+  f30: '<path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v5h-5"/>',
+  link: '<path d="M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1"/><path d="M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1"/>',
+  hist: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+};
+const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
+
+/* ======================= 占位图：封面、缩略图、台标、头像、宠物 ======================= */
+let UID = 0;
+function lcg(seed) { let s = seed || 1; return () => (s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 4294967296; }
+// ratio: "p" 竖海报 2:3，"w" 横图 16:9。opt.title=false 不写字；opt.kick 左上角小字。
+function art(t, hue, ratio = "w", opt = {}) {
+  const W = ratio === "p" ? 200 : 320, H = ratio === "p" ? 300 : 180, id = "g" + (UID++), v = hsh(t), rnd = lcg(v);
+  const c1 = `hsl(${hue} 42% 30%)`, c2 = `hsl(${(hue + 35) % 360} 48% 10%)`, c3 = `hsl(${(hue + 15) % 360} 78% 68%)`, c4 = `hsl(${(hue + 190) % 360} 45% 55%)`;
+  let m = "";
+  const k = opt.motif ?? v % 5;
+  if (k === 0) {
+    m = `<circle cx="${W * .7}" cy="${H * .4}" r="${W * .15}" fill="${c3}" opacity=".85"/>
+      <path d="M0 ${H * .72}L${W * .28} ${H * .5}L${W * .5} ${H * .63}L${W * .76} ${H * .44}L${W} ${H * .64}V${H}H0Z" fill="${c2}" opacity=".92"/>
+      <path d="M0 ${H * .84}L${W * .42} ${H * .68}L${W} ${H * .88}V${H}H0Z" fill="#0f0d0b" opacity=".55"/>`;
+  } else if (k === 1) {
+    for (let i = 0; i < 26; i++) m += `<circle cx="${(rnd() * W).toFixed(1)}" cy="${(rnd() * H * .75).toFixed(1)}" r="${(rnd() * 1.6 + .4).toFixed(1)}" fill="#fff4e6" opacity="${(rnd() * .6 + .3).toFixed(2)}"/>`;
+    m += `<circle cx="${W * .3}" cy="${H * .32}" r="${W * .12}" fill="${c3}"/><circle cx="${W * .35}" cy="${H * .28}" r="${W * .11}" fill="${c1}"/>
+      <path d="M0 ${H * .8}Q${W * .5} ${H * .62} ${W} ${H * .82}V${H}H0Z" fill="${c2}"/>`;
+  } else if (k === 2) {
+    m = `<g transform="rotate(-20 ${W / 2} ${H / 2})" opacity=".6"><rect x="${-W}" y="${H * .3}" width="${W * 3}" height="${H * .09}" fill="${c3}"/>
+      <rect x="${-W}" y="${H * .46}" width="${W * 3}" height="${H * .04}" fill="${c4}"/><rect x="${-W}" y="${H * .58}" width="${W * 3}" height="${H * .14}" fill="${c2}"/></g>`;
+  } else if (k === 3) {
+    for (let i = 0; i < 4; i++) { const y = H * (.5 + i * .12), a = H * .05; m += `<path d="M0 ${y}Q${W * .25} ${y - a} ${W * .5} ${y}T${W} ${y}V${H}H0Z" fill="${i % 2 ? c2 : c4}" opacity="${.35 + i * .15}"/>`; }
+    m += `<circle cx="${W * .78}" cy="${H * .26}" r="${W * .07}" fill="${c3}"/>`;
+  } else {
+    m = `<rect x="${W * .22}" y="${H * .14}" width="${W * .56}" height="${H * .56}" rx="${W * .28}" fill="${c4}" opacity=".3"/>
+      <rect x="${W * .32}" y="${H * .24}" width="${W * .36}" height="${H * .46}" rx="${W * .18}" fill="${c3}" opacity=".5"/>
+      <rect x="0" y="${H * .7}" width="${W}" height="${H * .3}" fill="${c2}"/>`;
+  }
+  if (opt.flip) m = `<g transform="translate(${W} 0) scale(-1 1)">${m}</g>`;
+  let txt = "";
+  if (opt.title !== false) {
+    const L = [...t].length;
+    if (ratio === "p") {
+      const fs = Math.min(34, 168 / Math.max(L, 2));
+      txt = `<text x="${W / 2}" y="${H * .86}" text-anchor="middle" font-family="Songti SC,STSong,Noto Serif SC,serif" font-weight="700" font-size="${fs}" letter-spacing="${fs * .12}" fill="#fff4e6">${esc(t)}</text>`;
+    } else {
+      const fs = Math.min(26, 250 / Math.max(L, 2));
+      txt = `<text x="18" y="${H - 20}" font-family="Songti SC,STSong,Noto Serif SC,serif" font-weight="700" font-size="${fs}" fill="#fff4e6" opacity=".92">${esc(t)}</text>`;
+    }
+  }
+  if (opt.kick) txt += `<text x="14" y="24" font-family="PingFang SC,sans-serif" font-size="12" fill="#fff4e6" opacity=".8" letter-spacing="2">${esc(opt.kick)}</text>`;
+  if (opt.ep) txt += `<text x="${W - 14}" y="${H - 14}" text-anchor="end" font-family="Menlo,monospace" font-size="22" font-weight="700" fill="#fff4e6" opacity=".85">${esc(opt.ep)}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect width="${W}" height="${H}" fill="url(#${id})"/>${m}${txt}</svg>`;
+}
+// 连不上 B 站时没缓存的封面：灰底 + 说明，标题照样显示在卡片下面。
+const noCover = (ratio = "w") => { const W = ratio === "p" ? 200 : 320, H = ratio === "p" ? 300 : 180;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><rect width="${W}" height="${H}" fill="#25211b"/><rect x="${W / 2 - 26}" y="${H / 2 - 26}" width="52" height="40" rx="8" fill="none" stroke="#5a5042" stroke-width="3"/><path d="M${W / 2 - 12} ${H / 2 - 34}l6 8M${W / 2 + 12} ${H / 2 - 34}l-6 8" stroke="#5a5042" stroke-width="3" stroke-linecap="round"/><text x="${W / 2}" y="${H / 2 + 40}" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="13" fill="#857a68">封面暂时取不到</text></svg>`; };
+function logo(c, w = 64) {
+  const [a, b] = c.logo, H = 40;
+  const t = b ? `<text x="32" y="16" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="10" font-weight="600" fill="#fff4e6" opacity=".85">${esc(a)}</text><text x="32" y="33" text-anchor="middle" font-family="Menlo,PingFang SC,sans-serif" font-size="${[...b].length > 2 ? 12 : 16}" font-weight="700" fill="#fff4e6">${esc(b)}</text>`
+    : `<text x="32" y="26" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="${[...a].length > 3 ? 11 : 14}" font-weight="700" fill="#fff4e6">${esc(a)}</text>`;
+  return `<svg viewBox="0 0 64 ${H}" width="${w}" aria-hidden="true"><rect width="64" height="${H}" rx="7" fill="${c.c}"/><rect x="1" y="1" width="62" height="${H - 2}" rx="6" fill="none" stroke="#fff" stroke-opacity=".15"/>${t}</svg>`;
+}
+function avatar(name, hue, s = 72) {
+  const ch = [...name][0];
+  return `<svg viewBox="0 0 72 72" width="${s}" height="${s}" aria-hidden="true"><circle cx="36" cy="36" r="36" fill="hsl(${hue} 40% 34%)"/><circle cx="36" cy="80" r="34" fill="hsl(${(hue + 30) % 360} 45% 22%)"/><text x="36" y="45" text-anchor="middle" font-family="Songti SC,STSong,serif" font-size="28" font-weight="700" fill="#fff4e6">${esc(ch)}</text></svg>`;
+}
+const PETS = [["猫", "#e8913a", 0], ["狗", "#c9a26b", 1], ["兔", "#efe5d0", 2], ["鸭", "#f1c84b", 3], ["熊猫", "#e6dcc8", 0], ["狐狸", "#d2553f", 1]];
+const PIX = [
+  ["1000001", "1100011", "1111111", "1011101", "1111111", "1110111", "0111110"],
+  ["0111110", "1111111", "1101011", "1111111", "1110111", "0111110", "0011100"],
+  ["0100010", "0100010", "0111110", "1101011", "1111111", "0111110", "0011100"],
+  ["0011100", "0110110", "0111111", "0111100", "1111110", "1111110", "0111100"],
+];
+function pet(i, s = 34) {
+  const [, col, shp] = PETS[i]; let r = "";
+  PIX[shp].forEach((row, y) => [...row].forEach((b, x) => { if (b === "1") r += `<rect x="${x}" y="${y}" width="1" height="1" fill="${i === 4 && (y === 3) && (x === 1 || x === 5) ? "#1c1915" : col}"/>`; }));
+  return `<svg viewBox="-.5 -.5 8 8" width="${s}" height="${s}" shape-rendering="crispEdges" aria-hidden="true">${r}</svg>`;
+}
+
+/* ============================== 假数据 ============================== */
+const CH = [
+  { id: "cctv1", name: "CCTV-1 综合", logo: ["CCTV", "1"], g: "央视", c: "#a8402e", h: 10, p: [["新闻联播", 30], ["焦点访谈", 20], ["天气预报", 10], ["黄金剧场《山海小镇》第 22 集", 50], ["黄金剧场《山海小镇》第 23 集", 50], ["晚间新闻", 30], ["纪录片《大河之源》", 60], ["午夜剧场", 60]] },
+  { id: "cctv2", name: "CCTV-2 财经", logo: ["CCTV", "2"], g: "央视", c: "#8a5a2a", h: 35, p: [["经济半小时", 30], ["消费主张", 30], ["是真的吗", 40], ["对话", 60], ["财经夜读", 30], ["生财有道", 30], ["重播", 60]] },
+  { id: "cctv5", name: "CCTV-5 体育", logo: ["CCTV", "5"], g: "央视", c: "#2f6a3a", h: 120, p: [["体育新闻", 30], ["中超联赛第 28 轮 · 直播", 115], ["足球之夜", 60], ["体育世界", 45], ["篮球公园", 60]] },
+  { id: "cctv6", name: "CCTV-6 电影", logo: ["CCTV", "6"], g: "央视", c: "#6a3a6a", h: 300, p: [["电影《雾都来信》", 110], ["光影星播客", 30], ["电影《北纬三十度》", 105], ["午夜影院", 60]] },
+  { id: "cctv13", name: "CCTV-13 新闻", logo: ["CCTV", "13"], g: "央视", c: "#2a4f7a", h: 215, p: [["新闻联播", 30], ["东方时空", 60], ["新闻 1+1", 30], ["国际时讯", 30], ["24 小时", 60], ["新闻直播间", 60]] },
+  { id: "cctv14", name: "CCTV-14 少儿", logo: ["CCTV", "少儿"], g: "央视", c: "#c27a1e", h: 45, p: [["动画《熊猫小队》", 30], ["智慧树", 30], ["动画《机甲少年团》", 25], ["小小智慧树", 35], ["动画剧场", 60], ["晚安故事", 30], ["重播", 60]] },
+  { id: "hunan", name: "湖南卫视", logo: ["湖南", "卫视"], g: "卫视", c: "#b5502a", h: 20, p: [["湖南新闻联播", 30], ["金鹰剧场《海边的夏天》第 8 集", 45], ["金鹰剧场《海边的夏天》第 9 集", 45], ["综艺《欢乐周末》", 90], ["夜宵剧场", 60]] },
+  { id: "zhejiang", name: "浙江卫视", logo: ["浙江", "卫视"], g: "卫视", c: "#2a5f8a", h: 205, p: [["浙江新闻联播", 30], ["中国蓝剧场《小城故事》第 15 集", 50], ["中国蓝剧场《小城故事》第 16 集", 50], ["综艺《一起去露营》", 90], ["夜间新闻", 30], ["夜间剧场", 60]] },
+  { id: "dongfang", name: "东方卫视", logo: ["东方", "卫视"], g: "卫视", c: "#7a2a3a", h: 345, p: [["东方新闻", 30], ["东方剧场《深海档案》第 3 集", 50], ["东方剧场《深海档案》第 4 集", 50], ["纪实《城市的夜》", 60], ["夜线", 60], ["午夜新闻", 30]] },
+  { id: "jiangsu", name: "江苏卫视", logo: ["江苏", "卫视"], g: "卫视", c: "#2a6a6a", h: 180, p: [["江苏新闻", 30], ["幸福剧场《纸飞机》第 11 集", 45], ["幸福剧场《纸飞机》第 12 集", 45], ["综艺《声音的旅行》", 100], ["零点剧场", 60]] },
+  { id: "phoenix", name: "凤凰中文", logo: ["凤凰", "中文"], g: "港澳台", c: "#9a6a1a", h: 40, p: [["时事直通车", 30], ["凤凰大视野", 40], ["时事辩论会", 50], ["文化大观园", 40], ["午夜新闻", 30], ["纪录片", 90]] },
+  { id: "phxinfo", name: "凤凰资讯", logo: ["凤凰", "资讯"], g: "港澳台", c: "#7a5a1a", h: 30, p: [["新闻今日谈", 60], ["财经观察", 60], ["环球新闻", 60], ["华闻大直播", 60], ["夜间新闻", 60]] },
+  { id: "cgtn", name: "CGTN", logo: ["CGTN"], g: "国际", c: "#1f4a6a", h: 200, p: [["World Today", 60], ["Global Business", 30], ["Dialogue", 30], ["The Point", 30], ["World Insight", 60], ["News", 60]] },
+  { id: "cctv15", name: "CCTV-15 音乐", logo: ["CCTV", "15"], g: "音乐", c: "#5a2a7a", h: 280, p: [["精彩音乐汇", 60], ["民歌·中国", 60], ["音乐公开课", 60], ["合唱先锋", 60], ["夜间音乐", 60]] },
+];
+CH.forEach((c, i) => { c.no = i + 1; let t = G0; c.pr = c.p.map(([n, d]) => { const o = { n, s: t, e: t + d }; t += d; return o; }); });
+const nowI = c => c.pr.findIndex(p => p.s <= NOW && NOW < p.e);
+const chById = id => CH.find(c => c.id === id);
+
+const SR = [
+  { id: "xhlc", t: "星河列车", k: "番剧", site: "B站", y: 2026, n: 24, upd: 12, at: 8, pos: "12:40", dur: "24:00", pct: .53, hue: 248, isNew: 1, sched: "每周六 10:00 更新", tags: ["科幻", "冒险", "治愈"],
+    syn: "一列穿行在星云之间的老式蒸汽列车，载着失忆的少女和一只会说话的橘猫。每一站都是一颗即将熄灭的星球，每一位乘客都带着一个没说完的告别。",
+    ep: ["发车", "橘猫列车长", "雨之星", "灯塔守望者", "借来的名字", "沙海的钟声", "第七节车厢", "回声", "星图碎片", "没有终点的站台", "冬眠的城市", "重新点亮"] },
+  { id: "shxz", t: "山海小镇", k: "电视剧", site: "B站", y: 2025, n: 36, upd: 36, at: 21, pct: .2, hue: 150, tags: ["都市", "温情"], syn: "辞职回乡的年轻人在海边小镇开起民宿，和邻里一起把日子过成一锅热汤。" },
+  { id: "mmzt", t: "猫咪侦探社", k: "番剧", site: "B站", y: 2024, n: 12, upd: 12, at: 3, pct: .7, hue: 28, tags: ["悬疑", "喜剧"], syn: "三只流浪猫在老城区开了家侦探社，专接人类不屑一顾的小案子。" },
+  { id: "jjsn", t: "机甲少年团", k: "番剧", site: "B站", y: 2026, n: 13, upd: 5, at: 5, wait: 1, hue: 212, sched: "每周三更新", tags: ["热血", "机战"], syn: "废品站长大的少年拼出了一台会闹脾气的机甲。" },
+  { id: "hbdx", t: "海边的夏天", k: "电视剧", site: "B站", y: 2026, n: 20, upd: 10, at: 0, hue: 192, isNew: 1, tags: ["青春"], syn: "一个暑假，四个高中生，一座快要拆掉的海边灯塔。" },
+  { id: "xmxd", t: "熊猫小队", k: "动画", site: "YouTube", y: 2022, n: 52, upd: 52, at: 30, pct: .4, hue: 96, tags: ["少儿"], syn: "五只小熊猫在竹林里帮大家解决麻烦，每集讲一个小道理。" },
+  { id: "cazs", t: "长安小吃铺", k: "纪录片", site: "YouTube", y: 2023, n: 8, upd: 8, at: 8, done: 1, hue: 14, tags: ["美食", "人文"], syn: "镜头跟着一家开了四十年的小吃铺，从凌晨三点的第一锅汤讲起。" },
+  { id: "scnx", t: "宋朝那些事", k: "纪录片", site: "B站", y: 2025, n: 10, upd: 10, at: 2, pct: .1, hue: 40, tags: ["历史"], syn: "从一幅长卷出发，讲宋人的吃穿住行。" },
+];
+const UP = [
+  { id: "xmcf", n: "小满的厨房", site: "B站", hue: 18, fans: "38.2 万", nw: 3, v: [["十分钟一锅番茄牛腩，汤汁拌饭绝了", "14:32", "2 小时前"], ["外婆的葱油饼，层层起酥的秘诀", "09:48", "昨天"], ["一周便当不重样（上）", "21:05", "3 天前"], ["冬天就该吃这锅羊肉汤", "16:20", "5 天前"]] },
+  { id: "djrc", n: "大橘的日常", site: "B站", hue: 34, fans: "102 万", nw: 2, v: [["大橘第一次见到雪", "06:12", "1 小时前"], ["偷吃被抓现场", "03:45", "昨天"], ["给猫做了一个纸箱城堡", "10:30", "3 天前"]] },
+  { id: "ajxx", n: "阿杰看星星", site: "B站", hue: 236, fans: "12.6 万", nw: 1, v: [["在海拔 4500 米拍到了银河拱桥", "18:44", "5 小时前"], ["入门望远镜怎么选：三百到三千", "25:10", "4 天前"], ["月全食全程延时摄影", "08:02", "1 周前"]] },
+  { id: "linlx", n: "Lin 的旅行手账", site: "YouTube", hue: 168, fans: "8.4 万", nw: 1, v: [["坐绿皮火车穿越秦岭", "28:16", "8 小时前"], ["在大理住了一个月花了多少钱", "19:55", "1 周前"]] },
+  { id: "lzxc", n: "老周修车记", site: "B站", hue: 200, fans: "56 万", nw: 0, v: [["二十年的老车换正时皮带", "32:18", "2 天前"], ["冬天电瓶亏电怎么办", "11:40", "6 天前"]] },
+  { id: "yhkp", n: "硬核科普社", site: "B站", hue: 280, fans: "210 万", nw: 0, v: [["为什么冬天的静电特别多", "12:08", "3 天前"], ["一颗芯片是怎么造出来的", "26:40", "1 周前"]] },
+];
+const LIB = {
+  "电影": [["wdlx", "雾都来信", 2019, "2 小时 1 分", 212, "剧情 · 悬疑"], ["bwss", "北纬三十度", 2021, "1 小时 52 分", 28, "冒险"], ["zhyb", "最后一班渡轮", 2018, "1 小时 38 分", 192, "爱情"],
+    ["zfj", "纸飞机", 2023, "1 小时 45 分", 52, "家庭"], ["xqtk", "星期天的客人", 2020, "1 小时 50 分", 82, "剧情"], ["smzx", "沙漠之心", 2016, "2 小时 10 分", 36, "冒险"], ["yxdw", "夜行动物园", 2022, "1 小时 33 分", 130, "动画 · 喜剧"]],
+  "剧集": [["xcgs", "小城故事", 2024, "2 季 · 24 集", 140, "都市"], ["shda", "深海档案", 2025, "1 季 · 10 集", 205, "悬疑"]],
+  "动画": [["ydsn", "云端少女", 2023, "1 季 · 12 集", 300, "奇幻"], ["tdzx", "铁道之夏", 2021, "剧场版 · 1 小时 41 分", 22, "青春"]],
+  "家庭视频": [["h26", "2026 国庆 · 青岛", 2026, "23 段 · 41 分钟", 200], ["h25", "2025 春节 · 老家", 2025, "58 段 · 1 小时 12 分", 8], ["hby", "宝宝一岁生日", 2025, "12 段 · 18 分钟", 330], ["hgd", "毕业典礼", 2024, "4 段 · 26 分钟", 262]],
+};
+const libAll = () => Object.entries(LIB).flatMap(([k, a]) => a.map(([id, t, y, d, hue, g]) => ({ id, t, y, d, hue, g: g || "家庭视频", k })));
+const libById = id => libAll().find(x => x.id === id);
+const srById = id => SR.find(s => s.id === id);
+
+// 设备：在线、在播什么（item id）、遥控状态。
+const DEV = [
+  { id: "living", n: "客厅小电视", s: "客厅", model: "星智 Cube 1.54", res: "240×180", on: true, now: "ch:cctv1", vol: 60, bri: 3, listen: false, pet: 0, sleep: 0, paused: false },
+  { id: "bed", n: "卧室小电视", s: "卧室", model: "AI Passport", res: "320×180", on: true, now: "v:xmcf:0", vol: 30, bri: 1, listen: true, pet: 2, sleep: 30, paused: false },
+  { id: "gp", n: "爷爷家的小电视", s: "爷爷家", model: "星智 Cube 1.54", res: "240×180", on: false, seen: "3 小时前", now: null },
+  { id: "pc", n: "这台电脑", s: "电脑", model: "在电脑上看 · 不需要小电视", pc: true, on: true, now: null },
+];
+const S = { view: "desktop", demo: "normal", target: "living", remember: true, ask: false, mini: "living", liveGroup: "全部", sel: null, sf: "全部", lt: "电影", up: "", q: "星", scope: "全部", hero: 0, lu: "living", pending: null, lastFocus: null, sheet: null };
+const devs = () => S.demo === "notv" ? DEV.filter(d => d.pc) : DEV;
+const dev = id => devs().find(d => d.id === id);
+const tvs = () => devs().filter(d => !d.pc);
+const blocked = () => S.demo === "biliblocked";
+const empty = () => S.demo === "nosubs";
+
+// 能播的东西都登记成 item：标题、副标题、封面、是直播还是点播。
+const IT = {};
+function reg(id, o) { IT[id] = { id, ...o }; }
+CH.forEach(c => reg("ch:" + c.id, { live: 1, ch: c.id, hue: c.h, get title() { return c.name; }, get line() { const p = c.pr[nowI(c)]; return `${p.n} · ${hm(p.s)}–${hm(p.e)}`; }, get pct() { const p = c.pr[nowI(c)]; return (NOW - p.s) / (p.e - p.s); } }));
+SR.forEach(s => { for (let e = 1; e <= s.n; e++) reg(`ep:${s.id}:${e}`, { title: `${s.t} 第 ${e} 集`, line: s.ep && s.ep[e - 1] ? s.ep[e - 1] : `${s.k} · ${s.site}`, hue: s.hue, sr: s.id, e, site: s.site, pct: e === s.at ? (s.pct || 0) : 0, dur: s.dur || "45:00" }); });
+UP.forEach(u => u.v.forEach((v, i) => reg(`v:${u.id}:${i}`, { title: v[0], line: `${u.n} · ${v[1]}`, hue: (u.hue + i * 40) % 360, up: u.id, site: u.site, pct: i === 0 && u.id === "xmcf" ? .58 : 0, dur: v[1] })));
+libAll().forEach(x => reg(`lib:${x.id}`, { title: x.t, line: `片库 · ${x.d}`, hue: x.hue, lib: x.id, site: "片库", pct: x.id === "wdlx" ? .62 : 0 }));
+const itemArt = (it, ratio = "w", o = {}) => (blocked() && it.site === "B站" && !it.sr) ? noCover(ratio) : art(it.title.replace(/ 第 \d+ 集$/, ""), it.hue, ratio, { title: false, ...o });
+
+/* ============================== 路由 ============================== */
+const NAV = [["home", "首页", "home"], ["live", "直播", "live"], ["lineup", "节目单", "guide"], ["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["search", "搜索", "search"], ["devices", "设备与遥控", "remote"], ["settings", "设置", "set"]];
+const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search", "搜索", "search"], ["remote", "遥控", "remote"], ["me", "我的", "more"]];
+const TITLES = { home: "首页", live: "直播", lineup: "节目单", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索", devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的" };
+const isM = () => $("#app").classList.contains("m");
+function parse() {
+  const h = decodeURIComponent(location.hash.slice(1)) || "/home", [p, qs] = h.split("?"), parts = p.split("/").filter(Boolean);
+  return { name: parts[0] || "home", arg: parts.slice(1).join("/"), q: new URLSearchParams(qs || "") };
+}
+let curRoute = "home", sheetHash = "";
+function applyParams(q) {
+  if (q.get("view")) S.view = q.get("view");
+  if (q.get("state")) S.demo = q.get("state");
+  if (q.get("q") !== null) S.q = q.get("q");
+  if (q.get("chrome") === "0") $("#proto").hidden = true;
+  $("#demo").value = S.demo;
+  applyView();
+}
+function applyView() {
+  const narrow = innerWidth < 700, phone = S.view === "phone" && !narrow, m = narrow || S.view === "phone";
+  $("#stage").classList.toggle("framed", phone);
+  $("#proto").classList.toggle("framed", phone);
+  $("#proto").classList.toggle("mhide", narrow);
+  $("#app").classList.toggle("m", m);
+  document.querySelectorAll("#proto [data-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === (m ? "phone" : "desktop"))));
+}
+function render(keepScroll) {
+  const r = parse(); let name = r.name;
+  if (!isM() && name === "me") name = "home";
+  if (!isM() && name === "remote") name = "devices";
+  if (!VIEWS[name]) name = "home";
+  curRoute = name;
+  $("#app").classList.toggle("onremote", name === "remote");
+  const prev = $("#main").scrollTop;
+  $("#view").innerHTML = VIEWS[name](r.arg);
+  renderTop(name, r.arg); renderNav(name); renderMini();
+  if (!keepScroll) $("#main").scrollTop = 0; else $("#main").scrollTop = prev;
+  document.title = `${name === "detail" ? detailTitle(r.arg) : TITLES[name]} · 小智电视`;
+  if (name === "live") afterLive();
+  if (r.q.get("sheet") && !S.sheet && sheetHash !== location.hash) { sheetHash = location.hash; const s = r.q.get("sheet"); setTimeout(() => s === "target" ? openTarget(r.q.get("item") || null) : s.startsWith("remote") ? openRemote(s.split(":")[1] || S.target) : null, 0); }
+}
+function renderNav(name) {
+  const cnt = { up: empty() ? 0 : UP.reduce((a, u) => a + u.nw, 0), series: empty() ? 0 : SR.filter(s => s.upd > s.at && s.at > 0).length };
+  $("#nav").innerHTML = NAV.map(([id, t, i], k) => `${k === 6 ? '<div class="sep"></div>' : ""}<a href="#/${id}" ${id === name || (name === "detail" && id === "series") ? 'aria-current="page"' : ""}>${ic(i)}${t}${cnt[id] ? `<em aria-label="${cnt[id]} 个更新">${cnt[id]}</em>` : ""}</a>`).join("");
+  const tabName = ["series", "up", "lib", "lineup", "devices", "settings", "detail"].includes(name) ? "me" : name;
+  $("#tabs").innerHTML = TABS.map(([id, t, i]) => `<a href="#/${id}" ${id === tabName ? 'aria-current="page"' : ""}>${ic(i, 22)}${t}</a>`).join("");
+}
+function targetChip(cls = "") {
+  const d = dev(S.target) || dev("pc");
+  return `<button class="tchip ${cls}" data-sheet="target" aria-haspopup="dialog" aria-label="播放到：${esc(d.n)}，点一下换">
+    <span class="dot ${d.on ? "" : "off"}"></span><small class="lbl">播放到</small>${esc(isM() ? d.s : d.n)}${ic("down", 16)}</button>`;
+}
+function renderTop(name, arg) {
+  const back = name === "detail" ? `<button class="iconbtn" data-back aria-label="返回">${ic("back")}</button>` : "";
+  const title = name === "detail" ? "" : TITLES[name];
+  const sb = name === "search" ? "" : `<label class="sbox">${ic("search", 18)}<input id="topq" type="search" placeholder="搜直播、剧集、UP 主、片库" aria-label="搜索"><kbd class="kb">/</kbd></label>`;
+  $("#top").innerHTML = `${back}<h1>${title}</h1>${sb}${targetChip()}<span class="me" aria-label="当前用户：马小鼠" title="马小鼠 · 主人">马</span>`;
+}
+const VIEWS = {};
+
+/* ============================== 卡片 ============================== */
+const playov = `<span class="playov"><span>${ic("play", 18)}</span></span>`;
+function cardItem(id, sub, extra = "") {
+  const it = IT[id];
+  return `<button class="card" data-play="${id}" aria-label="播放 ${esc(it.title)}"><span class="art">${itemArt(it, "w", { title: !!it.sr ? it.title.replace(/ 第 \d+ 集$/, "") : false })}${extra}${it.pct ? `<span class="pbar"><i style="width:${it.pct * 100}%"></i></span>` : ""}${playov}</span>
+    <span class="t">${esc(it.sr ? srById(it.sr).t : it.title)}</span><span class="s">${sub}</span></button>`;
+}
+function cardLive(c) {
+  const p = c.pr[nowI(c)], nx = c.pr[nowI(c) + 1], it = IT["ch:" + c.id];
+  return `<button class="card" data-play="ch:${c.id}" aria-label="播放 ${esc(c.name)}，正在播 ${esc(p.n)}"><span class="art">${art(p.n, c.h, "w", { title: false })}<span class="badge live">直播</span><span class="logo-on">${logo(c, 52)}</span><span class="pbar"><i style="width:${it.pct * 100}%"></i></span>${playov}</span>
+    <span class="t">${esc(p.n)}</span><span class="s">${esc(c.name)} · ${hm(p.s)}–${hm(p.e)}</span>${nx ? `<span class="s2">接下来 ${hm(nx.s)} ${esc(nx.n)}</span>` : ""}</button>`;
+}
+function cardSeries(s) {
+  const badge = s.wait ? `<span class="badge">等更新</span>` : s.done ? `<span class="badge">看完了</span>` : s.upd > s.at && s.at > 0 ? `<span class="badge new">更新 ${s.upd - s.at} 集</span>` : s.isNew && !s.at ? `<span class="badge new">新加</span>` : "";
+  const sub = s.at ? (s.done ? `看完了 · 共 ${s.n} 集` : `看到第 ${s.at} 集 · 更新到 ${s.upd}`) : `${s.k} · ${s.upd < s.n ? `更新到第 ${s.upd} 集` : `${s.n} 集全`}`;
+  const prog = s.at && !s.done ? `<span class="pbar"><i style="width:${s.at / s.n * 100}%"></i></span>` : "";
+  return `<a class="card p" href="#/detail/${s.id}"><span class="art">${art(s.t, s.hue, "p", { kick: s.k })}${badge}${prog}</span><span class="t">${esc(s.t)}</span><span class="s">${sub}</span></a>`;
+}
+function cardLib(x) {
+  if (x.k === "家庭视频") return `<button class="card" data-play="lib:${x.id}"><span class="art">${art(x.t, x.hue, "w", { title: false, motif: 3 })}<span class="badge">${x.y}</span>${playov}</span><span class="t">${esc(x.t)}</span><span class="s">${esc(x.d)}</span></button>`;
+  return `<a class="card p" href="#/detail/${x.id}"><span class="art">${art(x.t, x.hue, "p")}${x.id === "wdlx" ? `<span class="pbar"><i style="width:62%"></i></span>` : ""}${x.id === "xqtk" ? '<span class="badge new">新加</span>' : ""}</span><span class="t">${esc(x.t)}</span><span class="s">${x.y} · ${esc(x.g)}</span></a>`;
+}
+function cardVid(u, i) {
+  const v = u.v[i], id = `v:${u.id}:${i}`, it = IT[id];
+  return `<button class="card" data-play="${id}" aria-label="播放 ${esc(v[0])}"><span class="art">${itemArt(it)}<span class="badge r b mono">${v[1]}</span>${i < u.nw ? '<span class="badge new">新</span>' : ""}${it.pct ? `<span class="pbar"><i style="width:${it.pct * 100}%"></i></span>` : ""}${playov}</span>
+    <span class="t">${esc(v[0])}</span><span class="who">${avatar(u.n, u.hue, 20)}<span class="s">${esc(u.n)} · ${v[2]}</span></span></button>`;
+}
+const shelf = (title, sub, inner, more, moreT = "全部") => `<section aria-label="${esc(title)}"><div class="h2"><h2>${title}</h2>${sub ? `<small>${sub}</small>` : ""}${more ? `<a class="more" href="${more}">${moreT} ›</a>` : ""}</div><div class="shelf">${inner}</div></section>`;
+const banner = (kind, t, p, btn, href) => `<div class="banner ${kind}" role="note"><span class="ico">${ic(kind === "warn" ? "warn" : "info", 26)}</span><div><b>${t}</b><p>${p}</p></div>${btn ? `<a class="btn sm" href="${href}">${btn}</a>` : ""}</div>`;
+function splitPlay(id, label, small) {
+  const d = dev(S.target) || dev("pc");
+  return `<span class="split"><button class="btn pri" data-play="${id}">${ic("play", 16)}${label}${small ? ` <small>${small}</small>` : ""}</button><button class="btn pri caret" data-sheet="target" data-item="${id}" aria-label="选择播放到哪里（现在是 ${esc(d.n)}）">${ic("down", 16)}</button></span>`;
+}
+const toWhere = () => { const d = dev(S.target) || dev("pc"); return d.pc ? "在电脑上" : `到${d.s}`; };
+
+/* ============================== 首页 ============================== */
+const HERO = [
+  { kick: "剧集追更 · 新的一集", id: "xhlc", play: "ep:xhlc:8", btn: "继续第 8 集", small: "12:40", t: "星河列车", hue: 248, meta: "2026 · 番剧 · B站 · 更新到第 12 集", syn: SR[0].syn, sr: 1 },
+  { kick: "直播 · 正在播", live: "cctv5", play: "ch:cctv5", btn: "看直播", t: "中超联赛第 28 轮", hue: 120, meta: "CCTV-5 体育 · 19:30–21:25 · 还有 73 分钟", syn: "第 28 轮焦点战，上半场刚刚结束。接下来 21:25 是《足球之夜》。" },
+  { kick: "片库 · 新添加", id: "xqtk", play: "lib:xqtk", btn: "播放", t: "星期天的客人", hue: 82, meta: "2020 · 剧情 · 1 小时 50 分 · 1080p", syn: "一个下雨的星期天，三位不请自来的客人敲开了老钟表匠的门。", lib: 1 },
+];
+VIEWS.home = () => {
+  let o = "";
+  if (blocked()) o += banner("warn", "连不上 B 站", "UP 主和剧集暂时不更新，没缓存的封面先用占位图。直播、YouTube 和片库照常。", "查看原因", "#/settings");
+  if (S.demo === "notv") o += banner("info", "还没有小电视也能看", "点任何节目都会在这台电脑上播放。以后买了小电视，输入屏幕上的绑定码就能「播放到」它。", "绑定小电视", "#/devices");
+  const HS = empty() ? [HERO[1]] : HERO; if (S.hero >= HS.length) S.hero = 0;
+  const h = HS[S.hero], bg = h.live ? art(h.t, h.hue, "w", { title: false, motif: 2, flip: 1 }) : art(h.t, h.hue, "w", { title: false, motif: h.sr ? 1 : 0, flip: 1 });
+  o += `<section class="hero" aria-roledescription="轮播" aria-label="推荐"><div class="bg">${bg}</div><div class="shade"></div>
+    <div class="copy"><div class="kicker">${h.live ? '<span class="badge live">直播</span>' : ""}${h.kick}</div><h2>${esc(h.t)}</h2><div class="meta">${h.meta}</div><p class="syn">${esc(h.syn)}</p>
+    <div class="actions">${splitPlay(h.play, h.btn, h.small)}${h.id ? `<a class="btn" href="#/detail/${h.id}">详情</a>` : `<a class="btn" href="#/live">节目单</a>`}</div></div>
+    <div class="nav"><button class="iconbtn" data-hero="-1" aria-label="上一个">${ic("back", 18)}</button>${HS.map((_, i) => `<button class="dotb" data-hero-i="${i}" aria-label="第 ${i + 1} 个" ${i === S.hero ? 'aria-current="true"' : ""}></button>`).join("")}<button class="iconbtn" data-hero="1" aria-label="下一个" style="transform:scaleX(-1)">${ic("back", 18)}</button></div></section>`;
+  o += `<div class="chips qchips" aria-label="分类"><a href="#/series">${ic("series", 16)}剧集与番剧</a><a href="#/up">${ic("up", 16)}UP 主</a><a href="#/lib">${ic("lib", 16)}片库</a><a href="#/lineup">${ic("guide", 16)}节目单</a></div>`;
+  if (!empty()) o += shelf("继续观看", "在哪台上看的都算", [
+    cardItem("ep:xhlc:8", "第 8 集 · 还剩 11 分钟 · 客厅"), cardItem("lib:wdlx", "片库 · 还剩 46 分钟 · 这台电脑"), cardItem("v:xmcf:0", "小满的厨房 · 还剩 6 分钟 · 卧室"),
+    cardItem("ep:shxz:21", "第 21 集 · 还剩 38 分钟"), cardItem("v:linlx:0", "Lin 的旅行手账 · YouTube"),
+  ].join(""));
+  o += shelf("直播 · 正在播", `${hm(NOW)} · 节目信息来自 EPG`, ["cctv5", "cctv1", "hunan", "cctv6", "zhejiang", "phoenix", "cctv14"].map(id => cardLive(chById(id))).join(""), "#/live", "节目单");
+  if (empty()) {
+    o += `<div class="h2"><h2>开始收集你爱看的</h2></div><div class="onb">
+      <a href="#/up"><b>${ic("up")}订阅一个 UP 主</b><p>B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。</p></a>
+      <a href="#/series"><b>${ic("series")}加一部剧</b><p>番剧、多集视频、合集、播放列表都行，按顺序播，接着上次的地方。</p></a>
+      <a href="#/lib"><b>${ic("lib")}添加片库文件夹</b><p>电脑或 NAS 上的电影、剧集、动画和家庭视频，自动配上海报。</p></a></div>`;
+  } else {
+    o += shelf("UP 主更新", `${UP.reduce((a, u) => a + u.nw, 0)} 个新视频`, UP.filter(u => u.nw).flatMap(u => [...Array(u.nw).keys()].map(i => cardVid(u, i))).join(""), "#/up");
+    o += shelf("剧集追更", "", SR.filter(s => !s.done).map(cardSeries).join(""), "#/series");
+    o += shelf("我的片库", "最近添加", [...LIB["电影"], ...LIB["动画"]].map(([id]) => cardLib(libById(id))).join(""), "#/lib");
+  }
+  return o;
+};
+
+/* ============================== 直播：节目单网格 ============================== */
+const GROUPS = ["全部", "央视", "卫视", "港澳台", "国际", "音乐"];
+function liveHead() {
+  const sel = S.sel || { ch: "cctv5", i: nowI(chById("cctv5")) }, c = chById(sel.ch), p = c.pr[sel.i], nx = c.pr[sel.i + 1];
+  const st = p.e <= NOW ? "past" : p.s > NOW ? "future" : "now", pct = st === "now" ? (NOW - p.s) / (p.e - p.s) : 0;
+  const act = st === "now" ? `${splitPlay("ch:" + c.id, "看直播", toWhere())}<button class="btn" data-play="ch:${c.id}" data-to="pc">${ic("pc", 18)}在电脑上看</button>`
+    : st === "future" ? `<button class="btn" disabled>${ic("hist", 18)}${hm(p.s)} 开始 · 提醒我（以后）</button><button class="btn" data-play="ch:${c.id}">${ic("play", 16)}看这个台现在播的</button>`
+      : `<button class="btn" disabled>已经播完 · 暂不支持回看</button><button class="btn" data-play="ch:${c.id}">${ic("play", 16)}看这个台现在播的</button>`;
+  return `<div class="lprev">${art(p.n, c.h, "w", { title: false, motif: 2 })}<span class="logo-on">${logo(c, 64)}</span>${st === "now" ? '<span class="badge live r">直播</span>' : ""}</div>
+    <div class="linfo"><div class="ch"><b>${String(c.no).padStart(2, "0")}</b>${esc(c.name)} · ${c.g}</div><h2>${esc(p.n)}</h2>
+    <div class="lprog"><span>${hm(p.s)}</span><span class="trk"><i style="width:${pct * 100}%"></i></span><span>${hm(p.e)}</span></div>
+    <div class="lnext">${st === "now" ? `还有 ${p.e - NOW} 分钟 · ` : ""}${nx ? `接下来 ${hm(nx.s)} <b>${esc(nx.n)}</b>` : ""}</div><div class="actions">${act}</div></div>`;
+}
+VIEWS.live = () => {
+  const ppm = isM() ? 3.2 : 5, chw = isM() ? 64 : 200, W = (G1 - G0) * ppm;
+  const chs = CH.filter(c => S.liveGroup === "全部" || c.g === S.liveGroup), sel = S.sel || { ch: "cctv5", i: nowI(chById("cctv5")) };
+  const playingCh = (IT[dev(S.mini)?.now] || {}).ch;
+  let ticks = ""; for (let t = G0; t < G1; t += 30) ticks += `<span style="left:${(t - G0) * ppm}px">${hm(t)}</span>`;
+  const rows = chs.map(c => `<div class="grow"><div class="gch ${c.id === playingCh ? "cur" : ""}" title="${esc(c.name)}"><span class="no">${String(c.no).padStart(2, "0")}</span><span class="lg">${logo(c, 46)}</span><span>${esc(c.name)}</span></div>
+    <div class="gprogs" style="width:${W}px">${c.pr.filter(p => p.e > G0 && p.s < G1).map(p => { const i = c.pr.indexOf(p), s = Math.max(p.s, G0), e = Math.min(p.e, G1), st = p.e <= NOW ? "past" : p.s > NOW ? "" : "now";
+      return `<button class="gp ${st}" style="left:${(s - G0) * ppm + 2}px;width:${(e - s) * ppm - 4}px" data-sel="${c.id}:${i}" aria-pressed="${sel.ch === c.id && sel.i === i}" aria-label="${esc(c.name)} ${hm(p.s)} 到 ${hm(p.e)} ${esc(p.n)}${st === "now" ? "，正在播" : ""}"><b>${esc(p.n)}</b><small>${hm(p.s)}–${hm(p.e)}</small>${st === "now" ? `<span class="gpb" style="width:${(NOW - p.s) / (p.e - p.s) * 100}%"></span>` : ""}</button>`; }).join("")}</div></div>`).join("");
+  return `<div class="lhead" id="lhead">${liveHead()}</div>
+    <div class="chips" role="group" aria-label="分组">${GROUPS.map(g => `<button data-lg="${g}" aria-pressed="${S.liveGroup === g}">${g}<em>${g === "全部" ? CH.length : CH.filter(c => c.g === g).length}</em></button>`).join("")}<a href="#/lineup" style="margin-left:auto">${ic("guide", 16)}小电视的频道表</a></div>
+    <div class="guide" style="--chw:${chw}px"><div class="gscroll" id="gs"><div class="ginner" style="width:${chw + W}px">
+      <div class="gruler"><div class="gcorner">${isM() ? "今天" : "今天 · 10月24日 周六"}</div><div class="gticks" style="width:${W}px">${ticks}</div></div>
+      ${rows}<div class="gnow" style="left:${chw + (NOW - G0) * ppm}px"><span>${hm(NOW)}</span></div></div></div></div>
+    <p class="hint">方向键在节目之间移动，回车看详情。正在播的节目底部的红线是进度；左边红边是「${esc(dev(S.mini)?.n || "")}」正在看的台。节目信息来自频道表的 EPG（每天更新），台标来自 M3U 的 tvg-logo。</p>`;
+};
+// 横向滚动时，被左边切掉一半的节目把标题挪到看得见的地方（像 Plex 的节目单）。
+function pinTitles() {
+  const gs = $("#gs"); if (!gs) return; const x = gs.scrollLeft;
+  gs.querySelectorAll(".gp").forEach(b => { const l = b.offsetLeft, w = b.offsetWidth, pad = Math.max(10, Math.min(x - l + 10, w - 60)); b.style.paddingLeft = pad + "px"; });
+}
+function afterLive() { const gs = $("#gs"); if (!gs) return; gs.scrollLeft = (NOW - G0) * (isM() ? 3.2 : 5) - (isM() ? 60 : 140); pinTitles(); gs.addEventListener("scroll", () => requestAnimationFrame(pinTitles), { passive: true }); }
+
+/* ============================== 节目单：小电视的频道表 ============================== */
+VIEWS.lineup = () => {
+  const ts = tvs();
+  if (!ts.length) return `<div class="empty">${ic("tv", 56)}<b>还没有小电视</b><p>节目单是小电视上按「上 / 下」换台时的那张频道表。绑定小电视后在这里排。</p><a class="btn pri" href="#/devices">绑定小电视</a></div>`;
+  const d = ts.find(x => x.id === S.lu) || ts[0];
+  const grp = (name, list, sub) => `<div class="lgrp"><header>${name}<small>${sub}</small></header>${list.map(([no, lg, nm, sm, tag, on]) => `<div class="lrow"><span class="grip" aria-hidden="true">⋮⋮</span><span class="no">${no}</span><span>${lg}</span><span class="nm">${esc(nm)}<small>${esc(sm)}</small></span><span class="tag">${tag}</span><button class="sw" role="switch" aria-checked="${on}" aria-label="在${esc(d.s)}小电视上显示 ${esc(nm)}" data-sw></button></div>`).join("")}</div>`;
+  const chRows = g => CH.filter(c => c.g === g).map(c => [String(c.no).padStart(2, "0"), logo(c, 46), c.name, `现在：${c.pr[nowI(c)].n}`, "直播", c.id !== "cctv2"]);
+  const upRows = UP.slice(0, 4).map((u, i) => [String(31 + i), avatar(u.n, u.hue, 34), u.n, `${u.site} · 最新 20 个视频轮播`, "UP 主", i < 3]);
+  const srRows = SR.slice(0, 4).map((s, i) => [String(41 + i), avatar(s.t, s.hue, 34), s.t, `${s.k} · 看到第 ${s.at || 1} 集`, "剧集", true]);
+  return `<div class="chips" role="group" aria-label="哪台小电视">${ts.map(x => `<button data-lu="${x.id}" aria-pressed="${x.id === d.id}"><span class="dot ${x.on ? "" : "off"}"></span>${esc(x.n)}</button>`).join("")}</div>
+    <div class="lineup"><div>${grp("UP 主", upRows, "订阅的 UP 主，每个是一个台")}${grp("央视", chRows("央视"), "来自全站频道表")}${grp("卫视", chRows("卫视"), "")}${grp("动画影视", srRows, "剧集台，按顺序播")}${grp("港澳台", chRows("港澳台"), "")}</div>
+    <div><div class="panel"><h3>${esc(d.n)}的频道表</h3><div class="meta">${d.model} · ${d.res}</div><div class="meter" role="meter" aria-valuemin="0" aria-valuemax="128" aria-valuenow="86" aria-label="已用台数"><i style="width:${86 / 128 * 100}%"></i></div>
+      <div class="meta">86 / 128 个台 · 5.2 / 7 KB（小电视一次收得下的上限）</div><p class="hint">拖动 ⋮⋮ 调顺序；关掉的台小电视上不出现，电脑和手机上照样能看。</p></div>
+    <div class="panel"><h3>直播源</h3>
+      <div class="src">${ic("check", 18)}<span>全站频道表<small>管理员维护 · 214 个台 · 含 EPG</small></span></div>
+      <div class="src">${ic("plus", 18)}<span>预设：央视卫视精简<small>40 个台 · 适合小屏</small></span><button class="btn sm ghost">加入</button></div>
+      <div class="src">${ic("plus", 18)}<span>预设：少儿动画<small>12 个台</small></span><button class="btn sm ghost">加入</button></div>
+      <div class="src">${ic("link", 18)}<span>自定义 M3U 链接<small>台标读 tvg-logo，节目单读 x-tvg-url</small></span><button class="btn sm ghost">添加</button></div></div>
+    <div class="panel"><h3>节目信息（EPG）</h3><div class="meta">上次更新 今天 18:00 · 覆盖 168 / 214 个台</div><p class="hint">没有 EPG 的台只显示台名，不显示「正在播」。</p></div></div></div>`;
+};
+
+/* ============================== 剧集与番剧 ============================== */
+VIEWS.series = () => {
+  if (empty()) return `<div class="empty">${ic("series", 56)}<b>还没有剧集</b><p>粘贴 B 站番剧、多集视频、合集，或 YouTube 播放列表的链接；也可以在搜索里找到后「加为剧集」。</p><button class="btn pri" data-sheet="add" data-kind="series">${ic("plus", 18)}添加剧集</button></div>`;
+  const F = ["全部", "追更中", "番剧", "电视剧", "纪录片", "动画", "看完了"];
+  const list = SR.filter(s => S.sf === "全部" || (S.sf === "追更中" ? !s.done && s.upd <= s.n && s.at > 0 && !s.done : S.sf === "看完了" ? s.done : s.k === S.sf));
+  return `${blocked() ? banner("warn", "连不上 B 站", "B 站的剧集暂时不能更新集数；已缓存的封面和进度照常显示。", "", "") : ""}
+    <div class="chips" role="group" aria-label="筛选">${F.map(f => `<button data-sf="${f}" aria-pressed="${S.sf === f}">${f}</button>`).join("")}<button style="margin-left:auto" data-sheet="add" data-kind="series">${ic("plus", 16)}添加剧集</button></div>
+    <div class="pgrid">${list.map(cardSeries).join("")}</div>
+    <p class="hint">番剧需要在「设置 → B 站账号」登录后才能播大会员内容。每部剧在小电视上是一个台（「动画影视」组），换台回来接着上次的地方。</p>`;
+};
+
+/* ============================== UP 主 ============================== */
+VIEWS.up = () => {
+  if (empty()) return `<div class="empty">${ic("up", 56)}<b>还没有订阅 UP 主</b><p>B 站 UP 主或 YouTube 频道，每个都会变成一个台：从最新的没看过的视频开始播。登录 B 站后可以一键导入你关注的人。</p><button class="btn pri" data-sheet="add" data-kind="up">${ic("plus", 18)}订阅 UP 主</button></div>`;
+  const list = UP.filter(u => !S.up || u.id === S.up);
+  const vids = list.flatMap(u => u.v.map((_, i) => [u, i]));
+  return `${blocked() ? banner("warn", "连不上 B 站", "B 站 UP 主的新视频暂时刷不出来，YouTube 的照常。", "", "") : ""}
+    <div class="ups" role="group" aria-label="UP 主"><button class="up" data-up="" aria-pressed="${!S.up}"><span class="av" style="display:grid;place-items:center;background:var(--card);border-radius:50%">${ic("up", 30)}</span><span>全部</span><small>${UP.length} 位</small></button>
+      ${UP.map(u => `<button class="up" data-up="${u.id}" aria-pressed="${S.up === u.id}"><span class="av">${avatar(u.n, u.hue)}${u.nw ? `<em>${u.nw}</em>` : ""}</span><span>${esc(u.n)}</span><small>${u.site} · ${u.fans}</small></button>`).join("")}
+      <button class="up" data-sheet="add" data-kind="up"><span class="av" style="display:grid;place-items:center;border:1px dashed var(--rule-hi);border-radius:50%;box-shadow:none">${ic("plus", 26)}</span><span>订阅</span><small>粘贴链接</small></button></div>
+    <div class="h2" style="margin-top:8px"><h2>${S.up ? esc(UP.find(u => u.id === S.up).n) : "最新视频"}</h2><small>按发布时间</small>${S.up ? `<span class="more">${splitPlay(`v:${S.up}:0`, "从最新的没看过的开始", "")}</span>` : ""}</div>
+    <div class="wgrid">${vids.map(([u, i]) => cardVid(u, i)).join("")}</div>`;
+};
+
+/* ============================== 片库 ============================== */
+VIEWS.lib = () => {
+  if (empty()) return `<div class="empty">${ic("lib", 56)}<b>片库还是空的</b><p>选电脑或 NAS 上放电影、剧集、动画或家庭视频的文件夹。会读同目录的 poster.jpg 和 .nfo，没有就从文件名猜片名，电脑本地生成缩略图。</p>
+    <div class="actions" style="justify-content:center"><button class="btn pri">${ic("plus", 18)}添加文件夹</button><button class="btn">连接 Jellyfin / Emby / Plex</button></div></div>`;
+  const T = Object.keys(LIB);
+  const items = LIB[S.lt].map(([id]) => libById(id));
+  return `<div class="srcbar"><span class="pill">${ic("lib", 16)}NAS · 影视<small>312 项 · 10 分钟前扫描</small></span><span class="pill">${ic("lib", 16)}这台电脑 · 家庭视频<small>97 段</small></span><span class="pill add">${ic("plus", 16)}添加文件夹</span><span class="pill add">${ic("link", 16)}连接 Jellyfin / Emby / Plex</span></div>
+    <div class="chips" role="group" aria-label="分类">${T.map(t => `<button data-lt="${t}" aria-pressed="${S.lt === t}">${t}<em>${LIB[t].length}</em></button>`).join("")}</div>
+    <div class="${S.lt === "家庭视频" ? "wgrid" : "pgrid"}">${items.map(cardLib).join("")}</div>
+    <p class="hint">片库只在这台电脑和家里的网络里能看；播放到小电视时，电脑会把画面转成小电视的分辨率。</p>`;
+};
+
+/* ============================== 搜索 ============================== */
+VIEWS.search = () => {
+  const q = S.q.trim(), hit = s => q && s.includes(q), mk = s => esc(s).split(esc(q)).join(`<mark>${esc(q)}</mark>`);
+  const SC = ["全部", "直播", "剧集番剧", "UP 主", "视频", "片库"];
+  let o = `<label class="bigsearch">${ic("search", 22)}<input id="bigq" type="search" value="${esc(S.q)}" placeholder="搜直播、剧集、番剧、UP 主、B 站视频、片库" aria-label="搜索" autocomplete="off"></label>
+    <div class="chips" role="group" aria-label="范围">${SC.map(s => `<button data-scope="${s}" aria-pressed="${S.scope === s}">${s}</button>`).join("")}</div>`;
+  if (!q) return o + `<div class="h2"><h2>最近搜过</h2></div><div class="chips">${["星河", "番茄牛腩", "中超", "宝宝"].map(s => `<button data-q="${s}">${ic("hist", 16)}${s}</button>`).join("")}</div>`;
+  if (blocked()) o += banner("warn", "连不上 B 站", "只显示直播、YouTube 和片库里的结果。", "", "");
+  const sec = (name, scope, rows) => (S.scope === "全部" || S.scope === scope) && rows.length ? `<div class="h2"><h2>${name}</h2><small>${rows.length} 个</small></div><div class="rlist">${rows.join("")}</div>` : "";
+  const ri = (artH, t, sub, attrs, side = "") => `<button class="ritem" ${attrs}><span class="art">${artH}</span><span><b>${t}</b><span>${sub}</span></span>${side}</button>`;
+  const live = []; CH.forEach(c => c.pr.forEach((p, i) => { if ((hit(p.n) || hit(c.name)) && p.e > NOW) live.push(ri(`${art(p.n, c.h, "w", { title: false })}<span class="logo-on" style="width:36px;bottom:6px;left:6px">${logo(c, 36)}</span>`, mk(p.n), `${esc(c.name)} · ${p.s <= NOW ? "正在播" : "今天 " + hm(p.s)}`, `data-play="ch:${c.id}"`)); }));
+  const srs = SR.filter(s => hit(s.t) || s.tags.some(hit)).map(s => ri(art(s.t, s.hue, "w"), mk(s.t), `${s.k} · ${s.site} · ${s.at ? `看到第 ${s.at} 集` : `${s.n} 集`}`, `data-href="#/detail/${s.id}"`));
+  const bili = blocked() ? [] : [[`《${q}》相关番剧 · 加为剧集`, "番剧 · B站 · 12 集", 260]].map(([t, s, h]) => ri(art(t, h, "w", { title: false }), mk(t), s, `data-sheet="add" data-kind="series"`, `<span class="btn sm ghost">加为剧集</span>`));
+  const ups = UP.filter(u => hit(u.n)).map(u => `<button class="ritem" data-up-go="${u.id}"><span class="art" style="background:none;display:grid;place-items:center">${avatar(u.n, u.hue, 46)}</span><span><b>${mk(u.n)}</b><span>${u.site} · ${u.fans} 粉丝 · 已订阅</span></span></button>`);
+  if (!blocked()) ups.push(`<button class="ritem" data-sheet="add" data-kind="up"><span class="art" style="background:none;display:grid;place-items:center">${avatar(q + "探索", 300, 46)}</span><span><b>${mk(q)}探索频道</b><span>B站 · 3.1 万粉丝</span></span><span class="btn sm ghost">订阅</span></button>`);
+  const vids = UP.flatMap(u => u.v.map((v, i) => [u, v, i])).filter(([u, v]) => hit(v[0]) && !(blocked() && u.site === "B站")).map(([u, v, i]) => ri(itemArt(IT[`v:${u.id}:${i}`]), mk(v[0]), `${esc(u.n)} · ${v[1]} · ${v[2]}`, `data-play="v:${u.id}:${i}"`));
+  if (!blocked()) [`用手机拍${q}空的 5 个技巧`, `${q}空露营一晚是什么体验`, `一口气看完《${q}河列车》前 8 集`].forEach((t, i) => vids.push(ri(art(t, 200 + i * 30, "w", { title: false }), mk(t), `B站 · ${["08:12", "15:40", "42:05"][i]} · ${["12 万", "3.4 万", "88 万"][i]}播放`, `data-play="v:ajxx:${i % 3}"`)));
+  const libs = libAll().filter(x => hit(x.t)).map(x => ri(art(x.t, x.hue, "w"), mk(x.t), `片库 · ${x.k} · ${x.y}`, x.k === "家庭视频" ? `data-play="lib:${x.id}"` : `data-href="#/detail/${x.id}"`));
+  const body = sec("剧集与番剧", "剧集番剧", [...srs, ...bili]) + sec("片库", "片库", libs) + sec("直播", "直播", live) + sec("UP 主", "UP 主", ups) + sec("视频", "视频", vids);
+  return o + (body || `<div class="empty"><b>没找到「${esc(q)}」</b><p>换个说法试试；B 站和 YouTube 的结果要能连上才有。</p></div>`);
+};
+
+/* ============================== 详情 ============================== */
+const detailTitle = id => (srById(id) || libById(id) || { t: "详情" }).t;
+VIEWS.detail = id => {
+  const s = srById(id), x = libById(id);
+  if (!s && !x) return `<div class="empty"><b>找不到这个节目</b><p><a href="#/home">回首页</a></p></div>`;
+  if (x) {
+    return `<section class="dhero"><div class="bg">${art(x.t, x.hue, "w", { title: false })}</div><div class="dbody"><div class="dposter">${art(x.t, x.hue, "p")}</div>
+      <div><div class="kicker">片库 · ${x.k}</div><h2>${esc(x.t)}</h2><div class="meta">${x.y} · ${esc(x.g)} · ${x.d}</div>
+      <p class="syn">${x.id === "xqtk" ? HERO[2].syn : "海报和简介来自同目录的 .nfo 文件；没有的话，用文件名猜片名，再从本地截一帧做海报。"}</p>
+      ${x.id === "wdlx" ? `<div class="lastw">上次在 这台电脑 看到 <b>1:15:20</b> / 2:01:00 · 前天 22:10</div>` : ""}
+      <div class="actions">${splitPlay("lib:" + x.id, x.id === "wdlx" ? "继续播放" : "播放", x.id === "wdlx" ? "1:15:20" : toWhere())}${x.id === "wdlx" ? `<button class="btn" data-play="lib:${x.id}">从头播</button>` : ""}</div></div></div></section>
+      <div class="h2"><h2>文件</h2></div><div class="facts"><span class="tag">1080p</span><span class="tag">H.264</span><span class="tag">AAC 5.1</span><span class="tag">中文字幕</span><span class="tag">4.2 GB</span><span class="tag">NAS / 影视 / 电影</span></div>
+      <p class="hint">播放到小电视时，电脑会把画面转成 ${esc((dev("living") || {}).res || "240×180")}，声音转成单声道。</p>`;
+  }
+  const cur = s.at || 1, eps = []; const nEp = Math.min(s.n, 12);
+  for (let e = 1; e <= nEp; e++) {
+    const avail = e <= s.upd, watched = e < s.at || (s.done), isCur = e === s.at && !s.done;
+    const st = !avail ? `<span class="st">10月${24 + (e - s.upd) * 7 > 31 ? "下月" : 24 + (e - s.upd) * 7 + "日"} 更新</span>` : watched ? `<span class="st ok">${ic("check", 16)}看过</span>` : isCur ? `<span class="st go">看到 ${s.pos || "18:02"}</span>` : `<span class="st">${s.dur || "45:00"}</span>`;
+    eps.push(`<button class="ep ${isCur ? "cur" : ""}" ${avail ? `data-play="ep:${s.id}:${e}"` : "disabled"} aria-label="第 ${e} 集${s.ep ? " " + s.ep[e - 1] : ""}"><span class="art">${blocked() && avail && e > s.at + 1 ? noCover() : art(s.t + e, (s.hue + e * 11) % 360, "w", { title: false, ep: String(e).padStart(2, "0") })}${isCur ? `<span class="pbar"><i style="width:${(s.pct || .3) * 100}%"></i></span>` : ""}</span>
+      <span><b>第 ${e} 集${s.ep ? " · " + s.ep[e - 1] : ""}</b><span>${avail ? (e === s.upd && s.upd < s.n ? "最新一集 · " : "") + (s.dur || "45:00") : "还没更新"}</span></span>${st}</button>`);
+  }
+  const label = s.done ? "重看第 1 集" : s.at ? `继续第 ${cur} 集` : "从第 1 集开始";
+  return `<section class="dhero"><div class="bg">${art(s.t, s.hue, "w", { title: false, motif: 1, flip: 1 })}</div><div class="dbody"><div class="dposter">${art(s.t, s.hue, "p", { kick: s.k })}</div>
+    <div><div class="kicker">${s.k} · ${s.site}${s.sched ? " · " + s.sched : ""}</div><h2>${esc(s.t)}</h2><div class="meta">${s.y} · ${s.tags.join(" / ")} · ${s.upd < s.n ? `更新到第 ${s.upd} 集 / 共 ${s.n} 集` : `${s.n} 集全`}</div></div>
+    <div class="wide"><p class="syn">${esc(s.syn)}</p>${s.at && !s.done ? `<div class="lastw">上次在 客厅小电视 看到第 ${cur} 集 <b>${s.pos || "18:02"}</b> · 昨天 21:30</div>` : ""}
+    <div class="actions">${splitPlay(`ep:${s.id}:${cur}`, label, s.pos && !s.done ? s.pos : "")}<button class="btn" data-play="ep:${s.id}:1">从第 1 集</button><button class="btn" aria-pressed="true">${ic("check", 16)}追更中</button></div></div></div></section>
+    <div class="h2"><h2>选集</h2><small>正片 · ${s.n} 集${s.n > 12 ? "（只显示前 12 集）" : ""}</small></div><div class="eps">${eps.join("")}</div>
+    <p class="hint">小电视上，这部剧是「动画影视」组里的一个台，按顺序往下播。${s.site === "B站" && s.k === "番剧" ? "部分集数需要「设置 → B 站账号」登录。" : ""}</p>
+    ${shelf("同类", "", SR.filter(o => o.id !== s.id).slice(0, 6).map(cardSeries).join(""), "")}`;
+};
+
+/* ============================== 设备与遥控 ============================== */
+function nowText(d) {
+  const it = IT[d.now]; if (!it) return ["--", "", "没在播", ""];
+  if (it.live) { const c = chById(it.ch), p = c.pr[nowI(c)]; return [String(c.no).padStart(2, "0"), c.g, c.name, `${hm(p.s)}–${hm(p.e)} ${p.n}`]; }
+  if (it.sr) return ["4" + (SR.indexOf(srById(it.sr)) + 1), "动画影视", srById(it.sr).t, `第 ${it.e} 集 · ${it.line}`];
+  if (it.up) return ["3" + (UP.findIndex(u => u.id === it.up) + 1), "UP 主", UP.find(u => u.id === it.up).n, it.title];
+  return ["▶", "投屏", it.title, it.line];
+}
+VIEWS.devices = () => {
+  const ts = tvs();
+  const card = d => {
+    if (d.pc) return `<div class="dev"><header>${ic("pc")}<b>${d.n}</b><small><span class="dot" style="display:inline-block"></span> 就是这里</small></header><div class="model">${d.model}</div>
+      <div class="tvbox" style="height:142px;align-items:center;color:var(--dim);font:14px var(--serif)">${d.now ? esc(IT[d.now].title) : "点任何节目的「播放到 → 这台电脑」"}</div>
+      <div class="row"><button class="btn sm" data-settarget="pc">${S.target === "pc" ? "已是默认播放位置" : "设为默认播放位置"}</button></div></div>`;
+    const [n, g, x, y] = nowText(d);
+    return `<div class="dev ${d.on ? "" : "off"}"><header>${ic("tv")}<b>${esc(d.n)}</b><small><span class="dot ${d.on ? "" : "off"}" style="display:inline-block"></span> ${d.on ? (d.listen ? "在线 · 只听" : "在线") : "离线 · " + d.seen + "在线"}</small></header>
+      <div class="model">${d.model} · ${d.res}${d.sleep ? ` · ${d.sleep} 分钟后关` : ""}</div>
+      <div class="tvbox"><div class="tvscr ${d.on ? "" : "dark"}" style="aspect-ratio:${d.res === "320×180" ? "16/9" : "4/3"}"><span class="g">${g}</span><div class="n">${d.on ? n : "--"}</div><div class="x">${d.on ? esc(x) : "离线"}</div><div class="y">${d.on ? esc(y) : ""}</div></div></div>
+      <div class="row"><button class="btn sm pri" data-remote="${d.id}" ${d.on ? "" : "disabled"}>${ic("remote", 16)}遥控</button><button class="btn sm" data-settarget="${d.id}" ${d.on ? "" : "disabled"}>${S.target === d.id ? "已是默认播放位置" : "设为默认播放位置"}</button>${d.on ? `<button class="btn sm ghost" data-play="${d.now}" data-to="pc">在电脑上看</button>` : ""}</div></div>`;
+  };
+  const bind = `<div class="dev add">${ic("plus", 36)}<b>绑定新的小电视</b><p class="meta">小电视连上网后，屏幕上会显示绑定码。<br>也可以用手机扫它屏幕上的二维码。</p><button class="btn sm">输入绑定码</button></div>`;
+  return `${ts.length ? "" : `<div class="empty" style="margin-bottom:18px">${ic("tv", 56)}<b>还没有小电视</b><p>不影响在这台电脑上看。买了小电视以后，输入它屏幕上的绑定码，所有「播放到」里就会多出它。</p></div>`}
+    <div class="devs">${devs().filter(d => !d.pc).map(card).join("")}${card(dev("pc"))}${bind}</div>
+    <div class="h2"><h2>手机遥控</h2></div><div class="list"><a class="li" href="#">${ic("remote")}<span>让手机登录<small>手机扫码后就是遥控器，出门在外也能用</small></span><em>›</em></a><a class="li" href="#">${ic("up")}<span>家人和访客<small>家人有自己的订阅和进度；访客只能遥控一台</small></span><em>2 位家人</em></a></div>`;
+};
+VIEWS.remote = () => {
+  const ts = tvs().filter(d => d.on);
+  if (!ts.length) return `<div class="empty">${ic("remote", 56)}<b>${tvs().length ? "小电视都离线了" : "还没有小电视"}</b><p>遥控是给小电视用的。在这台手机上直接看，选「播放到 → 这台手机」就行（以后）。</p><a class="btn pri" href="#/devices">${tvs().length ? "看看设备" : "绑定小电视"}</a></div>`;
+  const d = dev(S.target) && !dev(S.target).pc && dev(S.target).on ? dev(S.target) : ts[0];
+  return `<div id="rbody" data-dev="${d.id}">${remoteHTML(d.id)}</div>`;
+};
+function remoteHTML(id) {
+  const d = dev(id) || tvs()[0], ts = tvs();
+  const pills = `<div class="rdevs" role="group" aria-label="遥控哪台">${ts.map(x => `<button data-rdev="${x.id}" data-k="rd-${x.id}" aria-pressed="${x.id === d.id}" ${x.on ? "" : 'aria-disabled="true"'}><span class="dot ${x.on ? "" : "off"}"></span>${esc(x.s)}</button>`).join("")}</div>`;
+  if (!d.on) return pills + `<div class="offbox">${ic("tv", 48)}<b>${esc(d.n)} 离线</b><p>${d.seen}还在线。看看电源和 Wi-Fi；它一连上，这里就能遥控。</p></div>`;
+  const it = IT[d.now] || {}, [n, g, x, y] = nowText(d);
+  const prog = it.live ? (() => { const c = chById(it.ch), p = c.pr[nowI(c)], nx = c.pr[nowI(c) + 1]; return `<div class="lprog"><span>${hm(p.s)}</span><span class="trk"><i style="width:${it.pct * 100}%"></i></span><span>${hm(p.e)}</span></div><div class="y">接下来 ${hm(nx.s)} ${esc(nx.n)}</div>`; })()
+    : `<div class="lprog"><span>${it.pct ? "08:24" : "00:00"}</span><span class="trk"><i style="width:${(it.pct || 0) * 100}%"></i></span><span>${esc(it.dur || "--")}</span></div>`;
+  const vod = !it.live;
+  return `${pills}<div class="rscreen" aria-live="polite"><div class="r1"><span class="n">${n}</span><span class="g">${g}${d.listen ? " · 只听" : ""}${d.paused ? " · 已暂停" : ""}</span></div><div class="x">${esc(x)}</div><div class="y">${esc(y)}</div>${prog}</div>
+    <div class="rpad">
+      <button data-rk="chup" data-k="chup" aria-label="上一个台">${ic("upc")}上一台</button>
+      <button class="main" data-rk="pp" data-k="pp" aria-label="${d.paused ? "继续" : "暂停"}">${ic(d.paused ? "play" : "pause")}${d.paused ? "继续" : "暂停"}</button>
+      <button data-rk="chdn" data-k="chdn" aria-label="下一个台">${ic("down")}下一台</button>
+      <button data-rk="back" data-k="back" ${vod ? "" : "disabled"}>${ic("r30")}退 30 秒</button>
+      <button data-rk="next" data-k="next" ${vod ? "" : "disabled"}>${ic("next", 18)}下一个</button>
+      <button data-rk="fwd" data-k="fwd" ${vod ? "" : "disabled"}>${ic("f30")}进 30 秒</button></div>
+    <label class="dial"><span class="ico">${ic("vol")}</span><span>音量</span><input type="range" min="0" max="100" step="10" value="${d.vol}" data-vol data-k="vol" aria-label="音量"><b id="volv">${d.vol}</b></label>
+    <div class="dial"><span class="ico">${ic("sun")}</span><span>亮度</span><span class="seg" role="group" aria-label="亮度">${[0, 1, 2, 3, 4].map(i => `<button data-bri="${i}" data-k="bri${i}" aria-pressed="${d.bri === i}" aria-label="亮度 ${i + 1} 档">${i + 1}</button>`).join("")}</span><b></b></div>
+    <div class="dial"><span class="ico">${ic("ear")}</span><span>只听</span><em>只放声音，屏幕只显示宠物</em><button class="sw" role="switch" aria-checked="${d.listen}" data-listen data-k="listen" aria-label="只听"></button></div>
+    <div class="dial"><span class="ico">${ic("moon")}</span><span>定时关</span><span class="seg" role="group" aria-label="定时关">${[0, 15, 30, 60, 90].map(m => `<button data-sleep="${m}" data-k="sl${m}" aria-pressed="${d.sleep === m}">${m ? m : "关"}</button>`).join("")}</span><b>${d.sleep ? "分钟" : ""}</b></div>
+    <div class="rsec"><b>宠物</b> <span class="hint">只听时屏幕上陪着你的那只</span><div class="petgrid" role="group" aria-label="宠物">${PETS.map((p, i) => `<button data-pet="${i}" data-k="pet${i}" aria-pressed="${d.pet === i}">${pet(i)}${p[0]}</button>`).join("")}</div></div>
+    <div class="actions"><button class="btn" data-play="${d.now}" data-to="pc">${ic("pc", 18)}在电脑上看这个</button><a class="btn ghost" href="#/lineup">频道表</a></div>`;
+}
+
+/* ============================== 设置 / 我的 ============================== */
+VIEWS.settings = () => {
+  const li = (icn, t, sub, val, attrs = 'href="#"', tag = "a") => `<${tag} class="li" ${attrs}><span class="ico">${ic(icn)}</span><span>${t}${sub ? `<small>${sub}</small>` : ""}</span><em>${val}</em></${tag}>`;
+  return `<div class="list"><h3>播放</h3>
+      <div class="li"><span class="ico">${ic("tv")}</span><span>「播放到」记住上次的选择<small>关掉以后，每次点播放都先问播到哪里</small></span><button class="sw" role="switch" aria-checked="${S.remember}" data-remember aria-label="记住上次的选择"></button></div>
+      ${li("pc", "在电脑上看的画质", "电脑上原画；小电视上自动转成它的分辨率", "原画")}${li("hist", "放过的", "最多 50 个，投屏和搜索点开的都在这里", "50 个")}</div>
+    <div class="list"><h3>内容来源</h3>${li("live", "直播源和节目单（EPG）", "全站频道表 · 2 个预设", "214 个台")}${li("up", "B 站账号", blocked() ? "连不上 B 站：路由器或网络拦了 bilibili.com，请检查后重试" : "登录后能导入关注、看番剧", blocked() ? "连不上" : "已登录")}${li("link", "YouTube", "需要代理；本机模式", "已开启")}${li("lib", "片库文件夹", "NAS · 影视、这台电脑 · 家庭视频", "2 个")}${li("link", "Jellyfin / Emby / Plex", "把已有媒体服务器的片库接进来", "未连接")}</div>
+    <div class="list"><h3>家里</h3>${li("remote", "设备与遥控", "", `${tvs().length} 台小电视`, 'href="#/devices"')}${li("up", "家人和访客", "", "2 位家人")}${li("set", "登录的地方", "手机、电脑和访客", "4 个")}</div>
+    <div class="list"><h3>关于</h3>${li("info", "小智电视 电脑版", "这台电脑就是家里的电视服务器", "0.3.0（原型）", "", "div")}</div>`;
+};
+VIEWS.me = () => `<div class="list">${[["series", "剧集与番剧", `${SR.length} 部`], ["up", "UP 主", `${UP.length} 位`], ["lib", "片库", "418 项"], ["lineup", "节目单（小电视的频道表）", ""], ["devices", "设备", `${tvs().length} 台小电视`], ["settings", "设置", ""]].map(([r, t, v]) => `<a class="li" href="#/${r}"><span class="ico">${ic(r === "lineup" ? "guide" : r === "devices" ? "tv" : r === "settings" ? "set" : r)}</span><span>${t}</span><em>${v} ›</em></a>`).join("")}</div>
+  <div class="list"><a class="li" href="#">${ic("hist")}<span>放过的<small>最多 50 个</small></span><em>›</em></a><div class="li"><span class="me">马</span><span>马小鼠<small>主人 · 家里 3 个人</small></span></div></div>`;
+
+/* ============================== 迷你播放条 ============================== */
+function renderMini() {
+  const d = dev(S.mini), it = d && IT[d.now];
+  const m = $("#mini");
+  if (!it) { m.className = "idle"; m.innerHTML = `<div class="mtx"><b>没有在播</b><span>点任何节目开始；「播放到」选播在哪台上</span></div>${targetChip()}`; return; }
+  m.className = "";
+  const where = d.pc ? "这台电脑 · 窗口里播放" : `${d.n}${d.listen ? " · 只听" : ""}`;
+  m.innerHTML = `<div class="mprog"><i style="width:${(it.pct || 0) * 100}%"></i></div>
+    <button class="mart" data-mini-open aria-label="打开正在播的">${itemArt(it, "w")}${it.live ? '<span class="badge live">直播</span>' : ""}</button>
+    <div class="mtx"><b>${esc(it.title)}</b><span><span class="dot ${d.on ? "" : "off"}"></span>${esc(where)} · ${esc(it.live ? it.line : it.line)}</span></div>
+    <div class="mctl"><button class="iconbtn hidem" data-rk="chup" data-mini aria-label="上一个">${ic("prev", 18)}</button><button class="iconbtn big" data-rk="pp" data-mini aria-label="${d.paused ? "继续" : "暂停"}">${ic(d.paused ? "play" : "pause", 18)}</button><button class="iconbtn hidem" data-rk="chdn" data-mini aria-label="下一个">${ic("next", 18)}</button>
+    ${d.pc ? "" : `<button class="iconbtn" data-remote="${d.id}" aria-label="遥控 ${esc(d.n)}">${ic("remote")}</button>`}</div>${targetChip()}`;
+}
+
+/* ============================== 抽屉 ============================== */
+function openSheet(kind, html, title, sub = "") {
+  S.lastFocus = document.activeElement; S.sheet = kind;
+  const sh = $("#sheet");
+  sh.innerHTML = `<div class="grab" aria-hidden="true"></div><div class="shh"><div style="flex:1"><h2 id="shTitle">${title}</h2>${sub ? `<p class="hint">${sub}</p>` : ""}</div><button class="iconbtn" data-close aria-label="关闭">${ic("x")}</button></div><div class="shb" id="shb">${html}</div>`;
+  sh.hidden = false; $("#scrim").hidden = false;
+  const f = sh.querySelector('[aria-checked="true"], .shb button, .shb input'); (f || sh.querySelector("[data-close]")).focus();
+}
+function closeSheet() {
+  $("#sheet").hidden = true; $("#scrim").hidden = true; S.sheet = null; S.pending = null;
+  if (S.lastFocus && document.contains(S.lastFocus)) S.lastFocus.focus();
+}
+function targetHTML() {
+  const it = S.pending && IT[S.pending];
+  const pend = it ? `<div class="pending"><span class="mart">${itemArt(it)}</span><span><b>${esc(it.title)}</b><span>${esc(it.line)}</span></span></div>` : "";
+  const rows = devs().map(d => {
+    const [, , x] = d.pc ? [] : nowText(d);
+    const sub = d.pc ? (d.now ? `窗口里正在放 ${IT[d.now].title}` : "在电脑上看，不需要小电视") : d.on ? `${d.model} · ${d.listen ? "只听 · " : ""}正在播 ${x}` : `离线 · ${d.seen}在线`;
+    return `<button class="tg ${d.on ? "" : "off"}" role="radio" aria-checked="${S.target === d.id}" data-tg="${d.id}" ${d.on ? "" : 'aria-disabled="true"'}>
+      <span class="ic">${ic(d.pc ? "pc" : "tv", 24)}</span><span><b><span class="dot ${d.on ? "" : "off"}"></span>${esc(d.n)}${S.target === d.id ? ' <span class="last">上次用的</span>' : ""}</b><span>${esc(sub)}</span></span>
+      <span class="chk">${S.target === d.id ? ic("check") : ""}</span></button>`;
+  }).join("");
+  return `${pend}<div role="radiogroup" aria-label="播放到">${rows}</div>
+    ${S.demo === "notv" ? `<p class="hint">还没有小电视。<a href="#/devices" style="color:var(--amber)">绑定一台 ›</a></p>` : ""}
+    <div class="opt"><span>记住这次的选择<small>下次点「播放」直接播到这里，不再问</small></span><button class="sw" role="switch" aria-checked="${S.remember}" data-remember aria-label="记住这次的选择"></button></div>
+    ${it ? "" : `<p class="hint">换了以后，所有「播放」按钮都播到新选的地方；正在播的不会被打断。</p>`}`;
+}
+function openTarget(itemId) { S.pending = itemId; openSheet("target", targetHTML(), "播放到", itemId ? "选一个地方，马上开始播" : "以后点「播放」默认播到这里"); }
+function openRemote(id) {
+  const d = dev(id); if (!d || d.pc) id = (tvs().find(x => x.on) || {}).id;
+  if (!id) { openSheet("remote", `<div class="offbox">${ic("tv", 48)}<b>还没有小电视</b><p>遥控是给小电视用的。</p></div>`, "遥控"); return; }
+  openSheet("remote", `<div id="rbody" data-dev="${id}">${remoteHTML(id)}</div>`, "遥控", "音量、亮度、只听、宠物、定时关都在这里");
+}
+function openAdd(kind) {
+  const up = kind === "up";
+  openSheet("add", `<label class="bigsearch" style="height:50px">${ic("link", 20)}<input type="text" placeholder="${up ? "B 站 UP 主 / YouTube 频道主页，或他们的任意视频链接" : "B 站番剧 / 多集视频 / 合集，或 YouTube 播放列表链接"}" aria-label="链接" style="font-size:15px"></label>
+    <button class="btn pri" style="width:100%">${up ? "订阅" : "添加为剧集"}</button>
+    <p class="hint">${up ? "每个 UP 主是一个台，从最新的没看过的视频开始播（轮播最新的 20 个）。" : "每部剧是一个台，按顺序播，换台回来接着上次的地方。"}</p>
+    ${up ? `<div class="opt"><span>从 B 站导入我关注的 UP 主<small>需要先在设置里登录 B 站</small></span><button class="btn sm">导入</button></div>` : ""}
+    <div class="opt"><span>不知道链接？<small>去搜索里找，结果上就有「${up ? "订阅" : "加为剧集"}」</small></span><a class="btn sm" href="#/search">去搜索</a></div>`, up ? "订阅 UP 主" : "添加剧集");
+}
+function refreshRemote() {
+  const rb = document.getElementById("rbody"); if (!rb) return;
+  const k = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.k : null;
+  rb.innerHTML = remoteHTML(rb.dataset.dev);
+  if (k) { const el = rb.querySelector(`[data-k="${k}"]`); if (el) el.focus(); }
+}
+
+/* ============================== 播放 ============================== */
+let toastT;
+function toast(t) { const el = $("#toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 2600); }
+function play(id, to) {
+  if (!IT[id]) return;
+  if (S.ask && !to) { openTarget(id); return; }
+  const tid = to || (dev(S.target) ? S.target : "pc"), d = dev(tid);
+  if (!d || !d.on) { openTarget(id); toast(`${d ? d.n : "那台"}离线了，换一个地方`); return; }
+  d.now = id; d.paused = false; S.mini = tid;
+  if (S.remember) S.target = tid;
+  if (S.sheet === "target") closeSheet();
+  render(true);
+  if (S.sheet === "remote") refreshRemote();
+  toast(d.pc ? `在这台电脑上播放「${IT[id].title}」` : `已在${d.n}上播放「${IT[id].title}」`);
+}
+function remoteKey(k, devId) {
+  const d = dev(devId); if (!d || !d.now) return;
+  const it = IT[d.now];
+  if (k === "pp") { d.paused = !d.paused; toast(d.paused ? `${d.n} 已暂停` : `${d.n} 继续播放`); }
+  else if (k === "chup" || k === "chdn") {
+    if (it.live) { const i = CH.findIndex(c => c.id === it.ch), j = (i + (k === "chdn" ? 1 : CH.length - 1)) % CH.length; d.now = "ch:" + CH[j].id; toast(`${d.n} 换到 ${CH[j].name}`); }
+    else if (it.sr) { const e = Math.max(1, Math.min(srById(it.sr).upd, it.e + (k === "chdn" ? 1 : -1))); d.now = `ep:${it.sr}:${e}`; toast(`第 ${e} 集`); }
+    else if (it.up) { const u = UP.find(x => x.id === it.up), i = +d.now.split(":")[2], j = (i + (k === "chdn" ? 1 : u.v.length - 1)) % u.v.length; d.now = `v:${u.id}:${j}`; toast(u.v[j][0]); }
+  } else if (k === "next") { remoteKey("chdn", devId); return; }
+  else if (k === "back" || k === "fwd") toast(k === "back" ? "退 30 秒" : "进 30 秒");
+  renderMini(); refreshRemote();
+  if (curRoute === "devices") render(true);
+}
+
+/* ============================== 事件 ============================== */
+document.addEventListener("click", e => {
+  const t = e.target.closest("button, a, [data-href]"); if (!t) return;
+  const ds = t.dataset;
+  if (t.id === "scrim") return;
+  if (ds.close !== undefined) return closeSheet();
+  if (ds.view) { S.view = ds.view; applyView(); render(true); return; }
+  if (ds.tg) { if (t.getAttribute("aria-disabled") === "true") { toast("这台离线了"); return; } if (S.pending) { const p = S.pending; S.pending = null; S.target = S.remember ? ds.tg : S.target; play(p, ds.tg); } else { S.target = ds.tg; closeSheet(); render(true); toast(`以后播放到「${dev(ds.tg).n}」`); } return; }
+  if (ds.play) { e.preventDefault(); play(ds.play, ds.to); return; }
+  if (ds.sheet === "target") { openTarget(ds.item || null); return; }
+  if (ds.sheet === "add") { openAdd(ds.kind); return; }
+  if (ds.remote) { openRemote(ds.remote); return; }
+  if (ds.rk) { const id = ds.mini !== undefined ? S.mini : (document.getElementById("rbody") || {}).dataset?.dev; remoteKey(ds.rk, id); return; }
+  if (ds.rdev) { if (t.getAttribute("aria-disabled") === "true") { const rb = $("#rbody"); rb.dataset.dev = ds.rdev; refreshRemote(); return; } const rb = $("#rbody"); rb.dataset.dev = ds.rdev; refreshRemote(); return; }
+  const rdev = () => dev((document.getElementById("rbody") || {}).dataset?.dev);
+  if (ds.bri !== undefined) { rdev().bri = +ds.bri; refreshRemote(); return; }
+  if (ds.sleep !== undefined) { const d = rdev(); d.sleep = +ds.sleep; refreshRemote(); toast(d.sleep ? `${d.n} ${d.sleep} 分钟后关` : "定时关已取消"); return; }
+  if (ds.pet !== undefined) { rdev().pet = +ds.pet; refreshRemote(); return; }
+  if (ds.listen !== undefined) { const d = rdev(); d.listen = !d.listen; refreshRemote(); renderMini(); toast(d.listen ? `${d.n} 只放声音` : `${d.n} 恢复画面`); return; }
+  if (ds.remember !== undefined) { S.remember = !S.remember; S.ask = !S.remember; t.setAttribute("aria-checked", S.remember); return; }
+  if (ds.sw !== undefined) { t.setAttribute("aria-checked", t.getAttribute("aria-checked") !== "true"); return; }
+  if (ds.settarget) { S.target = ds.settarget; render(true); toast(`以后播放到「${dev(ds.settarget).n}」`); return; }
+  if (ds.hero) { { const n = empty() ? 1 : HERO.length; S.hero = (S.hero + +ds.hero + n) % n; } render(true); return; }
+  if (ds.heroI !== undefined) { S.hero = +ds.heroI; render(true); return; }
+  if (ds.lg) { S.liveGroup = ds.lg; S.sel = null; render(true); return; }
+  if (ds.sel) { const [ch, i] = ds.sel.split(":"); S.sel = { ch, i: +i }; $("#lhead").innerHTML = liveHead(); document.querySelectorAll(".gp").forEach(b => b.setAttribute("aria-pressed", String(b === t))); return; }
+  if (ds.lu) { S.lu = ds.lu; render(true); return; }
+  if (ds.sf) { S.sf = ds.sf; render(true); return; }
+  if (ds.lt) { S.lt = ds.lt; render(true); return; }
+  if (ds.up !== undefined && t.classList.contains("up")) { S.up = ds.up; render(true); return; }
+  if (ds.upGo) { S.up = ds.upGo; location.hash = "#/up"; return; }
+  if (ds.scope) { S.scope = ds.scope; render(true); return; }
+  if (ds.q) { S.q = ds.q; render(true); return; }
+  if (ds.href) { location.hash = ds.href; return; }
+  if (ds.back !== undefined) { history.length > 1 ? history.back() : (location.hash = "#/home"); return; }
+  if (ds.miniOpen !== undefined) { const it = IT[(dev(S.mini) || {}).now]; if (it) location.hash = it.live ? "#/live" : it.sr ? `#/detail/${it.sr}` : it.lib ? `#/detail/${it.lib}` : "#/up"; return; }
+  if (t.getAttribute("href") === "#") { e.preventDefault(); toast("原型里这一项没做"); }
+});
+$("#scrim").addEventListener("click", closeSheet);
+document.addEventListener("input", e => {
+  if (e.target.dataset.vol !== undefined) { const d = dev($("#rbody").dataset.dev); d.vol = +e.target.value; $("#volv").textContent = d.vol; }
+  if (e.target.id === "bigq") { S.q = e.target.value; clearTimeout(window._qt); window._qt = setTimeout(() => { const pos = e.target.selectionStart; render(true); const b = $("#bigq"); if (b) { b.focus(); b.setSelectionRange(pos, pos); } }, 250); }
+});
+document.addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toLowerCase(), typing = tag === "input" || tag === "select" || tag === "textarea";
+  if (e.key === "Enter" && e.target.id === "topq") { S.q = e.target.value; location.hash = "#/search"; return; }
+  if (e.key === "Escape") { if (S.sheet) { closeSheet(); e.preventDefault(); } else if (typing) e.target.blur(); return; }
+  if (typing && !(e.target.type === "range" && (e.key === "ArrowUp" || e.key === "ArrowDown"))) return; // 滑块只吃左右键
+  if (e.key === "/") { e.preventDefault(); const i = $("#topq") || $("#bigq"); if (i) i.focus(); else location.hash = "#/search"; return; }
+  if (e.key === "Backspace" && !S.sheet && curRoute === "detail") { history.back(); return; }
+  if (e.key === "Tab" && S.sheet) { // 抽屉里 Tab 不跑出去
+    const f = [...$("#sheet").querySelectorAll(FOC)].filter(vis); if (!f.length) return;
+    const i = f.indexOf(document.activeElement);
+    if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
+    return;
+  }
+  if (e.key.startsWith("Arrow")) { if (spatial(e.key)) e.preventDefault(); }
+});
+// 方向键：在屏幕上找那个方向最近的可聚焦元素（电视遥控器式的导航）。
+const FOC = 'a[href], button:not([disabled]), input, select, [tabindex="0"]';
+const vis = el => el.offsetParent !== null || getComputedStyle(el).position === "fixed";
+function spatial(key) {
+  const root = S.sheet ? $("#sheet") : $("#app"), cur = document.activeElement;
+  const all = [...root.querySelectorAll(FOC)].filter(vis);
+  if (!cur || cur === document.body || !root.contains(cur)) { const f = all.find(el => el.closest("#view")) || all[0]; if (f) { f.focus(); return true; } return false; }
+  const r = cur.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, h = key === "ArrowLeft" || key === "ArrowRight", sg = key === "ArrowRight" || key === "ArrowDown" ? 1 : -1;
+  // 先在同一块里找（内容区、顶栏、侧栏、播放条、底栏各是一块），找不到再跨块：像电视遥控器那样走到边上才进侧栏。
+  const zone = el => el.closest("#view, #top, #side, #mini, #tabs, #sheet"), z = zone(cur);
+  return pick(all.filter(el => zone(el) === z)) || pick(all);
+  function pick(list) {
+  let best = null, bs = Infinity;
+  for (const el of list) {
+    if (el === cur || el.contains(cur)) continue;
+    const b = el.getBoundingClientRect(); if (!b.width || !b.height) continue;
+    const bc = h ? b.left + b.width / 2 : b.top + b.height / 2, rc = h ? cx : cy;
+    if ((bc - rc) * sg <= 1) continue;                       // 中心必须往那个方向走了
+    const gap = Math.max(0, h ? (sg > 0 ? b.left - r.right : r.left - b.right) : (sg > 0 ? b.top - r.bottom : r.top - b.bottom));
+    const overlap = h ? Math.min(b.bottom, r.bottom) - Math.max(b.top, r.top) : Math.min(b.right, r.right) - Math.max(b.left, r.left);
+    const cross = overlap > 0 ? 0 : (h ? Math.abs(b.top + b.height / 2 - cy) : Math.abs(b.left + b.width / 2 - cx));
+    const sc = gap + Math.abs(bc - rc) * .1 + cross * 2.5;
+    if (sc < bs) { bs = sc; best = el; }
+  }
+  if (best) { best.focus({ preventScroll: true }); best.scrollIntoView({ block: "nearest", inline: "nearest" }); return true; }
+  return false;
+  }
+}
+$("#demo").addEventListener("change", e => { S.demo = e.target.value; if (!dev(S.target)) S.target = "pc"; if (!dev(S.mini)) S.mini = S.target; render(true); });
+addEventListener("hashchange", () => { if (S.sheet) closeSheet(); applyParams(parse().q); render(); });
+addEventListener("resize", () => { const was = isM(); applyView(); if (was !== isM()) render(true); });
+applyParams(parse().q);
+if (S.demo === "notv") { S.target = "pc"; S.mini = "pc"; }
+render();
+</script>
+</body>
+</html>
