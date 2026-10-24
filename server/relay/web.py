@@ -29,8 +29,9 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, events, setup, stream, table, voice, voicecmds, watch as watch_pc, \
     wifi as wifi_api, youtube as youtube_links
-from . import ytsettings
-from .bilibili import REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, SourceError
+from . import bililogin, ytsettings
+from .bilibili import PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, \
+    MemberOnly, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
 
@@ -185,6 +186,10 @@ class Relay:
         self._cache_lock = threading.RLock()
         # 电脑版「订阅」页的 B 站搜索和封面缩略图（bilisearch.py）：缓存和次数限制。
         self.bili_search = bilisearch.BiliSearch(clock=monotonic, log=lambda message: self.log(message))
+        # 每个用户自己的 B 站登录（bililogin.py）：只在自建 / 电脑客户端有，存在数据目录的 secrets/bilibili/。
+        self.bili_accounts = (bililogin.BiliAccounts(Path(accounts.path).parent / "secrets" / "bilibili",
+                                                     log=lambda message: self.log(message))
+                              if selfhost is not None and accounts is not None else None)
         # 设备文件上次写的样子（主人、遥控码），变了就重写。
         self._synced: dict[str, tuple] = {}
         # 多用户：给设备加密 Wi-Fi 修改用的 X25519 私钥（wifi.setup_key 在启动时读进来）。
@@ -341,7 +346,8 @@ class Relay:
         return creator is not None and \
             self.clock() - creator.fetched_at >= KINDS[creator.kind][3]
 
-    def refresh_if_stale(self, cid: str, state: State | None = None) -> None:
+    def refresh_if_stale(self, cid: str, state: State | None = None, owner: int | None = None) -> None:
+        """owner：这份状态的主人（多用户）。他用大会员登录了 B 站时，番剧的会员集也留着（bililogin.py）。"""
         state = state if state is not None else self.state
         if not self._stale(state.get(cid)):
             return
@@ -349,8 +355,10 @@ class Relay:
             creator = state.get(cid)
             if not self._stale(creator):
                 return
+            login = self._vip_login(owner) if creator.kind == "series" and creator.site == "bilibili" else None
             # 多用户：同一个 UP 主（剧）被好几个人订阅时，列表只向网站要一次（共享缓存）。
-            if self.tenant:
+            # 大会员的剧集列表里有会员集，别人放不了：不用也不写共享缓存。
+            if self.tenant and login is None:
                 cached = self.accounts.cached_source(creator.site, creator.source, creator.kind)
                 if cached is not None and self.clock() - cached["fetched_at"] < KINDS[creator.kind][3]:
                     state.set_videos(cid, [Video(**v) for v in cached["videos"]], cached["fetched_at"])
@@ -359,7 +367,8 @@ class Relay:
             try:
                 client = self._client(creator.site)
                 if creator.kind == "series":
-                    videos = client.series(creator.source)[1]
+                    videos = (client.series(creator.source, login=login) if login is not None
+                              else client.series(creator.source))[1]
                 else:
                     videos = client.uploads(creator.source)
             except SourceError as error:
@@ -372,7 +381,8 @@ class Relay:
                 if creator.kind == "up":
                     state.set_total(cid, self._upload_total(creator.site, creator.source))
                 state.save()
-                self._cache_videos(creator, videos, now)
+                if login is None:
+                    self._cache_videos(creator, videos, now)
 
     def _upload_total(self, site: str, source: str) -> int:
         """UP 主一共有多少个投稿：客户端最近一次取列表时网站说的（B 站有，YouTube 节点没有），不知道为 0。"""
@@ -398,14 +408,14 @@ class Relay:
             return 404
         if self._paused_on(dev, cid):
             return 503
-        self.refresh_if_stale(cid, state)
+        self.refresh_if_stale(cid, state, dev.get("owner"))
         for _ in range(MAX_SKIPS):
             pick = state.next_video(cid)
             if pick is None:
                 return 503
             video, offset = pick
             try:
-                return self._start(video, offset), video, offset
+                return self._start(video, offset, dev.get("owner")), video, offset
             except SourceError as error:
                 if not error.permanent:
                     self.log(f"{cid} {video.bvid} 暂时取不到：{error}")
@@ -421,12 +431,47 @@ class Relay:
             raise SourceError(f"{site} 还没配置")
         return client
 
-    def _start(self, video, offset: float):
-        """起播：B 站在本机用 ffmpeg 换封装；YouTube 由 cstone 节点转好码，这里只转发。"""
+    def _start(self, video, offset: float, owner: int | None = None):
+        """起播：B 站在本机用 ffmpeg 换封装；YouTube 由 cstone 节点转好码，这里只转发。
+        owner：设备主人；他登录了 B 站（bililogin.py）就带着他的 cookies 取地址（清晰度还是小电视的）。"""
         if video.site == "youtube":
             return self._client("youtube").open(video.bvid, offset)
-        url = self._client("bilibili").media_url(video.bvid)
+        url = self._bili_url(video.bvid, self.bili_login(owner), owner)
         return self.starter(self.ffmpeg, url, offset)
+
+    # ---- B 站登录（自建 / 电脑客户端，bililogin.py） ----
+
+    def bili_login(self, user: int | None):
+        """这个用户的 B 站登录（bililogin.Login）；没开这个功能、没登录、登录失效了是 None。"""
+        if self.bili_accounts is None or user is None:
+            return None
+        return self.bili_accounts.login_for(user)
+
+    def _vip_login(self, user: int | None):
+        """大会员的登录（剧集列表要不要留会员集），否则 None。"""
+        login = self.bili_login(user)
+        return login if login is not None and login.vip else None
+
+    def _bili_url(self, bvid: str, login, user: int | None, quality: int | None = None) -> str:
+        """B 站的播放地址；不登录时和以前一模一样地调用客户端。会员集只给试看、而这个人存过登录时，
+        核对一次登录：已经失效了就当作暂时放不了（503，重新扫码后就好），别把这一集当成看过跳过去。"""
+        client = self._client("bilibili")
+        if login is None:
+            if user is None or self.bili_accounts is None or self.bili_accounts.record(user) is None:
+                return client.media_url(bvid)
+            try:
+                return client.media_url(bvid)
+            except MemberOnly as error:
+                if self.bili_accounts.recheck(user):
+                    raise SourceError(f"{error}（B 站登录已失效，请重新扫码）") from None
+                raise
+        try:
+            return client.media_url(bvid, login=login, quality=quality) if quality else \
+                client.media_url(bvid, login=login)
+        except MemberOnly as error:
+            if self.bili_accounts is not None and self.bili_accounts.recheck(user):
+                raise SourceError(f"{error}（B 站登录已失效，请重新扫码）") from None
+            raise
 
     def finish(self, cid: str, video, offset: float, outcome: str, elapsed: float, slot: str = "") -> None:
         dev = self._stream_device(slot) or NO_DEVICE
@@ -526,7 +571,7 @@ class Relay:
             return 503
         offset = 0.0 if done else max(0.0, position - RESUME_BACK_S)
         try:
-            return self._start(video, offset), video, offset
+            return self._start(video, offset, dev.get("owner")), video, offset
         except SourceError as error:
             self.log(f"cast {video.bvid} 取不到：{error}")
             return 503
@@ -1112,7 +1157,7 @@ class Relay:
         if not dev["id"] or not playing["online"] or not playing["channel"]:
             return {"ok": False, "error": f"{dev['name']}没在线"}
         cid = playing["channel"]
-        source = self._watch_source(dev, cid)
+        source = self._watch_source(dev, cid, caller.user)
         if isinstance(source, str):
             return {"ok": False, "error": source}
         try:
@@ -1122,9 +1167,10 @@ class Relay:
         return {"ok": True, "device": dev["id"], "sid": stream.sid, "channel": cid, "title": source.label,
                 "kind": source.key[0], "url": f"watch/{stream.sid}/{self.watch.token(stream)}/"}
 
-    def _watch_source(self, dev: dict, cid: str):
+    def _watch_source(self, dev: dict, cid: str, viewer: int | None = None):
         """设备正在播的 cid 的片源（watch.Source），或者给人看的原因（字符串）。
-        视频（UP 主、剧集、投屏）从设备此刻的位置起；直播台用频道表里的地址和 User-Agent。"""
+        视频（UP 主、剧集、投屏）从设备此刻的位置起；直播台用频道表里的地址和 User-Agent。
+        viewer：在电脑上看的人。B 站按他的登录（没有时按设备主人的）取更高的清晰度（bililogin.py）。"""
         if _relay_channel(cid):
             paused = self._paused_on(dev, cid)
             if paused is not None:
@@ -1141,7 +1187,14 @@ class Relay:
                 return watch_pc.Source(key, opener=lambda: client.open(video.bvid, position), paced=False,
                                        label=video.title)
             client = self.clients.get("bilibili")
-            return watch_pc.Source(key, url=lambda: client.media_url(video.bvid), user_agent=BILIBILI_UA,
+            whose = viewer if self.bili_login(viewer) is not None else dev.get("owner")
+            login = self.bili_login(whose)
+            if login is None:
+                url = lambda: self._bili_url(video.bvid, None, whose)  # noqa: E731
+            else:
+                quality = PC_QUALITY_VIP if login.vip else PC_QUALITY
+                url = lambda: self._bili_url(video.bvid, login, whose, quality)  # noqa: E731
+            return watch_pc.Source(key, url=url, user_agent=BILIBILI_UA,
                                    referer=BILIBILI_REFERER, offset=position, label=video.title)
         found = watch_pc.live_source(self.main_channels, cid)
         if found is None:
@@ -1261,6 +1314,9 @@ class Relay:
             if self.watch is not None and not caller.guest:
                 # 在电脑上看（watch.py）：只有自建 / 电脑客户端有，电脑版据此显示按钮。
                 summary["watch"] = True
+            if self.bili_accounts is not None and not caller.guest and caller.user is not None:
+                # 自建：每个人自己的 B 站登录（bililogin.py），电脑版据此显示「设置 → B 站账号」和导入关注。
+                summary["bili"] = self.bili_accounts.status(caller.user)
             if self.selfhost is not None:
                 # 自建：绑定码是 6 位数字，遥控页和电脑版的输入框据此换成数字键盘（云端没有这一项，还是 20 位）。
                 summary["claim_digits"] = tenancy_db.CLAIM_DIGITS
@@ -1326,12 +1382,13 @@ class Relay:
         client = self.clients.get(site)
         if client is None:
             return {"ok": False, "error": self._youtube_off("YouTube 还没配置好，剧集暂时只能用 B 站")}
+        login = self._vip_login(caller.user) if site == "bilibili" else None
         try:
             source = client.series_id(text)
             if source is None:
                 return {"ok": False, "error": "看不懂这个链接。请粘贴 B 站番剧页、多集视频（合集）的链接，"
                                               "或 YouTube 播放列表的链接（带 list=）"}
-            title, episodes = client.series(source)
+            title, episodes = client.series(source, login=login) if login is not None else client.series(source)
         except SourceError as error:
             self.log(f"添加剧集失败：{error}")
             if not error.permanent:
@@ -1340,6 +1397,8 @@ class Relay:
             reason = str(error).split(": ", 1)[-1]
             if reason.startswith(("code=", "404")):
                 reason = f"{_SITE_NAMES[site].strip()}说这个放不了（可能已删除、私享或需要会员）"
+            if "会员" in reason and self.bili_accounts is not None and login is None:
+                reason += "。需要大会员：在「设置 → B 站账号」扫码登录大会员账号后再加"
             return {"ok": False, "error": reason}
         name = name or title or source
         if not self.room(table.label_for(name, site), caller)["fits"]:
@@ -1349,7 +1408,8 @@ class Relay:
         except ValueError as error:
             return {"ok": False, "error": str(error)}
         state.save()
-        self._cache_videos(creator, creator.videos, creator.fetched_at)
+        if login is None:
+            self._cache_videos(creator, creator.videos, creator.fetched_at)
         self._tables_changed(state)
         self.log(f"添加剧集 {creator.id} {name}（{source}，{len(creator.videos)} 集）")
         return {"ok": True, "series": {"id": creator.id, "name": name, "total": len(creator.videos)}}
@@ -1808,7 +1868,7 @@ def _manage_handler(relay: Relay):
                 return
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
             if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)
-                                 or ytsettings.get(self, relay, path)):
+                                 or ytsettings.get(self, relay, path) or bililogin.get(self, relay, path)):
                 return
             # 在电脑上看的列表和段（watch.py）：只认地址里的令牌，不看登录；没开这个功能时 404。
             if watch_pc.get(self, relay, path):
@@ -1951,7 +2011,7 @@ def _manage_handler(relay: Relay):
             if setup.post(self, relay, path):
                 return
             if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)
-                                 or ytsettings.post(self, relay, path)):
+                                 or ytsettings.post(self, relay, path) or bililogin.post(self, relay, path)):
                 return
             if relay.tenant and path in ("/api/scan", "/api/invite/accept", "/api/bind/register"):
                 body = self._body()

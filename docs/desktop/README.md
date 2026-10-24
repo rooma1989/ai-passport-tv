@@ -225,6 +225,39 @@ Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
   `~/Library/LaunchAgents/io.github.ai-passport-tv.XiaozhiTV.plist`. Both **keep
   the data folder**; delete it by hand when you are sure.
 
+## Bilibili login (optional)
+
+Without logging in, Bilibili plays as a guest: up to 720p, and bangumi episodes
+for premium members only give a short preview, so they are skipped. On the PC
+client and a household server each family member can log in with their own
+Bilibili account: open **Settings**, find the Bilibili account section, click the
+scan-to-log-in button and scan the code with the Bilibili app, then confirm on the
+phone. The page shows the nickname, the avatar and whether the account is a
+premium member.
+
+What a login changes:
+
+- **Watching on the PC** uses the viewer's login (or the device owner's when the
+  viewer has none) and asks for 1080p, or 1080p+ for premium members. The TV
+  keeps 720p; its screen is too small to show more.
+- **Premium bangumi**: with a premium login, series keep the member episodes and
+  the TV plays them. Without one, adding such a series says it needs a premium
+  membership and where to log in.
+- **Importing followed creators**: the subscriptions page gets a button that lists
+  the creators you follow, with a search box, select all and select none; ones
+  you already subscribe to are marked. At most 12 creators fit, because each one
+  is a channel whose name has to fit in the device's settings packet.
+
+The login stays on this computer: `secrets/bilibili/<user id>.json` in the data
+folder, readable only by your user. It is never written to logs, the
+diagnostics bundle or database backups, and logging out deletes it at once.
+These are Bilibili's web APIs and normal use is fine; if you worry about
+Bilibili's anti-abuse checks, use a secondary account. When Bilibili rejects the
+saved login (it expired, or you logged out elsewhere), the page asks you to scan
+again and playback falls back to guest quality. If the router blocks Bilibili,
+the page says Bilibili cannot be reached and to check the router or proxy. The
+cloud relay does not have this feature.
+
 ## YouTube (optional)
 
 YouTube is off by default; Bilibili and live channels work without it. Turning
@@ -336,6 +369,9 @@ Developer notes (code map, building, CI, the interface with the core):
 - The Linux tray (GNOME has no tray area by default).
 - YouTube local mode on Windows and Linux (written for them, run only on a Mac), and how often YouTube
   asks for sign-in with imported cookies (on the Mac, through a proxy, it asked every time without).
+- Bilibili login against the real Bilibili: QR login, 1080p playback, member
+  bangumi and the followings import were developed against recorded answer
+  shapes only (the developer's router blocks Bilibili).
 
 ## Disclaimer
 
