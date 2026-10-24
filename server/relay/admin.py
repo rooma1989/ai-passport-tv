@@ -27,7 +27,7 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, console, events, playlist, presets, qr, table
+from . import channeltable, console, epg, events, playlist, presets, qr, table
 from .ytnode import MAX_STREAMS
 
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
@@ -120,6 +120,8 @@ def get(handler, relay, path: str) -> bool:
         handler._json(system(relay))
     elif path == "/api/admin/channels":
         handler._json(channels(relay))
+    elif path == "/api/admin/epg":
+        handler._json(epg.admin_view(relay))
     else:
         match = _USER.match(path)
         if match and match.group(2) == "sessions":
@@ -381,6 +383,7 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
         if body.get("dry") is True:
             return {"ok": True, "dry": True, "summary": summary, "warnings": checked.get("warnings") or [], "fit": fit}
         backup = channeltable.save(path, text, relay.clock)
+        _save_meta(path, body["rows"], rows)
         _ops(relay).set_global_groups(groups)
         relay._admin_groups = groups
     detail = (f"{len(current['rows'])}→{len(rows)} 个台，+{len(added)} −{len(removed)} 改{len(changed)}"
@@ -391,6 +394,22 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
     relay.sync_devices(force=True)
     return {"ok": True, "version": channeltable.version_of(text), "backup": backup, "summary": summary,
             "warnings": checked.get("warnings") or []}
+
+
+def _save_meta(path: Path, items: list, rows: list[dict]) -> None:
+    """频道表旁边的 tvg-id / 台标（channeltable.meta_of）：新台用页面带来的（从播放列表导入的才有），
+    留下的台照旧，删掉的台跟着删。写不了不要紧（节目单退回按台名对），不挡保存。"""
+    old = channeltable.meta_of(path)
+    meta = {}
+    for item, row in zip(items, rows):
+        given = channeltable.clean_meta(item) or old.get(row["id"])
+        if given:
+            meta[row["id"]] = given
+    if meta != old:
+        try:
+            channeltable.save_meta(path, meta)
+        except OSError:
+            pass
 
 
 # ---- POST ----
@@ -415,6 +434,13 @@ def post(handler, relay, path: str) -> bool:
     ip = handler._ip()
     if path == "/api/admin/channels":
         handler._json(save_channels(relay, body, caller, ip))
+        return True
+    if path == "/api/admin/epg":
+        # 节目单的来源（epg.py）：云端和自建都有，默认关着。
+        handler._json(epg.admin_save(relay, body, caller, ip))
+        return True
+    if path == "/api/admin/epg/refresh":
+        handler._json(epg.admin_refresh(relay, caller, ip))
         return True
     if selfhost and path == IMPORT_PATH:
         # 自建：读一份 M3U（地址、上传的内容或一个公开列表），列出里面的台给页面勾选；不存地址、不改频道表。

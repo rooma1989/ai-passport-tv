@@ -27,7 +27,7 @@ from ..tenancy.claimguard import ClaimGuard
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
-from . import admin, bilisearch, console, events, setup, stream, table, voice, voicecmds, watch as watch_pc, \
+from . import admin, bilisearch, console, epg, events, setup, stream, table, voice, voicecmds, watch as watch_pc, \
     wifi as wifi_api, youtube as youtube_links
 from . import bililogin, ytsettings
 from .bilibili import PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, \
@@ -201,6 +201,8 @@ class Relay:
         self._synced: dict[str, tuple] = {}
         # 多用户：给设备加密 Wi-Fi 修改用的 X25519 私钥（wifi.setup_key 在启动时读进来）。
         self.wifi_private: bytes | None = None
+        # 节目单（epg.py）：多用户时 __main__ 用 epg.attach 建；没打开时它不上网、不占内存。
+        self.guide: "epg.Guide | None" = None
 
     @property
     def tenant(self) -> bool:
@@ -1528,6 +1530,9 @@ class Relay:
             if self.selfhost is not None:
                 # 自建：绑定码是 6 位数字，遥控页和电脑版的输入框据此换成数字键盘（云端没有这一项，还是 20 位）。
                 summary["claim_digits"] = tenancy_db.CLAIM_DIGITS
+        if self.guide is not None and self.guide.enabled:
+            # 节目单打开了：遥控页和电脑版据此去问 /api/epg，在台名下面写「正在播：…」。
+            summary["epg"] = True
         if self.clients.get("youtube") is not None:
             summary["youtube"] = {"state": self.youtube_state()}
             if getattr(self, "youtube_kind", "") == "local":
@@ -2147,6 +2152,9 @@ def _manage_handler(relay: Relay):
             elif path in bilisearch.PATHS:
                 # 电脑版「订阅」页的 B 站搜索和封面缩略图；和订阅接口一样要账号（访客 404）。
                 bilisearch.get(self, relay, caller, path)
+            elif path == "/api/epg":
+                # 节目单（epg.py）：直播台现在和下一个节目；和频道列表一样，登录了的（访客也算）都能看。
+                self._json(epg.api(relay, self._query().get("channels")))
             elif relay.tenant and path == "/api/devices":
                 self._json({"ok": True, "devices": relay.my_devices(caller)})
             elif relay.tenant and path == "/api/wifi":

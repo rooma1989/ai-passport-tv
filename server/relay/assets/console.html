@@ -145,6 +145,7 @@
   .chcard .n span { color: var(--faint); }
   .chcard .t { font: 16px/1.35 var(--serif); overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
                -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .chcard .epg { font: 12px/1.4 var(--serif); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chcard.air { border-color: #5a4a2c; }
   .chcard.air .t, .chcard.air .n span { color: var(--amber); }
   .chcard.pending .n span { color: var(--amber); animation: blink 1.2s ease-in-out infinite; }
@@ -880,6 +881,33 @@ async function refresh() {
   settlePending();
   claimField();
   render();
+  loadEpg();
+}
+
+// ---------- 节目单 ----------
+// 服务器打开了节目单（/api/state 的 epg，server/relay/epg.py）才问 /api/epg：每个直播台现在和下一个节目。
+// 一分钟问一次就够（节目按开始、结束时间在这里自己换到下一个）。
+
+let epg = {}, epgAt = 0;
+async function loadEpg() {
+  if (!data || !data.epg) { epg = {}; return; }
+  if (Date.now() - epgAt < 60000) return;
+  epgAt = Date.now();
+  try { epg = (await call("GET", "api/epg")).channels || {}; } catch (error) { return; }
+  if (data) { renderChannels(); renderWatchTitle(); }
+}
+function hm(at) { const date = new Date(at * 1000); return pad(date.getHours()) + ":" + pad(date.getMinutes()); }
+// 「正在播：新闻联播 19:00–19:30」；没有节目单的台为空。
+function epgLine(id) {
+  const e = data && data.epg ? epg[id] : null;
+  const now = Date.now() / 1000;
+  const p = e && [e.now, e.next].find((x) => x && x.start <= now && now < x.end);
+  return p ? "正在播：" + p.title + " " + hm(p.start) + "–" + hm(p.end) : "";
+}
+function renderWatchTitle() {
+  if (!watching || !watching.label) return;
+  const line = epgLine(watching.channel);
+  $("watchWhat").textContent = watching.label + (line ? " · " + line : "");
 }
 
 let timer = 0;
@@ -1323,7 +1351,8 @@ async function startWatch(auto, again) {
   const player = playerFor(answer);
   watching = { mode: "follow", device, sid: answer.sid, key, player, busy: false, channel: answer.channel, kind: answer.kind };
   $("watchFollow").checked = true;
-  $("watchWhat").textContent = deviceName() + " · " + (data.now.name || answer.channel) + (answer.title && answer.title !== data.now.name ? " · " + answer.title : "");
+  watching.label = deviceName() + " · " + (data.now.name || answer.channel) + (answer.title && answer.title !== data.now.name ? " · " + answer.title : "");
+  renderWatchTitle();
   renderWatch();
   player.start();
 }
@@ -1356,7 +1385,8 @@ async function startDirect(body, ctx) {
   $("watchFollow").checked = false;
   const what = answer.series ? "第 " + answer.index + " / " + answer.total + " 集" + (answer.title ? " · " + answer.title : "")
     : answer.title && answer.title !== answer.name ? answer.title : "";
-  $("watchWhat").textContent = "这台电脑 · " + (answer.name || answer.channel) + (what ? " · " + what : "");
+  watching.label = "这台电脑 · " + (answer.name || answer.channel) + (what ? " · " + what : "");
+  renderWatchTitle();
   render();
   if (!same) {
     player.start();
@@ -1473,6 +1503,8 @@ function renderChannels() {
     n.appendChild(el("span", "", going ? "切换中…" : pc ? "电脑上在放" : air ? (pcTap() ? "小电视在播" : "播放中")
       : sites[c.id] ? siteTag(sites[c.id]) : c.id === "cast" ? "投屏" : ""));
     card.append(n, el("div", "t", c.name));
+    const line = epgLine(c.id);
+    if (line) { const e = el("div", "epg", line); e.title = line; card.appendChild(e); }
     if (adjusting && movable) {
       const select = el("select");
       for (const name of data.group_names) {

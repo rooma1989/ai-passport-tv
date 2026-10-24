@@ -85,7 +85,11 @@ def _clean(entry: dict) -> dict | None:
     if len(agent) > channeltable.AGENT_MAX or "|" in agent or any(ord(c) < 32 for c in agent):
         agent = ""
     row = {"name": name or url.rsplit("/", 1)[-1][:channeltable.NAME_MAX] or "未命名", "url": url, "agent": agent}
-    return row if len(channeltable.line_of(dict(row, id="ch000000")).encode("utf-8")) <= channeltable.LINE_MAX else None
+    if len(channeltable.line_of(dict(row, id="ch000000")).encode("utf-8")) > channeltable.LINE_MAX:
+        return None
+    # 节目单对台、台标用的属性（不进 channels.txt，存在旁边的 channels.txt.meta.json，见 channeltable.meta_of）。
+    row.update(channeltable.clean_meta(entry))
+    return row
 
 
 def read(body: dict, opener=urllib.request.urlopen) -> dict:

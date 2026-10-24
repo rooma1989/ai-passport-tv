@@ -1127,7 +1127,9 @@ class PageFieldTests(unittest.TestCase):
                   # GET /api/state on a self-hosted relay: the bind code is 6 digits (web.py summary()).
                   "claim_digits",
                   # 用手机听: now.listen, POST /api/listen (web.py Relay.listen).
-                  "listen", "url", "bye"}
+                  "listen", "url", "bye",
+                  # 节目单: data.epg in GET /api/state when the guide is on (epg.py); /api/epg is read as a whole.
+                  "epg"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 

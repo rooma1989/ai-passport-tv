@@ -106,6 +106,7 @@
   .row .n { width: 26px; flex: none; font: 13px var(--mono); color: var(--red); opacity: .75; }
   .row .t { flex: 1; min-width: 0; font: 17px/1.35 var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .src { flex: none; font: 11px var(--mono); color: var(--faint); letter-spacing: 1px; }
+  .row .t .epg { display: block; font: 12px/1.4 var(--serif); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row.air .t, .row.air .src { color: var(--amber); }
   .row.air .n { opacity: 1; }
   .row select { flex: none; background: var(--ink-deep); color: var(--paper); border: 1px solid var(--rule);
@@ -763,7 +764,10 @@ function renderChannels() {
     const air = !pending && c.id === data.now.channel && data.now.online;
     const going = pending && c.id === pending.channel;
     const row = el("div", "row" + (air ? " air" : "") + (going ? " pending" : ""));
-    row.append(el("span", "n", pad(c.n)), el("span", "t", c.name));
+    const line = epgLine(c.id);
+    const name = el("span", "t", c.name);
+    if (line) name.appendChild(el("small", "epg", line));
+    row.append(el("span", "n", pad(c.n)), name);
     if (adjusting && movable) {
       const select = el("select");
       for (const name of data.group_names) {
@@ -1705,6 +1709,25 @@ async function refresh() {
   claimField();
   render();
   if ($("mine").classList.contains("on")) loadMine(!$("sessionCount").textContent);
+  loadEpg();
+}
+
+// 节目单：服务器打开了（/api/state 的 epg，server/relay/epg.py）才问 /api/epg，一分钟一次；
+// 台名下面写「正在播：新闻联播 19:00–19:30」，节目按开始、结束时间在这里自己换。
+let epg = {}, epgAt = 0;
+async function loadEpg() {
+  if (!data || !data.epg) { epg = {}; return; }
+  if (Date.now() - epgAt < 60000) return;
+  epgAt = Date.now();
+  try { epg = (await call("GET", "api/epg")).channels || {}; } catch (error) { return; }
+  if (data) renderChannels();
+}
+function hm(at) { const date = new Date(at * 1000); return pad(date.getHours()) + ":" + pad(date.getMinutes()); }
+function epgLine(id) {
+  const e = data && data.epg ? epg[id] : null;
+  const now = Date.now() / 1000;
+  const p = e && [e.now, e.next].find((x) => x && x.start <= now && now < x.end);
+  return p ? "正在播：" + p.title + " " + hm(p.start) + "–" + hm(p.end) : "";
 }
 
 // 平时每 5 秒刷新；切换中每秒刷新，好尽快看到小智切过去。
