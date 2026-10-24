@@ -61,7 +61,7 @@ MAX_STREAMS = 3
 # 每个用户同时最多几路（两台电脑、或者两个页面）。
 MAX_PER_USER = 2
 # 列表里留几段；按字节再封顶（4K 直播源复制过来一段可能十几 MB）。
-WINDOW_SEGMENTS = 8
+WINDOW_SEGMENTS = 12
 WINDOW_BYTES = 64 * 1024 * 1024
 # 一段至少多长：短 GOP 的源合并成 2 秒左右一段；只有声音的源按这个时长切。
 FRAGMENT_US = 2_000_000

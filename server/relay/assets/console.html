@@ -1236,8 +1236,9 @@ class WatchPlayer {
       const first = Number((text.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/) || [])[1] || 0);
       const count = (text.match(/^\d+\.m4s$/gm) || []).length;
       const ended = text.includes("#EXT-X-ENDLIST");
-      // 第一次从倒数第三段起（离最新的近一点，又不至于一开始就卡）；落在窗口外就跳到窗口里。
-      if (this.next < 0) this.next = Math.max(first, first + count - 3);
+      // 第一次从倒数第六段起（约 12 秒的余量）：直播源常常几秒才来一大段（咪咕 6 秒一段），
+      // 余量只有一段时每次都要等，看起来就是几秒卡一下。落在窗口外就跳到窗口里。
+      if (this.next < 0) this.next = Math.max(first, first + count - 6);
       if (this.next < first) this.next = first;
       for (; this.next < first + count && this.alive; this.next++) {
         const data = await this.fetch(this.next + ".m4s", "arrayBuffer");
@@ -1264,7 +1265,7 @@ class WatchPlayer {
     if (inside < 0) {
       const ahead = [...Array(b.length).keys()].map((i) => b.start(i)).find((t) => t > v.currentTime);
       v.currentTime = (ahead !== undefined ? ahead : b.start(0)) + 0.05;
-    } else if (end - v.currentTime > 25) v.currentTime = end - 6;
+    } else if (end - v.currentTime > 30) v.currentTime = end - 12;
     if (!this.started) {
       this.started = true;
       this.say("");

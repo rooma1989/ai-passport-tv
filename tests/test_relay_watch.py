@@ -806,3 +806,19 @@ class _QuietServer(ThreadingHTTPServer):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LivePacingTests(unittest.TestCase):
+    """直播台不加 -re：源几秒一停时 -re 只按 1.05 倍追，产出落后，电脑上几秒卡一下（v0.2.3 的毛病）。"""
+
+    def test_live_channel_source_is_not_paced(self):
+        import tempfile
+        from types import SimpleNamespace
+        from server.relay.web import Relay
+        with tempfile.TemporaryDirectory() as tmp:
+            table_path = Path(tmp) / "channels.txt"
+            table_path.write_text("ch000 | CCTV1 | http://example.com/live.m3u8 | UA-test\n", encoding="utf-8")
+            source = Relay._live_source(SimpleNamespace(main_channels=table_path), "ch000")
+            self.assertFalse(source.paced)
+            args = watch.ffmpeg_args("ffmpeg", source, source.url, watch.Mode("copy", "encode"))
+            self.assertNotIn("-re", args)

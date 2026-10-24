@@ -1229,7 +1229,9 @@ class Relay:
             return "找不到这个台的地址"
         url, agent = found
         name = next((n for c, n in channel_groups.read_table(self.main_channels) if c == cid), cid)
-        return watch_pc.Source(("live", cid, url, agent), url=url, user_agent=agent, label=name)
+        # 直播源自己就按实时的速度给，不加 -re：加了以后源每停一下（咪咕这类几秒一段的 HLS 常有）ffmpeg 只按
+        # 1.05 倍追，产出越来越落后，电脑上几秒卡一下。
+        return watch_pc.Source(("live", cid, url, agent), url=url, user_agent=agent, label=name, paced=False)
 
     # ---- 在电脑上看：直接看一个台（不经小电视） ----
 
