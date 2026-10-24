@@ -1,4 +1,4 @@
-"""M3U 播放列表：读出 (名字, 地址, User-Agent)。
+"""M3U 播放列表：读出 (名字, 地址, User-Agent)，还有节目单和台标用的 tvg-id / tvg-name / tvg-logo。
 
 两处用：本地的频道配置页（tools/channel_config.py）和总后台频道表的「导入播放列表」
 （server/relay/admin.py，自建模式）。只认 http/https 的地址。
@@ -11,6 +11,19 @@ import re
 # #EXTINF 行上的 `http-user-agent="..."`，或单独一行 `#EXTVLCOPT:http-user-agent=...`。
 USER_AGENT_RE = re.compile(r"""http-user-agent\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 EXTVLCOPT_UA_RE = re.compile(r"""#EXTVLCOPT:http-user-agent\s*=\s*([^\r\n]*)""", re.IGNORECASE)
+# 节目单对台（server/relay/epg.py）和台标用的属性：tvg-id="CCTV1"，也有不带引号的 tvg-name=湖南卫视。
+TVG_RE = re.compile(r"""(?<![\w-])tvg-(id|name|logo)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s,"']+))""", re.IGNORECASE)
+TVG_KEYS = {"id": "tvg_id", "name": "tvg_name", "logo": "logo"}
+
+
+def _tvg(extinf: str) -> dict:
+    """#EXTINF 行上的 tvg-id、tvg-name、tvg-logo（没有的为空串），只看台名前面的属性部分。"""
+    found = {"tvg_id": "", "tvg_name": "", "logo": ""}
+    for match in TVG_RE.finditer(extinf):
+        key = TVG_KEYS[match.group(1).lower()]
+        if not found[key]:
+            found[key] = next(v for v in match.group(2, 3, 4) if v is not None).strip()
+    return found
 
 
 def _title(extinf: str) -> str:
@@ -26,7 +39,7 @@ def _title(extinf: str) -> str:
 
 
 def parse_playlist(text: str) -> list[dict]:
-    """[{name, url, agent}]。
+    """[{name, url, agent, tvg_id, tvg_name, logo}]（后三个没有时是空串）。
 
     名字取 #EXTINF 上第一个不在引号里的逗号之后的部分（属性值里可以有逗号，例如
     User-Agent 的 "(KHTML, like Gecko)"）；地址是其后第一行像网址的行。同名的台都保留
@@ -35,6 +48,7 @@ def parse_playlist(text: str) -> list[dict]:
     channels: list[dict] = []
     pending: str | None = None
     pending_agent: str = ""
+    pending_tvg: dict = {}
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
@@ -44,6 +58,8 @@ def parse_playlist(text: str) -> list[dict]:
             pending = name
             match = USER_AGENT_RE.search(line)
             pending_agent = match.group(1) if match else ""
+            # 属性只在台名之前：台名里正好有「tvg-id=」这种字样的不算。
+            pending_tvg = _tvg(line[:len(line) - len(name)] if line.endswith(name) else line)
             continue
         if line.startswith("#EXTVLCOPT:http-user-agent"):
             match = EXTVLCOPT_UA_RE.search(line)
@@ -54,7 +70,9 @@ def parse_playlist(text: str) -> list[dict]:
             continue
         if line.startswith(("http://", "https://")):
             name = pending if pending else line.rsplit("/", 1)[-1]
-            channels.append({"name": name, "url": line, "agent": pending_agent})
+            channels.append({"name": name, "url": line, "agent": pending_agent,
+                             **(pending_tvg if pending else {"tvg_id": "", "tvg_name": "", "logo": ""})})
             pending = None
             pending_agent = ""
+            pending_tvg = {}
     return channels

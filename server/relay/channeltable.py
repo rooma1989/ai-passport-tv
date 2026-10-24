@@ -45,6 +45,66 @@ _NEW_ID = re.compile(r"^ch(\d{3,6})$")
 _ROOT = Path(__file__).resolve().parents[2]
 
 
+# 频道表旁边的 <文件名>.meta.json：每个台的 tvg-id、tvg-name、台标地址（从播放列表导入时带来的，
+# 节目单对台用，见 server/relay/epg.py）。channels.txt 的格式不变（电视服务和 live.parse_channels 不认第五列），
+# 这个文件坏了、没有都不要紧：节目单退回按台名对。键是台的 id，值只有这三项、都是短字符串。
+META_SUFFIX = ".meta.json"
+META_FIELDS = ("tvg_id", "tvg_name", "logo")
+TVG_MAX = 64
+LOGO_MAX = 400
+
+
+def meta_path(path: Path) -> Path:
+    path = Path(path)
+    return path.with_name(path.name + META_SUFFIX)
+
+
+def clean_meta(item) -> dict:
+    """页面或播放列表给的一条里能存的 tvg_id / tvg_name / logo（不合格的丢掉，都没有时是 {}）。"""
+    found = {}
+    if not isinstance(item, dict):
+        return found
+    for field in META_FIELDS:
+        value = item.get(field)
+        if not isinstance(value, str):
+            continue
+        value = value.strip()
+        limit = LOGO_MAX if field == "logo" else TVG_MAX
+        if not value or len(value) > limit or any(ord(c) < 32 for c in value):
+            continue
+        if field == "logo" and (not value.startswith(("http://", "https://")) or any(c in value for c in " \"'<>")):
+            continue
+        found[field] = value
+    return found
+
+
+def meta_of(path: Path) -> dict[str, dict]:
+    """{台 id: {tvg_id?, tvg_name?, logo?}}；文件没有或坏了是 {}。"""
+    try:
+        data = json.loads(meta_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): clean_meta(v) for k, v in data.items() if isinstance(k, str) and clean_meta(v)}
+
+
+def save_meta(path: Path, meta: dict[str, dict]) -> None:
+    """整份替换；没有一项时删掉文件。"""
+    target = meta_path(path)
+    meta = {k: v for k, v in meta.items() if v}
+    if not meta:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=0, sort_keys=True), encoding="utf-8")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, target)
+
+
 def version_of(text: str) -> str:
     """文件内容的指纹：页面带着它保存，期间文件被别人改过就拒绝，免得覆盖掉。"""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]

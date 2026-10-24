@@ -138,6 +138,12 @@
   .preset b { font: 600 15px var(--serif); color: var(--paper-hi); }
   .preset p { margin: 0; font-size: 12px; color: var(--dim); flex: 1; }
   .preset p a { color: var(--amber-soft); }
+  /* 节目单（epg.py） */
+  .preset.on { border-color: var(--amber); }
+  .preset label { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--paper); cursor: pointer; }
+  .epgstat { margin: 8px 0 0; padding: 0; list-style: none; font: 13px/1.7 var(--serif); color: var(--dim); }
+  .epgstat .bad { color: var(--red); }
+  .epgstat button { margin-left: 10px; font-size: 13px; }
   .preset .inline button { font-size: 13px; padding: 5px 10px; }
   .chips button { border: 1px solid var(--rule); background: none; color: var(--dim); padding: 4px 12px; font: 13px var(--serif); }
   .chips button.on { border-color: var(--amber); color: var(--amber); }
@@ -353,6 +359,26 @@
             <button class="ghost" id="addCh">加入</button>
           </div>
         </div>
+        <div class="block" id="epgBlock" hidden>
+          <div class="h3">节目单 <small>台名下面显示「正在播：…」；默认关着，打开后每 <span id="epgHours">8</span> 小时更新一次</small></div>
+          <p class="disclaimer">以下是网上公开的第三方节目单，内容由其维护者负责，本项目不提供也不保证任何节目信息；请只添加你有权使用的内容。</p>
+          <div class="presets" id="epgPresets"></div>
+          <div class="implabel">或者填节目单的地址（XMLTV，.xml 或 .xml.gz）</div>
+          <div class="improw">
+            <input type="text" id="epgUrl" placeholder="https://…/e.xml">
+            <button class="ghost" id="epgAdd">加上</button>
+            <span></span>
+          </div>
+          <ul class="epgstat" id="epgStatus"></ul>
+          <p class="inline" style="margin-top: 10px">
+            <button class="go" id="epgSave">保存节目单设置</button>
+            <button class="ghost" id="epgRefresh">现在更新</button>
+            <span class="hint" id="epgState" style="margin: 0"></span>
+          </p>
+          <p class="hint">节目单在服务器上取（下载的文件存在数据目录的 epg/ 里），只留频道表里有的台、前后一天的节目，
+            按台名和播放列表里的 tvg-id 对台：CCTV-1、CCTV1综合、湖南卫视HD 这类写法都认。打开了也只是每天下载几次、
+            读一遍约 1 秒；关掉就不再下载、不占内存。最多 <span id="epgMax">3</span> 个来源，排在前面的优先。</p>
+        </div>
         <div class="block" id="fitBlock">
           <div class="h3">每个用户的设备放不放得下 <small>投屏台 + 他的 UP 主和剧集 + 这张表</small></div>
           <div class="scroll"><table>
@@ -427,7 +453,7 @@ const ACTIONS = {
   "session.revoke": "退出一个登录", "session.revoke_others": "退出别处的登录",
   "admin.session.revoke": "管理员退出他的一个登录", "admin.session.revoke_all": "管理员退出他的全部登录",
   "legacy_token.on": "打开共享配对令牌", "legacy_token.off": "关闭共享配对令牌", "channels.save": "保存频道表",
-  "channels.import": "导入播放列表", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
+  "channels.import": "导入播放列表", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
   "wifi.add": "给设备加 Wi-Fi", "wifi.remove": "删设备的 Wi-Fi", "wifi.up": "调 Wi-Fi 顺序", "wifi.switch": "让设备换 Wi-Fi",
   "login.pc.confirm": "手机确认电脑登录", "login.pc.deny": "手机拒绝电脑登录", "migrate": "从单用户迁移",
 };
@@ -1025,6 +1051,7 @@ async function loadChannels(keepMessage) {
   $("chBackups").textContent = chData.backups.length ? "最近的备份（和频道表在同一个目录）：" + chData.backups.slice().reverse().join("、") : "保存时会先把原文件复制一份备份。";
   renderChannels();  // 表变了（保存、刷新）：导入列表的「重复」和放不放得下跟着重算。
   if (impRows.length) { impMark(); renderImport(); }
+  loadEpg();
 }
 function renderFit(fit) {
   const body = $("fitRows");
@@ -1115,7 +1142,8 @@ $("addCh").onclick = () => {
 $("chReset").onclick = () => { if (confirm("放弃所有没保存的修改？")) loadChannels(); };
 function chPayload(dry) {
   const rows = chRows.map((r) => {
-    if (!r.id) return { name: r.name, url: r.url, agent: r.agent, group: r.group };
+    // 从播放列表导入的新台带着 tvg-id / 台标（服务器存在 channels.txt 旁边，节目单对台用）。
+    if (!r.id) return { name: r.name, url: r.url, agent: r.agent, group: r.group, tvg_id: r.tvg_id, tvg_name: r.tvg_name, logo: r.logo };
     const o = r.orig, item = { id: r.id };
     if (r.name !== o.name) item.name = r.name;
     if (r.url !== o.url) item.url = r.url;
@@ -1167,6 +1195,94 @@ $("chSave").onclick = () => busy($("chSave"), async () => {
   showProblems(["已保存：" + describe(answer.summary) + "。" + (answer.backup ? "原文件备份为 " + answer.backup + "。" : ""),
                 "每台小电视下次换台或重新连接时拿到新的频道表。"].concat(answer.warnings || []), true);
   loadChannels(true);
+});
+
+// ---------- 节目单（server/relay/epg.py） ----------
+// 来源是地址的列表（最多 epgData.max 个，排前面的优先）；预设只是一点就加上的地址。改了要点「保存节目单设置」。
+
+let epgData = null;
+let epgSources = [];
+async function loadEpg() {
+  try { epgData = await call("GET", "api/admin/epg"); } catch (error) { failed(error); return; }
+  $("epgBlock").hidden = !epgData.available;
+  if (!epgData.available) return;
+  epgSources = epgData.sources.slice();
+  $("epgHours").textContent = epgData.refresh_hours;
+  $("epgMax").textContent = epgData.max;
+  renderEpg();
+}
+function epgDirty() { return epgData && epgSources.join("\n") !== epgData.sources.join("\n"); }
+function renderEpg() {
+  const box = $("epgPresets");
+  box.replaceChildren();
+  for (const p of epgData.presets) {
+    const url = p.urls[0].url, on = epgSources.includes(url);
+    const item = el("div", "preset" + (on ? " on" : ""));
+    const about = el("p", "", p.description + " 维护者：");
+    const link = el("a", "", p.maintainer);
+    link.href = p.homepage; link.target = "_blank"; link.rel = "noopener noreferrer";
+    about.appendChild(link);
+    const label = el("label");
+    const box2 = el("input");
+    box2.type = "checkbox"; box2.checked = on;
+    box2.onchange = () => {
+      if (box2.checked && !epgSources.includes(url)) {
+        if (epgSources.length >= epgData.max) { toast("最多 " + epgData.max + " 个来源", true); box2.checked = false; return; }
+        epgSources.push(url);
+      }
+      if (!box2.checked) epgSources = epgSources.filter((u) => u !== url);
+      renderEpg();
+    };
+    label.append(box2, el("span", "", "用这个节目单"));
+    label.title = url;
+    item.append(el("b", "", p.name), about, label);
+    box.appendChild(item);
+  }
+  const known = new Set(epgData.presets.map((p) => p.urls[0].url));
+  const status = Object.fromEntries((epgData.status || []).map((s) => [s.url, s]));
+  const list = $("epgStatus");
+  list.replaceChildren();
+  epgSources.forEach((url, i) => {
+    const s = status[url];
+    const name = (s && s.name) || (known.has(url) ? epgData.presets.find((p) => p.urls[0].url === url).name : url);
+    const li = el("li");
+    let text = (i + 1) + ". " + name + "：";
+    if (!epgData.sources.includes(url)) text += "保存后开始下载";
+    else if (!s || (!s.checked_at && !s.parsed_at)) text += "等着下载…";
+    else {
+      text += s.ok === false ? "这次没取到（" + s.error + "）" + (s.fetched_at ? "，用 " + when(s.fetched_at) + " 下载的" : "")
+        : "上次检查 " + when(s.checked_at) + (s.fetched_at ? "，文件是 " + when(s.fetched_at) + " 的（" + kb(s.bytes) + " KB）" : "");
+      if (s.parsed_at) text += "；节目单里 " + s.channels + " 个台，对上频道表 " + s.matched + " 个" + (s.parse_error ? "（文件有错，只读了一部分）" : "");
+    }
+    li.appendChild(el("span", s && s.ok === false ? "bad" : "", text));
+    if (!known.has(url)) li.appendChild(button("去掉", "linkbtn red", () => { epgSources.splice(i, 1); renderEpg(); }));
+    list.appendChild(li);
+  });
+  const c = epgData.coverage;
+  if (epgData.sources.length && c && c.total) {
+    list.appendChild(el("li", "", "频道表 " + c.total + " 个台里 " + c.matched + " 个有节目单" +
+      (c.missing.length ? "；没对上的：" + c.missing.slice(0, 15).join("、") + (c.missing.length > 15 ? " 等" : "") : "") + "。"));
+  }
+  if (!epgSources.length) list.appendChild(el("li", "", "现在关着：勾选上面的节目单，或者填一个地址，再点「保存节目单设置」。"));
+  $("epgState").textContent = epgDirty() ? "有没保存的修改" : "";
+  $("epgSave").disabled = !epgDirty();
+  $("epgRefresh").hidden = !epgData.sources.length;
+}
+$("epgAdd").onclick = () => {
+  const url = $("epgUrl").value.trim();
+  if (!/^https?:\/\/\S+$/.test(url)) { toast("地址要以 http:// 或 https:// 开头", true); return; }
+  if (epgSources.includes(url)) { toast("已经有这个地址了", true); return; }
+  if (epgSources.length >= epgData.max) { toast("最多 " + epgData.max + " 个来源", true); return; }
+  epgSources.push(url);
+  $("epgUrl").value = "";
+  renderEpg();
+};
+$("epgSave").onclick = () => busy($("epgSave"), async () => {
+  const answer = await act("api/admin/epg", { sources: epgSources }, epgSources.length ? "已保存：服务器在后台下载节目单，过一会儿刷新看结果" : "已关掉节目单");
+  if (answer) { await loadEpg(); setTimeout(loadEpg, 8000); }
+});
+$("epgRefresh").onclick = () => busy($("epgRefresh"), async () => {
+  if (await act("api/admin/epg/refresh", {}, "正在更新：过一会儿刷新看结果")) setTimeout(loadEpg, 8000);
 });
 
 // ---------- 导入播放列表（自建模式） ----------
@@ -1325,7 +1441,10 @@ $("impAdd").onclick = () => {
     added.push(r);
   }
   if (!added.length) { toast("放不下了：小电视最多 " + chData.limits.channels + " 个台、" + chData.limits.bytes + " 字节的频道列表。先删几个台", true); return; }
-  for (const r of added) { chRows.push({ name: r.name, url: r.url, agent: r.agent, group: "" }); r.on = false; }
+  for (const r of added) {
+    chRows.push({ name: r.name, url: r.url, agent: r.agent, group: "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "" });
+    r.on = false;
+  }
   impMark();
   $("chFilter").value = "";
   renderChannels();
@@ -1350,7 +1469,7 @@ async function loadAudit(more) {
   actions.replaceChildren(new Option("所有操作", ""));
   const prefixes = [...new Set(data.actions.map((a) => a.split(".")[0] + "."))];
   for (const p of prefixes) actions.appendChild(new Option(({ "user.": "用户…", "device.": "设备…", "login.": "登录…", "session.": "退出登录…",
-    "invite.": "邀请…", "phone_link.": "登录链接…", "admin.": "管理员退出别人…", "channels.": "频道表…", "legacy_token.": "共享令牌…",
+    "invite.": "邀请…", "phone_link.": "登录链接…", "admin.": "管理员退出别人…", "channels.": "频道表…", "epg.": "节目单…", "legacy_token.": "共享令牌…",
     "wifi.": "设备 Wi-Fi…" })[p] || p, p));
   for (const a of data.actions) actions.appendChild(new Option("· " + (ACTIONS[a] || a), a));
   actions.value = chosen;
@@ -1364,7 +1483,7 @@ async function loadAudit(more) {
     const who = r.actor_user ? (r.actor_name || "（已删除的用户 #" + r.actor_user + "）") : "设备或系统";
     const target = r.target_kind === "user" ? "用户 " + (names[r.target_id] || "#" + r.target_id)
       : r.target_kind === "device" ? "设备 " + (devices[r.target_id] || r.target_id)
-      : r.target_kind === "channels" ? "频道表" : r.target_kind === "session" ? "登录" : r.target_kind === "invite" ? "邀请" : r.target_id;
+      : r.target_kind === "channels" ? "频道表" : r.target_kind === "epg" ? "节目单" : r.target_kind === "session" ? "登录" : r.target_kind === "invite" ? "邀请" : r.target_id;
     const what = td("t", ACTIONS[r.action] || r.action);
     what.appendChild(el("span", "sub", r.action));
     tr.append(td("m", when(r.at)), td("", who), what, td("", target), td("m", r.actor_ip_prefix || ""), td("", r.detail || ""));

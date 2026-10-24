@@ -230,6 +230,18 @@ source's own picture and sound:
 - Transcoding runs only while the player is open and stops at once on close; at most 3 streams on the computer and
   2 per person (two computers or two pages).
 
+## Programme guide (optional)
+
+Off by default. In the console > admin backend > **Channels → Programme
+guide**, tick one of the public guides (112114, fanmingming) or paste an XMLTV
+address and save: the channel tiles, the phone remote's list and the PC
+player's title then show what is on now and until when. These
+are third-party guides found on the internet; their content is the
+responsibility of their maintainers. The client fetches each guide every 8
+hours into `epg/` in its data folder and keeps only your channels' next day in
+memory (about 0.5 MB, a fraction of a second of CPU per read); details in
+[`docs/selfhost/`](../selfhost/README.md#programme-guide-optional).
+
 ## Data, updates and uninstalling
 
 | OS | Data (database, keys, channel table) | Logs |

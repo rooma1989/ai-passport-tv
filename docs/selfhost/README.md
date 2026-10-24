@@ -167,7 +167,7 @@ The server ships no channels. The administrator opens
 
 - **CCTV and provincial satellite channels in one click**: under "Import a
   playlist", pick one of the public playlists (iptv-org China or Chinese,
-  vbskycn/iptv, myIPTV) and press "Read" (or its upstream's mirror button, for
+  vbskycn/iptv, myIPTV, Guovin iptv-api, APTV) and press "Read" (or its upstream's mirror button, for
   example gh-proxy, when GitHub is slow from where you are). In the list press
   the CCTV or satellite quick filter, then "Select all" and **Add to the
   channel table**, then **Save** at the bottom. These are third-party lists
@@ -193,6 +193,41 @@ way to reach YouTube.
 
 With no channel at all, a bound TV shows "NO CHANNELS YET / ADD SOME / ON YOUR
 PHONE" and reconnects by itself once something is added.
+
+## Programme guide (optional)
+
+Off by default, on the home server, the PC client and the cloud relay alike.
+The administrator turns it on under **Channels → Programme guide**: tick one of
+the public guides listed there (112114, fanmingming) or paste the address of an
+XMLTV file (`.xml`, gzip-compressed or not), at most 3, then **Save programme
+guide settings**. The phone remote's channel list, the console's channel tiles
+and the PC player's title then show a second line with the programme on now
+and its start and end times. These are third-party guides found on the internet; their content
+is the responsibility of their maintainers, and this project does not provide or
+vouch for any programme information.
+
+- The server fetches each guide every 8 hours, asking with the previous ETag /
+  Last-Modified (an unchanged guide is not downloaded again), keeps the file as
+  received in `epg/` next to the database (at most 50 MB each), and retries a
+  failed one after 30 minutes with the old file still in use. "Update now" asks
+  again at most once every 5 minutes.
+- It reads the file in a background thread, element by element, and keeps
+  only the channels in the channel table and the programmes from an hour ago
+  to a day ahead.
+- Channels are matched by the `tvg-id` / `tvg-name` that a playlist import
+  brings along (kept in `channels.txt.meta.json` beside the table) and by the
+  name: "CCTV-1", "CCTV1", "CCTV-1 HD" and CCTV1 followed by its Chinese
+  description are all CCTV1, a satellite channel ending in "HD" or "high
+  definition" is the plain one, and a 4K channel with no guide of its own uses
+  the plain one (CCTV4K stays separate). The page shows how many channels matched and lists
+  the ones that did not.
+- Cost, measured on 2026-10-24 on a Mac with the fanmingming guide (0.46 MB
+  gzip, 7 MB of XML, 124 channels, 35 590 programmes, a 93-channel table):
+  one read takes 0.2–0.9 s of CPU and about 1 MB of extra Python memory; what
+  stays in memory for 28 matched channels is about 0.5 MB, and the whole relay
+  process stayed at 39 MB resident. The 112114 guide (0.2 MB gzip, 3 MB XML)
+  takes about 0.3 s. On Linux the guide thread runs at a lower priority. With
+  the guide off nothing is fetched, no thread runs and nothing is kept.
 
 ## Step 4: flash, connect and bind a TV
 
@@ -346,7 +381,12 @@ take effect on restart. The common keys:
 - The public playlists on the Channels page were read and parsed on
   2026-10-22 from a Mac outside the mainland network path (through a proxy),
   not from a home connection in mainland China; whether their streams play on
-  a TV was not checked.
+  a TV was not checked. The Guovin iptv-api and APTV lists were added on
+  2026-10-24 the same way (their files were last updated in August 2026).
+- The programme guides were fetched on 2026-10-24 from the same Mac:
+  112114 and fanmingming answered; e.erw.cc did not (TLS reset, with and
+  without the proxy), so it is not offered. The TV's own screen does not show
+  the guide yet.
 - YouTube local mode in Docker, on Linux and on Windows (run only on a Mac: the component
   download and the proxy path were tried there; with no cookies YouTube asked for sign-in every
   time through the proxy, so a whole video was not played through it).
@@ -367,6 +407,8 @@ legal advice.
 > The public playlists listed on the Channels page are third-party lists found on the
 > internet; their content is the responsibility of their maintainers. This project
 > does not provide or vouch for any live stream; add only what you are entitled to watch.
+> The programme guides listed there are likewise third-party guides; their content is the
+> responsibility of their maintainers.
 
 - Add only sources you are entitled to watch, for your own household. Do not
   share your server or its streams with people outside it, and do not make it

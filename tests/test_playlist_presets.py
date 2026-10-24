@@ -1,4 +1,5 @@
-"""The public playlist presets offered on the admin backend's Channels page (server/relay/presets.py).
+"""The public playlist and programme-guide presets offered on the admin backend's Channels page
+(server/relay/presets.py).
 
 Only playlist links, never stream addresses: the project ships no content
 (docs/superpowers/specs/2026-10-15-self-hosting-design.md, section 8). The table
@@ -30,10 +31,19 @@ def https(url):
 
 class PresetTableTests(unittest.TestCase):
     def test_every_preset_is_well_formed(self):
-        self.assertGreaterEqual(len(presets.PRESETS), 2)
-        ids = [p["id"] for p in presets.PRESETS]
+        self.check_table(presets.PRESETS, r"\.m3u$")
+
+    def test_every_guide_preset_is_well_formed(self):
+        # XMLTV programme guides: an .xml (possibly served gzip-compressed), never a playlist or a stream.
+        self.check_table(presets.EPG_PRESETS, r"\.xml(\.gz)?$")
+        ids = [p["id"] for p in presets.PRESETS + presets.EPG_PRESETS]
+        self.assertEqual(len(ids), len(set(ids)), "guide ids differ from playlist ids")
+
+    def check_table(self, table, path_pattern):
+        self.assertGreaterEqual(len(table), 2)
+        ids = [p["id"] for p in table]
         self.assertEqual(len(ids), len(set(ids)), "ids are unique")
-        for preset in presets.PRESETS:
+        for preset in table:
             with self.subTest(preset=preset["id"]):
                 self.assertEqual(set(preset), FIELDS)
                 self.assertRegex(preset["id"], r"^[a-z0-9][a-z0-9-]{1,39}$")
@@ -50,15 +60,16 @@ class PresetTableTests(unittest.TestCase):
                     self.assertTrue(https(url), url)
                     self.assertLessEqual(len(url), playlist.URL_FIELD_MAX)
                     # A playlist link, not a stream: .m3u, never an .m3u8 or a media file.
-                    self.assertRegex(urllib.parse.urlsplit(url).path, r"\.m3u$", url)
+                    self.assertRegex(urllib.parse.urlsplit(url).path, path_pattern, url)
 
     def test_no_forbidden_content(self):
         text = (ROOT / "server" / "relay" / "presets.py").read_text(encoding="utf-8")
         for needle in selfhost_content_check.forbidden_strings(ROOT):
             self.assertNotIn(needle, text)
         # The only addresses in the file are the presets' own links and homepages.
-        listed = {p["homepage"] for p in presets.PRESETS} | {p["url"] for p in presets.PRESETS} | \
-            {url for p in presets.PRESETS for _label, url in p["mirrors"]}
+        every = presets.PRESETS + presets.EPG_PRESETS
+        listed = {p["homepage"] for p in every} | {p["url"] for p in every} | \
+            {url for p in every for _label, url in p["mirrors"]}
         self.assertEqual(set(re.findall(r"https?://[^\s\"')]+", text.split('"""', 2)[2])), listed)
 
     def test_public_view_and_lookup(self):
@@ -73,6 +84,10 @@ class PresetTableTests(unittest.TestCase):
         self.assertIsNone(presets.url_of("nope"))
         self.assertIsNone(presets.url_of(presets.PRESETS[0]["id"], -1))
         self.assertIsNone(presets.url_of(presets.PRESETS[0]["id"], "0"))
+        self.assertEqual([p["id"] for p in presets.epg_public()], [p["id"] for p in presets.EPG_PRESETS])
+        self.assertEqual(presets.url_of(presets.EPG_PRESETS[0]["id"], 0, presets.EPG_PRESETS),
+                         presets.EPG_PRESETS[0]["url"])
+        self.assertIsNone(presets.url_of(presets.EPG_PRESETS[0]["id"]), "guides are not playlists")
 
 
 if __name__ == "__main__":
