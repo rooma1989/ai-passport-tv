@@ -44,10 +44,11 @@ Downloaded only if you turn on YouTube "local mode", not distributed
 --------------------------------------------------------------------
 
 - yt-dlp, from its official GitHub releases (https://github.com/yt-dlp/yt-dlp,
-  the standalone yt-dlp_macos / yt-dlp.exe / yt-dlp_linux builds; pinned
-  version and SHA-256, updates checked against the release's SHA2-256SUMS).
-  yt-dlp is released under the Unlicense; its standalone builds also contain
-  the third-party components listed in its THIRD_PARTY_LICENSES.txt.
+  the platform-independent pure-Python zipapp named "yt-dlp", run by this
+  program's own Python; pinned version and SHA-256, updates checked against the
+  release's SHA2-256SUMS). yt-dlp is released under the Unlicense; the zipapp
+  also contains yt-dlp-ejs, the yt-dlp project's JavaScript challenge solver
+  (its licences: https://github.com/yt-dlp/ejs).
 - Deno, from its official GitHub releases (https://github.com/denoland/deno,
   the per-platform zip; pinned version and SHA-256), MIT licence.
   Both are fetched by your computer from their publishers into

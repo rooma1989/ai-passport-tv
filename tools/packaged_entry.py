@@ -76,7 +76,7 @@ use_system_ca()
 # So the order is: chdir first, then import. The spec lists everything, which is
 # what keeps the lazily imported modules in the bundle.
 from tools import (certs, channel_config, datadir, ffmpeg_fetch, launch,  # noqa: E402,F401
-                   parentwatch)
+                   parentwatch, ytdlp_run)
 from tools.subcommands import (CERTS_COMMAND, CONFIG_COMMAND, CORE_COMMANDS,  # noqa: E402
                                MEDIA_COMMAND, SELFHOST_COMMAND)
 
@@ -238,6 +238,10 @@ def run_core(arguments: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == ytdlp_run.COMMAND:
+        # yt-dlp, run by this Python (tools/ytdlp_run.py): no parent watch (the node starts it with
+        # no pipe on standard input), no data directory, nothing of the server.
+        return ytdlp_run.main(arguments[1:])
     if arguments and arguments[0] in CORE_COMMANDS:
         return run_core(arguments)
 

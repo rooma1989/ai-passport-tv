@@ -13,12 +13,18 @@
 # follow, and modules are found by walking the folder rather than by importing them here,
 # because server.live reads a channel table when imported); the files the server reads beside
 # its code: the relay's pages, the help page, the web flasher, and a firmware set when
-# packaging/desktop/firmware/manifest.json exists (the release workflow fills it, P2c).
+# packaging/desktop/firmware/manifest.json exists (the release workflow fills it, P2c); the standard
+# library yt-dlp's zipapp imports, which the core runs on its own Python (tools/ytdlp_run.py).
 # What stays out: numpy (the default picture degrade needs none, section 5.8), tkinter, tests.
 
+import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules
+
 ROOT = Path(SPECPATH).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from tools.ytdlp_run import POSIX_ONLY, STDLIB_MODULES, STDLIB_PACKAGES, WINDOWS_ONLY  # noqa: E402
 
 
 def modules(package: str) -> list[str]:
@@ -34,8 +40,23 @@ def modules(package: str) -> list[str]:
 hiddenimports = modules("server") + [
     "tools", "tools.certs", "tools.console", "tools.datadir", "tools.desktop_folders", "tools.ffmpeg_fetch", "tools.parentwatch",
     "tools.subcommands", "tools.packaged_entry", "tools.launch", "tools.channel_config",
-    "tools.firmware_manifest", "tools.netcheck",
+    "tools.firmware_manifest", "tools.netcheck", "tools.ytdlp_run",
 ]
+
+
+def stdlib_for_ytdlp() -> list[str]:
+    """yt-dlp runs from its zipapp on the core's Python (tools/ytdlp_run.py), so the standard
+    library it imports has to be here although none of our code imports it."""
+    names = []
+    for package in STDLIB_PACKAGES:
+        names += collect_submodules(package, filter=lambda name: ".test" not in name and "idle" not in name)
+    # This system's own modules (fcntl, msvcrt, …); the ones built into the interpreter need nothing.
+    system = WINDOWS_ONLY if sys.platform == "win32" else POSIX_ONLY
+    return names + [name for name in STDLIB_MODULES + system
+                    if name not in ("sys", "nt", "posix", "curses", "readline", "winsound")]
+
+
+hiddenimports += stdlib_for_ytdlp()
 
 datas = [
     (str(ROOT / "server" / "relay" / "assets"), "server/relay/assets"),

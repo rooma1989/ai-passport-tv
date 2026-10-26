@@ -292,7 +292,7 @@ getting one.**
    when the proxy program routes everything by itself (TUN / enhanced mode) or
    YouTube is reachable directly.
 3. Press **Save**. The first time, the server downloads its two YouTube
-   components, yt-dlp and deno (about 80 MB, through that proxy; you can also
+   components, yt-dlp and deno (about 45 MB, through that proxy; you can also
    enter a download mirror prefix: what replaces `https://github.com` in the
    download address, so a GitHub accelerator that takes a whole address is
    written `https://<accelerator>/https://github.com`), and checks each file

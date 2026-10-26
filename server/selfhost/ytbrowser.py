@@ -218,7 +218,9 @@ def spec_for(browsers: list[dict], browser: str, profile: str) -> tuple[str, dic
 
 
 def extract_args(ytdlp: str, spec: str, out: Path) -> list[str]:
-    return [ytdlp, "--ignore-config", "--cookies-from-browser", spec, "--cookies", str(out)]
+    from ..relay.ytnode import ytdlp_command
+    # .pyz（纯 Python 版）经本机的 Python 跑；以前的单文件版直接跑（ytnode.ytdlp_command）。
+    return ytdlp_command(ytdlp) + ["--ignore-config", "--cookies-from-browser", spec, "--cookies", str(out)]
 
 
 # ---- 读出来的 cookies：只留 YouTube、Google ----
