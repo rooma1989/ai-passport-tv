@@ -82,11 +82,11 @@ def check_program(tray: Path, core: Path, notice: Path, tray_check: bool) -> Non
         result = run([tray, "--version"], timeout=60)
         if __version__ not in result.stdout:
             error(f"--version printed {result.stdout.strip()!r} (exit {result.returncode})")
-    tmp = Path(tempfile.mkdtemp(prefix="xztv-smoke-"))
+    tmp = Path(tempfile.mkdtemp(prefix="rootv-smoke-"))
     try:
         if TRAY_CHECK_ONLY:
             return tray_only(tray, tmp)
-        data = tmp / "小智 电视数据"
+        data = tmp / "小鼠 电视数据"
         started = time.monotonic()
         result = run([tray, "--data", data, "--smoke-test", "--timeout", "120"], timeout=240)
         say(result.stdout.rstrip())
@@ -115,35 +115,45 @@ def tray_only(tray: Path, tmp: Path) -> None:
 
 
 def check_mac(tray_check: bool) -> None:
-    app = OUT / "Xiaozhi TV.app"
+    app = OUT / "RooTV.app"
     contents = app / "Contents"
     try:
         info = plistlib.loads((contents / "Info.plist").read_bytes())
     except (OSError, ValueError) as exc:
         error(f"Info.plist unreadable: {exc}")
         return
-    for key, wanted in (("LSUIElement", True), ("NSAppSleepDisabled", True), ("CFBundleExecutable", "XiaozhiTV")):
+    for key, wanted in (("LSUIElement", True), ("NSAppSleepDisabled", True), ("CFBundleExecutable", "RooTV"),
+                         ("CFBundleIdentifier", "io.github.ai-passport-tv.RooTV"), ("LSHasLocalizedDisplayName", True)):
         if info.get(key) != wanted:
             error(f"Info.plist {key} = {info.get(key)!r}, wanted {wanted!r}")
     if not info.get("NSLocalNetworkUsageDescription"):
         error("Info.plist has no NSLocalNetworkUsageDescription")
+    strings = contents / "Resources" / "zh-Hans.lproj" / "InfoPlist.strings"
+    try:
+        if "小鼠电视" not in strings.read_text(encoding="utf-16"):
+            error(f"{strings.name} has no Chinese display name")
+    except (OSError, UnicodeError) as exc:
+        error(f"zh-Hans.lproj/InfoPlist.strings unreadable: {exc}")
+    icon = str(info.get("CFBundleIconFile") or "")
+    if not icon or not (contents / "Resources" / (icon if icon.endswith(".icns") else icon + ".icns")).is_file():
+        error(f"no app icon (CFBundleIconFile = {icon!r})")
     result = run(["codesign", "--verify", "--deep", "--strict", app])
     if result.returncode != 0:
         error(f"codesign --verify: {result.stderr.strip()[:300]}")
-    check_program(contents / "MacOS" / "XiaozhiTV", contents / "Resources" / "core" / "xiaozhi-tv-core",
+    check_program(contents / "MacOS" / "RooTV", contents / "Resources" / "core" / "rootv-core",
                   contents / "Resources" / "NOTICE.txt", tray_check)
-    dmgs = sorted(OUT.glob("XiaozhiTV-*-macos-*.dmg"))
+    dmgs = sorted(OUT.glob("RooTV-*-macos-*.dmg"))
     if len(dmgs) != 1:
         error(f"expected one DMG, found {[d.name for d in dmgs]}")
         return
-    mount = Path(tempfile.mkdtemp(prefix="xztv-dmg-"))
+    mount = Path(tempfile.mkdtemp(prefix="rootv-dmg-"))
     result = run(["hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount, dmgs[0]])
     if result.returncode != 0:
         error(f"hdiutil attach: {result.stderr.strip()[:300]}")
         return
     try:
-        if not (mount / "Xiaozhi TV.app" / "Contents" / "Resources" / "core" / "xiaozhi-tv-core").is_file():
-            error("DMG has no Xiaozhi TV.app with its core")
+        if not (mount / "RooTV.app" / "Contents" / "Resources" / "core" / "rootv-core").is_file():
+            error("DMG has no RooTV.app with its core")
         link = mount / "Applications"
         if not link.is_symlink() or os.readlink(link) != "/Applications":
             error("DMG has no Applications link")
@@ -152,26 +162,26 @@ def check_mac(tray_check: bool) -> None:
 
 
 def check_linux(tray_check: bool) -> None:
-    tarballs = sorted(OUT.glob("xiaozhi-tv-*-linux-*.tar.gz"))
+    tarballs = sorted(OUT.glob("rootv-*-linux-*.tar.gz"))
     if len(tarballs) != 1:
         error(f"expected one tarball, found {[t.name for t in tarballs]}")
         return
-    tmp = Path(tempfile.mkdtemp(prefix="xztv-tar-"))
+    tmp = Path(tempfile.mkdtemp(prefix="rootv-tar-"))
     try:
         with tarfile.open(tarballs[0]) as archive:
             archive.extractall(tmp, filter="data")
         folder = next(tmp.iterdir())
-        for name in ("xiaozhi-tv.desktop", "xiaozhi-tv.service", "README-linux.txt", "xiaozhi-tv.png"):
+        for name in ("rootv.desktop", "rootv.service", "README-linux.txt", "rootv.png"):
             if not (folder / name).is_file():
                 error(f"tarball has no {name}")
-        check_program(folder / "xiaozhi-tv", folder / "core" / "xiaozhi-tv-core", folder / "NOTICE.txt",
+        check_program(folder / "rootv", folder / "core" / "rootv-core", folder / "NOTICE.txt",
                       tray_check)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 def check_windows(program: Path, tray_check: bool) -> None:
-    check_program(program / "XiaozhiTV.exe", program / "core" / "xiaozhi-tv-core.exe", program / "NOTICE.txt",
+    check_program(program / "RooTV.exe", program / "core" / "rootv-core.exe", program / "NOTICE.txt",
                   tray_check)
 
 
@@ -186,7 +196,7 @@ def main() -> int:
     if sys.platform == "darwin":
         check_mac(args.tray_check)
     elif sys.platform == "win32":
-        check_windows(args.program or OUT / "stage" / "Xiaozhi TV", args.tray_check)
+        check_windows(args.program or OUT / "stage" / "RooTV", args.tray_check)
     else:
         check_linux(args.tray_check)
     if errors:

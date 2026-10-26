@@ -331,7 +331,7 @@ class ConfigRewriteTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             parsed = config.parse(text)
             self.assertEqual((parsed.youtube_mode, parsed.youtube_proxy), ("local", "socks5://127.0.0.1:7897"))
-            self.assertIn("# 小智电视自建服务器的设置", text, "comments kept")
+            self.assertIn("# 小鼠电视自建服务器的设置", text, "comments kept")
             self.assertIn('cookies = "youtube/cookies.txt"', text)
             self.assertEqual(text.count("[youtube]"), 1)
             self.assertEqual(len(text.splitlines()), len(config.DEFAULT_TEXT.splitlines()))

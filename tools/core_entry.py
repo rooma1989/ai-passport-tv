@@ -1,15 +1,15 @@
-"""The entry point of the PC client's core bundle (packaging/desktop/xiaozhi-tv-core.spec).
+"""The entry point of the PC client's core bundle (packaging/desktop/rootv-core.spec).
 
-The core is one executable, `xiaozhi-tv-core`, that becomes the self-host supervisor or
+The core is one executable, `rootv-core`, that becomes the self-host supervisor or
 one of the children it starts, by its first argument (tools/subcommands.py, CORE_COMMANDS;
 the dispatch itself is tools/packaged_entry.py, shared with the single-user build).
 
-    xiaozhi-tv-core                       = xiaozhi-tv-core selfhost --desktop
-    xiaozhi-tv-core --data D              = xiaozhi-tv-core selfhost --desktop --data D
-    xiaozhi-tv-core selfhost --desktop …  what the tray runs (docs/superpowers/specs/
+    rootv-core                       = rootv-core selfhost --desktop
+    rootv-core --data D              = rootv-core selfhost --desktop --data D
+    rootv-core selfhost --desktop …  what the tray runs (docs/superpowers/specs/
                                           2026-10-19-pc-client-architecture-design.md, 5.13)
-    xiaozhi-tv-core __relay …             a child, started by the supervisor
-    xiaozhi-tv-core __certs               the build check's certificate question
+    rootv-core __relay …             a child, started by the supervisor
+    rootv-core __certs               the build check's certificate question
 
 Anything else is refused rather than run as the single-user server: the core bundle is
 not that program, and a mistyped word should not start one.
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments or arguments[0].startswith("-"):
         arguments = ["selfhost", "--desktop"] + arguments
     if arguments[0] not in CORE_COMMANDS and arguments[0] != CERTS_COMMAND:
-        print(f"xiaozhi-tv-core：不认识「{arguments[0]}」。用法：xiaozhi-tv-core selfhost --desktop [--data <文件夹>]",
+        print(f"rootv-core：不认识「{arguments[0]}」。用法：rootv-core selfhost --desktop [--data <文件夹>]",
               file=sys.stderr)
         return 2
     return packaged_entry.main(arguments)

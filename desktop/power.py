@@ -31,7 +31,7 @@ import time
 
 RELEASE_DELAY_S = 120.0
 # ASCII: `pmset -g assertions` shows a non-ASCII name as "".
-REASON = "Xiaozhi TV: a device is watching"
+REASON = "RooTV: a device is watching"
 
 # Windows
 ES_CONTINUOUS = 0x80000000
@@ -199,7 +199,7 @@ def default_backend(platform_name: str | None = None, which=shutil.which, pid: i
                     # -i: idle sleep only (no -d: the display may sleep); -w: end with us.
                     return ChildBackend(["caffeinate", "-i", "-w", str(pid)], "caffeinate")
         elif which("systemd-inhibit"):
-            return ChildBackend(["systemd-inhibit", "--what=idle:sleep", "--who=Xiaozhi TV",
+            return ChildBackend(["systemd-inhibit", "--what=idle:sleep", "--who=RooTV",
                                  f"--why={REASON}", "--mode=block", "sleep", "infinity"], "systemd-inhibit")
     except (OSError, AttributeError):
         pass

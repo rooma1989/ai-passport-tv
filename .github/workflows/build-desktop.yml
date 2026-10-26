@@ -3,7 +3,7 @@ name: Build desktop client
 # The PC client (design docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md,
 # 5.2 and phase P2c): the tray plus the core in a macOS .app/DMG (Apple silicon
 # and Intel), a Windows Inno Setup installer and portable zip, and a Linux
-# tarball. The core is built here from packaging/desktop/xiaozhi-tv-core.spec
+# tarball. The core is built here from packaging/desktop/rootv-core.spec
 # (tools/build_core.py; its own checks are build-desktop-core.yml), with firmware
 # for its /flash/ page.
 #
@@ -140,7 +140,7 @@ jobs:
         run: python tools/build_core.py
 
       - name: Build
-        run: python packaging/desktop/build.py --release --core-dir build-core/dist/xiaozhi-tv-core
+        run: python packaging/desktop/build.py --release --core-dir build-core/dist/rootv-core
 
       - name: Smoke test (bundle)
         run: python packaging/desktop/smoke.py
@@ -174,37 +174,82 @@ jobs:
             Write-Output "::notice::Inno Setup $installed; wizard in Simplified Chinese (default) and English"
           }
           $version = python -c "import desktop; print(desktop.__version__)"
-          $stage = Join-Path $PWD "build-desktop\stage\Xiaozhi TV"
+          $stage = Join-Path $PWD "build-desktop\stage\RooTV"
           $out = Join-Path $PWD "build-desktop"
-          & $iscc "/DSourceDir=$stage" "/DAppVersion=$version" "/DOutputDir=$out" /Qp packaging\desktop\xiaozhi-tv.iss
+          & $iscc "/DSourceDir=$stage" "/DAppVersion=$version" "/DOutputDir=$out" /Qp packaging\desktop\rootv.iss
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::ISCC failed with exit code $LASTEXITCODE"; exit 1 }
-          $setup = Get-ChildItem build-desktop\XiaozhiTV-*-windows-x64-setup.exe | Select-Object -First 1
+          $setup = Get-ChildItem build-desktop\RooTV-*-windows-x64-setup.exe | Select-Object -First 1
           $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
           Add-Content -Path build-desktop\SHA256SUMS -Value "$hash  $($setup.Name)"
           Get-Content build-desktop\SHA256SUMS
+
+      # The rename (RooTV, formerly Xiaozhi TV): the last Xiaozhi TV installer is
+      # installed first, then this one over it. The old installation must be gone
+      # (its uninstaller is run by rootv.iss), the new one in place, and the first
+      # start of the new tray must move the old data folder.
+      - name: Upgrade over Xiaozhi TV 0.2.5-beta
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $old = "XiaozhiTV-0.2.5-beta-windows-x64-setup.exe"
+          gh release download v0.2.5-beta --repo rooma1989/ai-passport-tv --pattern $old --dir old-release
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path "old-release\$old")) {
+            Write-Output "::warning::could not download $old; upgrade test skipped"
+            exit 0
+          }
+          $p = Start-Process -FilePath "old-release\$old" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          $oldDir = Join-Path $env:ProgramFiles "Xiaozhi TV"
+          if ($p.ExitCode -ne 0 -or -not (Test-Path "$oldDir\XiaozhiTV.exe")) { Write-Output "::error::old installer failed ($($p.ExitCode))"; exit 1 }
+          # A household's data, as the old client leaves it.
+          $legacy = Join-Path $env:LOCALAPPDATA "XiaozhiTV"
+          New-Item -ItemType Directory -Force -Path "$legacy\run" | Out-Null
+          Set-Content -Path "$legacy\upgrade-marker.txt" -Value "kept"
+          $setup = Get-ChildItem build-desktop\RooTV-*-windows-x64-setup.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=upgrade.log" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Output "::error::upgrade install exited with $($p.ExitCode)"; Get-Content upgrade.log -Tail 40; exit 1 }
+          $dir = Join-Path $env:ProgramFiles "RooTV"
+          if (-not (Test-Path "$dir\RooTV.exe")) { Write-Output "::error::not installed in $dir"; exit 1 }
+          if (Test-Path "$oldDir\XiaozhiTV.exe") { Write-Output "::error::the old installation is still in $oldDir"; Get-Content upgrade.log -Tail 40; exit 1 }
+          $old = netsh advfirewall firewall show rule name="Xiaozhi TV" | Out-String
+          if ($old -match "Profiles:") { Write-Output "::error::the old firewall rule is still there"; exit 1 }
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{6F1C2B7E-3D44-4A8E-9B1F-7A5C2E9D4B10}_is1"
+          $name = (Get-ItemProperty $key -ErrorAction SilentlyContinue).DisplayName
+          if ($name -ne "小鼠电视 RooTV") { Write-Output "::error::uninstall entry is '$name'"; exit 1 }
+          # First start of the new tray (headless smoke test, default folders): moves the data.
+          $t = Start-Process -FilePath "$dir\RooTV.exe" -ArgumentList "--smoke-test","--timeout","120" -Wait -PassThru
+          $new = Join-Path $env:LOCALAPPDATA "RooTV"
+          if (Test-Path "$new\logs\tray.log") { Get-Content "$new\logs\tray.log" -Tail 30 }
+          if ($t.ExitCode -ne 0) { Write-Output "::error::first start after the upgrade failed ($($t.ExitCode))"; exit 1 }
+          if (-not (Test-Path "$new\upgrade-marker.txt")) { Write-Output "::error::data folder not moved to $new"; exit 1 }
+          if (-not (Test-Path "$legacy\MOVED-TO-RooTV.txt")) { Write-Output "::error::no MOVED-TO-RooTV.txt in $legacy"; exit 1 }
+          Remove-Item -Recurse -Force $new, $legacy
+          Write-Output "::notice::upgrade from Xiaozhi TV 0.2.5-beta: old installation removed, RooTV installed, data folder moved: PASS"
+          exit 0
 
       - name: Install, smoke-test, uninstall
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $setup = Get-ChildItem build-desktop\XiaozhiTV-*-windows-x64-setup.exe | Select-Object -First 1
+          $setup = Get-ChildItem build-desktop\RooTV-*-windows-x64-setup.exe | Select-Object -First 1
           $p = Start-Process -FilePath $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/LOG=install.log" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Output "::error::installer exited with $($p.ExitCode)"; Get-Content install.log -Tail 40; exit 1 }
-          $dir = Join-Path $env:ProgramFiles "Xiaozhi TV"
-          if (-not (Test-Path "$dir\XiaozhiTV.exe")) { Write-Output "::error::not installed in $dir"; exit 1 }
+          $dir = Join-Path $env:ProgramFiles "RooTV"
+          if (-not (Test-Path "$dir\RooTV.exe")) { Write-Output "::error::not installed in $dir"; exit 1 }
           # Firewall: one inbound rule for the core, Private profile only (design Q7).
-          $rule = netsh advfirewall firewall show rule name="Xiaozhi TV" verbose | Out-String
+          $rule = netsh advfirewall firewall show rule name="RooTV" verbose | Out-String
           Write-Output $rule
           if ($rule -notmatch "Profiles:\s+Private\s") { Write-Output "::error::firewall rule missing or not Private-only"; exit 1 }
-          if ($rule -notmatch [regex]::Escape("$dir\core\xiaozhi-tv-core.exe")) { Write-Output "::error::firewall rule is not for the core program"; exit 1 }
+          if ($rule -notmatch [regex]::Escape("$dir\core\rootv-core.exe")) { Write-Output "::error::firewall rule is not for the core program"; exit 1 }
           if ($rule -notmatch "Action:\s+Allow") { Write-Output "::error::firewall rule does not allow"; exit 1 }
           python packaging/desktop/smoke.py --program "$dir"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $u = Start-Process -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
           # The uninstaller hands over to a copy of itself; wait for the files to go.
-          for ($i = 0; $i -lt 60 -and (Test-Path "$dir\XiaozhiTV.exe"); $i++) { Start-Sleep -Seconds 1 }
-          if (Test-Path "$dir\XiaozhiTV.exe") { Write-Output "::error::uninstall left $dir\XiaozhiTV.exe (exit $($u.ExitCode))"; exit 1 }
-          $after = netsh advfirewall firewall show rule name="Xiaozhi TV" | Out-String
+          for ($i = 0; $i -lt 60 -and (Test-Path "$dir\RooTV.exe"); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$dir\RooTV.exe") { Write-Output "::error::uninstall left $dir\RooTV.exe (exit $($u.ExitCode))"; exit 1 }
+          $after = netsh advfirewall firewall show rule name="RooTV" | Out-String
           if ($after -match "Profiles:") { Write-Output "::error::uninstall left the firewall rule"; exit 1 }
           Write-Output "::notice::Windows installer: install, firewall rule (Private only), smoke test of the installed copy, uninstall: PASS"
           # netsh's "no rule matches" above exits 1, and the runner would take

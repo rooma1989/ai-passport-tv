@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Smoke test of the PC client's core: the frozen onedir build, or the same code from a checkout.
 
-    python3 tools/smoke_test_core.py --core dist/xiaozhi-tv-core/xiaozhi-tv-core [--ffmpeg fetch]
+    python3 tools/smoke_test_core.py --core dist/rootv-core/rootv-core [--ffmpeg fetch]
     python3 tools/smoke_test_core.py --source [--ffmpeg /opt/homebrew/bin/ffmpeg]
 
 What it checks, in order (docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md, 5.2 and 5.13):
@@ -439,7 +439,7 @@ def run(command: list[str], ffmpeg: str | None, keep: bool, fetch_timeout: float
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     where = parser.add_mutually_exclusive_group(required=True)
-    where.add_argument("--core", type=Path, help="the built xiaozhi-tv-core executable")
+    where.add_argument("--core", type=Path, help="the built rootv-core executable")
     where.add_argument("--source", action="store_true", help="run the same code from this checkout")
     parser.add_argument("--ffmpeg", help="passed to the core: a path, or 'fetch' for the pinned download")
     parser.add_argument("--fetch-timeout", type=float, default=600.0)

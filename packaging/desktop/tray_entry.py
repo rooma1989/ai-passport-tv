@@ -1,4 +1,4 @@
-"""PyInstaller entry of the tray (XiaozhiTV / XiaozhiTV.exe / xiaozhi-tv): desktop/tray.py."""
+"""PyInstaller entry of the tray (RooTV / RooTV.exe / rootv): desktop/tray.py."""
 
 import sys
 

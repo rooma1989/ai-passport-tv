@@ -1,7 +1,7 @@
-"""python3 -m server.selfhost --desktop（打包版：xiaozhi-tv-core selfhost --desktop）：电脑客户端的核心。
+"""python3 -m server.selfhost --desktop（打包版：rootv-core selfhost --desktop）：电脑客户端的核心。
 
 和不带 --desktop 的启动（__main__.main）做同样的准备（数据目录、设置、密钥、数据库、设置码），然后多做：
-数据目录默认在每个系统自己的位置（tools/datadir.desktop_data_dir），日志写文件，只开一个（run/core.lock），
+数据目录默认在每个系统自己的位置（tools/desktop_folders.resolve，第一次启动时把改名前的 XiaozhiTV 文件夹搬过来），日志写文件，只开一个（run/core.lock），
 网页端口被占时换一个，ffmpeg 没有就下载，开本机控制接口（control.py），托盘的管道一关就停，
 不在家里的网络上时网页和设备端口只听本机（network.py，受信任的网络）。
 退出码：0 正常停止；1 起不来；3 这个数据目录上已经有一个核心在跑（desktop.LOCK_HELD_EXIT）。
@@ -26,9 +26,19 @@ def run(args) -> int:
     if sys.version_info < (3, 11):
         print("电脑客户端的核心需要 Python 3.11 或更新的版本", file=sys.stderr)
         return 1
+    from tools import desktop_folders
+
     explicit = args.data is not None
-    data = (args.data if explicit else datadir.desktop_data_dir()).expanduser().resolve()
-    logs_dir = datadir.desktop_logs_dir(data if explicit else None)
+    moved: list[str] = []
+    if explicit:
+        data = args.data.expanduser().resolve()
+        logs_dir = datadir.desktop_logs_dir(data)
+    else:
+        # Same answer as the tray's (desktop/paths.resolve): the RooTV folder, the
+        # old XiaozhiTV one moved there first when nothing still uses it, or the
+        # old one for this run when an old tray or core still holds it.
+        folders = desktop_folders.resolve()
+        data, logs_dir, moved = folders.data.expanduser().resolve(), folders.logs, folders.messages
 
     def open_log():
         try:
@@ -49,9 +59,11 @@ def run(args) -> int:
     # 先拿锁再开日志：两个核心不能同时轮转同一个 core.log。
     lock = desktop.acquire_lock(layout.run / "core.lock")
     if lock is None:
-        print(f"这个数据目录上已经有一个小智电视核心在跑：{data}", file=sys.stderr)
+        print(f"这个数据目录上已经有一个小鼠电视核心在跑：{data}", file=sys.stderr)
         return desktop.LOCK_HELD_EXIT
     log = open_log()
+    for message in moved:
+        log(message)
     try:
         return _run_locked(args, layout, logs_dir, log)
     finally:
@@ -68,7 +80,7 @@ def _run_locked(args, layout, logs_dir, log) -> int:
     from .network import LOOPBACK, TrustedNetworks
     from .supervisor import Supervisor, watch_stdin
     from .version import VERSION
-    log(f"小智电视核心 {VERSION} 正在启动：数据目录 {layout.root}，日志 {logs_dir}")
+    log(f"小鼠电视（RooTV）核心 {VERSION} 正在启动：数据目录 {layout.root}，日志 {logs_dir}")
     settings = desktop.Settings(layout.root / "desktop.json")
     ffmpeg = desktop.Ffmpeg(layout.root / "bin", log)
     config_error = ""
@@ -197,14 +209,14 @@ def _run_locked(args, layout, logs_dir, log) -> int:
                     fresh = dataclasses.replace(fresh, bind=args.bind)
                 fixed = ("bind", "lan_port", "xingzhi_port", "passport_port", "public_port")
                 if any(getattr(fresh, name) != getattr(started, name) for name in fixed):
-                    log("设置文件里的端口或 bind 改了：要退出小智电视再打开才生效")
+                    log("设置文件里的端口或 bind 改了：要退出小鼠电视再打开才生效")
                 running["config"] = dataclasses.replace(fresh, **{name: getattr(running["config"], name)
                                                                   for name in fixed})
             try:
                 refresh()
             except Exception as error:      # noqa: BLE001 —— 地址问不到就用原来的
                 log(f"重新查本机地址失败：{type(error).__name__}")
-            log(f"重启：小智电视上的服务器地址填 {addresses['device'] or '（还不知道）'}")
+            log(f"重启：小电视上的服务器地址填 {addresses['device'] or '（还不知道）'}")
 
         state.reload = reload
         # 「设置 → YouTube」的 run/refresh-request（supervisor.py）：同样先重读设置。

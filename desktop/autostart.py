@@ -3,8 +3,8 @@
 | OS      | Entry                                                                    |
 | ------- | ------------------------------------------------------------------------ |
 | macOS   | ~/Library/LaunchAgents/<bundle id>.plist (RunAtLoad), per user           |
-| Windows | HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run, value "XiaozhiTV" |
-| Linux   | ~/.config/autostart/xiaozhi-tv.desktop (XDG autostart)                   |
+| Windows | HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run, value "RooTV"     |
+| Linux   | ~/.config/autostart/rootv.desktop (XDG autostart)                        |
 
 All three are per user and need no administrator, so the tray can switch them.
 The program is started with `--autostarted`, which keeps it from opening a
@@ -16,6 +16,11 @@ the next login. Removing it never stops the running copy either.
 
 Only an installed client registers itself: from a source checkout or from the
 mounted DMG the entry would point at a path that will not be there.
+
+Before the rename (0.2.5-beta and older) the entries were named after Xiaozhi TV:
+LaunchAgent io.github.ai-passport-tv.XiaozhiTV, Run value "XiaozhiTV",
+xiaozhi-tv.desktop. `legacy_for_this_os` finds them so the tray can replace the
+old entry with its own instead of leaving two (tray.App._initialise_login_item).
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import plistlib
 import sys
 from pathlib import Path
 
-from . import APP_ID, BUNDLE_ID
+from . import APP_ID, APP_NAME, BUNDLE_ID, LEGACY_APP_ID, LEGACY_BUNDLE_ID
 
 FLAG = "--autostarted"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -63,6 +68,12 @@ class MacLaunchAgent:
             return False
         args = data.get("ProgramArguments") or []
         return bool(args) and Path(args[0]) == self.program
+
+    def exists(self) -> bool:
+        return self.path.is_file()
+
+    def disabled_by_user(self) -> bool:
+        return False
 
     def enable(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,6 +115,17 @@ class WindowsRunKey:
             return False
         return not self._disabled_in_task_manager()
 
+    def exists(self) -> bool:
+        try:
+            with self._open(RUN_KEY, False) as key:
+                self.winreg.QueryValueEx(key, self.name)
+        except OSError:
+            return False
+        return True
+
+    def disabled_by_user(self) -> bool:
+        return self._disabled_in_task_manager()
+
     def _disabled_in_task_manager(self) -> bool:
         try:
             with self._open(APPROVED_KEY, False) as key:
@@ -133,18 +155,18 @@ class WindowsRunKey:
 
 
 class XdgAutostart:
-    def __init__(self, program: Path, config_home: Path | None = None):
+    def __init__(self, program: Path, config_home: Path | None = None, file_name: str = "rootv.desktop"):
         self.program = Path(program)
         base = config_home or Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-        self.path = Path(base) / "autostart" / "xiaozhi-tv.desktop"
+        self.path = Path(base) / "autostart" / file_name
 
     def entry(self) -> str:
         program = str(self.program).replace("\\", "\\\\").replace('"', '\\"')
         return ("[Desktop Entry]\n"
                 "Type=Application\n"
-                "Name=小智电视\n"
-                "Name[en]=Xiaozhi TV\n"
-                "Comment=小智电视电脑客户端\n"
+                f"Name={APP_NAME}\n"
+                "Name[en]=RooTV\n"
+                f"Comment={APP_NAME}电脑客户端（原名小智电视）\n"
                 f'Exec="{program}" {FLAG}\n'
                 "Terminal=false\n"
                 "X-GNOME-Autostart-enabled=true\n")
@@ -155,6 +177,15 @@ class XdgAutostart:
         except OSError:
             return False
         return str(self.program) in text and "Hidden=true" not in text
+
+    def exists(self) -> bool:
+        return self.path.is_file()
+
+    def disabled_by_user(self) -> bool:
+        try:
+            return "Hidden=true" in self.path.read_text(encoding="utf-8")
+        except OSError:
+            return False
 
     def enable(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +205,18 @@ def for_this_os(program: Path, platform_name: str | None = None):
     if platform_name == "win32":
         return WindowsRunKey(program)
     return XdgAutostart(program)
+
+
+def legacy_for_this_os(program: Path, platform_name: str | None = None, home: Path | None = None,
+                       winreg=None, config_home: Path | None = None):
+    """The entry the pre-rename client registered (only `exists`, `disabled_by_user`
+    and `disable` are meaningful: it points at the old program, whatever `program` is)."""
+    platform_name = platform_name or sys.platform
+    if platform_name == "darwin":
+        return MacLaunchAgent(program, home=home, label=LEGACY_BUNDLE_ID)
+    if platform_name == "win32":
+        return WindowsRunKey(program, winreg=winreg, name=LEGACY_APP_ID)
+    return XdgAutostart(program, config_home=config_home, file_name="xiaozhi-tv.desktop")
 
 
 def supported(frozen: bool, translocated: bool) -> bool:

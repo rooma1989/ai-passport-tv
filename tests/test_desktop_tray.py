@@ -54,7 +54,7 @@ class MenuTest(unittest.TestCase):
         self.assertIn("没有小电视在看", menu.headline(running()))
         two = Status(devices=(Device("客厅", watching=True, online=True), Device("卧室", watching=True, online=True),
                               Device("书房", online=False)))
-        self.assertEqual(menu.headline(running(two)), "小智电视 · 正在为 2 台小电视推流")
+        self.assertEqual(menu.headline(running(two)), "小鼠电视 · 正在为 2 台小电视推流")
         self.assertIn("第一次设置", menu.headline(running(Status(setup_pending=True))))
         self.assertIn("出了问题", menu.headline(running(Status(state="error"))))
         self.assertIn("视频组件", menu.headline(running(Status(state="fetching_ffmpeg"))))
@@ -401,47 +401,47 @@ class FakeWinreg:
 class AutostartTest(unittest.TestCase):
     def test_mac_launch_agent(self):
         with tempfile.TemporaryDirectory() as home:
-            program = Path("/Applications/Xiaozhi TV.app/Contents/MacOS/XiaozhiTV")
+            program = Path("/Applications/RooTV.app/Contents/MacOS/RooTV")
             agent = autostart.MacLaunchAgent(program, home=Path(home))
             self.assertFalse(agent.is_enabled())
             agent.enable()
             self.assertTrue(agent.is_enabled())
             data = plistlib.loads(agent.path.read_bytes())
-            self.assertEqual(data["Label"], "io.github.ai-passport-tv.XiaozhiTV")
+            self.assertEqual(data["Label"], "io.github.ai-passport-tv.RooTV")
             self.assertEqual(data["ProgramArguments"], [str(program), "--autostarted"])
             self.assertTrue(data["RunAtLoad"])
             self.assertNotIn("KeepAlive", data)     # quitting from the menu must stay quit
             self.assertEqual(agent.path.parent, Path(home) / "Library" / "LaunchAgents")
             # An entry for another copy of the app (moved, renamed) does not count.
-            self.assertFalse(autostart.MacLaunchAgent(Path("/elsewhere/XiaozhiTV"), home=Path(home)).is_enabled())
+            self.assertFalse(autostart.MacLaunchAgent(Path("/elsewhere/RooTV"), home=Path(home)).is_enabled())
             agent.disable()
             agent.disable()
             self.assertFalse(agent.path.exists())
 
     def test_windows_run_key(self):
         reg = FakeWinreg()
-        entry = autostart.WindowsRunKey(Path(r"C:\Program Files\Xiaozhi TV\XiaozhiTV.exe"), winreg=reg)
+        entry = autostart.WindowsRunKey(Path(r"C:\Program Files\RooTV\RooTV.exe"), winreg=reg)
         self.assertFalse(entry.is_enabled())
         entry.enable()
-        self.assertEqual(reg.keys[autostart.RUN_KEY]["XiaozhiTV"],
-                         r'"C:\Program Files\Xiaozhi TV\XiaozhiTV.exe" --autostarted')
+        self.assertEqual(reg.keys[autostart.RUN_KEY]["RooTV"],
+                         r'"C:\Program Files\RooTV\RooTV.exe" --autostarted')
         self.assertTrue(entry.is_enabled())
         # Switched off in Task Manager: present but not enabled; enabling clears the mark.
-        reg.keys[autostart.APPROVED_KEY]["XiaozhiTV"] = bytes([3] + [0] * 11)
+        reg.keys[autostart.APPROVED_KEY]["RooTV"] = bytes([3] + [0] * 11)
         self.assertFalse(entry.is_enabled())
         entry.enable()
         self.assertTrue(entry.is_enabled())
         entry.disable()
         self.assertFalse(entry.is_enabled())
-        self.assertNotIn("XiaozhiTV", reg.keys[autostart.RUN_KEY])
+        self.assertNotIn("RooTV", reg.keys[autostart.RUN_KEY])
 
     @unittest.skipIf(os.name == "nt", "XDG autostart is for Linux desktops; Windows paths differ")
     def test_xdg_autostart(self):
         with tempfile.TemporaryDirectory() as config:
-            entry = autostart.XdgAutostart(Path("/opt/xiaozhi-tv/xiaozhi-tv"), config_home=Path(config))
+            entry = autostart.XdgAutostart(Path("/opt/rootv/rootv"), config_home=Path(config))
             entry.enable()
             text = entry.path.read_text(encoding="utf-8")
-            self.assertIn('Exec="/opt/xiaozhi-tv/xiaozhi-tv" --autostarted', text)
+            self.assertIn('Exec="/opt/rootv/rootv" --autostarted', text)
             self.assertIn("Type=Application", text)
             self.assertTrue(entry.is_enabled())
             entry.disable()
@@ -451,10 +451,10 @@ class AutostartTest(unittest.TestCase):
         self.assertFalse(autostart.supported(frozen=False, translocated=False))
         self.assertFalse(autostart.supported(frozen=True, translocated=True))
         self.assertTrue(autostart.supported(frozen=True, translocated=False))
-        self.assertTrue(paths.translocated(Path("/private/var/folders/x/AppTranslocation/ABC/d/Xiaozhi TV.app"
-                                                "/Contents/MacOS/XiaozhiTV")))
-        self.assertTrue(paths.translocated(Path("/Volumes/Xiaozhi TV/Xiaozhi TV.app/Contents/MacOS/XiaozhiTV")))
-        self.assertFalse(paths.translocated(Path("/Applications/Xiaozhi TV.app/Contents/MacOS/XiaozhiTV")))
+        self.assertTrue(paths.translocated(Path("/private/var/folders/x/AppTranslocation/ABC/d/RooTV.app"
+                                                "/Contents/MacOS/RooTV")))
+        self.assertTrue(paths.translocated(Path("/Volumes/RooTV/RooTV.app/Contents/MacOS/RooTV")))
+        self.assertFalse(paths.translocated(Path("/Applications/RooTV.app/Contents/MacOS/RooTV")))
 
 
 # ----------------------------------------------------------------------------- power
@@ -644,27 +644,27 @@ class NetcheckTest(unittest.TestCase):
 class PathsTest(unittest.TestCase):
     def test_data_and_logs_per_os(self):
         home = Path("/home/u")
-        self.assertEqual(paths.data_dir({}, home, "Darwin"), home / "Library/Application Support/XiaozhiTV")
-        self.assertEqual(paths.logs_dir(Path("/d"), {}, home, "Darwin"), home / "Library/Logs/XiaozhiTV")
+        self.assertEqual(paths.data_dir({}, home, "Darwin"), home / "Library/Application Support/RooTV")
+        self.assertEqual(paths.logs_dir(Path("/d"), {}, home, "Darwin"), home / "Library/Logs/RooTV")
         win = paths.data_dir({"LOCALAPPDATA": r"C:\Users\张三\AppData\Local", "APPDATA": r"C:\roaming"}, home,
                              "Windows")
-        self.assertEqual(win, Path(r"C:\Users\张三\AppData\Local") / "XiaozhiTV")
+        self.assertEqual(win, Path(r"C:\Users\张三\AppData\Local") / "RooTV")
         self.assertEqual(paths.logs_dir(win, {}, home, "Windows"), win / "logs")
-        self.assertEqual(paths.data_dir({}, home, "Linux"), home / ".local/share/xiaozhi-tv")
-        self.assertEqual(paths.data_dir({"XDG_DATA_HOME": "/x"}, home, "Linux"), Path("/x/xiaozhi-tv"))
-        self.assertEqual(paths.logs_dir(Path("/d"), {}, home, "Linux"), home / ".local/state/xiaozhi-tv/logs")
+        self.assertEqual(paths.data_dir({}, home, "Linux"), home / ".local/share/rootv")
+        self.assertEqual(paths.data_dir({"XDG_DATA_HOME": "/x"}, home, "Linux"), Path("/x/rootv"))
+        self.assertEqual(paths.logs_dir(Path("/d"), {}, home, "Linux"), home / ".local/state/rootv/logs")
         # An explicit folder keeps everything inside it.
         self.assertEqual(paths.data_dir({paths.DATA_ENV: "/t/d"}, home, "Darwin"), Path("/t/d"))
         self.assertEqual(paths.logs_dir(Path("/t/d"), {paths.DATA_ENV: "/t/d"}, home, "Darwin"), Path("/t/d/logs"))
 
     def test_bundled_core(self):
         # resolve(): on Windows "/Applications" becomes "C:\\Applications"; the layout is what matters.
-        app = Path("/Applications/Xiaozhi TV.app").resolve()
-        mac = paths.bundled_core(app / "Contents" / "MacOS" / "XiaozhiTV", "Darwin")
-        self.assertEqual(mac, app / "Contents" / "Resources" / "core" / "xiaozhi-tv-core")
-        opt = Path("/opt/xiaozhi-tv").resolve()
-        self.assertEqual(paths.bundled_core(opt / "xiaozhi-tv", "Linux"), opt / "core" / "xiaozhi-tv-core")
-        self.assertEqual(paths.bundled_core(opt / "XiaozhiTV.exe", "Windows"), opt / "core" / "xiaozhi-tv-core.exe")
+        app = Path("/Applications/RooTV.app").resolve()
+        mac = paths.bundled_core(app / "Contents" / "MacOS" / "RooTV", "Darwin")
+        self.assertEqual(mac, app / "Contents" / "Resources" / "core" / "rootv-core")
+        opt = Path("/opt/rootv").resolve()
+        self.assertEqual(paths.bundled_core(opt / "rootv", "Linux"), opt / "core" / "rootv-core")
+        self.assertEqual(paths.bundled_core(opt / "RooTV.exe", "Windows"), opt / "core" / "rootv-core.exe")
 
     def test_core_command(self):
         data = Path("/d")
@@ -799,7 +799,7 @@ class AppTest(unittest.TestCase):
         app = self.make(DevCore(self.data, devices=2))
         app.start()
         self.assertTrue(app.state.awake_held)
-        self.assertEqual(menu.headline(app.state), "小智电视 · 正在为 2 台小电视推流")
+        self.assertEqual(menu.headline(app.state), "小鼠电视 · 正在为 2 台小电视推流")
         self.devcore.devices.clear()
         app.tick()          # still within the two minutes
         self.assertTrue(app.state.awake_held)
@@ -881,7 +881,7 @@ class AppTest(unittest.TestCase):
         app.run_action(menu.DIAGNOSTICS)
         made = Path(self.revealed[-1])
         self.addCleanup(lambda: made.unlink(missing_ok=True))
-        self.assertTrue(made.name.startswith("xiaozhi-tv-diagnostics-"))
+        self.assertTrue(made.name.startswith("rootv-diagnostics-"))
         import zipfile
         with zipfile.ZipFile(made) as archive:
             self.assertIn("versions.json", archive.namelist())

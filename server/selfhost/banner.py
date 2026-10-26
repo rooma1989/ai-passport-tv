@@ -37,7 +37,7 @@ def lines(address: str, lan_port: int, code: str, device_address: str, in_contai
     host = address or (THIS_COMPUTER if in_container else "127.0.0.1")
     port = "" if lan_port == 80 else f":{lan_port}"
     base = f"http://{host}{port}"
-    out = ["", "小智电视服务器已启动。"]
+    out = ["", "小鼠电视服务器已启动。"]
     if code:
         out += [f"  用家里网络上的手机或电脑打开：{base}/tv/setup",
                 f"  设置码：{show_code(code)}   （只能用一次；用来建管理员）"]

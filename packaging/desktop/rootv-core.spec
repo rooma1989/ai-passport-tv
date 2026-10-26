@@ -2,7 +2,7 @@
 #
 # docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md, sections 5.1 and 5.2
 # (phase P1a). Build with `python tools/build_core.py`; the result is
-# build-core/dist/xiaozhi-tv-core/ (the executable plus _internal/).
+# build-core/dist/rootv-core/ (the executable plus _internal/).
 #
 # Onedir, not onefile: the core starts five or more processes from the same executable, and a
 # onefile bundle unpacks itself into a temporary folder at every one of those starts. Onedir
@@ -32,7 +32,7 @@ def modules(package: str) -> list[str]:
 
 
 hiddenimports = modules("server") + [
-    "tools", "tools.certs", "tools.console", "tools.datadir", "tools.ffmpeg_fetch", "tools.parentwatch",
+    "tools", "tools.certs", "tools.console", "tools.datadir", "tools.desktop_folders", "tools.ffmpeg_fetch", "tools.parentwatch",
     "tools.subcommands", "tools.packaged_entry", "tools.launch", "tools.channel_config",
     "tools.firmware_manifest", "tools.netcheck",
 ]
@@ -69,7 +69,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="xiaozhi-tv-core",
+    name="rootv-core",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -93,5 +93,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="xiaozhi-tv-core",
+    name="rootv-core",
 )

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Put the latest released firmware into packaging/desktop/firmware/ before the core is built.
 
-The core's spec (xiaozhi-tv-core.spec) bundles that folder when it holds a
+The core's spec (rootv-core.spec) bundles that folder when it holds a
 manifest.json, so the client's /flash/ page works offline on the first run.
 The set comes from the release asset xiaozhi-tv-flasher.zip and is checked the
 way the flasher checks it (tools/firmware_manifest.install_bundle: manifest,

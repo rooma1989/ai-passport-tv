@@ -1,19 +1,21 @@
-**简体中文** · [English](#xiaozhi-tv-start-with-the-pc-client)
+**简体中文** · [English](#rootv-start-with-the-pc-client)
 
-## 小智电视：先装电脑客户端
+## 小鼠电视（RooTV）：先装电脑客户端
 
-把家里一台常开的 Windows 电脑或 Mac 变成小智电视的「电视台」：电脑在后台取片源、转码，经家里的 Wi-Fi 送到小电视；手机在家里用浏览器遥控。视频只在你家里的网络里走，不经过任何云服务器。
+小鼠电视原名小智电视，从这个版本起改用新名字和新图标；装新版时会自动换掉旧版，数据（账号、设备、频道、设置）原样搬过去。
+
+把家里一台常开的 Windows 电脑或 Mac 变成小电视的「电视台」：电脑在后台取片源、转码，经家里的 Wi-Fi 送到小电视；手机在家里用浏览器遥控。视频只在你家里的网络里走，不经过任何云服务器。
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 10/11（64 位） | `XiaozhiTV-…-windows-x64-setup.exe`（安装包，推荐）；`XiaozhiTV-…-windows-x64.zip`（免安装版） |
-| Mac，Apple 芯片（M1、M2、M3、M4…） | `XiaozhiTV-…-macos-arm64.dmg` |
-| Mac，Intel 芯片 | `XiaozhiTV-…-macos-x86_64.dmg` |
-| Linux x86_64（附带支持，未验证） | `xiaozhi-tv-…-linux-x86_64.tar.gz`（看压缩包里的 `README-linux.txt`） |
+| Windows 10/11（64 位） | `RooTV-…-windows-x64-setup.exe`（安装包，推荐）；`RooTV-…-windows-x64.zip`（免安装版） |
+| Mac，Apple 芯片（M1、M2、M3、M4…） | `RooTV-…-macos-arm64.dmg` |
+| Mac，Intel 芯片 | `RooTV-…-macos-x86_64.dmg` |
+| Linux x86_64（附带支持，未验证） | `rootv-…-linux-x86_64.tar.gz`（看压缩包里的 `README-linux.txt`） |
 
 `SHA256SUMS-desktop` 是这几个文件的校验值。图文教程：<https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.zh_CN.md>
 
-装好以后：托盘（Windows 任务栏右下角）或菜单栏（Mac 屏幕顶端）出现一个小电视图标；第一次运行会自动下载视频组件 ffmpeg，浏览器自动打开设置页（设置码已经填好）。然后图标菜单 →「连接手机…」扫码登录手机遥控，→「设置一台电视…」给插在电脑上的小电视刷固件。
+装好以后：托盘（Windows 任务栏右下角）或菜单栏（Mac 屏幕顶端）出现一个长着鼠耳朵的小电视图标；第一次运行会自动下载视频组件 ffmpeg，浏览器自动打开设置页（设置码已经填好）。然后图标菜单 →「连接手机…」扫码登录手机遥控，→「设置一台电视…」给插在电脑上的小电视刷固件。
 
 **这个软件不带任何频道、直播流、播放列表、账号或 cookies**，要播什么由你自己添加。
 
@@ -23,11 +25,11 @@
 
 **Windows**（SmartScreen「Windows 已保护你的电脑」）：点「**更多信息**」，再点「**仍要运行**」；「用户账户控制」点「是」。安装包只给「专用网络」加防火墙规则：家里的 Wi-Fi 在 Windows 里被标成「公用网络」时小电视连不进来，托盘菜单会提醒你怎么改。
 
-**Mac**（「未打开"Xiaozhi TV"」）：
+**Mac**（「未打开"RooTV"」，中文系统里可能写作「小鼠电视」）：
 
-1. 先把「Xiaozhi TV」从 DMG 窗口**拖进「应用程序」**，再从「应用程序」里打开。
+1. 先把「RooTV」（小鼠电视）从 DMG 窗口**拖进「应用程序」**，再从「应用程序」里打开。从小智电视升级的，打开新版时旧版会自动退出，之后可以把「应用程序」里的「Xiaozhi TV」删掉。
 2. 被拦下时点 **完成**。**不要点「移到废纸篓」**，那是把程序删掉。
-3. 打开 **系统设置 → 隐私与安全性**，往下滑，找到「已阻止"Xiaozhi TV"以保护 Mac」，点 **仍要打开**，再确认一次并输入密码。
+3. 打开 **系统设置 → 隐私与安全性**，往下滑，找到「已阻止"RooTV"以保护 Mac」，点 **仍要打开**，再确认一次并输入密码。
 4. 问能不能查找本地网络上的设备时，点「允许」。
 
 ## 给小电视刷固件
@@ -67,20 +69,22 @@ esptool.py --chip esp32c3 --port <你的串口> write_flash 0x0 FoloToy-AI-Passp
 
 ---
 
-## Xiaozhi TV: start with the PC client
+## RooTV: start with the PC client
 
-Turns a Windows PC or Mac that stays on at home into the TV station for your Xiaozhi TVs: the computer fetches and transcodes the sources and sends them over the home Wi-Fi; phones at home are the remote. Video stays on your home network and never passes through a cloud server.
+RooTV (小鼠电视) was called Xiaozhi TV until this release. Installing it replaces the old version and moves its data (accounts, devices, channels, settings) over unchanged.
+
+Turns a Windows PC or Mac that stays on at home into the TV station for your tiny TVs: the computer fetches and transcodes the sources and sends them over the home Wi-Fi; phones at home are the remote. Video stays on your home network and never passes through a cloud server.
 
 | Your computer | Download |
 | --- | --- |
-| Windows 10/11 (64-bit) | `XiaozhiTV-…-windows-x64-setup.exe` (installer, recommended); `XiaozhiTV-…-windows-x64.zip` (portable) |
-| Mac with Apple silicon (M1, M2, M3, M4…) | `XiaozhiTV-…-macos-arm64.dmg` |
-| Mac with an Intel processor | `XiaozhiTV-…-macos-x86_64.dmg` |
-| Linux x86_64 (bonus, not verified) | `xiaozhi-tv-…-linux-x86_64.tar.gz` (see `README-linux.txt` inside) |
+| Windows 10/11 (64-bit) | `RooTV-…-windows-x64-setup.exe` (installer, recommended); `RooTV-…-windows-x64.zip` (portable) |
+| Mac with Apple silicon (M1, M2, M3, M4…) | `RooTV-…-macos-arm64.dmg` |
+| Mac with an Intel processor | `RooTV-…-macos-x86_64.dmg` |
+| Linux x86_64 (bonus, not verified) | `rootv-…-linux-x86_64.tar.gz` (see `README-linux.txt` inside) |
 
 `SHA256SUMS-desktop` has their checksums. Tutorial: <https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.md>
 
-After installing, a small TV icon appears in the notification area (Windows) or the menu bar (Mac). The first run downloads the video component ffmpeg and opens the setup page in the browser with the one-time code filled in. Then use the icon's menu: "连接手机…" (connect a phone) signs a phone in to the remote, "设置一台电视…" (set up a TV) flashes a device plugged into the computer.
+After installing, a small TV icon with mouse ears appears in the notification area (Windows) or the menu bar (Mac). The first run downloads the video component ffmpeg and opens the setup page in the browser with the one-time code filled in. Then use the icon's menu: "连接手机…" (connect a phone) signs a phone in to the remote, "设置一台电视…" (set up a TV) flashes a device plugged into the computer.
 
 **The program ships no channels, streams, playlists, accounts or cookies**; you add what it plays.
 
@@ -90,11 +94,11 @@ The project has no code-signing certificate yet, so the system cannot name the p
 
 **Windows** (SmartScreen, "Windows protected your PC"): click **More info**, then **Run anyway**; answer Yes to User Account Control. The installer opens the firewall on the **Private** profile only: if Windows marked your home Wi-Fi Public, devices cannot connect, and the tray menu says how to change it.
 
-**Mac** ("Xiaozhi TV" Not Opened):
+**Mac** ("RooTV" Not Opened):
 
-1. Drag "Xiaozhi TV" from the DMG window **into Applications** first, and open it from there.
+1. Drag "RooTV" from the DMG window **into Applications** first, and open it from there. Upgrading from Xiaozhi TV: the old version quits when the new one opens; you can then delete "Xiaozhi TV" from Applications.
 2. When it is blocked, click **Done**. **Do not click Move to Trash**, which deletes the program.
-3. Open **System Settings → Privacy & Security**, scroll down to "Xiaozhi TV was blocked to protect your Mac", click **Open Anyway**, confirm and enter your password.
+3. Open **System Settings → Privacy & Security**, scroll down to "RooTV was blocked to protect your Mac", click **Open Anyway**, confirm and enter your password.
 4. When asked whether it may find devices on your local network, click Allow.
 
 ## Flashing the devices

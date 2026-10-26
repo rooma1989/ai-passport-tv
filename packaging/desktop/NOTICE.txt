@@ -1,5 +1,5 @@
-Xiaozhi TV (小智电视) PC client
-==============================
+RooTV (小鼠电视, formerly Xiaozhi TV / 小智电视) PC client
+=========================================================
 
 This program is open source under the MIT licence:
 https://github.com/rooma1989/ai-passport-tv (LICENSE).

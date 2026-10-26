@@ -41,12 +41,13 @@ class ReleaseError(Exception):
 
 def expected_files(version: str) -> list[str]:
     """The release's PC client downloads, in the order SHA256SUMS-desktop lists them."""
+    # RooTV since the rename; 0.2.5-beta and older were XiaozhiTV-... / xiaozhi-tv-...
     return [
-        f"XiaozhiTV-{version}-windows-x64-setup.exe",
-        f"XiaozhiTV-{version}-windows-x64.zip",
-        f"XiaozhiTV-{version}-macos-arm64.dmg",
-        f"XiaozhiTV-{version}-macos-x86_64.dmg",
-        f"xiaozhi-tv-{version}-linux-x86_64.tar.gz",
+        f"RooTV-{version}-windows-x64-setup.exe",
+        f"RooTV-{version}-windows-x64.zip",
+        f"RooTV-{version}-macos-arm64.dmg",
+        f"RooTV-{version}-macos-x86_64.dmg",
+        f"rootv-{version}-linux-x86_64.tar.gz",
     ]
 
 

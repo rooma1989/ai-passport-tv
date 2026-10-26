@@ -57,7 +57,7 @@ class ReleaseSetTests(unittest.TestCase):
             folder.mkdir(parents=True)
             lines = []
             for suffix in suffixes:
-                name = ("xiaozhi-tv-" if suffix.startswith("linux") else "XiaozhiTV-") + f"{VERSION}-{suffix}"
+                name = ("rootv-" if suffix.startswith("linux") else "RooTV-") + f"{VERSION}-{suffix}"
                 data = f"{artifact} {suffix}".encode()
                 (folder / name).write_bytes(data)
                 lines.append(f"{hashlib.sha256(data).hexdigest()}  {name}")
@@ -77,7 +77,7 @@ class ReleaseSetTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256((out / name).read_bytes()).hexdigest(), digest)
 
     def test_a_file_that_changed_after_its_build(self):
-        dmg = self.parts / "desktop-macos-arm64" / f"XiaozhiTV-{VERSION}-macos-arm64.dmg"
+        dmg = self.parts / "desktop-macos-arm64" / f"RooTV-{VERSION}-macos-arm64.dmg"
         dmg.write_bytes(b"something else")
         with self.assertRaisesRegex(release.ReleaseError, "macos-arm64.dmg: sha256"):
             release.collect(self.parts, Path(self.tmp.name) / "release", VERSION)
@@ -174,7 +174,7 @@ class ReleaseTextTests(unittest.TestCase):
 
     def test_pc_client_first_chinese_first(self):
         text = self.BODY.read_text(encoding="utf-8")
-        english = text.index("## Xiaozhi TV: start with the PC client")
+        english = text.index("## RooTV: start with the PC client")
         self.assertLess(text.index("电脑客户端"), english)
         self.assertLess(text.index("windows-x64-setup.exe"), text.index("FoloToy-AI-Passport-tv.bin"))
         self.assertLess(text.index("FoloToy-AI-Passport-tv.bin"), text.index("tv-server-*"))
@@ -191,7 +191,7 @@ class ReleaseTextTests(unittest.TestCase):
 
 
 class ChineseInstallerTests(unittest.TestCase):
-    ISS = ROOT / "packaging" / "desktop" / "xiaozhi-tv.iss"
+    ISS = ROOT / "packaging" / "desktop" / "rootv.iss"
     ISL = ROOT / "packaging" / "desktop" / "ChineseSimplified.isl"
     NOTE = ROOT / "packaging" / "desktop" / "ChineseSimplified-SOURCE.txt"
 

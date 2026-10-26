@@ -1,4 +1,4 @@
-"""自建服务器（「在家里跑的小智电视」）：python3 -m server.selfhost --data <数据目录>
+"""自建服务器（「在家里跑的小鼠电视」）：python3 -m server.selfhost --data <数据目录>
 
 设计见 docs/superpowers/specs/2026-10-15-self-hosting-design.md（第 4、14、15 节，阶段 S1）。Docker 镜像里
 它是 1 号进程（经 tini），数据目录是 /data；没有 Docker 的 Mac、Linux 用 ./run.sh --selfhost 起它。
@@ -17,7 +17,7 @@
   python3 -m server.selfhost health   查 /healthz（Docker 的 HEALTHCHECK 用）
 
 电脑客户端（托盘启动的核心）：python3 -m server.selfhost --desktop [--data <数据目录>]，打包版是
-xiaozhi-tv-core selfhost --desktop。多出来的（端口后备、日志文件、ffmpeg 下载、本机控制接口、子进程随监督
+rootv-core selfhost --desktop。多出来的（端口后备、日志文件、ffmpeg 下载、本机控制接口、子进程随监督
 进程结束）见 desktop.py、control.py、supervisor.py 和 docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md
 第 5 节。没有 --desktop 时一切和以前一样（Docker、./run.sh --selfhost）。
 """
@@ -210,7 +210,7 @@ def _health(data: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
-    parser = argparse.ArgumentParser(prog="python3 -m server.selfhost", description="小智电视自建服务器")
+    parser = argparse.ArgumentParser(prog="python3 -m server.selfhost", description="小鼠电视自建服务器")
     parser.add_argument("command", nargs="?", choices=("run", "health"), default="run")
     parser.add_argument("--data", type=Path, help="数据目录（Docker 里是 /data）")
     parser.add_argument("--ffmpeg", help="ffmpeg 的路径（默认在 PATH 里找）；--desktop 时 fetch = 用固定哈希下载的那份")

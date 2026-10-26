@@ -44,7 +44,7 @@ CORE_COMMANDS = {
     # process of its own (server/relay/channeltable.py, media_check).
     "__channel-check": "server.relay.channeltable",
     # The break-glass administration commands (users, login-link, …) against the
-    # client's database, for support: `xiaozhi-tv-core __tenancy-admin --db <data>/tv.db users`.
+    # client's database, for support: `rootv-core __tenancy-admin --db <data>/tv.db users`.
     "__tenancy-admin": "server.tenancy.admin",
     # The local YouTube node ([youtube] mode = "local"): server/relay/ytnode.py with --plain.
     "__ytnode": "server.relay.ytnode",

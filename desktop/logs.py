@@ -10,7 +10,7 @@ from pathlib import Path
 MAX_BYTES = 2 * 1024 * 1024
 BACKUPS = 5
 
-_logger = logging.getLogger("xiaozhi-tv.tray")
+_logger = logging.getLogger("rootv.tray")
 
 
 def setup(logs_dir: Path, echo: bool = True) -> logging.Logger:

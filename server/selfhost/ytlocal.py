@@ -21,7 +21,7 @@ REFRESH_REQUEST = "refresh-request"
 COOKIES_MAX = 48 * 1024
 # 只留这些域名的 cookies（YouTube 用到的）；别的网站的不存。
 COOKIE_DOMAINS = ("youtube.com", "google.com")
-COOKIE_HEADER = "# Netscape HTTP Cookie File\n# 小智电视：只留了 youtube.com、google.com 的条目。不要发给别人。\n"
+COOKIE_HEADER = "# Netscape HTTP Cookie File\n# 小鼠电视：只留了 youtube.com、google.com 的条目。不要发给别人。\n"
 
 
 class SettingsError(ValueError):

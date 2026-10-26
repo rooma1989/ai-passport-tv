@@ -44,6 +44,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from tools import desktop_folders as _desktop
+
 ENV_DATA_DIR = "TV_DATA_DIR"
 
 # Where the data goes when the program's own directory is not writable. One name
@@ -179,9 +181,11 @@ def data_dir() -> Path:
 # The PC client (docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md,
 # section 5.5). A folder of its own, not APP_DIR_NAME above: the client is a
 # separate program from the single-user server and the plain-Python self-host
-# beta, and its data folder holds a database and secrets.
-DESKTOP_DIR_NAME = "XiaozhiTV"
-DESKTOP_DIR_NAME_LINUX = "xiaozhi-tv"
+# beta, and its data folder holds a database and secrets. Named RooTV (rootv on
+# Linux) since the rename; tools/desktop_folders.py has the names, the old
+# XiaozhiTV ones and the one-time move between them.
+DESKTOP_DIR_NAME = _desktop.APP_DIR
+DESKTOP_DIR_NAME_LINUX = _desktop.APP_DIR_LINUX
 
 
 def desktop_data_dir(system: str | None = None, environ=None, home: Path | None = None) -> Path:
@@ -191,16 +195,7 @@ def desktop_data_dir(system: str | None = None, environ=None, home: Path | None 
     `user_data_dir` uses: a SQLite database in a roaming profile can be synced
     half-written on domain machines.
     """
-    system = system or platform.system()
-    environ = os.environ if environ is None else environ
-    home = home or Path.home()
-    if system == "Windows":
-        local = environ.get("LOCALAPPDATA")
-        return (Path(local) if local else home / "AppData" / "Local") / DESKTOP_DIR_NAME
-    if system == "Darwin":
-        return home / "Library" / "Application Support" / DESKTOP_DIR_NAME
-    xdg = environ.get("XDG_DATA_HOME")
-    return (Path(xdg) if xdg else home / ".local" / "share") / DESKTOP_DIR_NAME_LINUX
+    return _desktop.default_data_dir(system, environ, home)
 
 
 def desktop_logs_dir(data: Path | None = None, system: str | None = None, environ=None,
@@ -213,15 +208,7 @@ def desktop_logs_dir(data: Path | None = None, system: str | None = None, enviro
     """
     if data is not None:
         return Path(data) / "logs"
-    system = system or platform.system()
-    environ = os.environ if environ is None else environ
-    home = home or Path.home()
-    if system == "Darwin":
-        return home / "Library" / "Logs" / DESKTOP_DIR_NAME
-    if system == "Windows":
-        return desktop_data_dir(system, environ, home) / "logs"
-    xdg = environ.get("XDG_STATE_HOME")
-    return (Path(xdg) if xdg else home / ".local" / "state") / DESKTOP_DIR_NAME_LINUX / "logs"
+    return _desktop.default_logs_dir(system, environ, home)
 
 
 def channels_file() -> Path:

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_TEXT = """\
-# 小智电视自建服务器的设置。改完重启服务器生效（Docker：docker compose restart）。
+# 小鼠电视自建服务器的设置。改完重启服务器生效（Docker：docker compose restart）。
 # 说明：docs/selfhost/README.zh_CN.md
 
 [server]

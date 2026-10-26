@@ -3,9 +3,9 @@
 
     python3 tools/build_core.py [--clean] [--archive]
 
-Result: build-core/dist/xiaozhi-tv-core/ (the executable xiaozhi-tv-core[.exe] and _internal/),
-from packaging/desktop/xiaozhi-tv-core.spec. --archive also writes
-build-core/xiaozhi-tv-core-<system>-<machine>.zip (zip keeps the executable bit; the CI
+Result: build-core/dist/rootv-core/ (the executable rootv-core[.exe] and _internal/),
+from packaging/desktop/rootv-core.spec. --archive also writes
+build-core/rootv-core-<system>-<machine>.zip (zip keeps the executable bit; the CI
 uploads it). The tray and the installers (phase P2) put this folder inside the app; see
 docs/superpowers/specs/2026-10-19-pc-client-architecture-design.md, section 5.2.
 
@@ -25,11 +25,11 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = ROOT / "packaging" / "desktop" / "xiaozhi-tv-core.spec"
+SPEC = ROOT / "packaging" / "desktop" / "rootv-core.spec"
 OUTPUT = ROOT / "build-core"
 DIST = OUTPUT / "dist"
 WORK = OUTPUT / "work"
-NAME = "xiaozhi-tv-core"
+NAME = "rootv-core"
 PLATFORM_NAMES = {"Darwin": "macos"}
 
 sys.path.insert(0, str(ROOT))

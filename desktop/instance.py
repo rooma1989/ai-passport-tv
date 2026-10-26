@@ -90,13 +90,13 @@ def hand_off(client, open_url, wait_s: float = 30.0, sleep=time.sleep, clock=tim
         try:
             url = client.console_link()
             open_url(url)
-            log("另一个小智电视已经在运行，已经替你打开电脑版。")
+            log("另一个小鼠电视已经在运行，已经替你打开电脑版。")
             return True
         except ControlUnavailable:
             if clock() >= deadline:
-                log("另一个小智电视正在运行，但电视服务还没准备好；请稍后从托盘图标打开。")
+                log("另一个小鼠电视正在运行，但电视服务还没准备好；请稍后从托盘图标打开。")
                 return False
             sleep(1.0)
         except ControlError as error:
-            log(f"另一个小智电视正在运行，打开电脑版失败（{error}）。")
+            log(f"另一个小鼠电视正在运行，打开电脑版失败（{error}）。")
             return False

@@ -30,7 +30,7 @@ def export(logs_dir: Path, last_status: dict | None, core_tail: list[str], out_d
            clock=time.time) -> Path:
     out_dir = Path(out_dir or desktop_folder())
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(clock()))
-    target = out_dir / f"xiaozhi-tv-diagnostics-{stamp}.zip"
+    target = out_dir / f"rootv-diagnostics-{stamp}.zip"
     info = {
         "tray_version": __version__,
         "os": platform.platform(),

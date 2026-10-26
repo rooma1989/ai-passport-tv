@@ -2,9 +2,12 @@
 #
 # Onedir, windowed. The core is a separate onedir (the core agent's build, or the
 # stand-in core of stub-core.spec) that build.py puts beside it:
-#   macOS    Xiaozhi TV.app/Contents/MacOS/XiaozhiTV + Contents/Resources/core/
-#   Windows  Xiaozhi TV/XiaozhiTV.exe + core/xiaozhi-tv-core.exe
-#   Linux    xiaozhi-tv/xiaozhi-tv + core/xiaozhi-tv-core
+#   macOS    RooTV.app/Contents/MacOS/RooTV + Contents/Resources/core/
+#   Windows  RooTV/RooTV.exe + core/rootv-core.exe
+#   Linux    rootv/rootv + core/rootv-core
+#
+# Before the rename (0.2.5-beta) these were Xiaozhi TV.app/XiaozhiTV, XiaozhiTV.exe
+# and xiaozhi-tv; desktop/legacy.py and tools/desktop_folders.py take over from them.
 #
 # Run through packaging/desktop/build.py, which passes the version and icons in
 # the environment (XZTV_VERSION, XZTV_ICON).
@@ -17,7 +20,7 @@ ROOT = Path(SPECPATH).resolve().parents[1]
 VERSION = os.environ.get("XZTV_VERSION", "0.2.0-beta")
 NUMERIC = VERSION.split("-")[0]
 ICON = os.environ.get("XZTV_ICON") or None
-NAME = {"darwin": "XiaozhiTV", "win32": "XiaozhiTV"}.get(sys.platform, "xiaozhi-tv")
+NAME = {"darwin": "RooTV", "win32": "RooTV"}.get(sys.platform, "rootv")
 
 # pystray picks its backend by name at run time, so the analysis cannot see it.
 if sys.platform == "darwin":
@@ -32,9 +35,10 @@ a = Analysis(
     [str(Path(SPECPATH) / "tray_entry.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    datas=[],
-    hiddenimports=["desktop", "desktop.tray", "desktop.icons", "desktop.diagnostics", "tools",
-                   "tools.parentwatch", "tools.netcheck"] + backends,
+    # The tray icons (tools/make_icons.py); desktop/icons.py finds them beside itself.
+    datas=[(str(ROOT / "desktop" / "assets"), "desktop/assets")],
+    hiddenimports=["desktop", "desktop.tray", "desktop.icons", "desktop.diagnostics", "desktop.legacy", "tools",
+                   "tools.parentwatch", "tools.netcheck", "tools.desktop_folders"] + backends,
     hookspath=[],
     runtime_hooks=[],
     # The tray never imports the server, numpy or a GUI toolkit other than the
@@ -63,13 +67,21 @@ coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name=NAME)
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="Xiaozhi TV.app",
+        name="RooTV.app",
         icon=ICON,
-        bundle_identifier="io.github.ai-passport-tv.XiaozhiTV",
+        # Was io.github.ai-passport-tv.XiaozhiTV; a new identity (the old login
+        # item is replaced by the tray on its first run, desktop/autostart.py).
+        bundle_identifier="io.github.ai-passport-tv.RooTV",
         version=NUMERIC,
         info_plist={
-            "CFBundleName": "Xiaozhi TV",
-            "CFBundleDisplayName": "小智电视",
+            # "RooTV" here, 小鼠电视 from zh-Hans.lproj/InfoPlist.strings (build.py):
+            # Finder shows the localised name only when the base name matches
+            # the bundle's file name.
+            "CFBundleName": "RooTV",
+            "CFBundleDisplayName": "RooTV",
+            "LSHasLocalizedDisplayName": True,
+            "CFBundleDevelopmentRegion": "en",
+            "CFBundleLocalizations": ["en", "zh-Hans"],
             "CFBundleShortVersionString": NUMERIC,
             "CFBundleVersion": NUMERIC,
             "LSMinimumSystemVersion": "12.0",
@@ -77,7 +89,7 @@ if sys.platform == "darwin":
             "LSUIElement": True,
             # macOS 15 asks before an app talks to LAN hosts.
             "NSLocalNetworkUsageDescription":
-                "小智电视要连接家里网络上的小电视和片源。Xiaozhi TV connects to the TV devices and video sources on your home network.",
+                "小鼠电视要连接家里网络上的小电视和片源。RooTV connects to the TV devices and video sources on your home network.",
             # The core's pacing must not be throttled by App Nap.
             "NSAppSleepDisabled": True,
             "NSHighResolutionCapable": True,

@@ -50,21 +50,21 @@ class DataFolderTests(unittest.TestCase):
     def test_windows_uses_local_not_roaming_app_data(self):
         env = {"LOCALAPPDATA": r"C:\Users\张三\AppData\Local", "APPDATA": r"C:\Users\张三\AppData\Roaming"}
         found = datadir.desktop_data_dir("Windows", env, Path("/home/x"))
-        self.assertEqual(found, Path(env["LOCALAPPDATA"]) / "XiaozhiTV")
+        self.assertEqual(found, Path(env["LOCALAPPDATA"]) / "RooTV")
         self.assertEqual(datadir.desktop_logs_dir(None, "Windows", env, Path("/home/x")), found / "logs")
 
     def test_macos_application_support_and_library_logs(self):
         home = Path("/Users/someone")
         self.assertEqual(datadir.desktop_data_dir("Darwin", {}, home),
-                         home / "Library" / "Application Support" / "XiaozhiTV")
-        self.assertEqual(datadir.desktop_logs_dir(None, "Darwin", {}, home), home / "Library" / "Logs" / "XiaozhiTV")
+                         home / "Library" / "Application Support" / "RooTV")
+        self.assertEqual(datadir.desktop_logs_dir(None, "Darwin", {}, home), home / "Library" / "Logs" / "RooTV")
 
     def test_linux_follows_xdg(self):
         home = Path("/home/someone")
-        self.assertEqual(datadir.desktop_data_dir("Linux", {}, home), home / ".local" / "share" / "xiaozhi-tv")
+        self.assertEqual(datadir.desktop_data_dir("Linux", {}, home), home / ".local" / "share" / "rootv")
         env = {"XDG_DATA_HOME": "/d", "XDG_STATE_HOME": "/s"}
-        self.assertEqual(datadir.desktop_data_dir("Linux", env, home), Path("/d/xiaozhi-tv"))
-        self.assertEqual(datadir.desktop_logs_dir(None, "Linux", env, home), Path("/s/xiaozhi-tv/logs"))
+        self.assertEqual(datadir.desktop_data_dir("Linux", env, home), Path("/d/rootv"))
+        self.assertEqual(datadir.desktop_logs_dir(None, "Linux", env, home), Path("/s/rootv/logs"))
 
     def test_an_explicit_data_folder_keeps_its_logs_inside(self):
         self.assertEqual(datadir.desktop_logs_dir(Path("/tmp/d"), "Darwin"), Path("/tmp/d/logs"))
@@ -80,9 +80,9 @@ class ChildCommandTests(unittest.TestCase):
 
     def test_frozen_uses_the_executable_and_a_sub_command(self):
         with mock.patch.object(sys, "frozen", True, create=True), \
-                mock.patch.object(sys, "executable", "/app/xiaozhi-tv-core"):
-            self.assertEqual(supervisor.child_command("server.tv_server"), ["/app/xiaozhi-tv-core", "__tv"])
-            self.assertEqual(supervisor.child_command("server.relay", desktop=True), ["/app/xiaozhi-tv-core", "__relay"])
+                mock.patch.object(sys, "executable", "/app/rootv-core"):
+            self.assertEqual(supervisor.child_command("server.tv_server"), ["/app/rootv-core", "__tv"])
+            self.assertEqual(supervisor.child_command("server.relay", desktop=True), ["/app/rootv-core", "__relay"])
 
     def test_every_child_has_a_dispatched_module_with_main(self):
         import importlib

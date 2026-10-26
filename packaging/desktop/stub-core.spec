@@ -1,5 +1,5 @@
 # PyInstaller configuration for the STAND-IN core (desktop/devcore.py), named
-# xiaozhi-tv-core like the real one. For CI before branch desktop-core (P1) is
+# rootv-core like the real one. For CI before branch desktop-core (P1) is
 # merged; see stub_core_entry.py. Onedir, console (the tray starts it with
 # CREATE_NO_WINDOW on Windows, as it will the real core).
 
@@ -20,6 +20,6 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="xiaozhi-tv-core", debug=False, strip=False,
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="rootv-core", debug=False, strip=False,
           upx=False, console=True, codesign_identity=None, entitlements_file=None)
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="xiaozhi-tv-core")
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="rootv-core")

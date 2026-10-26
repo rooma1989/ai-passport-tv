@@ -6,14 +6,17 @@
 
 Output in build-desktop/ (untracked):
 
-    macOS    XiaozhiTV-<ver>-macos-<arm64|x86_64>.dmg   (Xiaozhi TV.app, ad-hoc signed, + Applications link)
-    Windows  XiaozhiTV-<ver>-windows-x64.zip            (portable) and stage/Xiaozhi TV/ for Inno Setup
-    Linux    xiaozhi-tv-<ver>-linux-x86_64.tar.gz       (onedir, .desktop, systemd --user unit, --no-tray)
+    macOS    RooTV-<ver>-macos-<arm64|x86_64>.dmg   (RooTV.app, ad-hoc signed, + Applications link)
+    Windows  RooTV-<ver>-windows-x64.zip            (portable) and stage/RooTV/ for Inno Setup
+    Linux    rootv-<ver>-linux-x86_64.tar.gz        (onedir, .desktop, systemd --user unit, --no-tray)
     SHA256SUMS
 
 The installer for Windows is compiled by the workflow (Inno Setup is a Windows
-program): `iscc /DSourceDir=build-desktop\\stage\\Xiaozhi TV /DAppVersion=<ver>
-packaging\\desktop\\xiaozhi-tv.iss`.
+program): `iscc /DSourceDir=build-desktop\\stage\\RooTV /DAppVersion=<ver>
+packaging\\desktop\\rootv.iss`.
+
+The icons are tracked files in packaging/desktop/icons/, made from the brand
+SVGs by tools/make_icons.py (rootv.icns, rootv.ico, rootv.png).
 
 Builds for the machine it runs on only (PyInstaller does not cross-build).
 Needs: pip install pyinstaller pystray pillow.
@@ -38,9 +41,15 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 OUT = ROOT / "build-desktop"
 WORK = ROOT / "build-desktop-work"
-APP = "Xiaozhi TV.app"
-WINDOWS_DIR = "Xiaozhi TV"
-ICON_SOURCE = ROOT / "packaging" / "site" / "assets" / "icon-512.png"
+APP = "RooTV.app"
+WINDOWS_DIR = "RooTV"
+EXE_NAME = "RooTV"           # macOS and Windows; the Linux program is LINUX_NAME
+LINUX_NAME = "rootv"
+CORE = "rootv-core"
+ICONS = HERE / "icons"
+# Where the system shows a localised name (Finder, Launchpad, Spotlight with a
+# Chinese system language), the app is called this; elsewhere RooTV.
+NAME_ZH = "小鼠电视"
 
 sys.path.insert(0, str(ROOT))
 from desktop import __version__  # noqa: E402
@@ -77,19 +86,26 @@ def machine() -> str:
 
 
 def icons() -> dict:
-    """App icons made from the site's 512 px icon: .ico (Windows), .icns (macOS), .png (Linux)."""
-    from desktop.icons import save_app_icons
-    out = WORK / "icons"
-    out.mkdir(parents=True, exist_ok=True)
-    ico = out / "xiaozhi-tv.ico"
-    iconset = out / "xiaozhi-tv.iconset"
-    save_app_icons(ICON_SOURCE, ico, iconset if sys.platform == "darwin" else None)
-    result = {"ico": ico, "png": ICON_SOURCE}
-    if sys.platform == "darwin":
-        icns = out / "xiaozhi-tv.icns"
-        run(["iconutil", "-c", "icns", iconset, "-o", icns])
-        result["icns"] = icns
+    """The app icons (tools/make_icons.py): .icns (macOS), .ico (Windows), .png (Linux)."""
+    result = {"icns": ICONS / "rootv.icns", "ico": ICONS / "rootv.ico", "png": ICONS / "rootv.png"}
+    for path in result.values():
+        if not path.is_file():
+            fail(f"missing {path.relative_to(ROOT)}: run python3 tools/make_icons.py")
     return result
+
+
+def localise_mac(app: Path) -> None:
+    """The Chinese display name: zh-Hans.lproj/InfoPlist.strings (UTF-16, as
+    Apple's tools write it) plus LSHasLocalizedDisplayName in Info.plist."""
+    for language in ("zh-Hans", "zh_CN"):
+        folder = app / "Contents" / "Resources" / f"{language}.lproj"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "InfoPlist.strings").write_text(
+            f'CFBundleDisplayName = "{NAME_ZH}";\nCFBundleName = "{NAME_ZH}";\n', encoding="utf-16")
+    english = app / "Contents" / "Resources" / "en.lproj"
+    english.mkdir(parents=True, exist_ok=True)
+    (english / "InfoPlist.strings").write_text('CFBundleDisplayName = "RooTV";\nCFBundleName = "RooTV";\n',
+                                                encoding="utf-16")
 
 
 def pyinstaller(spec: Path, dist: Path, env: dict) -> None:
@@ -113,7 +129,7 @@ def sign_mac(app: Path) -> None:
     core = app / "Contents" / "Resources" / "core"
     files = sorted(p for p in core.rglob("*") if p.is_file() and not p.is_symlink() and is_macho(p))
     # Libraries before the executable that loads them.
-    files.sort(key=lambda p: p.name == "xiaozhi-tv-core")
+    files.sort(key=lambda p: p.name == CORE)
     for path in files:
         run(["codesign", "--force", "--sign", "-", "--timestamp=none", path])
     run(["codesign", "--force", "--sign", "-", "--timestamp=none", app])
@@ -136,7 +152,7 @@ def make_dmg(app: Path, dmg: Path) -> None:
     shutil.copy2(HERE / "NOTICE.txt", stage / "NOTICE.txt")
     if dmg.exists():
         dmg.unlink()
-    run(["hdiutil", "create", "-volname", "Xiaozhi TV", "-srcfolder", stage, "-fs", "HFS+", "-format", "UDZO",
+    run(["hdiutil", "create", "-volname", "RooTV", "-srcfolder", stage, "-fs", "HFS+", "-format", "UDZO",
          "-ov", dmg])
 
 
@@ -164,7 +180,7 @@ def sha256sums(files: list[Path]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--core-dir", type=Path, help="the core's PyInstaller onedir (folder xiaozhi-tv-core/)")
+    source.add_argument("--core-dir", type=Path, help="the core's PyInstaller onedir (folder rootv-core/)")
     source.add_argument("--stub-core", action="store_true", help="build and bundle the stand-in core (CI only)")
     parser.add_argument("--release", action="store_true", help="a build meant for users: refuses the stand-in core")
     parser.add_argument("--version", default=__version__)
@@ -178,16 +194,16 @@ def main(argv: list[str] | None = None) -> int:
         folder.mkdir(parents=True)
     env = dict(os.environ, XZTV_VERSION=args.version, PYTHONHASHSEED="0")
     icon = icons()
-    env["XZTV_ICON"] = str(icon.get("icns") or icon["ico"])
+    env["XZTV_ICON"] = str(icon["icns"] if sys.platform == "darwin" else icon["ico"])
 
     dist = WORK / "dist"
     pyinstaller(HERE / "tray.spec", dist, env)
     if args.stub_core:
         pyinstaller(HERE / "stub-core.spec", dist, env)
-        core_dir = dist / "xiaozhi-tv-core"
+        core_dir = dist / CORE
     else:
         core_dir = args.core_dir.resolve()
-    exe = "xiaozhi-tv-core.exe" if sys.platform == "win32" else "xiaozhi-tv-core"
+    exe = CORE + ".exe" if sys.platform == "win32" else CORE
     if not (core_dir / exe).is_file():
         fail(f"no {exe} in {core_dir}")
 
@@ -197,28 +213,29 @@ def main(argv: list[str] | None = None) -> int:
         resources = app / "Contents" / "Resources"
         copy_tree(core_dir, resources / "core")
         shutil.copy2(HERE / "NOTICE.txt", resources / "NOTICE.txt")
+        localise_mac(app)
         sign_mac(app)
         copy_tree(app, OUT / APP)
-        dmg = OUT / f"XiaozhiTV-{args.version}-macos-{machine()}.dmg"
+        dmg = OUT / f"RooTV-{args.version}-macos-{machine()}.dmg"
         make_dmg(app, dmg)
         made.append(dmg)
     elif sys.platform == "win32":
         stage = OUT / "stage" / WINDOWS_DIR
-        copy_tree(dist / "XiaozhiTV", stage)
+        copy_tree(dist / EXE_NAME, stage)
         copy_tree(core_dir, stage / "core")
         shutil.copy2(HERE / "NOTICE.txt", stage / "NOTICE.txt")
-        shutil.copy2(icon["ico"], stage / "xiaozhi-tv.ico")
-        portable = OUT / f"XiaozhiTV-{args.version}-windows-x64.zip"
+        shutil.copy2(icon["ico"], stage / "rootv.ico")
+        portable = OUT / f"RooTV-{args.version}-windows-x64.zip"
         make_zip(stage, portable)
         made.append(portable)
     else:
-        folder = OUT / f"xiaozhi-tv-{args.version}-linux-{machine()}"
-        copy_tree(dist / "xiaozhi-tv", folder)
+        folder = OUT / f"{LINUX_NAME}-{args.version}-linux-{machine()}"
+        copy_tree(dist / LINUX_NAME, folder)
         copy_tree(core_dir, folder / "core")
-        for name in ("NOTICE.txt", "xiaozhi-tv.desktop", "xiaozhi-tv.service", "README-linux.txt"):
+        for name in ("NOTICE.txt", "rootv.desktop", "rootv.service", "README-linux.txt"):
             shutil.copy2(HERE / name, folder / name)
-        shutil.copy2(icon["png"], folder / "xiaozhi-tv.png")
-        launcher = folder / "xiaozhi-tv"
+        shutil.copy2(icon["png"], folder / "rootv.png")
+        launcher = folder / LINUX_NAME
         launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         tarball = OUT / f"{folder.name}.tar.gz"
         make_tar(folder, tarball)

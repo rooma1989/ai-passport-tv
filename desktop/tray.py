@@ -1,7 +1,7 @@
-"""The tray program: `XiaozhiTV` (installed) or `python3 -m desktop` (checkout).
+"""The tray program: `RooTV` (installed) or `python3 -m desktop` (checkout).
 
-    XiaozhiTV [--data DIR] [--no-tray] [--autostarted]
-    XiaozhiTV --smoke-test [--timeout S]     CI: headless start, check the control API, stop
+    RooTV [--data DIR] [--no-tray] [--autostarted]
+    RooTV --smoke-test [--timeout S]     CI: headless start, check the control API, stop
 
 What it does (design 5.1-5.4, 5.10, 5.11):
 
@@ -37,7 +37,7 @@ from pathlib import Path
 
 from tools import netcheck
 
-from . import APP_ID, APP_NAME, __version__, autostart, menu, paths, power
+from . import APP_ID, APP_NAME, __version__, autostart, legacy, menu, paths, power
 from .control import ControlClient, ControlError, ControlUnavailable, Status
 from .core import CoreProcess, no_window_flags
 from .instance import SingleInstance, hand_off
@@ -104,12 +104,14 @@ class App:
     def __init__(self, data: Path, client: ControlClient, core: CoreProcess, keep_awake: power.KeepAwake,
                  login_item=None, prefs: Prefs | None = None, opener=open_url, path_opener=open_path,
                  revealer=reveal, autostarted: bool = False, translocated: bool = False,
-                 windows_profiles=None, logs_dir: Path | None = None, clock=time.monotonic):
+                 windows_profiles=None, logs_dir: Path | None = None, clock=time.monotonic,
+                 legacy_login_item=None):
         self.data = Path(data)
         self.client = client
         self.core = core
         self.keep_awake = keep_awake
         self.login_item = login_item            # an autostart entry, or None where unsupported
+        self.legacy_login_item = legacy_login_item  # the pre-rename client's entry, replaced on first run
         self.prefs = prefs or Prefs(paths.prefs_file(self.data))
         self.open_url = opener
         self.open_path = path_opener
@@ -252,16 +254,33 @@ class App:
     def _initialise_login_item(self) -> None:
         """On by default (Q8): registered once, on the first run of an installed copy.
         Afterwards the OS entry is the truth, so a switch-off in Task Manager or
-        Login Items is respected."""
-        if self.login_item is None or self.prefs.get("autostart_initialised"):
+        Login Items is respected.
+
+        The first run after the rename does it once more under the new name: the
+        old client's entry (named XiaozhiTV, pointing at the old program) is
+        removed and the new one takes its place, on or off as the user had it --
+        the moved tray.json says "initialised" but no RooTV entry exists yet."""
+        if self.login_item is None:
+            return
+        if self.prefs.get("autostart_initialised") and self.prefs.get("login_item_name") == APP_ID:
             return
         wanted = self.prefs.get("autostart", True)
+        legacy = self.legacy_login_item
+        try:
+            if legacy is not None and legacy.exists():
+                if legacy.disabled_by_user():
+                    wanted = False
+                legacy.disable()
+                log("已删除旧版小智电视的登录时启动项")
+        except OSError as error:
+            log(f"删除旧版的登录时启动项失败：{type(error).__name__}")
         try:
             if wanted:
                 self.login_item.enable()
             else:
                 self.login_item.disable()
             self.prefs.set("autostart_initialised", True)
+            self.prefs.set("login_item_name", APP_ID)
             log("已设置登录时启动" if wanted else "登录时不启动")
         except OSError as error:
             log(f"设置登录时启动失败：{type(error).__name__}")
@@ -359,7 +378,7 @@ class App:
         with self._lock:
             self.state = replace(self.state, keep_awake=new)
         self._power(self.state.status)
-        self._notice("小智电视运行时电脑不会闲置睡眠（合上笔记本盖子仍会睡）" if new == "always"
+        self._notice("小鼠电视运行时电脑不会闲置睡眠（合上笔记本盖子仍会睡）" if new == "always"
                      else "只在有小电视在看时阻止电脑睡眠")
 
     def toggle_autostart(self) -> None:
@@ -563,12 +582,21 @@ class PystrayUI:
             icon.title = title
             icon.menu = self._menu(items)
             if self._mac:
-                self._template()
+                self._template(kind)
         self._on_main(apply)
 
-    def _template(self) -> None:
+    def _template(self, kind: str = "idle") -> None:
+        """pystray hands AppKit one bitmap scaled to the bar's height; replace it
+        with the @1x/@2x template pair (desktop/icons.py), or at least mark
+        pystray's as a template so the bar recolours it."""
         try:
-            self.icon._status_item.button().image().setTemplate_(True)     # noqa: SLF001
+            button = self.icon._status_item.button()     # noqa: SLF001
+            from .icons import mac_image
+            image = mac_image(kind)
+            if image is not None:
+                button.setImage_(image)
+            else:
+                button.image().setTemplate_(True)
         except Exception:       # noqa: BLE001 - cosmetic
             pass
 
@@ -643,13 +671,14 @@ def build_app(args, data: Path, logs_dir: Path, opener=open_url) -> App:
     check = args.smoke_test or bool(args.tray_check)
     keep_awake = power.KeepAwake(power.NullBackend() if check else power.default_backend())
     translocated = sys.platform == "darwin" and paths.is_frozen() and paths.translocated()
-    login_item = None
+    login_item = legacy_login_item = None
     if autostart.supported(paths.is_frozen(), translocated) and not check:
         login_item = autostart.for_this_os(paths.program_path())
+        legacy_login_item = autostart.legacy_for_this_os(paths.program_path())
     windows_profiles = netcheck.windows_profiles if sys.platform == "win32" and not check else None
     return App(data, control, core, keep_awake, login_item=login_item, opener=opener,
                autostarted=args.autostarted, translocated=translocated, windows_profiles=windows_profiles,
-               logs_dir=logs_dir)
+               logs_dir=logs_dir, legacy_login_item=legacy_login_item)
 
 
 def smoke_test(app: App, timeout: float, data: Path) -> int:
@@ -765,10 +794,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.data:
         os.environ[paths.DATA_ENV] = str(args.data)
-    data = paths.data_dir()
-    logs_dir = paths.logs_dir(data)
+    # The RooTV folders; on the first start after the rename this moves the old
+    # XiaozhiTV ones (asking an old tray that still runs to quit first).
+    folders = paths.resolve(stop_old=None if args.smoke_test or args.smoke_second or args.tray_check
+                            else legacy.stop_old_tray)
+    data, logs_dir = folders.data, folders.logs
     setup_logs(logs_dir, echo=True)
     log(f"{APP_NAME} {__version__} 启动（数据文件夹：{data}）")
+    for message in folders.messages:
+        log(message)
 
     instance = SingleInstance(paths.lock_file(data))
     if not instance.acquire():

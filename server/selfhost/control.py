@@ -90,7 +90,7 @@ class Actions:
             admin = accounts.admin_id()
             if admin is None:
                 raise ControlError(409, "setup_pending", "还没有建管理员")
-            made = PhoneLinks(accounts).create(admin, "127.0.0.1", "小智电视（这台电脑）", source="pc")
+            made = PhoneLinks(accounts).create(admin, "127.0.0.1", "小鼠电视（这台电脑）", source="pc")
         except Limited as error:
             raise ControlError(429, "limited", str(error)) from None
         finally:

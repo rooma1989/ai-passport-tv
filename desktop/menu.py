@@ -70,7 +70,7 @@ def problems(state: TrayState) -> list[str]:
     """Things the user has to know about, most important first."""
     out = []
     if state.translocated:
-        out.append("请先把「小智电视」拖进「应用程序」文件夹，再从那里打开")
+        out.append("请先把「小鼠电视」（RooTV）拖进「应用程序」文件夹，再从那里打开")
     if state.core == "restarting":
         out.append("电视服务停了，正在重新启动…")
     elif state.core == "stopped":
@@ -191,7 +191,7 @@ def build(state: TrayState) -> tuple[Item, ...]:
         items.append(Item("这是我家的网络（允许小电视和手机连进来）", TRUST_NETWORK))
     if state.windows_public or core_says(state, "network_public"):
         items.append(Item("怎么把家里的网络改成「专用」…", NETWORK_HELP))
-    items.append(Item("不让电脑睡眠（小智电视运行时一直保持唤醒）", KEEP_AWAKE,
+    items.append(Item("不让电脑睡眠（小鼠电视运行时一直保持唤醒）", KEEP_AWAKE,
                       checked=state.keep_awake == "always"))
     items.append(Item("登录时启动", AUTOSTART, checked=bool(state.autostart),
                       enabled=state.autostart is not None))
@@ -199,7 +199,7 @@ def build(state: TrayState) -> tuple[Item, ...]:
     items.append(Item("打开日志文件夹", OPEN_LOGS))
     items.append(Item("导出诊断信息…", DIAGNOSTICS, enabled=not state.busy))
     items.append(Item("重启电视服务", RESTART, enabled=state.core in ("running", "restarting", "stopped")))
-    items.append(Item("退出小智电视", QUIT))
+    items.append(Item("退出小鼠电视", QUIT))
     return tuple(items)
 
 

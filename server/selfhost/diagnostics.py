@@ -61,7 +61,7 @@ def build(desktop, dest_dir: Path | None = None, clock=time.time) -> Path:
     """做诊断压缩包，返回它的路径。"""
     dest = Path(dest_dir) if dest_dir else default_dest(desktop.layout.root)
     dest.mkdir(parents=True, exist_ok=True)
-    name = time.strftime("xiaozhi-tv-diagnostics-%Y%m%d-%H%M%S.zip", time.localtime(clock()))
+    name = time.strftime("rootv-diagnostics-%Y%m%d-%H%M%S.zip", time.localtime(clock()))
     target = dest / name
     home = str(Path.home())
 

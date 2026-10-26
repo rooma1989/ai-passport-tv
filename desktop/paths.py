@@ -1,8 +1,9 @@
 """Where the client keeps its data and logs, and where the core program is.
 
 Section 5.5 of the PC client design: one per-user folder with the S1 layout,
-local rather than roaming on Windows, plus `logs/`. The core agent owns the
-core's side of this (`tools/datadir.py`, `server/selfhost`); the tray computes
+local rather than roaming on Windows, plus `logs/`. The names, and the one-time
+move from the pre-rename XiaozhiTV folder, are in `tools/desktop_folders.py`,
+which the core (`server/selfhost/desktop_main.py`) uses as well; the tray computes
 the same folder so it can find `run/control.json` before the core has said
 anything. Both must agree -- `--data` on the tray is passed to the core, so the
 tray's answer is the one the core uses.
@@ -15,17 +16,19 @@ import platform
 import sys
 from pathlib import Path
 
-from . import APP_ID
+from tools import desktop_folders
 
 # An explicit data folder, for tests, portable use and support. Also what
-# `--data` sets for the core it starts.
-DATA_ENV = "XIAOZHI_TV_DATA"
+# `--data` sets for the core it starts. The pre-rename name is still honoured.
+DATA_ENV = desktop_folders.DATA_ENV
+LEGACY_DATA_ENV = desktop_folders.LEGACY_DATA_ENV
 # A different core program (path to an executable, or a command line split on
 # whitespace). Used by CI before the real core is merged, and by developers.
-CORE_ENV = "XIAOZHI_TV_CORE"
+CORE_ENV = "ROOTV_CORE"
+LEGACY_CORE_ENV = "XIAOZHI_TV_CORE"
 
-LINUX_NAME = "xiaozhi-tv"
-CORE_NAME = "xiaozhi-tv-core"
+LINUX_NAME = desktop_folders.APP_DIR_LINUX
+CORE_NAME = "rootv-core"
 
 
 def system() -> str:
@@ -37,21 +40,13 @@ def is_frozen() -> bool:
 
 
 def data_dir(env: dict | None = None, home: Path | None = None, os_name: str | None = None) -> Path:
-    """The per-user data folder (not created here)."""
+    """The per-user data folder under the current name (not created or moved here;
+    `resolve` is what a run uses)."""
     env = os.environ if env is None else env
-    home = Path.home() if home is None else home
-    os_name = os_name or system()
-    if env.get(DATA_ENV):
-        return Path(env[DATA_ENV]).expanduser()
-    if os_name == "Darwin":
-        return home / "Library" / "Application Support" / APP_ID
-    if os_name == "Windows":
-        # LOCALAPPDATA, not APPDATA: a SQLite database in a roaming profile can
-        # be synced half-written on domain machines (design 5.5).
-        base = env.get("LOCALAPPDATA")
-        return (Path(base) if base else home / "AppData" / "Local") / APP_ID
-    base = env.get("XDG_DATA_HOME")
-    return (Path(base) if base else home / ".local" / "share") / LINUX_NAME
+    explicit = desktop_folders.explicit_data_dir(env)
+    if explicit is not None:
+        return explicit
+    return desktop_folders.default_data_dir(os_name or system(), env, home)
 
 
 def logs_dir(data: Path, env: dict | None = None, home: Path | None = None, os_name: str | None = None) -> Path:
@@ -61,14 +56,18 @@ def logs_dir(data: Path, env: dict | None = None, home: Path | None = None, os_n
     portable copy leaves nothing behind elsewhere.
     """
     env = os.environ if env is None else env
-    home = Path.home() if home is None else home
     os_name = os_name or system()
-    if env.get(DATA_ENV) or os_name == "Windows":
+    if desktop_folders.explicit_data_dir(env) is not None or os_name == "Windows":
         return Path(data) / "logs"
-    if os_name == "Darwin":
-        return home / "Library" / "Logs" / APP_ID
-    base = env.get("XDG_STATE_HOME")
-    return (Path(base) if base else home / ".local" / "state") / LINUX_NAME / "logs"
+    return desktop_folders.default_logs_dir(os_name, env, home)
+
+
+def resolve(stop_old=None, env: dict | None = None, home: Path | None = None,
+            os_name: str | None = None) -> "desktop_folders.Folders":
+    """The data and logs folders of this run: the RooTV ones, after moving the
+    pre-rename XiaozhiTV ones there when nothing uses them any more
+    (tools/desktop_folders.py). The core answers the same question the same way."""
+    return desktop_folders.resolve(os_name or system(), env, home, stop_old=stop_old)
 
 
 def run_dir(data: Path) -> Path:
@@ -97,7 +96,7 @@ def program_path() -> Path:
 def bundled_core(executable: Path | None = None, os_name: str | None = None) -> Path:
     """The core inside an installed client.
 
-    macOS: `Xiaozhi TV.app/Contents/MacOS/XiaozhiTV` is the tray and the core's
+    macOS: `RooTV.app/Contents/MacOS/RooTV` is the tray and the core's
     onedir sits in `Contents/Resources/core/` (code signing wants everything in
     `Contents/MacOS` to be code; a onedir also carries data files). Windows and
     Linux: `core/` beside the tray.
@@ -114,12 +113,12 @@ def core_command(data: Path, env: dict | None = None) -> list[str]:
     """The command line that starts the core (design 5.13, "Starting the core").
 
     `--data` only when the folder was chosen explicitly (`--data` on the tray,
-    XIAOZHI_TV_DATA): the core then keeps its logs inside it, as the tray does.
+    ROOTV_DATA, or the old XIAOZHI_TV_DATA): the core then keeps its logs inside it, as the tray does.
     Otherwise both use the per-OS folders of design 5.5 on their own.
     """
     env = os.environ if env is None else env
-    data_args = ["--data", str(data)] if env.get(DATA_ENV) else []
-    override = env.get(CORE_ENV, "").strip()
+    data_args = ["--data", str(data)] if desktop_folders.explicit_data_dir(env) is not None else []
+    override = (env.get(CORE_ENV) or env.get(LEGACY_CORE_ENV) or "").strip()
     if override:
         base = [override] if Path(override).exists() else override.split()
     elif is_frozen():
