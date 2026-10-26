@@ -4,14 +4,20 @@
 
 # Home media center UI — design
 
-Status: **design only, proposed 2026-10-24**, nothing built. Branch
-`media-center-design` (based on `v0.2.4-beta`). The clickable prototype is
+Status: **design only, proposed 2026-10-24**, nothing built. First version on
+branch `media-center-design` (based on `v0.2.4-beta`); the owner accepted every
+recommendation in section 13. **Revised the same day** on branch
+`media-center-appletv` (based on main `136571d`): a visual language closer to a
+TV box's system UI (section 10), a top tab bar instead of the sidebar on the
+desktop (section 2), and the product name RooTV with three app icon candidates
+(section 15). The clickable prototype is
 [`docs/design/media-center/index.html`](../../design/media-center/index.html):
 one self-contained file, no network requests (its Content-Security-Policy
 forbids them), fake data, placeholder art drawn in SVG. Open it in any browser;
 the dashed "prototype" box in the corner switches between the desktop and the
-phone layout and between demo states (normal, no TV, no subscriptions and an
-empty library, Bilibili unreachable).
+phone layout, between dark and light, between demo states (normal, no TV, no
+subscriptions and an empty library, Bilibili unreachable) and between the three
+app icon candidates.
 
 Builds on [`2026-10-19-pc-client-architecture-design.md`](2026-10-19-pc-client-architecture-design.md)
 (the PC client and its console), [`2026-10-10-grouped-channels-and-remote-design.md`](2026-10-10-grouped-channels-and-remote-design.md)
@@ -59,8 +65,10 @@ content-first structure, and introduces three cross-cutting pieces:
 - Same information architecture on the PC and the phone; different layouts.
 - Keyboard and remote-style (arrow key) navigation on the PC; large hit targets
   on the phone.
-- Keep the product's identity: dark ink background, warm red accent, amber
-  monospace for numbers and times, serif headings.
+- A calm look in the manner of a TV box's system UI (section 10): dark by
+  default, large rounded artwork, focus that lifts the card, translucent
+  materials. Where the UI depicts the tiny TV's own screen it keeps that
+  screen's amber digits.
 
 ### Non-goals
 
@@ -68,20 +76,26 @@ content-first structure, and introduces three cross-cutting pieces:
   on-screen menu.
 - No new content sources beyond the planned local library and the optional
   Jellyfin/Emby/Plex connection.
-- No light theme in the first release (tokens are prepared for it).
+- No light theme in the first release: it is designed and in the prototype, and
+  ships in M9 (Q10).
 - No recommendation engine: the home page is assembled from the household's own
   subscriptions, history and EPG.
 
 ## 2. Information architecture
 
-Desktop: a left sidebar with nine entries; a top bar with search, the Play-to
-chip and the user; a now-playing bar along the bottom. Phone: five bottom tabs.
+Desktop: a **top tab bar** with six tabs in a centred translucent capsule (Home,
+Live, Series, Creators, Library, Search), the wordmark on the left, and on the
+right the Play-to chip, **Devices & remote** and **Settings** as icons, and the
+user. The bar is transparent over a hero and turns into a blurred material once
+the page scrolls. Lineup is no longer a top-level entry: it is the second
+segment of Live ("Guide | TV lineup"). A now-playing bar floats at the bottom.
+Phone: five bottom tabs.
 
 | Entry | Contents | Replaces today |
 | --- | --- | --- |
 | **Home** | Hero (up to three items), rows: Continue watching, Live now, Creator updates, New episodes, My library | the "Remote" page as landing page |
 | **Live** | Selected programme on top (channel, title, progress, next, Play / Watch on this computer), group chips, programme guide grid with time ruler and now-line | the channel grid on the "Remote" page |
-| **Lineup** | The channel list each tiny TV cycles through: per TV, groups, order, show/hide, size budget (channels and bytes), live sources and presets, EPG status | "Adjust groups" link, admin channel table presets |
+| **Lineup** (second segment of Live) | The channel list each tiny TV cycles through: per TV, groups, order, show/hide, size budget (channels and bytes), live sources and presets, EPG status | "Adjust groups" link, admin channel table presets |
 | **Series & anime** | Poster grid with filters (following, anime, drama, documentary, animation, finished); add series | the "Series" table on "Subscriptions" |
 | **Creators** | Avatar strip with new-video counts, latest videos grid, subscribe, import from Bilibili | the "Creators" table on "Subscriptions" |
 | **Library** | Local folders and media servers: Movies, Series, Animation, Home videos; sources bar | new |
@@ -100,11 +114,13 @@ and the Play-to picker applies. History ("played before", up to 50) is a row
 under Continue watching on the phone's Me tab and a section in Settings on the
 desktop; its entries use the same media item shape.
 
-**Detail pages** (reached from posters and search): backdrop, poster, title,
-meta line (year, kind, source, schedule), synopsis, "last watched on <device>
-at <position>", actions (Continue episode N at position, Play to..., From
-episode 1, Following), episode list with watched/current/not-yet-released
-states, related row. Library movies show file facts (resolution, codecs,
+**Detail pages** (reached from posters and search): a full-bleed backdrop with
+title art (the logo image when the metadata has one, otherwise the title set
+large), meta line (year, kind, source, schedule), synopsis, "last watched on
+<device> at <position>" with a progress line, actions (Continue episode N at
+position, Play to..., From episode 1, Following), episodes as a shelf of 16:9
+cards with watched/current/not-yet-released states (not-yet-released cards are
+disabled and skipped by focus), related row. Library movies show file facts (resolution, codecs,
 subtitles, size, folder) and the note that playback on a tiny TV is transcoded
 by the PC.
 
@@ -112,8 +128,10 @@ by the PC.
 
 Always visible at the bottom (above the tabs on the phone). It follows the
 **session the user last started or controlled**: artwork, title, "<device> ·
-<programme or position>", a progress line, previous / play-pause / next, a
-remote button for TVs, and the Play-to chip on desktop. Clicking the artwork
+<programme or position>", a progress line, previous / play-pause / next and a
+remote button for TVs. On the desktop it floats as a blurred capsule (at most
+960 px wide) over the content; the Play-to chip stays in the top bar instead of
+being repeated here. Clicking the artwork
 opens what is playing (the guide for live, the detail page for a series or
 library item). When this computer is the target, the bar controls the in-page
 player window, which keeps today's "follow the TV" option.
@@ -182,7 +200,7 @@ now-playing bar, or the phone's Remote tab. It contains, top to bottom:
 5. **Pets**: six choices, the current one outlined.
 6. **Watch this on the computer** and a link to the TV's lineup.
 
-Desktop: a 430 px right drawer over the current page. Phone: the Remote tab
+Desktop: a 440 px sheet floating at the right of the current page. Phone: the Remote tab
 is the panel as a page; from elsewhere it is a bottom sheet. Changes apply
 immediately with a short toast, as today. Every control has a 44 px (desktop)
 or 52–58 px (phone) hit target.
@@ -191,14 +209,14 @@ or 52–58 px (phone) hit target.
 
 | | Desktop (>= 700 px) | Phone (< 700 px) |
 | --- | --- | --- |
-| Navigation | left sidebar, 224 px | bottom tabs (5) |
-| Top bar | page title, search box (`/` focuses), Play-to chip with name, user | page title, compact Play-to chip (short device name) |
-| Rows | horizontal shelves, 252 px landscape cards, 150 px posters | shelves bleed to the screen edge, 224 px / 116 px, scroll snap |
-| Hero | 360 px, text on the left over a gradient | 420 px, full width, text at the bottom |
-| Guide | 200 px channel column (number, logo, name), 5 px per minute | 64 px column (logo only), 3.2 px per minute, preview image hidden |
-| Detail | poster 220 px beside title and actions | poster 112 px beside title; synopsis and actions full width |
-| Sheets | right drawer, 430 px | bottom sheet, up to 90 % height, grab handle |
-| Now-playing bar | full controls, 74 px | art, title, pause, remote; 62 px; hidden on the Remote tab |
+| Navigation | top tab bar: centred capsule with six tabs; wordmark left; Play-to chip, Devices and Settings icons and the user right; transparent over heroes, blurred material once scrolled | bottom tab bar (5), blurred material, 54 px targets |
+| Page title | large title, 40 px, under the bar (none on Home and detail pages) | large title, 34 px; when it scrolls away a 17 px title appears in the navigation bar |
+| Rows | horizontal shelves bleeding to the window edge, 300 px landscape cards, 176 px posters, 24 px gaps | 248 px / 118 px, 14 px gaps, scroll snap |
+| Hero | full-bleed, 74 % of the window height (500 to 740 px), fades into the page; the first row overlaps its lower edge | 560 px, text and full-width buttons at the bottom |
+| Guide | 210 px channel column (number, logo, name), 5 px per minute | 64 px column (logo only), 3.2 px per minute, preview image hidden |
+| Detail | full-bleed backdrop with title art, then the episode shelf and a related shelf | same, 600 px backdrop; buttons wrap to full width |
+| Sheets | 440 px sheet floating at the right, 12 px from the edges, 26 px radius | bottom sheet up to 92 % high with a grabber, 24 px top radius |
+| Now-playing bar | floating capsule, at most 960 px wide, 72 px high | 62 px capsule floating above the tab bar; hidden on the Remote tab |
 
 The breakpoint is the window width, not the device: a narrow PC window gets the
 phone layout. Both layouts are one page and one set of components.
@@ -257,42 +275,110 @@ CSP has `img-src 'self'`). All remote art therefore goes through the relay:
   covers them.
 
 Every art slot has a deterministic placeholder (colour from the title, the
-title in serif), used while loading, when blocked, and when no art exists, so
+title in heavy sans), used while loading, when blocked, and when no art exists, so
 the grid never collapses.
 
 ## 9. Accessibility
 
 - **Keyboard and remote-style navigation on the PC.** Arrow keys move focus to
   the nearest focusable element in that direction, first within the same region
-  (content, top bar, sidebar, now-playing bar, sheet) and only then across;
-  Enter activates; Esc closes a sheet; Backspace goes back from a detail page;
-  `/` focuses search. Sliders keep left/right, up/down leave them. Rows scroll
-  to keep the focused card visible. This is what a TV remote or a keyboard on a
-  living-room PC needs. The prototype implements all of it.
-- **Focus** is always visible: a 2 px amber outline; cards also lift and get an
-  amber ring. Sheets trap Tab and return focus to their opener.
-- **Contrast**: today's `--dim` (#8c8170) and `--faint` (#6e6455) on the ink
-  background are below 4.5:1 for small text. The design raises them to #a19580
-  and #857a68 and keeps the darker values for decoration only.
-- **Hit targets**: at least 44 px on desktop controls; phone buttons 48 px, pad
-  keys 58 px, list rows 58 px, bottom tabs 58 px.
+  (content, top bar, now-playing bar, sheet; the tab bar on the phone) and only
+  then across. Left and right inside a row stay in that row: the end of a row
+  does not jump to another one. Enter activates. Esc is the remote's Back: it
+  closes a sheet, leaves a text field, goes back from a detail page, otherwise
+  moves focus to the tab bar, and from the tab bar returns Home. Backspace also
+  goes back from a detail page; `/` opens Search. Sliders keep left/right,
+  up/down leave them. Rows scroll smoothly to keep the focused card fully
+  visible, and the page scrolls so the row clears the top bar and the
+  now-playing bar. After Play re-renders the page, focus stays on the same
+  item. This is what a TV remote or a keyboard on a living-room PC needs. The
+  prototype implements all of it.
+- **Focus** is always visible (section 10): cards lift, scale and catch a
+  highlight; buttons, chips and tabs take the focus colour; everything else
+  gets a 2 px ring. Sheets trap Tab and return focus to their opener.
+- **Contrast**: the text tokens give at least 4.5:1 for small text on their
+  backgrounds in both themes (`--label-3` about 5:1); `--label-4` is for
+  decoration only. Text on artwork sits on a dark gradient and is always white.
+- **Hit targets**: at least 44 px on desktop controls (buttons 46 px, tabs
+  40 px inside a 50 px capsule); phone buttons 50 px, pad keys 60 px, list rows
+  60 px, tab bar items 54 px.
 - **Semantics**: navigation landmarks, `aria-current` on the active entry,
   pressed state on chips and segment buttons, `role="switch"` on switches,
   the picker as a `radiogroup`, `role="dialog"` with `aria-modal` on sheets,
   toasts in an `aria-live` region, every image-only button labelled
   ("Play <title>", "Remote <device>").
 - **Motion**: no autoplaying video, no auto-rotating hero, nothing plays sound
-  until the user presses Play; `prefers-reduced-motion` turns off transitions.
+  until the user presses Play; `prefers-reduced-motion` turns off transitions,
+  the card tilt and the sheen.
 
 ## 10. Visual language
 
-Kept from today: `--ink #1c1915`, `--ink-deep`, `--side`, `--rule`,
-`--paper`/`--paper-hi`, `--red #d2553f`, `--amber #ffb547`; serif (Songti SC /
-Noto Serif SC) for headings, titles and buttons; monospace amber for channel
-numbers, times and counts; sans for meta text. Added: `--card`, `--card-hi`,
-`--rule-hi`, a 6 px radius on cards and buttons (today's pages are square; posters
-need a little softness), red progress bars, amber "new" badges, red "live"
-badges. Posters are 2:3, everything else 16:9.
+Revised 2026-10-24. The warm-red serif look of the first version is replaced by
+a style closer to a TV box's system UI; the owner's reference is the Apple TV
+app and tvOS. It evokes that style and copies none of it: no Apple logo, no
+"TV+" marks, no Apple icons or assets; every icon is a simple inline SVG drawn
+for this project.
+
+**Colour tokens.** Dark is the default; the light variant redefines the same
+names. Areas over artwork (hero, detail backdrop, the top bar while it floats
+over them) are pinned to the dark set with a `.dk` class, so text on images is
+always white in both themes.
+
+| Token | Dark | Light | Use |
+| --- | --- | --- | --- |
+| `--bg`, `--bg-2`, `--bg-3` | #0b0b0d, #1a1a1d, #26262b | #f2f2f6, #ffffff, #e4e4ea | page; grouped lists and panels; art placeholders |
+| `--fill`, `--fill-2`, `--fill-3` | white at 8, 14, 24 % | black at 5, 8, 15 % | buttons, chips, guide blocks, tracks |
+| `--label`, `--label-2`, `--label-3` | #f5f5f7, 68 %, 55 % | #111113, 80 %, 66 % | text hierarchy; `--label-4` (about 30 %) is decoration only |
+| `--sep` | white at 10 % | black at 10 % | hairlines |
+| `--mat`, `--mat-thick` | rgba(40,40,46,.52), rgba(26,26,30,.80) | white at 62 %, rgba(248,248,251,.84) | materials, always with the blur |
+| `--focus-bg`, `--focus-fg` | #f5f5f7, #0b0b0d | #111113, #ffffff | focused controls |
+| `--brand` | #ff6b3d, gradient to #ffb05a | same | active phone tab, guide now-line, "new" badges, switches, the primary button's focus ring |
+| `--live`, `--ok` | #ff4b3e, #34c76a | same | "live" badge; online dot |
+
+The tiny TV's own screen (device cards, the remote panel's readout) keeps the
+firmware's amber monospace digits in both themes, because it depicts that
+screen.
+
+**Materials.** `backdrop-filter: saturate(180%) blur(28px)` over `--mat` (tab
+capsule, Play-to chip, badges on artwork) or `--mat-thick` (top bar after
+scrolling, now-playing bar, sheets, toasts, phone tab bar). Without
+backdrop-filter the thick colours are opaque enough to stay legible.
+
+**Shape.** Radii 6 px (badges), 10 px (small buttons, guide blocks), 12 px
+(buttons, posters), 14 px (landscape cards), 16 to 20 px (lists, panels, search
+field, guide), 22 to 26 px (now-playing bar, sheets), fully round for chips and
+tabs. Posters 2:3, everything else 16:9. Shadows: cards `0 8px 22px` at 38 %
+(12 % in light), focused cards `0 30px 56px` at 62 % (26 % in light). In light
+the hero does not fade into the white page: it ends on a darkened lower edge and
+the first row starts below it.
+
+**Motion.** Focus and hover 220 ms `cubic-bezier(.2,.8,.2,1)`; colour changes
+140 ms; fades 260 ms; sheets 380 ms `cubic-bezier(.32,.72,0,1)`, from the right
+on the desktop and from the bottom on the phone; the sheen on a newly focused
+card runs once in 900 ms. `prefers-reduced-motion` turns all of it off.
+
+**Focus.** A focused or hovered card lifts 6 px, scales to 1.07, takes the
+deeper shadow and a soft highlight; under a mouse it also tilts up to about
+4 degrees towards the pointer and the highlight follows the pointer; keyboard
+focus plays one sheen sweep instead. The labels under the card move down 5 px.
+Buttons, chips, tabs and segments take the focus colour (white on dark) and
+scale to 1.05 to 1.07; guide blocks take the focus colour and scale only 1.04;
+list rows get a fill and a 2 px inner ring. On the phone cards scale to 1.04.
+Hovering a card while keyboard focus is in the content moves the focus there,
+so two cards are never raised at once.
+
+**Typography.** System fonts only, no web fonts:
+`-apple-system, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif`,
+tabular figures for numbers and times. Scale: title art 66 px / 800 (52 px for
+long titles, 40 px on the phone); large title 40 px / 700 (34 px phone); live
+and detail headline 32 px / 700; row and sheet titles 22 px / 700 (20 px
+phone); body 15 px; secondary 13 to 14 px; captions 12 px; phone tab labels
+10.5 px. Title art shows the logo image when metadata provides one; otherwise
+the title is set large with a light gradient tinted from the artwork's hue.
+
+**Rhythm.** Content gutter 56 px on the desktop, 16 px on the phone; 24 px
+between cards (14 px phone); rows 30 px apart; space instead of rules and
+borders.
 
 ## 11. API additions
 
@@ -320,30 +406,38 @@ time. Each phase ships on its own; the console keeps working between phases.
 
 | Phase | Scope | Effort |
 | --- | --- | --- |
-| M0 Shell | Shared tokens and components (cards, shelves, sheets, chips, now-playing bar, spatial navigation) as one CSS/JS asset; new sidebar and routes in `console.html`; today's pages mounted under the new entries unchanged | 2 |
+| M0 Shell | Shared tokens (dark, light prepared) and components (cards with focus lift and tilt, shelves, materials, sheets, chips, floating now-playing bar, spatial focus engine with row scrolling and focus restore) as one CSS/JS asset; top tab bar and routes in `console.html`; today's pages mounted under the new entries unchanged | 3 |
 | M1 Play to and remote | `/api/targets`, `POST /api/play` dispatcher, the picker, the remote panel (moving today's dials, pets and pad), `POST /api/sleep`, remembered target | 3.5 |
 | M2 Home | `/api/home` aggregator, Home rows, YouTube thumbnails in the proxy, cached M3U logos | 3 |
-| M3 Live and lineup | Guide grid (needs `desktop-epg`), selected-programme header, Lineup page (moves "adjust groups", presets, size budget) | 3 |
+| M3 Live and lineup | Guide grid (needs `desktop-epg`), selected-programme header, Lineup as the second segment of Live (moves "adjust groups", presets, size budget) | 3 |
 | M4 Series, creators, detail, progress | Poster grid, creator page, detail pages, `/api/progress`, continue-watching rules (Q4) | 4 |
 | M5 Search | Aggregated search, paste-a-link result, add/subscribe from results | 2 |
 | M6 Phone | `remote.html` rebuilt on the same shell with bottom tabs (or one responsive page, Q1); guest view | 3 |
 | M7 Local library | Folder picker, scanner (walk, `.nfo`/poster, filename parsing, low-priority thumbnail extraction), index, detail, playback to the PC and to TVs through the existing ffmpeg paths | 7 |
 | M8 Media servers | Jellyfin and Emby connector (same API family); Plex after | 4 (+2 Plex) |
-| M9 Polish | Accessibility pass, empty/error states, keyboard tests, screenshots for the docs and the website | 2 |
-| **Total** | | **33.5 (35.5 with Plex)** |
+| M9 Polish | Accessibility pass, empty/error states, keyboard tests, light theme checked on every screen, screenshots for the docs and the website | 2.5 |
+| R Rename | RooTV: app and bundle names, installers, data-folder migration with tests, autostart entries, docs and website (section 15); the chosen icon as `.icns`, `.ico`, PNGs and tray templates. Firmware boot text not included | 2 |
+| **Total** | | **37 (39 with Plex)** |
 
 Order: M0 → M1 → M2 are the visible change and can start now; M3 waits for the
 EPG branch; M7 can run in parallel after M1 because it only needs the item
-shape and `POST /api/play`.
+shape and `POST /api/play`. R is independent of the others and can go first or
+last; it needs the icon choice (Q12).
 
 Risks: the console is a 140 KB single file and the phone page 104 KB; moving
 them to a shared asset is the first real cost (M0). Library scanning and
 thumbnail extraction must stay low priority so they never disturb streaming to
 the TVs (the PC is the household's TV server). Logo fetching must not become an
 open URL fetcher. Bilibili rate limits apply to search aggregation exactly as
-today.
+today. Blur materials cost GPU time on old integrated graphics; the thick
+material colours are chosen to work without the blur, so it can be switched
+off per machine.
 
 ## 13. Questions for you to decide
+
+The owner accepted every recommendation in Q1 to Q11 on 2026-10-24. Two were
+revised by the visual update the same day (Q2, Q10); Q12 and Q13 are new and
+open.
 
 **Q1. One responsive page or two pages?** Today the PC console and the phone
 page are separate files with duplicated styles. *Recommendation:* one shared
@@ -354,9 +448,8 @@ view.
 **Q2. What "Lineup" means.** The prototype reads it as the **tiny TV's channel
 list** (what channel up/down cycles through, per TV, with groups, order,
 presets and the size budget), because Live already holds the programme guide.
-*Recommendation:* keep it as its own entry on desktop and under Me on the
-phone. If you meant the EPG itself, Lineup merges into Live as a second tab and
-the TV channel list moves into each device's card.
+*Accepted, then revised:* with the top tab bar it is the second segment of Live
+("Guide | TV lineup") on the desktop and stays under Me on the phone.
 
 **Q3. How Play to remembers.** Per browser, per account, or always ask?
 *Recommendation:* per browser, default on, with the server's auto target as
@@ -389,19 +482,35 @@ M6.
 **Q9. Who sees the library?** *Recommendation:* family members see the whole
 library; guests never; a per-folder "only me" later.
 
-**Q10. Light theme.** *Recommendation:* dark only for now; the tokens make a
-light theme a later CSS change.
+**Q10. Light theme.** *Accepted, then revised:* dark stays the default and ships
+first; the light variant is now designed (section 10, toggle in the prototype)
+and ships in M9.
 
 **Q11. Channel logos.** *Recommendation:* cache at channel-table load time and
 serve locally (section 8); never proxy arbitrary logo URLs on demand.
 
+**Q12. Which app icon?** Three candidates (section 15): A mouse inside a retro
+TV, B a TV with mouse ears, C a mouse resting on a TV. *Recommendation:* B for
+the clearest silhouette at 16 px and in the menu bar; A if a more illustrative
+icon matters more than the small sizes.
+
+**Q13. When to rename?** *Recommendation:* as its own phase R after M0 (so the
+new shell ships under the new name), with the data folder moved automatically
+and the old path still read for one release.
+
 ## 14. Prototype notes
 
-- File: `docs/design/media-center/index.html`, about 120 KB, no dependencies,
+- File: `docs/design/media-center/index.html`, about 160 KB, no dependencies,
   no requests. Hash routes: `#/home`, `#/live`, `#/lineup`, `#/series`, `#/up`,
-  `#/lib`, `#/search`, `#/devices`, `#/settings`, `#/detail/<id>`, and on the
-  phone `#/remote` and `#/me`. Query parameters for demos: `view=phone`,
-  `state=notv|nosubs|biliblocked`, `q=<search>`, `sheet=target|remote:<device>`.
+  `#/lib`, `#/search`, `#/devices`, `#/settings`, `#/brand`, `#/detail/<id>`,
+  and on the phone `#/remote` and `#/me`. Query parameters for demos:
+  `view=phone`, `theme=light`, `logo=a|b|c`, `state=notv|nosubs|biliblocked`,
+  `q=<search>`, `sheet=target|remote:<device>`, `chrome=0` (hides the prototype
+  panel).
+- The product names are the constants `BRAND` and `BRAND_ZH`; the app icons,
+  tray icons and wordmark come from one builder in the page (between the
+  `BRAND-ICONS` markers), which `brand/export.mjs` also uses to write the
+  standalone SVG files.
 - The clock is fixed at 20:12 so screenshots are repeatable. All titles,
   creators, programmes and covers are invented placeholders.
 - Not prototyped: the add-folder flow, the media server sign-in, family and
@@ -409,6 +518,63 @@ serve locally (section 8); never proxy arbitrary logo URLs on demand.
 - Screenshots for review are generated into `.shots/` (git-ignored) from the
   file with a headless browser at 1440x900 (desktop) and 390x844 (phone); they
   are not part of the repository.
-- Verified: renders in a Chromium-based browser at both sizes, all routes and
-  sheets open, arrow-key navigation reaches rows, guide blocks and the sidebar.
-  Not verified: Safari and Firefox, screen readers, a real touch device.
+- Verified: renders in a Chromium-based headless browser at both sizes and in
+  both themes with no console errors and no network requests; all routes and
+  sheets open; arrow-key navigation reaches the hero, rows, guide blocks and the
+  tab bar, and Esc walks back as described in section 9. Not verified: Safari
+  and Firefox (backdrop-filter and the focus tilt in particular), screen
+  readers, a real touch device, real mouse hover (the tilt was exercised only
+  in code review).
+
+## 15. Name and brand
+
+Decided 2026-10-24: the product is **RooTV**. Its Chinese name (four characters
+meaning "little mouse TV", written out in the Chinese peer of this document and
+in `BRAND_ZH`) is used wherever a Chinese UI needs a product name: window and
+tab titles, the About row, the installer, empty states that name the product.
+The wordmark always reads "RooTV". The tiny TV hardware keeps its generic name in
+the UI. In the prototype the two names live in `BRAND` and `BRAND_ZH` and
+nowhere else.
+
+**Wordmark.** Geometric round-cap strokes, no font: "Roo" in the label colour,
+"TV" in coral, so the exported file looks the same everywhere. A stacked lock-up
+adds the Chinese name beneath; in the exported file that line is live text and
+must be converted to outlines before production use.
+
+**App icon: three candidates, not chosen yet (Q12).**
+
+- **A, mouse in the TV**: a mouse peeking up inside a cream retro TV with
+  antennas; coral background, matching the UI accent.
+- **B, TV with mouse ears**: the TV is the mouse's head, two round ears on top
+  and the screen as its face; night-blue background. Simplest silhouette.
+- **C, mouse on the TV**: a mouse resting its paws on a TV whose screen shows a
+  play symbol; warm yellow background.
+
+Each has a 1024 master on a superellipse ("squircle") background, used from
+64 px up; a simplified small version for 16 to 32 px (no whiskers, paws,
+antenna tips or highlights, larger features); and a single-colour tray
+template on a 32 grid, black on transparent, which macOS recolours for light and
+dark menu bars (Windows uses the same shape in white or black). All three are
+original drawings and use no existing cartoon character or platform mark. The
+prototype's Brand page (`#/brand`) shows each at 1024 (scaled), 180, 64, 32 and
+16 px, in light and dark menu bars, and in lock-ups with the wordmark and the
+Chinese name; "Try in the top bar" swaps it into the page header.
+
+**Files.** In `docs/design/media-center/brand/`: `icon-{a,b,c}.svg`,
+`icon-{a,b,c}-small.svg`, `tray-{a,b,c}.svg`, `wordmark-rootv.svg`,
+`wordmark-rootv-white.svg`, `wordmark-lockup-zh.svg`,
+`wordmark-lockup-zh-white.svg`. They are written by
+`node docs/design/media-center/brand/export.mjs` from the builder inside the
+prototype, so the page and the files cannot drift. `.icns`, `.ico` and PNG
+sizes are produced from them once an icon is chosen (phase R).
+
+**Rename scope** (phase R; timing is Q13). What carries the old name today:
+
+| Area | Today | Change |
+| --- | --- | --- |
+| Desktop app | macOS `Xiaozhi TV.app` with executable `XiaozhiTV`; tray menu and About | `RooTV.app`; Chinese display name where the system shows localised names |
+| Installers and archives | `XiaozhiTV-<ver>-macos-<arch>.dmg`, `XiaozhiTV-<ver>-windows-x64.zip` and the setup built from `packaging/desktop/xiaozhi-tv.iss` (app name, Start menu and desktop shortcuts, uninstaller), `xiaozhi-tv-<ver>-linux-x86_64.tar.gz` | `RooTV-<ver>-...` and `rootv-<ver>-linux-...`; the Windows setup upgrades or removes the old installation cleanly |
+| Data folder | `XiaozhiTV` (`xiaozhi-tv` on Linux) from `tools/datadir.py` and `desktop/paths.py`; variables `XIAOZHI_TV_DATA` and `XIAOZHI_TV_CORE`; autostart entries named `XiaozhiTV` (`desktop/autostart.py`, the Windows Run key) | new folder `RooTV` (`rootv` on Linux); on first start move the old folder when the new one does not exist; read the old path and variables for one more release; replace the old autostart entry rather than adding a second |
+| Pages and documents | console and phone page titles and icons, README, user documents, screenshots | new name and icon; the CHANGELOG records the rename |
+| Website | `packaging/site/` with the download page | name, icon, download file names |
+| Tiny TV boot text | product name on the firmware's boot screen and settings page | firmware change, assessed separately; not in phase R's estimate |

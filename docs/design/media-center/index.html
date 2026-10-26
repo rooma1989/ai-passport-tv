@@ -1,504 +1,632 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#1c1915">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b0b0d">
 <!-- 原型不发任何网络请求：CSP 只许内联样式、内联脚本和 data: 图片。 -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
-<title>小智电视 · 家庭媒体中心（原型）</title>
+<title>小鼠电视 RooTV · 家庭媒体中心（原型）</title>
 <style>
-/* 设计原型（docs/superpowers/specs/2026-10-24-media-center-ui-design.md）。颜色和字体沿用 console.html / remote.html，
-   只把 --dim / --faint 调亮了一档（小字对比度够 4.5:1）。所有封面、台标都是 SVG 画的占位图，数据是假的。 */
-:root {
-  --ink: #1c1915; --ink-deep: #0f0d0b; --side: #161310; --card: #25211b; --card-hi: #302a22; --rule: #3a342b; --rule-hi: #5a5042;
-  --paper: #e6dcc8; --paper-hi: #f2e9d6; --dim: #a19580; --faint: #857a68; --red: #d2553f; --red-hi: #e46a52;
-  --amber: #ffb547; --amber-soft: #f3dfb4; --r: 6px;
-  --serif: "Songti SC", "STSong", "Noto Serif SC", serif;
-  --mono: "Menlo", "SF Mono", ui-monospace, monospace;
-  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+/* 设计原型（docs/superpowers/specs/2026-10-24-media-center-ui-design.md 第 10 节「视觉语言」）。
+   风格向电视盒子的系统界面靠：大圆角卡片、柔和阴影、焦点时卡片浮起放大带一点视差和反光、毛玻璃材质、顶部标签栏。
+   只用系统字体，不加载任何字体或图片；所有封面、台标、标志都是 SVG / CSS 画的占位，数据是假的。
+   产品名只在脚本里的 BRAND / BRAND_ZH 两个常量里；应用图标、托盘图标和字标由脚本里的 iconSVG / traySVG / wordmarkSVG 画。 */
+
+/* ---- 颜色：默认深色；.dk 把一块区域固定成深色（大图上的文字），.lg 固定成浅色（品牌页的浅色样张） ---- */
+:root, .dk {
+  --bg: #0b0b0d; --bg-2: #1a1a1d; --bg-3: #26262b;
+  --fill: rgba(255,255,255,.08); --fill-2: rgba(255,255,255,.14); --fill-3: rgba(255,255,255,.24);
+  --sep: rgba(255,255,255,.10);
+  --label: #f5f5f7; --label-2: rgba(235,235,245,.68); --label-3: rgba(235,235,245,.55); --label-4: rgba(235,235,245,.28);
+  --on-label: #0b0b0d;
+  --mat: rgba(40,40,46,.52); --mat-thick: rgba(26,26,30,.80); --mat-line: rgba(255,255,255,.12);
+  --focus-bg: #f5f5f7; --focus-fg: #0b0b0d;
+  --sh-card: 0 8px 22px rgba(0,0,0,.38); --sh-focus: 0 30px 56px rgba(0,0,0,.62);
+  color-scheme: dark;
 }
+:root[data-theme=light], .lg {
+  --bg: #f2f2f6; --bg-2: #ffffff; --bg-3: #e4e4ea;
+  --fill: rgba(0,0,0,.05); --fill-2: rgba(0,0,0,.08); --fill-3: rgba(0,0,0,.15);
+  --sep: rgba(0,0,0,.10);
+  --label: #111113; --label-2: rgba(60,60,67,.80); --label-3: rgba(60,60,67,.66); --label-4: rgba(60,60,67,.30);
+  --on-label: #ffffff;
+  --mat: rgba(255,255,255,.62); --mat-thick: rgba(248,248,251,.84); --mat-line: rgba(0,0,0,.08);
+  --focus-bg: #111113; --focus-fg: #ffffff;
+  --sh-card: 0 6px 16px rgba(0,0,0,.12); --sh-focus: 0 24px 44px rgba(0,0,0,.26);
+  color-scheme: light;
+}
+:root {
+  --page: #0b0b0d;
+  --brand: #ff6b3d; --brand-2: #ffb05a; --live: #ff4b3e; --ok: #34c76a; --warn: #ffb340;
+  --r-xs: 6px; --r-s: 10px; --r-m: 14px; --r-l: 20px; --r-xl: 28px;
+  --ease: cubic-bezier(.2,.8,.2,1); --ease-sheet: cubic-bezier(.32,.72,0,1);
+  --t-fast: .14s; --t-focus: .22s; --t-sheet: .38s; --t-fade: .26s;
+  --blur: saturate(180%) blur(28px);
+  --sans: -apple-system, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+  --g: 56px; --topH: 76px; --sat: 0px; --sab: 0px;
+}
+:root[data-theme=light] { --page: #f2f2f6; }
+
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { margin: 0; height: 100%; background: #0b0a08; color: var(--paper); font: 15px/1.5 var(--sans); }
+html, body { margin: 0; height: 100%; background: var(--page); color: var(--label); font: 15px/1.45 var(--sans); -webkit-font-smoothing: antialiased; }
 button, select, input { font: inherit; color: inherit; }
 button { background: none; border: 0; padding: 0; cursor: pointer; text-align: inherit; }
 button:disabled { cursor: default; opacity: .45; }
 a { color: inherit; text-decoration: none; }
 :focus { outline: none; }
-:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; border-radius: 4px; }
+:focus-visible { outline: 2px solid var(--label); outline-offset: 3px; border-radius: 8px; }
 [hidden] { display: none !important; }
 svg { display: block; }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+.num { font-variant-numeric: tabular-nums; }
 
 /* ---- 舞台：桌面铺满；「手机」时套一个 390×844 的框 ---- */
 #stage { height: 100vh; display: flex; }
-#stage.framed { align-items: center; justify-content: center; background: radial-gradient(circle at 50% 30%, #2a241d, #0b0a08 70%); }
-#app { position: relative; flex: 1; height: 100vh; overflow: hidden; background: var(--ink);
-       display: grid; grid-template-columns: 224px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
-#stage.framed #app { flex: none; width: 410px; height: 864px; border: 10px solid #050403; border-radius: 48px;
-                     box-shadow: 0 30px 80px rgba(0,0,0,.6), 0 0 0 1px #3a342b; }
+#stage.framed { align-items: center; justify-content: center; background: radial-gradient(circle at 50% 30%, var(--bg-3), var(--page) 72%); }
+#app { position: relative; flex: 1; height: 100vh; overflow: hidden; background: var(--page); }
+#stage.framed #app { flex: none; width: 410px; height: 864px; border: 10px solid #000; border-radius: 54px; --sat: 44px; --sab: 22px;
+                     box-shadow: 0 30px 80px rgba(0,0,0,.45), 0 0 0 1px var(--sep); }
+#sbar { display: none; }
+#stage.framed #sbar { display: flex; position: absolute; z-index: 30; left: 0; right: 0; top: 0; height: 44px; padding: 14px 34px 0; justify-content: space-between;
+                      font: 600 15px var(--sans); pointer-events: none; color: var(--label); }
+#stage.framed #sbar i { width: 26px; height: 12px; border-radius: 3px; border: 1.5px solid currentColor; opacity: .8; }
+#stage.framed #app.herotop:not(.scrolled) #sbar { color: #fff; }
 
-/* ---- 原型选项（不是产品的一部分） ---- */
-#proto { position: fixed; z-index: 50; left: 12px; bottom: 12px; width: 200px; padding: 10px 12px; border: 1px dashed var(--rule-hi);
-         background: rgba(15,13,11,.92); border-radius: 8px; font-size: 12px; color: var(--dim); display: grid; gap: 8px; }
-#proto b { color: var(--amber); font: 12px var(--mono); letter-spacing: 1px; }
-#proto .seg { display: flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; }
-#proto .seg button { flex: 1; padding: 5px 0; text-align: center; color: var(--dim); }
-#proto .seg button[aria-pressed=true] { background: var(--paper-hi); color: var(--ink); }
-#proto select { width: 100%; background: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 5px; color: var(--paper); }
-#stage.framed ~ #proto, #proto.framed { left: 24px; top: 24px; bottom: auto; }
+/* ---- 原型面板（不是产品的一部分） ---- */
+#proto { position: fixed; z-index: 50; left: 12px; bottom: 12px; width: 214px; padding: 12px; border: 1px dashed var(--label-4); border-radius: 16px;
+         background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); font-size: 12px; color: var(--label-2); display: grid; gap: 8px; }
+#proto b { color: var(--brand); font: 700 12px var(--sans); letter-spacing: .04em; }
+#proto .seg { display: flex; padding: 2px; border-radius: 9px; background: var(--fill); }
+#proto .seg button { flex: 1; padding: 4px 0; text-align: center; border-radius: 7px; color: var(--label-2); }
+#proto .seg button[aria-pressed=true] { background: var(--fill-3); color: var(--label); font-weight: 600; }
+#proto select { width: 100%; margin-top: 3px; background: var(--fill); border: 0; border-radius: 8px; padding: 5px; color: var(--label); }
+#proto a { color: var(--label); font-weight: 600; }
+#proto.framed { left: 24px; top: 24px; bottom: auto; }
 #proto.mhide { display: none; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 
-/* ---- 侧边导航 ---- */
-#side { grid-row: 1 / 3; background: var(--side); border-right: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; }
-.brand { padding: 22px 22px 14px; }
-.brand b { display: block; font: 700 22px/1 var(--serif); letter-spacing: 4px; color: var(--paper-hi); }
-.brand span { display: block; margin-top: 8px; font-size: 11px; color: var(--red); letter-spacing: 3px; }
-#nav { flex: 1; overflow-y: auto; padding: 6px 10px 150px; }
-#nav a { display: flex; align-items: center; gap: 12px; padding: 9px 12px; margin: 2px 0; border-radius: var(--r);
-         color: var(--dim); font: 16px var(--serif); letter-spacing: 1px; }
-#nav a:hover { background: var(--card); color: var(--paper-hi); }
-#nav a[aria-current=page] { background: var(--card-hi); color: var(--paper-hi); box-shadow: inset 3px 0 0 var(--red); }
-#nav a em { margin-left: auto; font: 11px var(--mono); font-style: normal; color: var(--ink); background: var(--amber); border-radius: 9px; padding: 0 6px; }
-#nav .sep { height: 1px; background: var(--rule); margin: 8px 12px; }
+/* ---- 主滚动区 ---- */
+#main { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--fill-3) transparent; }
+#view { padding: calc(var(--topH) + 12px) var(--g) 140px; }
+#view.bleed { padding-top: 0; }
+.ph { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin: 8px 0 22px; }
+.lt { margin: 0; font: 700 40px/1.1 var(--sans); letter-spacing: -.01em; }
 
-/* ---- 主区和顶栏 ---- */
-#main { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
-.top { position: sticky; top: 0; z-index: 6; display: flex; align-items: center; gap: 14px; padding: 14px 32px 12px;
-       background: linear-gradient(var(--ink) 75%, rgba(28,25,21,0)); }
-.top h1 { margin: 0; font: 600 22px var(--serif); letter-spacing: 3px; color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.iconbtn { width: 38px; height: 38px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--paper); }
-.iconbtn:hover { background: var(--card); }
-.sbox { flex: 1; max-width: 400px; margin-left: 12px; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px;
-        background: var(--card); border: 1px solid var(--rule); border-radius: 999px; color: var(--dim); }
-.sbox input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--paper-hi); }
-.sbox kbd { font: 11px var(--mono); color: var(--faint); border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; }
-.sbox:focus-within { border-color: var(--rule-hi); }
-.tchip { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px 0 12px; border: 1px solid var(--rule);
-         border-radius: 999px; color: var(--paper-hi); font: 14px var(--serif); white-space: nowrap; }
-.tchip:hover { border-color: var(--rule-hi); background: var(--card); }
-.tchip small { color: var(--dim); font: 12px var(--sans); }
-.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--amber); box-shadow: 0 0 6px rgba(255,181,71,.6); }
-.dot.off { background: var(--faint); box-shadow: none; }
-.me { width: 34px; height: 34px; flex: none; border-radius: 50%; background: #5b3a2e; color: var(--paper-hi); display: grid; place-items: center; font: 600 15px var(--serif); }
-#view { padding: 0 32px 40px; }
+/* ---- 顶部标签栏（桌面）/ 导航栏（手机） ---- */
+#top { position: absolute; z-index: 8; left: 0; right: 0; top: 0; height: var(--topH); display: flex; align-items: center; gap: 16px; padding: 0 var(--g);
+       color: var(--label); transition: background var(--t-fade) var(--ease), box-shadow var(--t-fade) var(--ease); }
+#top.solid { background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 1px 0 var(--mat-line); }
+#top.dk:not(.solid) { background: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,0)); }
+#top .tl, #top .tr { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 10px; }
+#top .tr { justify-content: flex-end; }
+.wml { display: inline-flex; padding: 6px 8px; margin-left: -8px; border-radius: 10px; }
+.ttabs { flex: none; display: flex; gap: 2px; padding: 5px; border-radius: 999px; background: var(--mat); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: inset 0 0 0 1px var(--mat-line); }
+.ttabs a { position: relative; height: 40px; padding: 0 20px; border-radius: 999px; display: flex; align-items: center; gap: 6px; font: 600 15px var(--sans); color: var(--label-2);
+           transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast), box-shadow var(--t-focus); }
+.ttabs a:hover { color: var(--label); }
+.ttabs a[aria-current=page] { background: var(--fill-2); color: var(--label); }
+.ttabs a em { position: absolute; top: 4px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--brand); color: #fff; font: 700 10px/16px var(--sans); font-style: normal; text-align: center; }
+.ttabs a:focus-visible, .iconbtn:focus-visible, .wml:focus-visible, .tchip:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); transform: scale(1.06); box-shadow: 0 10px 26px rgba(0,0,0,.35); }
+.ntitle { display: none; }
+.iconbtn { width: 44px; height: 44px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--label);
+           transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast), box-shadow var(--t-focus); }
+.iconbtn:hover, .iconbtn[aria-current=page] { background: var(--fill-2); }
+.tchip { flex: none; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 999px; background: var(--mat); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+         box-shadow: inset 0 0 0 1px var(--mat-line); color: var(--label); font: 600 14px var(--sans); white-space: nowrap;
+         transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast), box-shadow var(--t-focus); }
+.tchip:hover { background: var(--fill-2); }
+.tchip small { color: var(--label-3); font: 500 12px var(--sans); }
+.tchip:focus-visible small { color: inherit; opacity: .7; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ok); }
+.dot.off { background: var(--label-4); }
+.me { width: 36px; height: 36px; flex: none; border-radius: 50%; background: linear-gradient(135deg, #8e6cf0, #4b7bea); color: #fff; display: grid; place-items: center; font: 700 15px var(--sans); }
+@media (max-width: 1180px) { .d #top .tchip small, .d .ttabs a svg { display: none; } .d .ttabs a { padding: 0 14px; } }
 
-/* ---- 通用 ---- */
-.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: var(--r); white-space: nowrap;
-       background: var(--card-hi); border: 1px solid var(--rule); color: var(--paper-hi); font: 16px var(--serif); letter-spacing: 1px; }
-.btn:hover { border-color: var(--rule-hi); }
-.btn.pri { background: var(--red); border-color: var(--red); color: #fff4e6; }
-.btn.pri:hover { background: var(--red-hi); }
-.btn small { font: 12px var(--sans); letter-spacing: 0; opacity: .85; }
-.btn.sm { height: 34px; padding: 0 12px; font-size: 14px; }
-.btn.ghost { background: none; }
-.split { display: inline-flex; }
-.split .btn:first-child { border-radius: var(--r) 0 0 var(--r); }
-.split .btn.caret { border-radius: 0 var(--r) var(--r) 0; padding: 0 10px; border-left: 1px solid rgba(15,13,11,.35); }
-.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 18px; }
-.chips button, .chips a { height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--rule); color: var(--dim); font: 14px var(--serif); display: inline-flex; align-items: center; gap: 6px; }
-.chips button:hover, .chips a:hover { color: var(--paper-hi); border-color: var(--rule-hi); }
-.chips [aria-pressed=true] { background: var(--paper-hi); border-color: var(--paper-hi); color: var(--ink); }
-.chips em { font: 11px var(--mono); font-style: normal; opacity: .7; }
-.hint { color: var(--faint); font-size: 12px; margin: 8px 0 0; }
-.mono { font-family: var(--mono); }
-.h2 { display: flex; align-items: baseline; gap: 12px; margin: 30px 0 12px; }
-.h2 h2 { margin: 0; font: 600 19px var(--serif); letter-spacing: 2px; color: var(--paper-hi); }
-.h2 small { color: var(--faint); font-size: 12px; }
-.h2 .more { margin-left: auto; color: var(--dim); font-size: 13px; }
-.h2 .more:hover { color: var(--paper-hi); }
-.banner { display: flex; gap: 14px; align-items: center; margin: 4px 0 18px; padding: 14px 18px; border-radius: 8px; border: 1px solid var(--rule); background: var(--card); }
-.banner.warn { border-color: #6b3b2c; background: #2b1d17; }
-.banner b { display: block; font: 600 16px var(--serif); color: var(--paper-hi); }
-.banner p { margin: 2px 0 0; font-size: 13px; color: var(--dim); }
+/* ---- 标志：图标和字标都是脚本里的 SVG（iconSVG / wordmarkSVG），这里只管摆放 ---- */
+.wml { gap: 10px; align-items: center; color: var(--label); }
+.wml > svg:first-child { flex: none; filter: drop-shadow(0 2px 6px rgba(0,0,0,.25)); }
+.wml:focus-visible { color: var(--focus-fg); }
+/* ---- 通用控件 ---- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 46px; padding: 0 22px; border-radius: 12px; white-space: nowrap;
+       background: var(--fill-2); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); color: var(--label); font: 600 16px var(--sans);
+       transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast), box-shadow var(--t-focus); }
+.btn:hover { background: var(--fill-3); }
+.btn.pri { background: var(--label); color: var(--on-label); }
+.btn.pri:hover { background: var(--label); opacity: .92; }
+.btn small { font: 500 13px var(--sans); opacity: .7; }
+.btn.sm { height: 36px; padding: 0 14px; font-size: 14px; border-radius: 10px; }
+.btn.ghost { background: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.btn:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); transform: scale(1.06); box-shadow: 0 14px 30px rgba(0,0,0,.4); opacity: 1; }
+.btn.pri:focus-visible { box-shadow: 0 14px 30px rgba(0,0,0,.4), 0 0 0 3px var(--brand); }
+.split { display: inline-flex; gap: 2px; }
+.split .btn:first-child { border-radius: 12px 4px 4px 12px; }
+.split .btn.caret { border-radius: 4px 12px 12px 4px; padding: 0 12px; }
+.chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 22px; }
+.chips button, .chips a { height: 38px; padding: 0 16px; border-radius: 999px; background: var(--fill); color: var(--label-2); font: 600 14px var(--sans); display: inline-flex; align-items: center; gap: 6px; text-align: center;
+                          transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast); }
+.chips button:hover, .chips a:hover { background: var(--fill-2); color: var(--label); }
+.chips [aria-pressed=true] { background: var(--label); color: var(--on-label); }
+.chips em { font: 600 11px var(--sans); font-style: normal; opacity: .6; font-variant-numeric: tabular-nums; }
+.chips :focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); transform: scale(1.07); box-shadow: 0 10px 24px rgba(0,0,0,.3); }
+.segc { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--fill); }
+.segc a { height: 34px; padding: 0 18px; border-radius: 9px; display: flex; align-items: center; font: 600 14px var(--sans); color: var(--label-2); transition: transform var(--t-focus) var(--ease); }
+.segc a[aria-current=page] { background: var(--fill-3); color: var(--label); box-shadow: 0 2px 6px rgba(0,0,0,.18); }
+.segc a:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); transform: scale(1.05); }
+.hint { color: var(--label-3); font-size: 13px; margin: 12px 0 0; max-width: 900px; }
+.h2 { display: flex; align-items: baseline; gap: 12px; margin: 30px 0 0; }
+.h2 h2 { margin: 0; font: 700 22px var(--sans); letter-spacing: -.005em; }
+.h2 small { color: var(--label-3); font-size: 13px; }
+.h2 .more { margin-left: auto; color: var(--label-2); font: 600 14px var(--sans); padding: 4px 10px; border-radius: 8px; }
+.h2 .more:hover { color: var(--label); background: var(--fill); }
+.banner { display: flex; gap: 16px; align-items: center; margin: 0 0 22px; padding: 16px 20px; border-radius: 18px; background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: inset 0 0 0 1px var(--mat-line); }
+.banner b { display: block; font: 600 16px var(--sans); }
+.banner p { margin: 2px 0 0; font-size: 14px; color: var(--label-2); }
 .banner .btn { margin-left: auto; }
-.banner .ico { color: var(--amber); flex: none; }
-.banner.warn .ico { color: var(--red); }
-.empty { text-align: center; padding: 56px 20px; border: 1px dashed var(--rule); border-radius: 10px; color: var(--dim); }
-.empty b { display: block; margin: 14px 0 6px; font: 600 20px var(--serif); color: var(--paper-hi); letter-spacing: 2px; }
-.empty p { margin: 0 auto 18px; max-width: 420px; font-size: 14px; }
-.empty svg { margin: 0 auto; color: var(--faint); }
+.banner .ico { width: 40px; height: 40px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--fill); color: var(--brand); }
+.banner.warn .ico { color: var(--warn); }
+.empty { text-align: center; padding: 64px 24px; border-radius: var(--r-l); background: var(--bg-2); color: var(--label-2); }
+.empty .eic { width: 88px; height: 88px; margin: 0 auto; border-radius: 50%; background: var(--fill); display: grid; place-items: center; color: var(--label-2); }
+.empty b { display: block; margin: 18px 0 6px; font: 700 22px var(--sans); color: var(--label); }
+.empty p { margin: 0 auto 20px; max-width: 440px; font-size: 15px; }
+.tag { display: inline-block; font: 600 12px var(--sans); padding: 4px 9px; border-radius: 7px; background: var(--fill); color: var(--label-2); white-space: nowrap; }
+.sw { position: relative; width: 51px; height: 31px; flex: none; border-radius: 16px; background: var(--fill-3); transition: background var(--t-fast); }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.25); transition: transform var(--t-focus) var(--ease); }
+.sw[aria-checked=true] { background: var(--brand); }
+.sw[aria-checked=true]::after { transform: translateX(20px); }
+.sw:focus-visible { outline: 2px solid var(--label); outline-offset: 3px; border-radius: 16px; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 30px; background: transparent; margin: 0; }
+input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: var(--fill-3); }
+input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: var(--fill-3); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 26px; margin-top: -10px; border-radius: 50%; background: #fff; border: 0; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+input[type=range]::-moz-range-thumb { width: 26px; height: 26px; border-radius: 50%; background: #fff; border: 0; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+input[type=range]:focus-visible { outline: 2px solid var(--label); outline-offset: 2px; border-radius: 8px; }
 
-/* ---- 卡片和货架 ---- */
-.shelf { display: flex; gap: 14px; overflow-x: auto; scroll-snap-type: x proximity; padding: 4px 4px 12px; margin: 0 -4px; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+/* ---- 卡片和货架：焦点 = 浮起 + 放大 + 反光；鼠标在上面时跟着指针轻微倾斜 ---- */
+.shelf { display: flex; gap: 24px; overflow-x: auto; overflow-y: hidden; padding: 16px var(--g) 30px; margin: 0 calc(-1 * var(--g)); scroll-padding-inline: var(--g); scroll-snap-type: x proximity; scrollbar-width: none; }
+.shelf::-webkit-scrollbar { display: none; }
 .shelf > * { flex: none; scroll-snap-align: start; }
-.card { display: block; width: 252px; text-align: left; }
-.card.p { width: 150px; }
-.card .art { position: relative; display: block; width: 100%; border-radius: var(--r); overflow: hidden; aspect-ratio: 16 / 9; background: var(--card); transition: transform .15s, box-shadow .15s; }
-.card.p .art { aspect-ratio: 2 / 3; }
+.card { display: block; width: 300px; text-align: left; border-radius: var(--r-m); scroll-margin: calc(var(--topH) + 30px) var(--g) 150px; }
+.card.p { width: 176px; }
+.card .art { position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: var(--r-m); overflow: hidden; background: var(--bg-3); box-shadow: var(--sh-card);
+             transform: perspective(900px) translateY(var(--lift, 0px)) scale(var(--sc, 1)) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+             transition: transform var(--t-focus) var(--ease), box-shadow var(--t-focus) var(--ease); }
+.card.p .art { aspect-ratio: 2 / 3; border-radius: 12px; }
 .card .art > svg { width: 100%; height: 100%; }
-.card:hover .art, .card:focus-visible .art { transform: translateY(-2px); box-shadow: 0 0 0 2px var(--rule-hi), 0 10px 24px rgba(0,0,0,.4); }
+.card .art::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity var(--t-focus) var(--ease);
+                    background: radial-gradient(130% 90% at var(--mx, 50%) var(--my, 0%), rgba(255,255,255,.30), rgba(255,255,255,.06) 42%, rgba(255,255,255,0) 68%);
+                    box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
+.card .art::before { content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none; opacity: 0;
+                     background: linear-gradient(105deg, rgba(255,255,255,0) 35%, rgba(255,255,255,.22) 50%, rgba(255,255,255,0) 65%); transform: translateX(-120%); }
+.card:is(:hover, :focus-visible):not(:disabled) .art { --lift: -6px; --sc: 1.07; box-shadow: var(--sh-focus); }
+.card:is(:hover, :focus-visible):not(:disabled) .art::after { opacity: 1; }
+.card:focus-visible .art::before { animation: sheen .9s var(--ease) .06s both; }
+@keyframes sheen { from { opacity: 1; transform: translateX(-120%); } to { opacity: 1; transform: translateX(120%); } }
 .card:focus-visible { outline: none; }
-.card:focus-visible .art { box-shadow: 0 0 0 3px var(--amber), 0 10px 24px rgba(0,0,0,.4); }
-.card .t { display: block; margin-top: 8px; font: 15px/1.35 var(--serif); color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .s { display: block; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .s2 { display: block; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pbar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(15,13,11,.6); }
-.pbar i { display: block; height: 100%; background: var(--red); }
-.badge { position: absolute; top: 8px; left: 8px; font: 11px/1 var(--sans); padding: 4px 6px; border-radius: 3px; background: rgba(15,13,11,.8); color: var(--paper-hi); }
-.badge.r { left: auto; right: 8px; }
-.badge.live { background: var(--red); color: #fff4e6; }
-.badge.new { background: var(--amber); color: var(--ink); }
+.card .t, .card .s, .card .s2, .card .who { transition: transform var(--t-focus) var(--ease); }
+.card:is(:hover, :focus-visible):not(:disabled) :is(.t, .s, .s2, .who) { transform: translateY(5px); }
+.card .t { display: block; margin-top: 12px; font: 600 15px/1.35 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .s { display: block; margin-top: 1px; font-size: 13px; color: var(--label-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .s.go { color: var(--brand); font-weight: 600; }
+.card .s2 { display: block; font-size: 12px; color: var(--label-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pbar { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.32); overflow: hidden; z-index: 2; }
+.pbar i { display: block; height: 100%; border-radius: 2px; background: #fff; }
+.badge { position: absolute; z-index: 2; top: 10px; left: 10px; font: 700 11px/1 var(--sans); letter-spacing: .02em; padding: 5px 7px; border-radius: var(--r-xs); background: rgba(0,0,0,.52);
+         -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); color: #fff; display: inline-flex; align-items: center; gap: 3px; }
+.badge.r { left: auto; right: 10px; }
+.badge.live { background: var(--live); }
+.badge.new { background: var(--brand); }
 .badge.b { bottom: 10px; top: auto; }
-.logo-on { position: absolute; left: 8px; bottom: 10px; width: 52px; }
-.playov { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; transition: opacity .15s; background: rgba(15,13,11,.25); }
-.playov span { width: 46px; height: 46px; border-radius: 50%; background: rgba(15,13,11,.7); display: grid; place-items: center; color: var(--paper-hi); box-shadow: 0 0 0 1px rgba(242,233,214,.4); }
-.card:hover .playov, .card:focus-visible .playov { opacity: 1; }
-.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 24px 16px; }
+.logo-on { position: absolute; z-index: 2; left: 12px; bottom: 22px; width: 52px; }
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 34px 24px; }
+.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 34px 24px; }
 .pgrid .card, .wgrid .card { width: auto; }
-.wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 22px 16px; }
-.onb { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-.onb a { display: block; padding: 20px; border: 1px dashed var(--rule-hi); border-radius: 10px; }
-.onb a:hover { background: var(--card); }
-.onb b { display: flex; align-items: center; gap: 8px; font: 600 17px var(--serif); color: var(--paper-hi); }
-.onb p { margin: 6px 0 0; font-size: 13px; color: var(--dim); }
+.onb { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-top: 16px; }
+.onb a { display: block; padding: 22px; border-radius: var(--r-l); background: var(--bg-2); box-shadow: var(--sh-card); transition: transform var(--t-focus) var(--ease), box-shadow var(--t-focus); }
+.onb a:hover, .onb a:focus-visible { outline: none; transform: translateY(-4px) scale(1.03); box-shadow: var(--sh-focus); }
+.onb b { display: flex; align-items: center; gap: 10px; font: 700 17px var(--sans); }
+.onb b svg { color: var(--brand); }
+.onb p { margin: 8px 0 0; font-size: 14px; color: var(--label-2); }
 
-/* ---- 首页大图 ---- */
-.hero { position: relative; height: 360px; border-radius: 12px; overflow: hidden; margin-top: 4px; }
-.hero .bg { position: absolute; inset: 0; }
-.hero .bg svg { width: 100%; height: 100%; }
-.hero .shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(15,13,11,.94) 0, rgba(15,13,11,.6) 42%, rgba(15,13,11,0) 72%), linear-gradient(0deg, rgba(15,13,11,.6), transparent 40%); }
-.hero .copy { position: absolute; left: 40px; bottom: 34px; max-width: 480px; }
-.kicker { font-size: 12px; letter-spacing: 3px; color: var(--red); display: flex; align-items: center; gap: 8px; }
+/* ---- 首页大图：铺满宽度，底部渐隐到页面底色，左边是标题图 ---- */
+.hero { position: relative; height: clamp(500px, 74vh, 740px); margin: 0 calc(-1 * var(--g)); overflow: hidden; color: var(--label); }
+.hero .bg, .hero .bg svg, .dhero .bg, .dhero .bg svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.hero .shade, .dhero .shade { position: absolute; inset: 0; background: linear-gradient(0deg, var(--page) 0, rgba(0,0,0,0) 36%), linear-gradient(90deg, rgba(0,0,0,.74) 0, rgba(0,0,0,.38) 36%, rgba(0,0,0,0) 64%); }
+.hero .copy { position: absolute; left: var(--g); bottom: 168px; max-width: 580px; }
+.kicker { font: 700 13px var(--sans); letter-spacing: .08em; color: var(--label-2); display: flex; align-items: center; gap: 8px; }
 .kicker .badge { position: static; }
-.hero h2 { margin: 8px 0 6px; font: 700 40px/1.15 var(--serif); letter-spacing: 5px; color: var(--paper-hi); }
-.meta { font-size: 13px; color: var(--dim); }
-.syn { margin: 10px 0 0; font: 15px/1.7 var(--serif); color: var(--paper); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
-.hero .nav { position: absolute; right: 22px; bottom: 26px; display: flex; gap: 8px; align-items: center; }
-.hero .nav button.dotb { width: 8px; height: 8px; border-radius: 50%; background: rgba(242,233,214,.35); }
-.hero .nav button.dotb[aria-current=true] { background: var(--paper-hi); width: 22px; border-radius: 4px; }
-.hero .nav .iconbtn { background: rgba(15,13,11,.5); }
+.tart { margin: 12px 0 14px; font: 800 66px/1.02 var(--sans); letter-spacing: -.01em; color: #fff; max-width: 11em;
+        background: linear-gradient(180deg, #fff 40%, hsl(var(--h, 30) 90% 84%)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        filter: drop-shadow(0 6px 26px rgba(0,0,0,.35)); }
+.tart.sm { font-size: 52px; }
+.meta { font-size: 14px; color: var(--label-2); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.meta .tag { background: var(--fill-2); color: var(--label); padding: 2px 7px; font-size: 11px; }
+.syn { margin: 12px 0 0; font: 15px/1.6 var(--sans); color: var(--label-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 22px; align-items: center; }
+.hnav { position: absolute; right: var(--g); bottom: 172px; display: flex; gap: 10px; align-items: center; }
+.hnav .dotb { width: 8px; height: 8px; border-radius: 4px; background: var(--fill-3); transition: width var(--t-focus) var(--ease), background var(--t-fast); }
+.hnav .dotb[aria-current=true] { background: var(--label); width: 26px; }
+.hnav .iconbtn { background: var(--mat); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); }
+.after { position: relative; z-index: 1; margin-top: -132px; }
+.after > section:first-child .h2, .after > .banner:first-child { margin-top: 0; }
 .qchips { display: none; }
 
-/* ---- 直播：上面是选中的节目，下面是节目单网格 ---- */
-.lhead { display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 28px; align-items: center; margin: 4px 0 18px; }
-.lprev { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: var(--card); }
+/* ---- 直播：选中的节目 + 节目指南网格 ---- */
+.lhead { display: grid; grid-template-columns: 440px minmax(0, 1fr); gap: 36px; align-items: center; margin: 0 0 24px; }
+.lprev { position: relative; aspect-ratio: 16 / 9; border-radius: var(--r-l); overflow: hidden; background: var(--bg-3); box-shadow: var(--sh-card); }
 .lprev > svg { width: 100%; height: 100%; }
-.lprev .logo-on { width: 64px; left: 12px; top: 12px; bottom: auto; }
-.linfo .ch { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
-.linfo .ch b { font: 600 13px var(--mono); color: var(--amber); }
-.linfo h2 { margin: 6px 0 4px; font: 700 28px/1.3 var(--serif); letter-spacing: 2px; color: var(--paper-hi); }
-.lprog { display: flex; align-items: center; gap: 10px; margin: 10px 0 4px; font: 12px var(--mono); color: var(--dim); max-width: 460px; }
-.lprog .trk { flex: 1; height: 4px; border-radius: 2px; background: var(--rule); overflow: hidden; }
-.lprog .trk i { display: block; height: 100%; background: var(--red); }
-.lnext { font-size: 13px; color: var(--dim); }
-.lnext b { color: var(--paper); font-weight: normal; font-family: var(--serif); }
-.guide { border: 1px solid var(--rule); border-radius: 10px; background: var(--ink-deep); overflow: hidden; }
-.gscroll { overflow: auto; max-height: 560px; position: relative; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+.lprev .logo-on { width: 64px; left: 14px; top: 14px; bottom: auto; }
+.linfo .ch { display: flex; align-items: center; gap: 10px; color: var(--label-2); font-size: 14px; }
+.linfo .ch b { font: 700 14px var(--sans); font-variant-numeric: tabular-nums; color: var(--label); }
+.linfo h2 { margin: 6px 0 4px; font: 700 32px/1.2 var(--sans); }
+.lprog { display: flex; align-items: center; gap: 10px; margin: 12px 0 6px; font: 500 12px var(--sans); font-variant-numeric: tabular-nums; color: var(--label-3); max-width: 480px; }
+.lprog .trk { flex: 1; height: 5px; border-radius: 3px; background: var(--fill-2); overflow: hidden; }
+.lprog .trk i { display: block; height: 100%; border-radius: 3px; background: var(--label); }
+.lnext { font-size: 14px; color: var(--label-2); }
+.lnext b { color: var(--label); font-weight: 600; }
+.guide { border-radius: var(--r-l); background: var(--bg-2); overflow: hidden; box-shadow: inset 0 0 0 1px var(--sep); }
+.gscroll { overflow: auto; max-height: 600px; position: relative; scrollbar-width: thin; scrollbar-color: var(--fill-3) transparent; }
 .ginner { position: relative; }
-.grow { display: flex; height: 62px; border-bottom: 1px solid #241f19; }
-.gch { position: sticky; left: 0; z-index: 3; flex: none; width: var(--chw); display: flex; align-items: center; gap: 10px; padding: 0 12px;
-       background: var(--side); border-right: 1px solid var(--rule); }
-.gch .no { font: 600 12px var(--mono); color: var(--amber); width: 18px; }
+.grow { display: flex; height: 68px; }
+.gch { position: sticky; left: 0; z-index: 3; flex: none; width: var(--chw); display: flex; align-items: center; gap: 12px; padding: 0 14px;
+       background: var(--bg-2); box-shadow: 1px 0 0 var(--sep); }
+.gch .no { font: 600 13px var(--sans); font-variant-numeric: tabular-nums; color: var(--label-3); width: 20px; }
 .gch .lg { width: 46px; flex: none; }
-.gch span { font: 14px var(--serif); color: var(--paper); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gch.cur { box-shadow: inset 3px 0 0 var(--red); }
+.gch span { font: 600 14px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gch.cur { box-shadow: 1px 0 0 var(--sep), inset 4px 0 0 var(--brand); }
 .gprogs { position: relative; flex: none; }
-.gp { position: absolute; top: 5px; bottom: 5px; padding: 6px 10px; border-radius: 5px; background: var(--card); border: 1px solid #2f2922; overflow: hidden; text-align: left; }
-.gp b { display: block; font: 14px/1.3 var(--serif); font-weight: normal; color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gp small { display: block; font: 11px var(--mono); color: var(--faint); }
-.gp:hover { background: var(--card-hi); border-color: var(--rule-hi); }
-.gp.now { background: #33241c; border-color: #5c3628; }
-.gp.now small { color: var(--amber); }
+.gp { position: absolute; top: 5px; bottom: 5px; padding: 8px 12px; border-radius: var(--r-s); background: var(--fill); overflow: hidden; text-align: left;
+      scroll-margin: 48px 24px 24px calc(var(--chw) + 16px); transition: transform var(--t-focus) var(--ease), background var(--t-fast), box-shadow var(--t-focus); }
+.gp b { display: block; font: 600 14px/1.3 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gp small { display: block; white-space: nowrap; overflow: hidden; font: 500 12px var(--sans); font-variant-numeric: tabular-nums; color: var(--label-3); }
+.gp:hover { background: var(--fill-2); }
+.gp.now { background: var(--fill-2); }
+.gp.now small { color: var(--label-2); }
 .gp.past { opacity: .5; }
-.gp .gpb { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--red); }
-.gp[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--amber); }
-.gp:focus-visible { outline-offset: -2px; }
-.gruler { position: sticky; top: 0; z-index: 4; display: flex; height: 34px; background: var(--side); border-bottom: 1px solid var(--rule); }
-.gcorner { position: sticky; left: 0; z-index: 5; flex: none; width: var(--chw); padding: 8px 12px; font-size: 12px; color: var(--dim); background: var(--side); border-right: 1px solid var(--rule); }
+.gp .gpb { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--brand); }
+.gp[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--label); }
+.gp:focus-visible { outline: none; z-index: 2; background: var(--focus-bg); transform: scale(1.04); box-shadow: 0 12px 26px rgba(0,0,0,.4); opacity: 1; }
+.gp:focus-visible b, .gp:focus-visible small { color: var(--focus-fg); }
+.gruler { position: sticky; top: 0; z-index: 4; display: flex; height: 38px; background: var(--bg-2); box-shadow: 0 1px 0 var(--sep); }
+.gcorner { position: sticky; left: 0; z-index: 5; flex: none; width: var(--chw); padding: 10px 14px; font: 600 12px var(--sans); color: var(--label-2); background: var(--bg-2); box-shadow: 1px 0 0 var(--sep); }
 .gticks { position: relative; flex: none; }
-.gticks span { position: absolute; top: 8px; font: 12px var(--mono); color: var(--dim); padding-left: 6px; border-left: 1px solid var(--rule); height: 26px; }
-.gnow { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--red); z-index: 2; pointer-events: none; }
-.gnow span { position: sticky; top: 6px; display: block; width: 44px; margin-left: -22px; padding: 2px 0; text-align: center; border-radius: 3px; background: var(--red); color: #fff4e6; font: 11px var(--mono); z-index: 6; }
+.gticks span { position: absolute; top: 11px; font: 500 12px var(--sans); font-variant-numeric: tabular-nums; color: var(--label-3); padding-left: 6px; }
+.gnow { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--brand); z-index: 2; pointer-events: none; }
+.gnow span { position: sticky; top: 8px; display: block; width: 48px; margin-left: -23px; padding: 3px 0; text-align: center; border-radius: 6px; background: var(--brand); color: #fff; font: 700 11px var(--sans); font-variant-numeric: tabular-nums; z-index: 6; }
 
-/* ---- 节目单（小电视的频道表） ---- */
-.lineup { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
-.lgrp { border: 1px solid var(--rule); border-radius: 10px; margin-bottom: 14px; overflow: hidden; background: var(--ink-deep); }
-.lgrp > header { display: flex; align-items: baseline; gap: 10px; padding: 10px 14px; background: var(--side); font: 600 16px var(--serif); color: var(--paper-hi); }
-.lgrp > header small { font: 12px var(--sans); color: var(--faint); }
-.lrow { display: grid; grid-template-columns: 22px 34px 52px minmax(0, 1fr) auto 52px; gap: 12px; align-items: center; padding: 8px 14px; border-top: 1px solid #241f19; }
-.lrow .grip { color: var(--faint); cursor: grab; letter-spacing: -2px; }
-.lrow .no { font: 600 13px var(--mono); color: var(--amber); }
-.lrow .nm { font: 15px var(--serif); color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.lrow .nm small { display: block; font: 12px var(--sans); color: var(--dim); }
-.tag { font-size: 11px; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--rule); color: var(--dim); white-space: nowrap; }
-.sw { width: 46px; height: 26px; border-radius: 13px; background: var(--rule); position: relative; flex: none; }
-.sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--paper); transition: left .15s; }
-.sw[aria-checked=true] { background: var(--red); }
-.sw[aria-checked=true]::after { left: 23px; background: #fff4e6; }
-.panel { border: 1px solid var(--rule); border-radius: 10px; padding: 16px; background: var(--ink-deep); margin-bottom: 14px; }
-.panel h3 { margin: 0 0 10px; font: 600 16px var(--serif); color: var(--paper-hi); }
-.meter { height: 8px; border-radius: 4px; background: var(--rule); overflow: hidden; margin: 8px 0 4px; }
-.meter i { display: block; height: 100%; background: var(--amber); }
-.src { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid #241f19; font-size: 14px; }
-.src:first-of-type { border-top: 0; }
+/* ---- 小电视的频道表（直播的第二个分段） ---- */
+.lineup { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 28px; align-items: start; }
+.lgrp { border-radius: 18px; margin-bottom: 18px; overflow: hidden; background: var(--bg-2); }
+.lgrp > header { display: flex; align-items: baseline; gap: 10px; padding: 14px 16px 8px; font: 700 16px var(--sans); }
+.lgrp > header small { font: 500 12px var(--sans); color: var(--label-3); }
+.lrow { display: grid; grid-template-columns: 20px 30px 52px minmax(0, 1fr) auto 52px; gap: 12px; align-items: center; padding: 10px 16px; box-shadow: inset 0 1px 0 var(--sep); }
+.lrow .grip { color: var(--label-4); cursor: grab; letter-spacing: -2px; }
+.lrow .no { font: 600 13px var(--sans); font-variant-numeric: tabular-nums; color: var(--label-3); }
+.lrow .nm { font: 600 15px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lrow .nm small { display: block; font: 400 12px var(--sans); color: var(--label-2); }
+.lrow svg { border-radius: 8px; }
+.panel { border-radius: 18px; padding: 18px; background: var(--bg-2); margin-bottom: 18px; }
+.panel h3 { margin: 0 0 6px; font: 700 17px var(--sans); }
+.meter { height: 8px; border-radius: 4px; background: var(--fill-2); overflow: hidden; margin: 12px 0 6px; }
+.meter i { display: block; height: 100%; border-radius: 4px; background: var(--brand); }
+.src { display: flex; align-items: center; gap: 12px; padding: 12px 0; box-shadow: inset 0 1px 0 var(--sep); font: 500 14px var(--sans); }
+.src:first-of-type { box-shadow: none; }
+.src > svg { color: var(--label-2); }
 .src span { flex: 1; min-width: 0; }
-.src small { display: block; color: var(--faint); font-size: 12px; }
+.src small { display: block; color: var(--label-3); font-size: 12px; font-weight: 400; }
 
-/* ---- 详情 ---- */
-.dhero { position: relative; margin: -64px -32px 0; padding: 92px 32px 30px; overflow: hidden; }
-.dhero .bg { position: absolute; inset: -40px; filter: blur(30px) saturate(1.2); opacity: .55; }
-.dhero .bg svg { width: 100%; height: 100%; }
-.dhero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(28,25,21,.35), var(--ink) 92%); }
-.dbody { position: relative; z-index: 1; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 34px; align-items: end; }
-.dbody .dposter { grid-row: 1 / 3; }
-.dbody .wide { grid-column: 2; }
-.dposter { border-radius: 8px; overflow: hidden; aspect-ratio: 2 / 3; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
-.dposter.w { aspect-ratio: 16 / 9; }
-.dposter svg { width: 100%; height: 100%; }
-.dbody h2 { margin: 8px 0 6px; font: 700 40px/1.2 var(--serif); letter-spacing: 5px; color: var(--paper-hi); }
-.dbody .syn { -webkit-line-clamp: 3; max-width: 640px; }
-.lastw { margin-top: 12px; font-size: 13px; color: var(--dim); }
-.lastw b { color: var(--amber); font: 13px var(--mono); }
-.facts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.eps { display: grid; gap: 4px; }
-.ep { display: grid; grid-template-columns: 176px minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 10px; border-radius: 10px; text-align: left; width: 100%; }
-.ep:hover { background: var(--card); }
-.ep.cur { background: var(--card-hi); }
-.ep .art { position: relative; aspect-ratio: 16 / 9; border-radius: 5px; overflow: hidden; }
-.ep .art svg { width: 100%; height: 100%; }
-.ep b { display: block; font: 16px var(--serif); font-weight: normal; color: var(--paper-hi); }
-.ep span { font-size: 13px; color: var(--dim); }
-.ep .st { font: 12px var(--mono); color: var(--dim); text-align: right; }
-.ep .st.ok { color: var(--faint); }
-.ep .st.go { color: var(--amber); }
-.ep:disabled { opacity: .55; }
+/* ---- 详情：铺满的背景图 + 标题图，下面是选集货架 ---- */
+.dhero { position: relative; margin: 0 calc(-1 * var(--g)); min-height: clamp(520px, 76vh, 740px); display: flex; align-items: flex-end; padding: 0 var(--g) 40px; overflow: hidden; }
+.dhero .shade { background: linear-gradient(0deg, var(--page) 0, rgba(0,0,0,0) 42%), linear-gradient(90deg, rgba(0,0,0,.80) 0, rgba(0,0,0,.45) 40%, rgba(0,0,0,0) 70%); }
+/* 浅色：大图上的字永远是白的，所以大图不往白色页面里渐隐、货架也不压在图上，图的下沿加深 */
+:root[data-theme=light] :is(.hero, .dhero) .shade { background: linear-gradient(0deg, rgba(0,0,0,.55) 0, rgba(0,0,0,0) 45%), linear-gradient(90deg, rgba(0,0,0,.78) 0, rgba(0,0,0,.4) 38%, rgba(0,0,0,0) 66%); }
+:root[data-theme=light] .hero { height: clamp(460px, 66vh, 660px); }
+:root[data-theme=light] .hero .copy { bottom: 76px; }
+:root[data-theme=light] .hnav { bottom: 80px; }
+:root[data-theme=light] .after { margin-top: 8px; }
+.dcopy { position: relative; max-width: 660px; color: var(--label); }
+.dcopy .syn { -webkit-line-clamp: 3; }
+.lastw { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 14px; color: var(--label-2); }
+.lastw .trk { width: 120px; height: 4px; border-radius: 2px; background: var(--fill-3); overflow: hidden; }
+.lastw .trk i { display: block; height: 100%; background: var(--label); }
+.facts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.card.ep { width: 320px; }
 
 /* ---- UP 主 ---- */
-.ups { display: flex; gap: 18px; overflow-x: auto; padding: 4px 4px 14px; margin: 0 -4px 6px; }
-.up { flex: none; width: 84px; text-align: center; }
-.up .av { position: relative; width: 72px; height: 72px; margin: 0 auto; border-radius: 50%; box-shadow: 0 0 0 2px var(--rule); }
+.ups { display: flex; gap: 26px; overflow-x: auto; padding: 14px var(--g) 22px; margin: -6px calc(-1 * var(--g)) 4px; scrollbar-width: none; }
+.up { flex: none; width: 104px; text-align: center; border-radius: 12px; scroll-margin: 0 var(--g); }
+.up .av { position: relative; display: block; width: 96px; height: 96px; margin: 0 auto; border-radius: 50%; box-shadow: var(--sh-card); transition: transform var(--t-focus) var(--ease), box-shadow var(--t-focus); }
 .up .av svg { border-radius: 50%; }
-.up[aria-pressed=true] .av { box-shadow: 0 0 0 3px var(--red); }
-.up .av em { position: absolute; right: -2px; top: -2px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--amber); color: var(--ink); font: 600 11px/20px var(--mono); font-style: normal; }
-.up span { display: block; margin-top: 8px; font: 13px var(--serif); color: var(--paper); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.up small { font-size: 11px; color: var(--faint); }
-.who { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.up .av.pl { display: grid; place-items: center; background: var(--fill-2); color: var(--label-2); }
+.up .av.add { display: grid; place-items: center; background: none; box-shadow: inset 0 0 0 2px var(--fill-3); color: var(--label-2); }
+.up:is(:hover, :focus-visible) .av { transform: scale(1.1); box-shadow: var(--sh-focus); }
+.up:focus-visible { outline: none; }
+.up[aria-pressed=true] .av { box-shadow: 0 0 0 3px var(--page), 0 0 0 6px var(--label); }
+.up .av em { position: absolute; right: 0; top: 0; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: var(--brand); color: #fff; font: 700 12px/22px var(--sans); font-style: normal; }
+.up span { display: block; margin-top: 12px; font: 600 14px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.up small { font-size: 12px; color: var(--label-3); }
+.who { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .who svg { flex: none; border-radius: 50%; }
-.who .t { margin: 0; }
+.who .s { margin: 0; }
 
 /* ---- 片库 ---- */
 .srcbar { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 18px; }
-.srcbar .pill { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; background: var(--card); border: 1px solid var(--rule); font-size: 13px; color: var(--paper); }
-.srcbar .pill small { color: var(--faint); }
-.srcbar .pill.add { border-style: dashed; color: var(--dim); background: none; }
+.srcbar .pill { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 12px; background: var(--bg-2); font: 600 13px var(--sans); }
+.srcbar .pill small { color: var(--label-3); font-weight: 400; }
+.srcbar .pill.add { background: none; box-shadow: inset 0 0 0 1.5px var(--fill-3); color: var(--label-2); }
 
 /* ---- 搜索 ---- */
-.bigsearch { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 20px; border-radius: 12px; background: var(--card); border: 1px solid var(--rule-hi); margin: 4px 0 14px; color: var(--dim); }
-.bigsearch input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--paper-hi); font: 22px var(--serif); }
-.rlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 6px 16px; }
-.ritem { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 8px; border-radius: 8px; text-align: left; width: 100%; }
-.ritem:hover { background: var(--card); }
-.ritem .art { position: relative; aspect-ratio: 16 / 9; border-radius: 5px; overflow: hidden; }
+.bigsearch { display: flex; align-items: center; gap: 12px; height: 60px; padding: 0 20px; border-radius: 16px; background: var(--fill); margin: 0 0 16px; color: var(--label-3); max-width: 900px; transition: background var(--t-fast), box-shadow var(--t-fast); }
+.bigsearch:focus-within { background: var(--fill-2); box-shadow: 0 0 0 2px var(--label); }
+.bigsearch input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--label); font: 500 22px var(--sans); }
+.bigsearch input:focus-visible { outline: none; }
+.rlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 8px 20px; margin-top: 12px; }
+.ritem { display: grid; grid-template-columns: 128px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 10px; border-radius: 16px; text-align: left; width: 100%;
+         transition: transform var(--t-focus) var(--ease), background var(--t-fast), box-shadow var(--t-focus); }
+.ritem:hover { background: var(--fill); }
+.ritem:focus-visible { outline: none; background: var(--bg-2); transform: scale(1.03); box-shadow: var(--sh-focus); }
+.ritem .art { position: relative; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: var(--bg-3); }
 .ritem .art svg { width: 100%; height: 100%; }
-.ritem .art.lg { aspect-ratio: auto; height: 46px; display: grid; place-items: center; background: none; }
-.ritem .art.lg svg { width: 72px; height: 44px; }
-.ritem b { display: block; font: 15px var(--serif); font-weight: normal; color: var(--paper-hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ritem span { font-size: 12px; color: var(--dim); }
-.ritem mark { background: none; color: var(--amber); }
+.ritem .art.av { background: none; display: grid; place-items: center; }
+.ritem .art.av svg { width: 52px; height: 52px; }
+.ritem b { display: block; font: 600 15px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ritem > span > span { font-size: 13px; color: var(--label-2); }
+.ritem mark { background: none; color: var(--brand); }
 
 /* ---- 设备 ---- */
-.devs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-.dev { border: 1px solid var(--rule); border-radius: 12px; padding: 16px; background: var(--ink-deep); display: grid; gap: 12px; }
+.devs { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
+.dev { border-radius: 22px; padding: 18px; background: var(--bg-2); display: grid; gap: 14px; align-content: start; }
 .dev.off { opacity: .7; }
 .dev header { display: flex; align-items: center; gap: 10px; }
-.dev header b { font: 600 17px var(--serif); color: var(--paper-hi); }
-.dev header small { margin-left: auto; font-size: 12px; color: var(--dim); }
-.dev .model { font-size: 12px; color: var(--faint); }
-.tvbox { display: flex; justify-content: center; padding: 14px; border-radius: 8px; background: #0a0908; }
-.tvscr { width: 210px; border: 6px solid #2a2520; border-radius: 6px; background: #000; padding: 10px 12px; font-family: var(--mono); }
-.tvscr .n { font: 600 28px/1 var(--mono); color: var(--amber); text-shadow: 0 0 8px rgba(255,181,71,.35); }
-.tvscr .g { float: right; font-size: 10px; color: var(--red); }
-.tvscr .x { margin-top: 8px; font: 13px/1.35 var(--serif); color: var(--amber-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tvscr .y { font: 11px/1.4 var(--serif); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tvscr.dark .n, .tvscr.dark .x { color: #3a342b; text-shadow: none; }
+.dev header b { font: 700 17px var(--sans); }
+.dev header small { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--label-2); }
+.dev .model { font-size: 13px; color: var(--label-3); }
+.tvbox { display: flex; justify-content: center; align-items: center; padding: 16px; border-radius: 16px; background: var(--fill); min-height: 150px; color: var(--label-2); font-size: 14px; }
+/* 小电视自己的屏幕（固件画面）：沿用它真实的琥珀色等宽数字，不跟着界面主题变 */
+.tvface { --amber: #ffb547; --amber-soft: #f3dfb4; --tvred: #e0654d; }
+.tvscr { width: 214px; border: 7px solid #1d1d20; border-radius: 12px; background: #000; padding: 10px 12px; font-family: Menlo, "SF Mono", ui-monospace, monospace; box-shadow: 0 10px 24px rgba(0,0,0,.3); }
+.tvscr .n { font: 600 28px/1 Menlo, ui-monospace, monospace; color: var(--amber); text-shadow: 0 0 8px rgba(255,181,71,.35); }
+.tvscr .g { float: right; font-size: 10px; color: var(--tvred); }
+.tvscr .x { margin-top: 8px; font: 13px/1.35 var(--sans); color: var(--amber-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvscr .y { font: 11px/1.4 var(--sans); color: #8c8170; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tvscr.dark .n, .tvscr.dark .x { color: #2a2a2e; text-shadow: none; }
 .dev .row { display: flex; gap: 8px; flex-wrap: wrap; }
-.dev.add { place-content: center; text-align: center; border-style: dashed; color: var(--dim); min-height: 260px; }
-.dev.add b { font: 600 17px var(--serif); color: var(--paper-hi); }
+.dev.add { place-content: center; justify-items: center; text-align: center; background: none; box-shadow: inset 0 0 0 2px var(--fill-2); color: var(--label-2); min-height: 280px; }
+.dev.add b { font: 700 17px var(--sans); color: var(--label); }
+.dev.add p { margin: 0; font-size: 13px; }
 
-/* ---- 设置 / 我的 ---- */
-.list { border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; margin-bottom: 18px; background: var(--ink-deep); max-width: 760px; }
-.list > h3 { margin: 0; padding: 12px 16px 6px; font: 600 13px var(--sans); color: var(--faint); letter-spacing: 1px; }
-.li { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 54px; padding: 10px 16px; border-top: 1px solid #241f19; text-align: left; }
-.li:first-of-type { border-top: 0; }
-.li > span { flex: 1; min-width: 0; font: 15px var(--serif); color: var(--paper-hi); }
-.li > span small { display: block; font: 12px var(--sans); color: var(--dim); }
-.li > em { font-style: normal; font-size: 13px; color: var(--dim); }
-.li .ico { color: var(--dim); }
-a.li:hover, button.li:hover { background: var(--card); }
+/* ---- 列表（设置 / 我的）：圆角分组 ---- */
+.list { border-radius: 16px; overflow: hidden; margin-bottom: 22px; background: var(--bg-2); max-width: 780px; }
+.list > h3 { margin: 0; padding: 14px 18px 6px; font: 600 13px var(--sans); color: var(--label-3); letter-spacing: .02em; }
+.li { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 58px; padding: 10px 18px; text-align: left; box-shadow: inset 0 1px 0 var(--sep); transition: background var(--t-fast); }
+.list > h3 + .li, .list > .li:first-child { box-shadow: none; }
+.li > span { flex: 1; min-width: 0; font: 500 15px var(--sans); }
+.li > span small { display: block; font: 400 13px var(--sans); color: var(--label-2); }
+.li > em { font-style: normal; font-size: 14px; color: var(--label-3); }
+.li .ico { width: 30px; height: 30px; flex: none; border-radius: 8px; display: grid; place-items: center; background: var(--fill-2); color: var(--label); }
+a.li:hover, button.li:hover { background: var(--fill); }
+a.li:focus-visible, button.li:focus-visible { outline: none; background: var(--fill-2); box-shadow: inset 0 0 0 2px var(--label); border-radius: 16px; }
 
-/* ---- 迷你播放条 ---- */
-#mini { grid-column: 2; position: relative; z-index: 7; display: flex; align-items: center; gap: 14px; height: 74px; padding: 0 20px; background: var(--ink-deep); border-top: 1px solid var(--rule); }
-.mprog { position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: var(--rule); }
-.mprog i { display: block; height: 100%; background: var(--red); }
-.mart { position: relative; width: 96px; aspect-ratio: 16 / 9; flex: none; border-radius: 4px; overflow: hidden; }
+/* ---- 品牌页 ---- */
+.bvar { border-radius: 24px; background: var(--bg-2); padding: 22px; margin-bottom: 22px; }
+.bvar header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.bvar h2 { margin: 0; font: 700 20px var(--sans); }
+.bvar header .btn { margin-left: auto; }
+.bvar header .btn[aria-pressed=true] { background: var(--label); color: var(--on-label); }
+.bvar > p { margin: 6px 0 16px; color: var(--label-2); font-size: 14px; max-width: 780px; }
+.isz { display: flex; align-items: flex-end; gap: 26px; flex-wrap: wrap; padding: 22px; border-radius: 18px; background: var(--bg); }
+.isz figure, .trow figure { margin: 0; display: grid; justify-items: center; gap: 8px; }
+figcaption { font: 500 12px var(--sans); color: var(--label-3); white-space: nowrap; }
+.trow { align-items: start; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px; }
+.mbar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; width: 100%; height: 30px; padding: 0 14px; border-radius: 8px; font: 500 13px var(--sans); }
+.mbar.l { background: #e6e6eb; color: #000; } .mbar.d { background: #26262b; color: #fff; }
+.mbar i { width: 16px; height: 10px; border-radius: 2px; background: currentColor; opacity: .35; }
+.tzoom { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 10px; }
+.tzoom.l { background: #e6e6eb; color: #000; } .tzoom.d { background: #26262b; color: #fff; }
+.lock { display: flex; align-items: center; gap: 14px; padding: 22px; border-radius: 18px; background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--sep); color: var(--label); }
+.lock.dk { background: #0b0b0d; }
+.lock .zh { font: 700 19px var(--sans); letter-spacing: .12em; color: var(--label-2); }
+.lock.st { flex-direction: column; gap: 10px; }
+.locks { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; }
+.code { font: 13px Menlo, ui-monospace, monospace; background: var(--fill); padding: 2px 6px; border-radius: 6px; }
+.todo { margin: 0; padding-left: 20px; color: var(--label-2); font-size: 14px; line-height: 1.8; max-width: 820px; }
+.todo b { color: var(--label); font-weight: 600; }
+
+/* ---- 正在播放栏：浮在底部的毛玻璃胶囊 ---- */
+#mini { position: absolute; z-index: 7; left: 50%; bottom: 18px; transform: translateX(-50%); width: min(960px, calc(100% - 2 * var(--g))); height: 72px;
+        display: flex; align-items: center; gap: 14px; padding: 0 12px 0 10px; border-radius: 22px; overflow: hidden;
+        background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 18px 50px rgba(0,0,0,.4), inset 0 0 0 1px var(--mat-line); }
+.mprog { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--fill); }
+.mprog i { display: block; height: 100%; background: var(--label); }
+.mart { position: relative; width: 92px; aspect-ratio: 16 / 9; flex: none; border-radius: 9px; overflow: hidden; background: var(--bg-3); transition: transform var(--t-focus) var(--ease); }
 .mart svg { width: 100%; height: 100%; }
-.mart .badge { top: 4px; left: 4px; font-size: 10px; padding: 2px 4px; }
+.mart .badge { top: 4px; left: 4px; font-size: 9px; padding: 3px 4px; }
+button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px; transform: scale(1.06); }
 .mtx { min-width: 0; flex: 1; }
-.mtx b { display: block; font: 15px var(--serif); font-weight: normal; color: var(--paper-hi); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mtx span { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.mtx b { display: block; font: 600 15px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtx span { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--label-2); white-space: nowrap; overflow: hidden; }
 .mctl { display: flex; align-items: center; gap: 4px; }
-.mctl .iconbtn.big { width: 46px; height: 46px; background: var(--paper-hi); color: var(--ink); }
-.mctl .iconbtn.big:hover { background: #fff; }
-#mini .tchip { margin-left: 8px; }
-#mini.idle .mtx b { color: var(--dim); }
+.mctl .iconbtn.big { width: 48px; height: 48px; background: var(--label); color: var(--on-label); }
+#mini.idle { padding-left: 22px; }
+#mini.idle .mtx b { color: var(--label-2); }
 
 /* ---- 手机底栏 ---- */
 #tabs { display: none; }
 
-/* ---- 抽屉（播放到 / 遥控 / 添加） ---- */
-#scrim { position: absolute; inset: 0; z-index: 20; background: rgba(8,7,6,.62); }
-#sheet { position: absolute; z-index: 21; top: 0; right: 0; bottom: 0; width: 430px; max-width: 100%; display: flex; flex-direction: column;
-         background: var(--side); border-left: 1px solid var(--rule); box-shadow: -20px 0 60px rgba(0,0,0,.45); }
-.shh { display: flex; align-items: center; gap: 10px; padding: 18px 20px 12px; }
-.shh h2 { flex: 1; margin: 0; font: 600 20px var(--serif); letter-spacing: 2px; color: var(--paper-hi); }
-.shh p { margin: 0; }
-.shb { flex: 1; overflow-y: auto; padding: 0 20px 24px; }
+/* ---- 抽屉 / 底部面板（播放到 / 遥控 / 添加）：厚毛玻璃 ---- */
+#scrim { position: absolute; inset: 0; z-index: 20; background: rgba(0,0,0,.42); animation: fade var(--t-fade) var(--ease); }
+#sheet { position: absolute; z-index: 21; top: 12px; right: 12px; bottom: 12px; width: 440px; max-width: calc(100% - 24px); display: flex; flex-direction: column; border-radius: 26px; overflow: hidden;
+         background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 30px 80px rgba(0,0,0,.5), inset 0 0 0 1px var(--mat-line);
+         animation: inR var(--t-sheet) var(--ease-sheet); }
+@keyframes fade { from { opacity: 0; } }
+@keyframes inR { from { transform: translateX(40px); opacity: 0; } }
+@keyframes inU { from { transform: translateY(100%); } }
+.shh { display: flex; align-items: center; gap: 10px; padding: 20px 20px 12px; }
+.shh h2 { margin: 0; font: 700 22px var(--sans); }
+.shh .hint { margin-top: 2px; }
+.shh .iconbtn { background: var(--fill); width: 36px; height: 36px; }
+.shb { flex: 1; overflow-y: auto; padding: 4px 20px 24px; }
 .grab { display: none; }
-.pending { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 10px; background: var(--card); margin-bottom: 14px; }
-.pending .mart { width: 84px; }
-.pending b { display: block; font: 15px var(--serif); font-weight: normal; color: var(--paper-hi); }
-.pending span { font-size: 12px; color: var(--dim); }
-.tg { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; min-height: 68px; padding: 12px; margin-bottom: 8px;
-      border: 1px solid var(--rule); border-radius: 12px; text-align: left; }
-.tg:hover { background: var(--card); }
-.tg[aria-checked=true] { border-color: var(--red); background: var(--card-hi); }
-.tg .ic { width: 44px; height: 44px; border-radius: 10px; background: var(--card); display: grid; place-items: center; color: var(--paper); }
-.tg b { display: flex; align-items: center; gap: 8px; font: 16px var(--serif); font-weight: normal; color: var(--paper-hi); }
-.tg span { display: block; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tg .last { font: 11px var(--sans); color: var(--amber); border: 1px solid #5a4a2c; border-radius: 3px; padding: 0 4px; }
-.tg.off { opacity: .55; }
-.tg .chk { color: var(--red); }
-.opt { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--rule); margin-top: 6px; font-size: 14px; }
+.pending { display: flex; gap: 12px; align-items: center; padding: 10px; border-radius: 16px; background: var(--fill); margin-bottom: 16px; }
+.pending .mart { width: 88px; }
+.pending b { display: block; font: 600 15px var(--sans); }
+.pending span { font-size: 13px; color: var(--label-2); }
+.tg { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; min-height: 70px; padding: 12px; margin-bottom: 8px; border-radius: 16px; background: var(--fill); text-align: left;
+      transition: transform var(--t-focus) var(--ease), background var(--t-fast), box-shadow var(--t-focus); }
+.tg:hover { background: var(--fill-2); }
+.tg[aria-checked=true] { box-shadow: inset 0 0 0 2px var(--label); }
+.tg:focus-visible { outline: none; background: var(--fill-2); transform: scale(1.02); box-shadow: inset 0 0 0 2px var(--label), 0 12px 30px rgba(0,0,0,.3); }
+.tg .ic { width: 44px; height: 44px; border-radius: 12px; background: var(--fill-2); display: grid; place-items: center; }
+.tg b { display: flex; align-items: center; gap: 8px; font: 600 16px var(--sans); }
+.tg span { display: block; font-size: 13px; color: var(--label-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tg .last { font: 600 11px var(--sans); color: var(--brand); background: rgba(255,107,61,.14); border-radius: 5px; padding: 1px 5px; }
+.tg.off { opacity: .5; }
+.tg .chk { color: var(--brand); }
+.opt { display: flex; align-items: center; gap: 12px; padding: 14px 0; box-shadow: inset 0 1px 0 var(--sep); margin-top: 8px; font: 500 15px var(--sans); }
 .opt span { flex: 1; }
-.opt small { display: block; color: var(--faint); font-size: 12px; }
+.opt small { display: block; color: var(--label-3); font-size: 12px; font-weight: 400; }
 
 /* ---- 遥控 ---- */
 .rdevs { display: flex; gap: 8px; overflow-x: auto; margin: 0 0 14px; }
-.rdevs button { flex: none; display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--rule); color: var(--dim); font: 14px var(--serif); }
-.rdevs button[aria-pressed=true] { border-color: var(--red); color: var(--paper-hi); background: var(--card-hi); }
-.rscreen { padding: 16px 18px; border-radius: 10px; background: var(--ink-deep); border: 1px solid var(--rule); }
+.rdevs button { flex: none; display: flex; align-items: center; gap: 6px; height: 38px; padding: 0 14px; border-radius: 999px; background: var(--fill); color: var(--label-2); font: 600 14px var(--sans); transition: transform var(--t-focus) var(--ease); }
+.rdevs button[aria-pressed=true] { background: var(--label); color: var(--on-label); }
+.rdevs button:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); transform: scale(1.06); }
+.rscreen { padding: 16px 18px; border-radius: 18px; background: #050506; color: #f3dfb4; box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
 .rscreen .r1 { display: flex; justify-content: space-between; align-items: baseline; }
-.rscreen .n { font: 600 44px/1 var(--mono); color: var(--amber); text-shadow: 0 0 10px rgba(255,181,71,.3); }
-.rscreen .g { font: 13px var(--mono); color: var(--red); }
-.rscreen .x { margin-top: 10px; font: 20px/1.35 var(--serif); color: var(--amber-soft); }
-.rscreen .y { margin-top: 2px; font: 14px/1.5 var(--serif); color: var(--dim); }
-.rscreen .lprog { margin: 10px 0 0; }
-.rpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
-.rpad button { height: 52px; border-radius: 10px; border: 1px solid var(--rule); display: flex; align-items: center; justify-content: center; gap: 6px; font: 15px var(--serif); color: var(--paper); }
-.rpad button:hover { border-color: var(--rule-hi); background: var(--card); }
-.rpad button.main { background: var(--paper-hi); color: var(--ink); border-color: var(--paper-hi); }
-.dial { display: grid; grid-template-columns: 30px 52px minmax(0, 1fr) 48px; gap: 10px; align-items: center; min-height: 48px; border-top: 1px dotted var(--rule); }
-.dial .ico { color: var(--dim); }
-.dial > span { font: 15px var(--serif); color: var(--paper); }
-.dial b { text-align: right; font: 600 13px var(--mono); color: var(--amber); }
-.dial .seg { display: flex; gap: 4px; }
-.dial .seg button { flex: 1; height: 34px; border-radius: 6px; border: 1px solid var(--rule); font: 13px var(--mono); color: var(--dim); }
-.dial .seg button, .rpad button, .chips button { text-align: center; }
-.dial .seg button[aria-pressed=true] { background: var(--amber); border-color: var(--amber); color: var(--ink); }
-.dial em { font-style: normal; font-size: 12px; color: var(--faint); }
-input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 30px; background: transparent; margin: 0; }
-input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--rule); }
-input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--rule); }
-input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; margin-top: -8px; border-radius: 50%; background: var(--red); border: 0; }
-input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--red); border: 0; }
-.petgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 8px; }
-.petgrid button { display: grid; justify-items: center; gap: 2px; padding: 6px 0; border-radius: 8px; font-size: 11px; color: var(--dim); }
-.petgrid button:hover { background: var(--card); }
-.petgrid button[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--red); color: var(--amber); background: var(--card); }
-.rsec { margin-top: 10px; padding-top: 10px; border-top: 1px dotted var(--rule); }
-.rsec > b { font: 15px var(--serif); font-weight: normal; color: var(--paper); }
-.offbox { text-align: center; padding: 30px 10px; color: var(--dim); }
-.offbox b { display: block; font: 600 18px var(--serif); color: var(--paper-hi); margin: 10px 0 4px; }
+.rscreen .n { font: 600 44px/1 Menlo, ui-monospace, monospace; color: var(--amber); text-shadow: 0 0 10px rgba(255,181,71,.3); }
+.rscreen .g { font: 13px Menlo, ui-monospace, monospace; color: var(--tvred); }
+.rscreen .x { margin-top: 10px; font: 600 19px/1.35 var(--sans); color: var(--amber-soft); }
+.rscreen .y { margin-top: 2px; font: 14px/1.5 var(--sans); color: #a19580; }
+.rscreen .lprog { margin: 10px 0 0; color: #857a68; }
+.rscreen .lprog .trk { background: #2a2620; }
+.rscreen .lprog .trk i { background: var(--amber); }
+.rpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0; }
+.rpad button { height: 56px; border-radius: 16px; background: var(--fill); display: flex; align-items: center; justify-content: center; gap: 6px; font: 600 15px var(--sans); text-align: center;
+               transition: transform var(--t-focus) var(--ease), background var(--t-fast); }
+.rpad button:hover { background: var(--fill-2); }
+.rpad button.main { background: var(--label); color: var(--on-label); }
+.rpad button:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); transform: scale(1.05); box-shadow: 0 10px 24px rgba(0,0,0,.3); }
+.dials { border-radius: 16px; background: var(--fill); padding: 0 14px; }
+.dial { display: grid; grid-template-columns: 26px 56px minmax(0, 1fr) 44px; gap: 10px; align-items: center; min-height: 54px; }
+.dial + .dial { box-shadow: inset 0 1px 0 var(--sep); }
+.dial .ico { color: var(--label-2); }
+.dial > span { font: 600 15px var(--sans); }
+.dial b { text-align: right; font: 600 14px var(--sans); font-variant-numeric: tabular-nums; color: var(--label-2); }
+.dial .seg { display: flex; gap: 4px; padding: 3px; border-radius: 10px; background: var(--fill); }
+.dial .seg button { flex: 1; height: 32px; border-radius: 8px; font: 600 13px var(--sans); font-variant-numeric: tabular-nums; color: var(--label-2); text-align: center; }
+.dial .seg button[aria-pressed=true] { background: var(--label); color: var(--on-label); }
+.dial .seg button:focus-visible { outline: 2px solid var(--label); outline-offset: 1px; }
+.dial em { font-style: normal; font-size: 13px; color: var(--label-3); }
+.dial .sw { justify-self: end; }
+.petgrid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 10px; }
+.petgrid button { display: grid; justify-items: center; gap: 4px; padding: 8px 0; border-radius: 12px; font-size: 12px; color: var(--label-2); background: var(--fill); }
+.petgrid button:hover { background: var(--fill-2); }
+.petgrid button[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--label); color: var(--label); }
+.petgrid button:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); }
+.rsec { margin-top: 18px; }
+.rsec > b { font: 700 16px var(--sans); }
+.offbox { text-align: center; padding: 30px 10px; color: var(--label-2); }
+.offbox svg { margin: 0 auto; }
+.offbox b { display: block; font: 700 18px var(--sans); color: var(--label); margin: 12px 0 4px; }
 
-#toast { position: absolute; z-index: 40; left: 50%; bottom: 96px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; transition: .2s;
-         background: var(--paper-hi); color: var(--ink); padding: 10px 18px; border-radius: 999px; font: 14px var(--serif); white-space: nowrap; max-width: 92%; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 10px 30px rgba(0,0,0,.4); }
+#toast { position: absolute; z-index: 40; left: 50%; bottom: 104px; transform: translate(-50%, 16px); opacity: 0; pointer-events: none; transition: opacity var(--t-fade) var(--ease), transform var(--t-fade) var(--ease);
+         background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 14px 40px rgba(0,0,0,.4), inset 0 0 0 1px var(--mat-line);
+         padding: 12px 20px; border-radius: 999px; font: 600 14px var(--sans); white-space: nowrap; max-width: 92%; overflow: hidden; text-overflow: ellipsis; }
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 
 /* =================== 手机布局（.m）：窗口窄于 700px，或原型选了「手机」 =================== */
-.m#app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto auto; }
-.m #side { display: none; }
-.m .top { padding: 12px 16px 10px; padding-top: max(12px, env(safe-area-inset-top)); }
-.m .top h1 { font-size: 21px; }
-.m .sbox, .m .top .me, .m .top .kb { display: none; }
-.m .tchip { height: 36px; padding: 0 10px; font-size: 13px; max-width: 52%; }
-.m .tchip .lbl { display: none; }
-.m #view { padding: 0 16px 20px; }
-.m .shelf { margin: 0 -16px; padding: 4px 16px 12px; scroll-padding: 0 16px; gap: 12px; }
-.m .card { width: 224px; }
-.m .card.p { width: 116px; }
-.m .h2 { margin: 24px 0 10px; }
-.m .h2 h2 { font-size: 18px; }
-.m .hero { height: 420px; margin: 0 -16px; border-radius: 0; }
-.m .hero .shade { background: linear-gradient(0deg, rgba(15,13,11,.96) 0, rgba(15,13,11,.6) 45%, rgba(15,13,11,0) 75%); }
-.m .hero .copy { left: 18px; right: 18px; bottom: 44px; }
-.m .hero h2 { font-size: 30px; letter-spacing: 3px; }
-.m .hero .nav { left: 0; right: 0; bottom: 16px; justify-content: center; }
-.m .hero .nav .iconbtn { display: none; }
-.m .actions .btn { height: 48px; }
+.m#app { --g: 16px; --topH: calc(var(--sat) + 52px); --sat: env(safe-area-inset-top, 0px); --sab: env(safe-area-inset-bottom, 0px); }
+#stage.framed .m#app { --sat: 44px; --sab: 22px; }
+.m #view { padding: calc(var(--topH) + 4px) var(--g) calc(var(--sab) + 150px); }
+.m #view.bleed { padding-top: 0; }
+.m .ph { margin: 4px 0 16px; gap: 12px; }
+.m .lt { font-size: 34px; letter-spacing: 0; }
+.m #top { padding: var(--sat) 12px 0; gap: 6px; }
+.m .ttabs, .m #top .tr .iconbtn, .m #top .me { display: none; }
+.m #top:not(.home) .wml { display: none; }
+.m .ntitle { display: grid; place-items: center; position: absolute; left: 70px; right: 70px; bottom: 0; height: 52px; font: 600 17px var(--sans); opacity: 0; transition: opacity var(--t-fast); pointer-events: none; white-space: nowrap; overflow: hidden; }
+.m #top.tt .ntitle { opacity: 1; }
+.m #top.home .ntitle { display: none; }
+.m .tchip { height: 36px; padding: 0 12px; font-size: 14px; max-width: 60%; }
+.m .tchip small { display: none; }
+.m .shelf { gap: 14px; padding: 12px var(--g) 22px; }
+.m .card { width: 248px; }
+.m .card.p { width: 118px; }
+.m .card.ep { width: 248px; }
+.m .card:is(:hover, :focus-visible):not(:disabled) .art { --lift: -3px; --sc: 1.04; }
+.m .h2 { margin: 22px 0 0; }
+.m .h2 h2 { font-size: 20px; }
+.m .hero { height: 560px; }
+.m .hero .shade { background: linear-gradient(0deg, var(--page) 0, rgba(0,0,0,.55) 32%, rgba(0,0,0,0) 62%); }
+:root[data-theme=light] .m .hero .shade, :root[data-theme=light] .m .dhero .shade { background: linear-gradient(0deg, rgba(0,0,0,.78) 0, rgba(0,0,0,.45) 38%, rgba(0,0,0,0) 66%); }
+:root[data-theme=light] .m .hero { height: 540px; }
+:root[data-theme=light] .m .hero .copy { bottom: 56px; }
+:root[data-theme=light] .m .hnav { bottom: 22px; }
+:root[data-theme=light] .m .after { margin-top: 14px; }
+.m .hero .copy { left: 16px; right: 16px; bottom: 74px; }
+.m .tart { font-size: 40px; margin: 8px 0 10px; }
+.m .hnav { left: 0; right: 0; bottom: 44px; justify-content: center; }
+.m .hnav .iconbtn { display: none; }
+.m .after { margin-top: -22px; }
+.m .actions .btn { height: 50px; }
 .m .actions { flex-wrap: nowrap; }
 .m .actions .split { flex: 1; }
 .m .actions .split .btn:first-child { flex: 1; }
-.m .qchips { display: flex; overflow-x: auto; flex-wrap: nowrap; margin: 14px -16px 0; padding: 0 16px; }
-.m .qchips a { flex: none; height: 38px; }
+.m .qchips { display: flex; overflow-x: auto; flex-wrap: nowrap; margin: 4px -16px 0; padding: 4px 16px; scrollbar-width: none; }
+.m .qchips a { flex: none; height: 40px; }
 .m .banner { flex-wrap: wrap; }
-.m .banner .btn { margin-left: 0; }
+.m .banner .btn { margin-left: 56px; }
 .m .onb { grid-template-columns: 1fr; }
 .m .lhead { grid-template-columns: 1fr; gap: 12px; }
 .m .lprev { display: none; }
 .m .linfo h2 { font-size: 22px; }
 .m .gscroll { max-height: none; }
+.m .grow { height: 62px; }
 .m .gch { gap: 0; padding: 0 8px; justify-content: center; }
 .m .gch .no, .m .gch > span:not(.lg) { display: none; }
 .m .lineup { grid-template-columns: 1fr; }
-.m .lrow { grid-template-columns: 30px 46px minmax(0, 1fr) 48px; }
+.m .lrow { grid-template-columns: 28px 46px minmax(0, 1fr) 52px; }
 .m .lrow .grip, .m .lrow .tag { display: none; }
-.m .dhero { margin: -60px -16px 0; padding: 80px 16px 20px; }
-.m .dbody { grid-template-columns: 112px minmax(0, 1fr); gap: 16px; }
-.m .dbody h2 { font-size: 24px; letter-spacing: 2px; margin-top: 0; }
-.m .dbody .wide { grid-column: 1 / -1; }
-.m .dbody .dposter { grid-row: auto; }
-.m .dbody .actions { flex-wrap: wrap; }
-.m .dbody .actions .split { flex: 1 1 100%; }
-.m .ep { grid-template-columns: 124px minmax(0, 1fr); gap: 12px; padding: 8px 0; }
-.m .ep .st { grid-column: 2; text-align: left; }
-.m .pgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 10px; }
+.m .dhero { min-height: 600px; padding-bottom: 20px; }
+.m .dhero .shade { background: linear-gradient(0deg, var(--page) 0, rgba(0,0,0,.6) 40%, rgba(0,0,0,0) 70%); }
+.m .dcopy .actions { flex-wrap: wrap; }
+.m .dcopy .actions .split { flex: 1 1 100%; }
+.m .pgrid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px 12px; }
 .m .wgrid { grid-template-columns: 1fr; }
 .m .rlist { grid-template-columns: 1fr; }
-.m .ritem { grid-template-columns: 104px minmax(0, 1fr) auto; padding: 8px 0; }
+.m .ritem { grid-template-columns: 104px minmax(0, 1fr) auto; padding: 8px 4px; }
 .m .bigsearch { height: 50px; }
 .m .bigsearch input { font-size: 18px; }
 .m .devs { grid-template-columns: 1fr; }
-.m #mini { grid-column: 1; height: 62px; margin: 0 8px 8px; padding: 0 8px 0 6px; gap: 10px; border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
-.m .mprog { top: auto; bottom: 0; }
-.m .mart { width: 78px; }
+.m .isz { gap: 16px; padding: 16px; }
+.m .ups { gap: 16px; }
+.m .up { width: 84px; }
+.m .up .av { width: 76px; height: 76px; }
+.m #mini { left: 8px; right: 8px; bottom: calc(var(--sab) + 64px); transform: none; width: auto; height: 62px; padding: 0 8px 0 7px; gap: 10px; border-radius: 18px; }
+.m .mart { width: 76px; }
 .m .mctl .hidem, .m #mini .tchip { display: none; }
-.m .mctl .iconbtn.big { width: 42px; height: 42px; }
-.m #tabs { display: grid; grid-template-columns: repeat(5, 1fr); background: var(--side); border-top: 1px solid var(--rule); padding-bottom: env(safe-area-inset-bottom); }
-.m #tabs a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 58px; font-size: 11px; color: var(--faint); }
-.m #tabs a[aria-current=page] { color: var(--amber); }
-.m #sheet { top: auto; left: 0; width: auto; max-height: 90%; border-left: 0; border-top: 1px solid var(--rule); border-radius: 18px 18px 0 0; box-shadow: 0 -20px 60px rgba(0,0,0,.45); }
-.m .grab { display: block; width: 40px; height: 5px; border-radius: 3px; background: var(--rule-hi); margin: 8px auto 0; }
+.m .mctl .iconbtn.big { width: 44px; height: 44px; }
+.m #mini.idle { padding-left: 16px; }
+.m #tabs { position: absolute; z-index: 9; left: 0; right: 0; bottom: 0; display: grid; grid-template-columns: repeat(5, 1fr); padding: 4px 4px var(--sab);
+           background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 -1px 0 var(--mat-line); }
+.m #tabs a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 54px; border-radius: 12px; font: 600 10.5px var(--sans); color: var(--label-3); }
+.m #tabs a[aria-current=page] { color: var(--brand); }
+.m #tabs a:focus-visible { outline: 2px solid var(--label); outline-offset: -2px; }
+.m #sheet { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-width: none; max-height: 92%; border-radius: 24px 24px 0 0; animation: inU var(--t-sheet) var(--ease-sheet); padding-bottom: var(--sab); }
+.m .grab { display: block; width: 36px; height: 5px; border-radius: 3px; background: var(--label-4); margin: 7px auto 0; }
 .m .shh { padding-top: 10px; }
-.m #toast { bottom: 150px; }
+.m #toast { bottom: calc(var(--sab) + 140px); }
 .m.onremote #mini { display: none; }
-.m .rpad button { height: 58px; }
-.m .li { min-height: 58px; }
+.m .rpad button { height: 60px; }
+.m .li { min-height: 60px; }
 </style>
 </head>
 <body>
 <div id="stage">
   <div id="app" class="d">
-    <aside id="side" aria-label="主导航">
-      <div class="brand"><b>小智电视</b><span>家庭媒体中心</span></div>
-      <nav id="nav"></nav>
-    </aside>
-    <div id="main">
-      <header class="top" id="top"></header>
-      <div id="view"></div>
-    </div>
+    <div id="sbar" aria-hidden="true"><span>20:12</span><i></i></div>
+    <div id="main"><div id="view"></div></div>
+    <header id="top"></header>
     <div id="mini" aria-label="正在播放"></div>
     <nav id="tabs" aria-label="底部导航"></nav>
     <div id="scrim" hidden></div>
@@ -507,9 +635,12 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 
   </div>
 </div>
 <div id="proto" aria-label="原型选项">
-  <b>原型 · 不是产品界面</b>
+  <b>原型面板 · 不是产品界面</b>
   <div class="seg" role="group" aria-label="布局">
     <button data-view="desktop" aria-pressed="true">桌面</button><button data-view="phone" aria-pressed="false">手机</button>
+  </div>
+  <div class="seg" role="group" aria-label="外观">
+    <button data-theme="dark" aria-pressed="true">深色</button><button data-theme="light" aria-pressed="false">浅色</button>
   </div>
   <label>演示状态
     <select id="demo">
@@ -519,10 +650,22 @@ input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 
       <option value="biliblocked">连不上 B 站</option>
     </select>
   </label>
-  <span>方向键在界面里移动 · 回车播放 · Esc 关闭 · / 搜索</span>
+  <label>图标候选
+    <select id="logosel">
+      <option value="a">A · 电视里的小鼠</option>
+      <option value="b">B · 鼠耳小电视</option>
+      <option value="c">C · 趴在电视上的小鼠</option>
+    </select>
+  </label>
+  <a href="#/brand">品牌页：图标、托盘图标、字标 ›</a>
+  <span>方向键移动焦点 · 回车播放 · Esc 返回 · / 搜索</span>
 </div>
 <script>
 "use strict";
+/* 产品名（已定）：界面上的字标写 RooTV；中文界面需要产品名的地方（窗口标题、关于、空状态）写「小鼠电视」。 */
+const BRAND = "RooTV";
+const BRAND_ZH = "小鼠电视";
+
 /* ============================== 小工具 ============================== */
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -530,23 +673,25 @@ const hsh = s => { let h = 2166136261; for (const c of String(s)) { h ^= c.codeP
 const hm = m => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 const NOW = 20 * 60 + 12; // 原型的时钟固定在 20:12，截图每次一样
 const G0 = 19 * 60, G1 = 23 * 60 + 30;
+const RM = matchMedia("(prefers-reduced-motion: reduce)");
+const SANS = "-apple-system,PingFang SC,Helvetica Neue,sans-serif";
 
 const IC = {
   home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
-  live: '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 3l4 4 4-4"/>',
-  guide: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 9v11M12 14h6M12 17h4"/>',
-  series: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+  live: '<rect x="3" y="7" width="18" height="13" rx="3"/><path d="M8 3l4 4 4-4"/>',
+  guide: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 9v11M12 14h6M12 17h4"/>',
+  series: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4"/>',
   up: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
-  lib: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  lib: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
-  remote: '<rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17h4"/>',
+  remote: '<rect x="7" y="2" width="10" height="20" rx="4"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17h4"/>',
   set: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
-  play: '<path d="M7 4l13 8-13 8z" fill="currentColor" stroke="none"/>',
-  pause: '<path d="M7 4h4v16H7zM13 4h4v16h-4z" fill="currentColor" stroke="none"/>',
-  next: '<path d="M5 4l10 8-10 8zM17 4h2v16h-2z" fill="currentColor" stroke="none"/>',
-  prev: '<path d="M19 4 9 12l10 8zM5 4h2v16H5z" fill="currentColor" stroke="none"/>',
-  tv: '<rect x="2" y="5" width="20" height="13" rx="2"/><path d="M8 21h8"/>',
-  pc: '<rect x="4" y="4" width="16" height="11" rx="1"/><path d="M2 19h20"/>',
+  play: '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z" fill="currentColor" stroke="none"/>',
+  pause: '<rect x="6" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/>',
+  next: '<path d="M4 5.5v13a1 1 0 0 0 1.6.8l9-6.5a1 1 0 0 0 0-1.6l-9-6.5A1 1 0 0 0 4 5.5zM17 5h2.5v14H17z" fill="currentColor" stroke="none"/>',
+  prev: '<path d="M20 5.5v13a1 1 0 0 1-1.6.8l-9-6.5a1 1 0 0 1 0-1.6l9-6.5A1 1 0 0 1 20 5.5zM4.5 5H7v14H4.5z" fill="currentColor" stroke="none"/>',
+  tv: '<rect x="2" y="5" width="20" height="13" rx="3"/><path d="M8 21h8"/>',
+  pc: '<rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 19h20"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
   down: '<path d="M6 9l6 6 6-6"/>',
@@ -555,18 +700,100 @@ const IC = {
   vol: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9a4 4 0 0 1 0 6"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
   moon: '<path d="M20 15A8 8 0 1 1 9 4a7 7 0 0 0 11 11z"/>',
-  ear: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="1"/><rect x="17" y="14" width="4" height="6" rx="1"/>',
+  ear: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/>',
   back: '<path d="M15 5l-7 7 7 7"/>',
+  fwd: '<path d="M9 5l7 7-7 7"/>',
   more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
   warn: '<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17v.5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
-  paw: '<circle cx="7" cy="9" r="2"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="9" r="2"/><path d="M8 17c0-3 2-5 4-5s4 2 4 5-2 3-4 3-4 0-4-3z"/>',
   r30: '<path d="M4 12a8 8 0 1 0 3-6.2"/><path d="M4 4v5h5"/>',
   f30: '<path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M20 4v5h-5"/>',
   link: '<path d="M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1"/><path d="M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1"/>',
   hist: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  brand: '<rect x="3" y="6" width="18" height="13" rx="4"/><path d="M10 10l5 2.5-5 2.5z"/>',
 };
-const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
+const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n]}</svg>`;
+
+/* ============================== 标志 ============================== */
+/* BRAND-ICONS-START —— 图标、托盘图标、字标的唯一来源。brand/export.mjs 从这里导出 brand/*.svg，改这里再导出，别直接改导出的文件。 */
+const ICON_VARIANTS = {
+  a: { name: "电视里的小鼠", bg: ["#ff9b6a", "#ff5c43"] },
+  b: { name: "鼠耳小电视", bg: ["#4a5aa0", "#1b2145"] },
+  c: { name: "趴在电视上的小鼠", bg: ["#ffdc7c", "#ffad42"] },
+};
+const MC = { body: "#dcd6e6", shade: "#c3bcd2", ear: "#ffb3c4", nose: "#ff6f86", eye: "#24212d", cream: "#fff4e8", navy: "#262b45" };
+// 苹果式的圆角方：超椭圆 |x|^5 + |y|^5 = 1，比普通圆角矩形的转角更顺。
+const SQUIRCLE = (() => { const n = 5, pts = []; for (let i = 0; i < 72; i++) { const t = i / 72 * 2 * Math.PI, c = Math.cos(t), s = Math.sin(t);
+  pts.push([512 + 512 * Math.sign(c) * Math.abs(c) ** (2 / n), 512 + 512 * Math.sign(s) * Math.abs(s) ** (2 / n)]); }
+  return "M" + pts.map(p => p.map(v => v.toFixed(1)).join(" ")).join("L") + "Z"; })();
+const rr = (x, y, w, h, r) => `M${x + r} ${y}H${x + w - r}A${r} ${r} 0 0 1 ${x + w} ${y + r}V${y + h - r}A${r} ${r} 0 0 1 ${x + w - r} ${y + h}H${x + r}A${r} ${r} 0 0 1 ${x} ${y + h - r}V${y + r}A${r} ${r} 0 0 1 ${x + r} ${y}Z`;
+const ear = (cx, cy, r, ri) => `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${MC.body}"/><circle cx="${cx}" cy="${cy}" r="${ri}" fill="${MC.ear}"/>`;
+const eyes = (y, xs, r, hl) => xs.map(x => `<circle cx="${x}" cy="${y}" r="${r}" fill="${MC.eye}"/>${hl ? `<circle cx="${x + r * .32}" cy="${y - r * .34}" r="${r * .32}" fill="#fff"/>` : ""}`).join("");
+const whisk = (cx, y, d, col, w) => `<path d="M${cx - d} ${y}l-86 -12M${cx - d} ${y + 22}l-82 14M${cx + d} ${y}l86 -12M${cx + d} ${y + 22}l82 14" stroke="${col}" stroke-width="${w}" stroke-linecap="round" fill="none"/>`;
+// 应用图标（1024 网格）。small=true 是 16–32 px 用的简化版：少细节、五官更大。
+function iconSVG(v = "a", o = {}) {
+  const size = o.size || 1024, sm = !!o.small, u = (o.uid || "i") + v + (sm ? "s" : ""), V = ICON_VARIANTS[v] || ICON_VARIANTS.a;
+  let g = "";
+  if (v === "b") {
+    if (sm) g = `${ear(282, 300, 176, 100)}${ear(742, 300, 176, 100)}<path d="${rr(112, 300, 800, 610, 200)}" fill="${MC.body}"/><path d="${rr(204, 404, 616, 416, 132)}" fill="#20264a"/>
+      <circle cx="420" cy="592" r="50" fill="#fff3e6"/><circle cx="604" cy="592" r="50" fill="#fff3e6"/><ellipse cx="512" cy="686" rx="42" ry="32" fill="${MC.nose}"/>`;
+    else g = `${ear(300, 300, 150, 92)}${ear(724, 300, 150, 92)}<path d="M214 604l-118 -22M214 654l-112 20M810 604l118 -22M810 654l112 20" stroke="${MC.body}" stroke-width="16" stroke-linecap="round"/>
+      <path d="${rr(306, 820, 112, 76, 38)}" fill="${MC.shade}"/><path d="${rr(606, 820, 112, 76, 38)}" fill="${MC.shade}"/>
+      <path d="${rr(152, 334, 720, 548, 180)}" fill="#000" opacity=".22"/><path d="${rr(152, 300, 720, 548, 180)}" fill="${MC.body}"/>
+      <defs><radialGradient id="${u}g" cx=".5" cy=".38" r=".7"><stop offset="0" stop-color="#3f4c92"/><stop offset="1" stop-color="#1f2446"/></radialGradient></defs>
+      <path d="${rr(236, 392, 552, 372, 120)}" fill="url(#${u}g)"/>
+      <circle cx="380" cy="640" r="28" fill="${MC.nose}" opacity=".45"/><circle cx="644" cy="640" r="28" fill="${MC.nose}" opacity=".45"/>
+      <circle cx="436" cy="560" r="38" fill="#fff3e6"/><circle cx="588" cy="560" r="38" fill="#fff3e6"/><ellipse cx="512" cy="628" rx="30" ry="22" fill="${MC.nose}"/>
+      <path d="M464 668q24 28 48 0q24 28 48 0" stroke="#fff3e6" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" fill="none"/>`;
+  } else if (v === "c") {
+    if (sm) g = `${ear(314, 236, 144, 82)}${ear(710, 236, 144, 82)}<ellipse cx="512" cy="430" rx="296" ry="234" fill="${MC.body}"/>${eyes(386, [418, 606], 42)}<ellipse cx="512" cy="462" rx="36" ry="27" fill="${MC.nose}"/>
+      <path d="${rr(106, 500, 812, 440, 150)}" fill="#3a3f5e"/><path d="${rr(186, 580, 652, 282, 84)}" fill="#fff2dc"/><path d="M450 628V814L618 721Z" fill="#ff6a45" stroke="#ff6a45" stroke-width="34" stroke-linejoin="round"/>`;
+    else g = `${ear(338, 262, 118, 70)}${ear(686, 262, 118, 70)}<ellipse cx="512" cy="432" rx="252" ry="206" fill="${MC.body}"/>
+      <circle cx="388" cy="446" r="26" fill="${MC.ear}" opacity=".6"/><circle cx="636" cy="446" r="26" fill="${MC.ear}" opacity=".6"/>${eyes(388, [434, 590], 27, 1)}<ellipse cx="512" cy="446" rx="27" ry="20" fill="${MC.nose}"/>
+      ${whisk(512, 448, 136, "#a59cba", 9)}
+      <path d="${rr(150, 512, 724, 420, 122)}" fill="#000" opacity=".16"/><path d="${rr(150, 488, 724, 420, 122)}" fill="#3a3f5e"/>
+      <path d="${rr(214, 552, 596, 292, 78)}" fill="#fff2dc"/><path d="M470 612V784L618 698Z" fill="#ff6a45" stroke="#ff6a45" stroke-width="30" stroke-linejoin="round"/>
+      <ellipse cx="410" cy="494" rx="56" ry="38" fill="#eee9f4"/><ellipse cx="614" cy="494" rx="56" ry="38" fill="#eee9f4"/>
+      <path d="M392 478v26M428 478v26M596 478v26M632 478v26" stroke="${MC.shade}" stroke-width="7" stroke-linecap="round"/>`;
+  } else {
+    const S = sm ? [196, 276, 632, 488, 110] : [236, 364, 552, 392, 86];
+    const scr = rr(...S);
+    const mouse = sm ? `${ear(366, 476, 122, 70)}${ear(658, 476, 122, 70)}<circle cx="512" cy="712" r="214" fill="${MC.body}"/>${eyes(664, [440, 584], 36)}<ellipse cx="512" cy="732" rx="36" ry="27" fill="${MC.nose}"/>`
+      : `${ear(382, 540, 92, 54)}${ear(642, 540, 92, 54)}<circle cx="512" cy="690" r="168" fill="${MC.body}"/><circle cx="420" cy="716" r="22" fill="${MC.ear}" opacity=".6"/><circle cx="604" cy="716" r="22" fill="${MC.ear}" opacity=".6"/>
+        ${eyes(660, [456, 568], 23, 1)}<ellipse cx="512" cy="712" rx="25" ry="19" fill="${MC.nose}"/>${whisk(512, 724, 92, "#a59cba", 8)}`;
+    g = sm ? `<path d="${rr(120, 200, 784, 640, 170)}" fill="${MC.cream}"/><path d="${scr}" fill="${MC.navy}"/><clipPath id="${u}c"><path d="${scr}"/></clipPath><g clip-path="url(#${u}c)">${mouse}</g>`
+      : `<path d="M440 312L352 196M584 312L672 196" stroke="${MC.cream}" stroke-width="30" stroke-linecap="round"/><circle cx="352" cy="196" r="36" fill="${MC.cream}"/><circle cx="672" cy="196" r="36" fill="${MC.cream}"/>
+        <path d="${rr(310, 790, 88, 70, 30)}" fill="#f1dcc8"/><path d="${rr(626, 790, 88, 70, 30)}" fill="#f1dcc8"/>
+        <path d="${rr(172, 330, 680, 510, 130)}" fill="#000" opacity=".14"/><path d="${rr(172, 300, 680, 510, 130)}" fill="${MC.cream}"/>
+        <path d="${scr}" fill="${MC.navy}"/><clipPath id="${u}c"><path d="${scr}"/></clipPath><g clip-path="url(#${u}c)"><ellipse cx="512" cy="392" rx="320" ry="120" fill="#3a4170" opacity=".7"/>${mouse}</g>`;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="${size}" height="${size}"${o.label ? ` role="img" aria-label="${o.label}"` : ' aria-hidden="true"'}><defs><linearGradient id="${u}b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${V.bg[0]}"/><stop offset="1" stop-color="${V.bg[1]}"/></linearGradient>
+<linearGradient id="${u}h" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
+<path d="${SQUIRCLE}" fill="url(#${u}b)"/><path d="${SQUIRCLE}" fill="url(#${u}h)"/>${g}</svg>`;
+}
+// 托盘 / 菜单栏图标：单色模板图（32 网格）。导出时 fill 是黑色 + 透明，macOS 按模板图自动反色；原型里用 currentColor 预览。
+function traySVG(v = "a", o = {}) {
+  const size = o.size || 32, c = o.color || "currentColor", u = (o.uid || "t") + v;
+  let g;
+  if (v === "b") g = `<circle cx="9" cy="8.2" r="5" fill="${c}"/><circle cx="23" cy="8.2" r="5" fill="${c}"/><path fill-rule="evenodd" d="${rr(3, 9.5, 26, 19.5, 7)}${rr(7, 13.6, 18, 11.4, 4)}" fill="${c}"/>
+    <circle cx="12.6" cy="19" r="1.9" fill="${c}"/><circle cx="19.4" cy="19" r="1.9" fill="${c}"/>`;
+  else if (v === "c") g = `<clipPath id="${u}k"><rect width="32" height="12.4"/></clipPath><g clip-path="url(#${u}k)"><circle cx="9.5" cy="6.5" r="4.2" fill="${c}"/><circle cx="22.5" cy="6.5" r="4.2" fill="${c}"/><ellipse cx="16" cy="14" rx="9.5" ry="7.5" fill="${c}"/></g>
+    <path d="${rr(3.2, 14.2, 25.6, 14.6, 4.4)}" fill="none" stroke="${c}" stroke-width="2.4"/><path d="M13.6 18.2v7l5.9-3.5z" fill="${c}" stroke="${c}" stroke-width="1.4" stroke-linejoin="round"/>`;
+  else g = `<path d="M13.4 9.6 9.6 4.2M18.6 9.6l3.8-5.4" stroke="${c}" stroke-width="2.3" stroke-linecap="round"/><path d="${rr(3.2, 9.6, 25.6, 18.6, 5.4)}" fill="none" stroke="${c}" stroke-width="2.4"/>
+    <clipPath id="${u}k"><path d="${rr(4.4, 10.8, 23.2, 16.2, 4.2)}"/></clipPath><g clip-path="url(#${u}k)" fill="${c}"><circle cx="11.6" cy="17.2" r="3.4"/><circle cx="20.4" cy="17.2" r="3.4"/><circle cx="16" cy="23" r="5.6"/></g>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="${size}" height="${size}" aria-hidden="true">${g}</svg>`;
+}
+// 字标「RooTV」：圆头粗线条画的几何字母，不依赖任何字体，导出的文件在哪都一样。
+function wordmarkSVG(o = {}) {
+  const h = o.h || 24, roo = o.roo || "currentColor", tv = o.tv || "#ff6b3d";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 322 104" height="${h}" width="${(h * 322 / 104).toFixed(1)}"${o.label === false ? ' aria-hidden="true"' : ' role="img" aria-label="RooTV"'}><g fill="none" stroke-width="17" stroke-linecap="round" stroke-linejoin="round">
+<path d="M12 20V86M12 20H36a20 20 0 0 1 0 40H12M33 60 54 86" stroke="${roo}"/><circle cx="96" cy="63" r="22.5" stroke="${roo}"/><circle cx="158" cy="63" r="22.5" stroke="${roo}"/>
+<path d="M202 20H256M229 20V86M270 20 290 86 310 20" stroke="${tv}"/></g></svg>`;
+}
+/* BRAND-ICONS-END */
+let BUID = 0;
+const icon = (v, size, small, label) => iconSVG(v, { size, small, uid: "k" + (BUID++), label });
+const tray = (v, size) => traySVG(v, { size, uid: "t" + (BUID++) });
 
 /* ======================= 占位图：封面、缩略图、台标、头像、宠物 ======================= */
 let UID = 0;
@@ -574,15 +801,15 @@ function lcg(seed) { let s = seed || 1; return () => (s = (Math.imul(s, 11035152
 // ratio: "p" 竖海报 2:3，"w" 横图 16:9。opt.title=false 不写字；opt.kick 左上角小字。
 function art(t, hue, ratio = "w", opt = {}) {
   const W = ratio === "p" ? 200 : 320, H = ratio === "p" ? 300 : 180, id = "g" + (UID++), v = hsh(t), rnd = lcg(v);
-  const c1 = `hsl(${hue} 42% 30%)`, c2 = `hsl(${(hue + 35) % 360} 48% 10%)`, c3 = `hsl(${(hue + 15) % 360} 78% 68%)`, c4 = `hsl(${(hue + 190) % 360} 45% 55%)`;
+  const c1 = `hsl(${hue} 46% 34%)`, c2 = `hsl(${(hue + 35) % 360} 52% 11%)`, c3 = `hsl(${(hue + 15) % 360} 82% 70%)`, c4 = `hsl(${(hue + 190) % 360} 48% 56%)`;
   let m = "";
   const k = opt.motif ?? v % 5;
   if (k === 0) {
     m = `<circle cx="${W * .7}" cy="${H * .4}" r="${W * .15}" fill="${c3}" opacity=".85"/>
       <path d="M0 ${H * .72}L${W * .28} ${H * .5}L${W * .5} ${H * .63}L${W * .76} ${H * .44}L${W} ${H * .64}V${H}H0Z" fill="${c2}" opacity=".92"/>
-      <path d="M0 ${H * .84}L${W * .42} ${H * .68}L${W} ${H * .88}V${H}H0Z" fill="#0f0d0b" opacity=".55"/>`;
+      <path d="M0 ${H * .84}L${W * .42} ${H * .68}L${W} ${H * .88}V${H}H0Z" fill="#000" opacity=".45"/>`;
   } else if (k === 1) {
-    for (let i = 0; i < 26; i++) m += `<circle cx="${(rnd() * W).toFixed(1)}" cy="${(rnd() * H * .75).toFixed(1)}" r="${(rnd() * 1.6 + .4).toFixed(1)}" fill="#fff4e6" opacity="${(rnd() * .6 + .3).toFixed(2)}"/>`;
+    for (let i = 0; i < 26; i++) m += `<circle cx="${(rnd() * W).toFixed(1)}" cy="${(rnd() * H * .75).toFixed(1)}" r="${(rnd() * 1.6 + .4).toFixed(1)}" fill="#fff" opacity="${(rnd() * .6 + .3).toFixed(2)}"/>`;
     m += `<circle cx="${W * .3}" cy="${H * .32}" r="${W * .12}" fill="${c3}"/><circle cx="${W * .35}" cy="${H * .28}" r="${W * .11}" fill="${c1}"/>
       <path d="M0 ${H * .8}Q${W * .5} ${H * .62} ${W} ${H * .82}V${H}H0Z" fill="${c2}"/>`;
   } else if (k === 2) {
@@ -602,28 +829,28 @@ function art(t, hue, ratio = "w", opt = {}) {
     const L = [...t].length;
     if (ratio === "p") {
       const fs = Math.min(34, 168 / Math.max(L, 2));
-      txt = `<text x="${W / 2}" y="${H * .86}" text-anchor="middle" font-family="Songti SC,STSong,Noto Serif SC,serif" font-weight="700" font-size="${fs}" letter-spacing="${fs * .12}" fill="#fff4e6">${esc(t)}</text>`;
+      txt = `<text x="${W / 2}" y="${H * .86}" text-anchor="middle" font-family="${SANS}" font-weight="800" font-size="${fs}" letter-spacing="${fs * .04}" fill="#fff">${esc(t)}</text>`;
     } else {
       const fs = Math.min(26, 250 / Math.max(L, 2));
-      txt = `<text x="18" y="${H - 20}" font-family="Songti SC,STSong,Noto Serif SC,serif" font-weight="700" font-size="${fs}" fill="#fff4e6" opacity=".92">${esc(t)}</text>`;
+      txt = `<text x="18" y="${H - 22}" font-family="${SANS}" font-weight="800" font-size="${fs}" fill="#fff" opacity=".94">${esc(t)}</text>`;
     }
   }
-  if (opt.kick) txt += `<text x="14" y="24" font-family="PingFang SC,sans-serif" font-size="12" fill="#fff4e6" opacity=".8" letter-spacing="2">${esc(opt.kick)}</text>`;
-  if (opt.ep) txt += `<text x="${W - 14}" y="${H - 14}" text-anchor="end" font-family="Menlo,monospace" font-size="22" font-weight="700" fill="#fff4e6" opacity=".85">${esc(opt.ep)}</text>`;
+  if (opt.kick) txt += `<text x="14" y="24" font-family="${SANS}" font-weight="700" font-size="11" fill="#fff" opacity=".8" letter-spacing="1.5">${esc(opt.kick)}</text>`;
+  if (opt.ep) txt += `<text x="${W - 16}" y="${H - 18}" text-anchor="end" font-family="${SANS}" font-size="30" font-weight="800" fill="#fff" opacity=".9">${esc(opt.ep)}</text>`;
   return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2=".35" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect width="${W}" height="${H}" fill="url(#${id})"/>${m}${txt}</svg>`;
 }
 // 连不上 B 站时没缓存的封面：灰底 + 说明，标题照样显示在卡片下面。
 const noCover = (ratio = "w") => { const W = ratio === "p" ? 200 : 320, H = ratio === "p" ? 300 : 180;
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><rect width="${W}" height="${H}" fill="#25211b"/><rect x="${W / 2 - 26}" y="${H / 2 - 26}" width="52" height="40" rx="8" fill="none" stroke="#5a5042" stroke-width="3"/><path d="M${W / 2 - 12} ${H / 2 - 34}l6 8M${W / 2 + 12} ${H / 2 - 34}l-6 8" stroke="#5a5042" stroke-width="3" stroke-linecap="round"/><text x="${W / 2}" y="${H / 2 + 40}" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="13" fill="#857a68">封面暂时取不到</text></svg>`; };
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><rect width="${W}" height="${H}" fill="#2a2a2f"/><rect x="${W / 2 - 26}" y="${H / 2 - 26}" width="52" height="40" rx="10" fill="none" stroke="#5c5c63" stroke-width="3"/><path d="M${W / 2 - 12} ${H / 2 - 34}l6 8M${W / 2 + 12} ${H / 2 - 34}l-6 8" stroke="#5c5c63" stroke-width="3" stroke-linecap="round"/><text x="${W / 2}" y="${H / 2 + 40}" text-anchor="middle" font-family="${SANS}" font-size="13" fill="#8e8e95">封面暂时取不到</text></svg>`; };
 function logo(c, w = 64) {
   const [a, b] = c.logo, H = 40;
-  const t = b ? `<text x="32" y="16" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="10" font-weight="600" fill="#fff4e6" opacity=".85">${esc(a)}</text><text x="32" y="33" text-anchor="middle" font-family="Menlo,PingFang SC,sans-serif" font-size="${[...b].length > 2 ? 12 : 16}" font-weight="700" fill="#fff4e6">${esc(b)}</text>`
-    : `<text x="32" y="26" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="${[...a].length > 3 ? 11 : 14}" font-weight="700" fill="#fff4e6">${esc(a)}</text>`;
-  return `<svg viewBox="0 0 64 ${H}" width="${w}" aria-hidden="true"><rect width="64" height="${H}" rx="7" fill="${c.c}"/><rect x="1" y="1" width="62" height="${H - 2}" rx="6" fill="none" stroke="#fff" stroke-opacity=".15"/>${t}</svg>`;
+  const t = b ? `<text x="32" y="16" text-anchor="middle" font-family="${SANS}" font-size="10" font-weight="600" fill="#fff" opacity=".85">${esc(a)}</text><text x="32" y="33" text-anchor="middle" font-family="${SANS}" font-size="${[...b].length > 2 ? 12 : 16}" font-weight="800" fill="#fff">${esc(b)}</text>`
+    : `<text x="32" y="26" text-anchor="middle" font-family="${SANS}" font-size="${[...a].length > 3 ? 11 : 14}" font-weight="800" fill="#fff">${esc(a)}</text>`;
+  return `<svg viewBox="0 0 64 ${H}" width="${w}" aria-hidden="true"><rect width="64" height="${H}" rx="9" fill="${c.c}"/><rect x=".5" y=".5" width="63" height="${H - 1}" rx="8.5" fill="none" stroke="#fff" stroke-opacity=".18"/>${t}</svg>`;
 }
 function avatar(name, hue, s = 72) {
   const ch = [...name][0];
-  return `<svg viewBox="0 0 72 72" width="${s}" height="${s}" aria-hidden="true"><circle cx="36" cy="36" r="36" fill="hsl(${hue} 40% 34%)"/><circle cx="36" cy="80" r="34" fill="hsl(${(hue + 30) % 360} 45% 22%)"/><text x="36" y="45" text-anchor="middle" font-family="Songti SC,STSong,serif" font-size="28" font-weight="700" fill="#fff4e6">${esc(ch)}</text></svg>`;
+  return `<svg viewBox="0 0 72 72" width="${s}" height="${s}" aria-hidden="true"><circle cx="36" cy="36" r="36" fill="hsl(${hue} 44% 40%)"/><circle cx="36" cy="80" r="34" fill="hsl(${(hue + 30) % 360} 48% 24%)"/><text x="36" y="45" text-anchor="middle" font-family="${SANS}" font-size="27" font-weight="700" fill="#fff">${esc(ch)}</text></svg>`;
 }
 const PETS = [["猫", "#e8913a", 0], ["狗", "#c9a26b", 1], ["兔", "#efe5d0", 2], ["鸭", "#f1c84b", 3], ["熊猫", "#e6dcc8", 0], ["狐狸", "#d2553f", 1]];
 const PIX = [
@@ -697,7 +924,7 @@ const DEV = [
   { id: "gp", n: "爷爷家的小电视", s: "爷爷家", model: "星智 Cube 1.54", res: "240×180", on: false, seen: "3 小时前", now: null },
   { id: "pc", n: "这台电脑", s: "电脑", model: "在电脑上看 · 不需要小电视", pc: true, on: true, now: null },
 ];
-const S = { view: "desktop", demo: "normal", target: "living", remember: true, ask: false, mini: "living", liveGroup: "全部", sel: null, sf: "全部", lt: "电影", up: "", q: "星", scope: "全部", hero: 0, lu: "living", pending: null, lastFocus: null, sheet: null };
+const S = { view: "desktop", theme: "dark", logo: "a", demo: "normal", target: "living", remember: true, ask: false, mini: "living", liveGroup: "全部", sel: null, sf: "全部", lt: "电影", up: "", q: "星", scope: "全部", hero: 0, lu: "living", pending: null, lastFocus: null, sheet: null };
 const devs = () => S.demo === "notv" ? DEV.filter(d => d.pc) : DEV;
 const dev = id => devs().find(d => d.id === id);
 const tvs = () => devs().filter(d => !d.pc);
@@ -714,122 +941,162 @@ libAll().forEach(x => reg(`lib:${x.id}`, { title: x.t, line: `片库 · ${x.d}`,
 const itemArt = (it, ratio = "w", o = {}) => (blocked() && it.site === "B站" && !it.sr) ? noCover(ratio) : art(it.title.replace(/ 第 \d+ 集$/, ""), it.hue, ratio, { title: false, ...o });
 
 /* ============================== 路由 ============================== */
-const NAV = [["home", "首页", "home"], ["live", "直播", "live"], ["lineup", "节目单", "guide"], ["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["search", "搜索", "search"], ["devices", "设备与遥控", "remote"], ["settings", "设置", "set"]];
+// 桌面：顶部标签栏六项，右边两个图标（设备与遥控、设置）。节目单（小电视的频道表）是「直播」里的第二个分段。
+const TOPT = [["home", "首页"], ["live", "直播"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"], ["search", "搜索", "search"]];
 const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search", "搜索", "search"], ["remote", "遥控", "remote"], ["me", "我的", "more"]];
-const TITLES = { home: "首页", live: "直播", lineup: "节目单", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索", devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的" };
+const TITLES = { home: "首页", live: "直播", lineup: "频道表", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索", devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的", brand: "品牌" };
+const HEROR = ["home", "detail"];
 const isM = () => $("#app").classList.contains("m");
 function parse() {
   const h = decodeURIComponent(location.hash.slice(1)) || "/home", [p, qs] = h.split("?"), parts = p.split("/").filter(Boolean);
   return { name: parts[0] || "home", arg: parts.slice(1).join("/"), q: new URLSearchParams(qs || "") };
 }
-let curRoute = "home", sheetHash = "";
+let curRoute = "home", curArg = "", sheetHash = "";
 function applyParams(q) {
   if (q.get("view")) S.view = q.get("view");
   if (q.get("state")) S.demo = q.get("state");
+  if (q.get("theme")) S.theme = q.get("theme") === "light" ? "light" : "dark";
+  if (q.get("logo") && "abc".includes(q.get("logo"))) S.logo = q.get("logo");
   if (q.get("q") !== null) S.q = q.get("q");
-  if (q.get("chrome") === "0") $("#proto").hidden = true;
-  $("#demo").value = S.demo;
-  applyView();
+  $("#proto").hidden = q.get("chrome") === "0";
+  $("#demo").value = S.demo; $("#logosel").value = S.logo;
+  applyTheme(); applyView();
+}
+function applyTheme() {
+  document.documentElement.dataset.theme = S.theme;
+  document.querySelector('meta[name="theme-color"]').content = S.theme === "light" ? "#f2f2f6" : "#0b0b0d";
+  document.querySelectorAll("#proto [data-theme]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.theme === S.theme)));
 }
 function applyView() {
   const narrow = innerWidth < 700, phone = S.view === "phone" && !narrow, m = narrow || S.view === "phone";
   $("#stage").classList.toggle("framed", phone);
   $("#proto").classList.toggle("framed", phone);
   $("#proto").classList.toggle("mhide", narrow);
-  $("#app").classList.toggle("m", m);
+  $("#app").classList.toggle("m", m); $("#app").classList.toggle("d", !m);
   document.querySelectorAll("#proto [data-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === (m ? "phone" : "desktop"))));
 }
+// 重画时记住焦点在哪（同一个 data-play / href …），画完放回去，像电视上那样按完回车焦点不丢。
+const FKEYS = ["data-play", "data-sel", "data-k", "data-lg", "data-sf", "data-lt", "data-up", "data-scope", "data-hero", "data-hero-i", "data-logo", "data-settarget", "data-remote", "data-rk", "data-sheet", "data-q", "href"];
+function focusKey() {
+  const a = document.activeElement; if (!a || a === document.body) return null;
+  const zone = a.closest("#view, #top, #mini, #tabs"); if (!zone) return null;
+  for (const at of FKEYS) if (a.hasAttribute(at)) { const sel = `[${at}="${CSS.escape(a.getAttribute(at))}"]`; return { z: "#" + zone.id, sel, i: [...zone.querySelectorAll(sel)].indexOf(a) }; }
+  return null;
+}
+function restoreFocus(k) { if (!k) return; const list = [...document.querySelectorAll(`${k.z} ${k.sel}`)]; const el = list[k.i] || list[0]; if (el) el.focus({ preventScroll: true }); }
 function render(keepScroll) {
   const r = parse(); let name = r.name;
   if (!isM() && name === "me") name = "home";
   if (!isM() && name === "remote") name = "devices";
   if (!VIEWS[name]) name = "home";
-  curRoute = name;
+  const fk = focusKey(), shelves = keepScroll ? [...document.querySelectorAll("#view .shelf, #view .gscroll, #view .ups")].map(e => e.scrollLeft) : [];
+  curRoute = name; curArg = r.arg;
   $("#app").classList.toggle("onremote", name === "remote");
-  const prev = $("#main").scrollTop;
-  $("#view").innerHTML = VIEWS[name](r.arg);
-  renderTop(name, r.arg); renderNav(name); renderMini();
-  if (!keepScroll) $("#main").scrollTop = 0; else $("#main").scrollTop = prev;
-  document.title = `${name === "detail" ? detailTitle(r.arg) : TITLES[name]} · 小智电视`;
+  $("#app").classList.toggle("herotop", HEROR.includes(name));
+  const prev = $("#main").scrollTop, bleed = HEROR.includes(name);
+  const v = $("#view"); v.className = bleed ? "bleed" : "";
+  v.innerHTML = (bleed ? "" : pageHead(name)) + VIEWS[name](r.arg);
+  renderTop(name, r.arg); renderTabs(name); renderMini();
+  $("#main").scrollTop = keepScroll ? prev : 0;
+  document.title = `${name === "detail" ? detailTitle(r.arg) : TITLES[name]} · ${BRAND_ZH}`;
   if (name === "live") afterLive();
+  if (keepScroll) document.querySelectorAll("#view .shelf, #view .gscroll, #view .ups").forEach((e, i) => { if (shelves[i] !== undefined) e.scrollLeft = shelves[i]; });
+  if (name === "live") pinTitles();
+  updateTop(); restoreFocus(fk);
   if (r.q.get("sheet") && !S.sheet && sheetHash !== location.hash) { sheetHash = location.hash; const s = r.q.get("sheet"); setTimeout(() => s === "target" ? openTarget(r.q.get("item") || null) : s.startsWith("remote") ? openRemote(s.split(":")[1] || S.target) : null, 0); }
 }
-function renderNav(name) {
-  const cnt = { up: empty() ? 0 : UP.reduce((a, u) => a + u.nw, 0), series: empty() ? 0 : SR.filter(s => s.upd > s.at && s.at > 0).length };
-  $("#nav").innerHTML = NAV.map(([id, t, i], k) => `${k === 6 ? '<div class="sep"></div>' : ""}<a href="#/${id}" ${id === name || (name === "detail" && id === "series") ? 'aria-current="page"' : ""}>${ic(i)}${t}${cnt[id] ? `<em aria-label="${cnt[id]} 个更新">${cnt[id]}</em>` : ""}</a>`).join("");
-  const tabName = ["series", "up", "lib", "lineup", "devices", "settings", "detail"].includes(name) ? "me" : name;
-  $("#tabs").innerHTML = TABS.map(([id, t, i]) => `<a href="#/${id}" ${id === tabName ? 'aria-current="page"' : ""}>${ic(i, 22)}${t}</a>`).join("");
+function pageHead(name) {
+  const seg = name === "live" || name === "lineup" ? `<nav class="segc" aria-label="直播"><a href="#/live" ${name === "live" ? 'aria-current="page"' : ""}>节目指南</a><a href="#/lineup" ${name === "lineup" ? 'aria-current="page"' : ""}>小电视频道表</a></nav>` : "";
+  return `<header class="ph"><h1 class="lt">${name === "lineup" ? "直播" : TITLES[name]}</h1>${seg}</header>`;
 }
-function targetChip(cls = "") {
-  const d = dev(S.target) || dev("pc");
-  return `<button class="tchip ${cls}" data-sheet="target" aria-haspopup="dialog" aria-label="播放到：${esc(d.n)}，点一下换">
-    <span class="dot ${d.on ? "" : "off"}"></span><small class="lbl">播放到</small>${esc(isM() ? d.s : d.n)}${ic("down", 16)}</button>`;
-}
+const counts = () => ({ up: empty() ? 0 : UP.reduce((a, u) => a + u.nw, 0), series: empty() ? 0 : SR.filter(s => s.upd > s.at && s.at > 0).length });
+function tabOf(name, arg) { return name === "lineup" ? "live" : name === "detail" ? (libById(arg) ? "lib" : "series") : name === "me" ? "home" : name; }
 function renderTop(name, arg) {
+  const cur = tabOf(name, arg), cnt = counts();
   const back = name === "detail" ? `<button class="iconbtn" data-back aria-label="返回">${ic("back")}</button>` : "";
-  const title = name === "detail" ? "" : TITLES[name];
-  const sb = name === "search" ? "" : `<label class="sbox">${ic("search", 18)}<input id="topq" type="search" placeholder="搜直播、剧集、UP 主、片库" aria-label="搜索"><kbd class="kb">/</kbd></label>`;
-  $("#top").innerHTML = `${back}<h1>${title}</h1>${sb}${targetChip()}<span class="me" aria-label="当前用户：马小鼠" title="马小鼠 · 主人">马</span>`;
+  const cr = id => cur === id ? 'aria-current="page"' : "";
+  $("#top").innerHTML = `<div class="tl">${back}<a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${icon(S.logo, 30, true)}${wordmarkSVG({ h: 21, label: false })}</a></div>
+    <nav class="ttabs" aria-label="主导航">${TOPT.map(([id, t, i]) => `<a href="#/${id}" ${cr(id)}>${i ? ic(i, 17) : ""}${t}${cnt[id] ? `<em aria-label="${cnt[id]} 个更新">${cnt[id]}</em>` : ""}</a>`).join("")}</nav>
+    <div class="tr">${targetChip()}<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv")}</a><a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set")}</a><span class="me" role="img" aria-label="当前用户：马小鼠" title="马小鼠 · 主人">马</span></div>
+    <span class="ntitle" aria-hidden="true">${esc(name === "detail" ? detailTitle(arg) : name === "lineup" ? "直播" : TITLES[name])}</span>`;
+  $("#top").classList.toggle("home", name === "home");
+}
+function renderTabs(name) {
+  const tabName = ["series", "up", "lib", "lineup", "devices", "settings", "detail", "brand"].includes(name) ? "me" : name;
+  $("#tabs").innerHTML = TABS.map(([id, t, i]) => `<a href="#/${id}" ${id === tabName ? 'aria-current="page"' : ""}>${ic(i, 24)}${t}</a>`).join("");
+}
+// 滚动时：顶栏从透明变成毛玻璃；手机上大标题滚走后，导航栏中间出现小标题。
+function updateTop() {
+  const st = $("#main").scrollTop, solid = st > 8;
+  $("#top").classList.toggle("solid", solid);
+  $("#top").classList.toggle("dk", HEROR.includes(curRoute) && !solid);
+  $("#top").classList.toggle("tt", st > 44);
+  $("#app").classList.toggle("scrolled", solid);
+}
+function targetChip() {
+  const d = dev(S.target) || dev("pc");
+  return `<button class="tchip" data-sheet="target" aria-haspopup="dialog" aria-label="播放到：${esc(d.n)}，点一下换">
+    <span class="dot ${d.on ? "" : "off"}"></span><small>播放到</small>${esc(isM() ? d.s : d.n)}${ic("down", 15)}</button>`;
 }
 const VIEWS = {};
 
 /* ============================== 卡片 ============================== */
-const playov = `<span class="playov"><span>${ic("play", 18)}</span></span>`;
+const pbar = p => p ? `<span class="pbar"><i style="width:${(p * 100).toFixed(1)}%"></i></span>` : "";
 function cardItem(id, sub, extra = "") {
   const it = IT[id];
-  return `<button class="card" data-play="${id}" aria-label="播放 ${esc(it.title)}"><span class="art">${itemArt(it, "w", { title: !!it.sr ? it.title.replace(/ 第 \d+ 集$/, "") : false })}${extra}${it.pct ? `<span class="pbar"><i style="width:${it.pct * 100}%"></i></span>` : ""}${playov}</span>
+  return `<button class="card" data-play="${id}" aria-label="播放 ${esc(it.title)}"><span class="art">${itemArt(it, "w", { title: !!it.sr ? it.title.replace(/ 第 \d+ 集$/, "") : false })}${extra}${pbar(it.pct)}</span>
     <span class="t">${esc(it.sr ? srById(it.sr).t : it.title)}</span><span class="s">${sub}</span></button>`;
 }
 function cardLive(c) {
   const p = c.pr[nowI(c)], nx = c.pr[nowI(c) + 1], it = IT["ch:" + c.id];
-  return `<button class="card" data-play="ch:${c.id}" aria-label="播放 ${esc(c.name)}，正在播 ${esc(p.n)}"><span class="art">${art(p.n, c.h, "w", { title: false })}<span class="badge live">直播</span><span class="logo-on">${logo(c, 52)}</span><span class="pbar"><i style="width:${it.pct * 100}%"></i></span>${playov}</span>
+  return `<button class="card" data-play="ch:${c.id}" aria-label="播放 ${esc(c.name)}，正在播 ${esc(p.n)}"><span class="art">${art(p.n, c.h, "w", { title: false })}<span class="badge live">直播</span><span class="logo-on">${logo(c, 52)}</span>${pbar(it.pct)}</span>
     <span class="t">${esc(p.n)}</span><span class="s">${esc(c.name)} · ${hm(p.s)}–${hm(p.e)}</span>${nx ? `<span class="s2">接下来 ${hm(nx.s)} ${esc(nx.n)}</span>` : ""}</button>`;
 }
 function cardSeries(s) {
   const badge = s.wait ? `<span class="badge">等更新</span>` : s.done ? `<span class="badge">看完了</span>` : s.upd > s.at && s.at > 0 ? `<span class="badge new">更新 ${s.upd - s.at} 集</span>` : s.isNew && !s.at ? `<span class="badge new">新加</span>` : "";
   const sub = s.at ? (s.done ? `看完了 · 共 ${s.n} 集` : `看到第 ${s.at} 集 · 更新到 ${s.upd}`) : `${s.k} · ${s.upd < s.n ? `更新到第 ${s.upd} 集` : `${s.n} 集全`}`;
-  const prog = s.at && !s.done ? `<span class="pbar"><i style="width:${s.at / s.n * 100}%"></i></span>` : "";
-  return `<a class="card p" href="#/detail/${s.id}"><span class="art">${art(s.t, s.hue, "p", { kick: s.k })}${badge}${prog}</span><span class="t">${esc(s.t)}</span><span class="s">${sub}</span></a>`;
+  return `<a class="card p" href="#/detail/${s.id}"><span class="art">${art(s.t, s.hue, "p", { kick: s.k })}${badge}${s.at && !s.done ? pbar(s.at / s.n) : ""}</span><span class="t">${esc(s.t)}</span><span class="s">${sub}</span></a>`;
 }
 function cardLib(x) {
-  if (x.k === "家庭视频") return `<button class="card" data-play="lib:${x.id}"><span class="art">${art(x.t, x.hue, "w", { title: false, motif: 3 })}<span class="badge">${x.y}</span>${playov}</span><span class="t">${esc(x.t)}</span><span class="s">${esc(x.d)}</span></button>`;
-  return `<a class="card p" href="#/detail/${x.id}"><span class="art">${art(x.t, x.hue, "p")}${x.id === "wdlx" ? `<span class="pbar"><i style="width:62%"></i></span>` : ""}${x.id === "xqtk" ? '<span class="badge new">新加</span>' : ""}</span><span class="t">${esc(x.t)}</span><span class="s">${x.y} · ${esc(x.g)}</span></a>`;
+  if (x.k === "家庭视频") return `<button class="card" data-play="lib:${x.id}"><span class="art">${art(x.t, x.hue, "w", { title: false, motif: 3 })}<span class="badge">${x.y}</span></span><span class="t">${esc(x.t)}</span><span class="s">${esc(x.d)}</span></button>`;
+  return `<a class="card p" href="#/detail/${x.id}"><span class="art">${art(x.t, x.hue, "p")}${x.id === "wdlx" ? pbar(.62) : ""}${x.id === "xqtk" ? '<span class="badge new">新加</span>' : ""}</span><span class="t">${esc(x.t)}</span><span class="s">${x.y} · ${esc(x.g)}</span></a>`;
 }
 function cardVid(u, i) {
   const v = u.v[i], id = `v:${u.id}:${i}`, it = IT[id];
-  return `<button class="card" data-play="${id}" aria-label="播放 ${esc(v[0])}"><span class="art">${itemArt(it)}<span class="badge r b mono">${v[1]}</span>${i < u.nw ? '<span class="badge new">新</span>' : ""}${it.pct ? `<span class="pbar"><i style="width:${it.pct * 100}%"></i></span>` : ""}${playov}</span>
+  return `<button class="card" data-play="${id}" aria-label="播放 ${esc(v[0])}"><span class="art">${itemArt(it)}<span class="badge r b num">${v[1]}</span>${i < u.nw ? '<span class="badge new">新</span>' : ""}${pbar(it.pct)}</span>
     <span class="t">${esc(v[0])}</span><span class="who">${avatar(u.n, u.hue, 20)}<span class="s">${esc(u.n)} · ${v[2]}</span></span></button>`;
 }
 const shelf = (title, sub, inner, more, moreT = "全部") => `<section aria-label="${esc(title)}"><div class="h2"><h2>${title}</h2>${sub ? `<small>${sub}</small>` : ""}${more ? `<a class="more" href="${more}">${moreT} ›</a>` : ""}</div><div class="shelf">${inner}</div></section>`;
-const banner = (kind, t, p, btn, href) => `<div class="banner ${kind}" role="note"><span class="ico">${ic(kind === "warn" ? "warn" : "info", 26)}</span><div><b>${t}</b><p>${p}</p></div>${btn ? `<a class="btn sm" href="${href}">${btn}</a>` : ""}</div>`;
+const banner = (kind, t, p, btn, href) => `<div class="banner ${kind}" role="note"><span class="ico">${ic(kind === "warn" ? "warn" : "info", 22)}</span><div><b>${t}</b><p>${p}</p></div>${btn ? `<a class="btn sm" href="${href}">${btn}</a>` : ""}</div>`;
+const emptyBox = (icon, t, p, act = "") => `<div class="empty"><div class="eic">${ic(icon, 40)}</div><b>${t}</b><p>${p}</p>${act}</div>`;
 function splitPlay(id, label, small) {
   const d = dev(S.target) || dev("pc");
-  return `<span class="split"><button class="btn pri" data-play="${id}">${ic("play", 16)}${label}${small ? ` <small>${small}</small>` : ""}</button><button class="btn pri caret" data-sheet="target" data-item="${id}" aria-label="选择播放到哪里（现在是 ${esc(d.n)}）">${ic("down", 16)}</button></span>`;
+  return `<span class="split"><button class="btn pri" data-play="${id}">${ic("play", 17)}${label}${small ? ` <small>${small}</small>` : ""}</button><button class="btn pri caret" data-sheet="target" data-item="${id}" aria-label="选择播放到哪里（现在是 ${esc(d.n)}）">${ic("down", 17)}</button></span>`;
 }
 const toWhere = () => { const d = dev(S.target) || dev("pc"); return d.pc ? "在电脑上" : `到${d.s}`; };
+const meta = a => `<div class="meta">${a.filter(Boolean).join('<span aria-hidden="true">·</span>')}</div>`;
 
 /* ============================== 首页 ============================== */
 const HERO = [
-  { kick: "剧集追更 · 新的一集", id: "xhlc", play: "ep:xhlc:8", btn: "继续第 8 集", small: "12:40", t: "星河列车", hue: 248, meta: "2026 · 番剧 · B站 · 更新到第 12 集", syn: SR[0].syn, sr: 1 },
-  { kick: "直播 · 正在播", live: "cctv5", play: "ch:cctv5", btn: "看直播", t: "中超联赛第 28 轮", hue: 120, meta: "CCTV-5 体育 · 19:30–21:25 · 还有 73 分钟", syn: "第 28 轮焦点战，上半场刚刚结束。接下来 21:25 是《足球之夜》。" },
-  { kick: "片库 · 新添加", id: "xqtk", play: "lib:xqtk", btn: "播放", t: "星期天的客人", hue: 82, meta: "2020 · 剧情 · 1 小时 50 分 · 1080p", syn: "一个下雨的星期天，三位不请自来的客人敲开了老钟表匠的门。", lib: 1 },
+  { kick: "剧集追更 · 新的一集", id: "xhlc", play: "ep:xhlc:8", btn: "继续第 8 集", small: "12:40", t: "星河列车", hue: 248, meta: ["2026", "番剧", "B站", "更新到第 12 集", '<span class="tag">4K</span>'], syn: SR[0].syn, sr: 1 },
+  { kick: "直播 · 正在播", live: "cctv5", play: "ch:cctv5", btn: "看直播", t: "中超联赛第 28 轮", hue: 120, meta: ["CCTV-5 体育", "19:30–21:25", "还有 73 分钟"], syn: "第 28 轮焦点战，上半场刚刚结束。接下来 21:25 是《足球之夜》。" },
+  { kick: "片库 · 新添加", id: "xqtk", play: "lib:xqtk", btn: "播放", t: "星期天的客人", hue: 82, meta: ["2020", "剧情", "1 小时 50 分", '<span class="tag">1080p</span>'], syn: "一个下雨的星期天，三位不请自来的客人敲开了老钟表匠的门。", lib: 1 },
 ];
 VIEWS.home = () => {
-  let o = "";
-  if (blocked()) o += banner("warn", "连不上 B 站", "UP 主和剧集暂时不更新，没缓存的封面先用占位图。直播、YouTube 和片库照常。", "查看原因", "#/settings");
-  if (S.demo === "notv") o += banner("info", "还没有小电视也能看", "点任何节目都会在这台电脑上播放。以后买了小电视，输入屏幕上的绑定码就能「播放到」它。", "绑定小电视", "#/devices");
   const HS = empty() ? [HERO[1]] : HERO; if (S.hero >= HS.length) S.hero = 0;
   const h = HS[S.hero], bg = h.live ? art(h.t, h.hue, "w", { title: false, motif: 2, flip: 1 }) : art(h.t, h.hue, "w", { title: false, motif: h.sr ? 1 : 0, flip: 1 });
-  o += `<section class="hero" aria-roledescription="轮播" aria-label="推荐"><div class="bg">${bg}</div><div class="shade"></div>
-    <div class="copy"><div class="kicker">${h.live ? '<span class="badge live">直播</span>' : ""}${h.kick}</div><h2>${esc(h.t)}</h2><div class="meta">${h.meta}</div><p class="syn">${esc(h.syn)}</p>
-    <div class="actions">${splitPlay(h.play, h.btn, h.small)}${h.id ? `<a class="btn" href="#/detail/${h.id}">详情</a>` : `<a class="btn" href="#/live">节目单</a>`}</div></div>
-    <div class="nav"><button class="iconbtn" data-hero="-1" aria-label="上一个">${ic("back", 18)}</button>${HS.map((_, i) => `<button class="dotb" data-hero-i="${i}" aria-label="第 ${i + 1} 个" ${i === S.hero ? 'aria-current="true"' : ""}></button>`).join("")}<button class="iconbtn" data-hero="1" aria-label="下一个" style="transform:scaleX(-1)">${ic("back", 18)}</button></div></section>`;
-  o += `<div class="chips qchips" aria-label="分类"><a href="#/series">${ic("series", 16)}剧集与番剧</a><a href="#/up">${ic("up", 16)}UP 主</a><a href="#/lib">${ic("lib", 16)}片库</a><a href="#/lineup">${ic("guide", 16)}节目单</a></div>`;
+  let o = `<section class="hero dk" aria-roledescription="轮播" aria-label="推荐"><div class="bg">${bg}</div><div class="shade"></div>
+    <div class="copy"><div class="kicker">${h.live ? '<span class="badge live">直播</span>' : ""}${h.kick}</div><div class="tart${[...h.t].length > 6 ? " sm" : ""}" style="--h:${h.hue}" role="heading" aria-level="2">${esc(h.t)}</div>${meta(h.meta)}<p class="syn">${esc(h.syn)}</p>
+    <div class="actions">${splitPlay(h.play, h.btn, h.small)}${h.id ? `<a class="btn" href="#/detail/${h.id}">详情</a>` : `<a class="btn" href="#/live">节目指南</a>`}</div></div>
+    <div class="hnav"><button class="iconbtn" data-hero="-1" aria-label="上一个">${ic("back", 18)}</button>${HS.map((_, i) => `<button class="dotb" data-hero-i="${i}" aria-label="第 ${i + 1} 个" ${i === S.hero ? 'aria-current="true"' : ""}></button>`).join("")}<button class="iconbtn" data-hero="1" aria-label="下一个">${ic("fwd", 18)}</button></div></section><div class="after">`;
+  if (blocked()) o += banner("warn", "连不上 B 站", "UP 主和剧集暂时不更新，没缓存的封面先用占位图。直播、YouTube 和片库照常。", "查看原因", "#/settings");
+  if (S.demo === "notv") o += banner("info", `没有小电视也能用${BRAND_ZH}`, "点任何节目都会在这台电脑上播放。以后买了小电视，输入屏幕上的绑定码就能「播放到」它。", "绑定小电视", "#/devices");
+  o += `<div class="chips qchips" aria-label="分类"><a href="#/series">${ic("series", 16)}剧集与番剧</a><a href="#/up">${ic("up", 16)}UP 主</a><a href="#/lib">${ic("lib", 16)}片库</a><a href="#/lineup">${ic("guide", 16)}频道表</a></div>`;
   if (!empty()) o += shelf("继续观看", "在哪台上看的都算", [
     cardItem("ep:xhlc:8", "第 8 集 · 还剩 11 分钟 · 客厅"), cardItem("lib:wdlx", "片库 · 还剩 46 分钟 · 这台电脑"), cardItem("v:xmcf:0", "小满的厨房 · 还剩 6 分钟 · 卧室"),
     cardItem("ep:shxz:21", "第 21 集 · 还剩 38 分钟"), cardItem("v:linlx:0", "Lin 的旅行手账 · YouTube"),
   ].join(""));
-  o += shelf("直播 · 正在播", `${hm(NOW)} · 节目信息来自 EPG`, ["cctv5", "cctv1", "hunan", "cctv6", "zhejiang", "phoenix", "cctv14"].map(id => cardLive(chById(id))).join(""), "#/live", "节目单");
+  o += shelf("直播 · 正在播", `${hm(NOW)} · 节目信息来自 EPG`, ["cctv5", "cctv1", "hunan", "cctv6", "zhejiang", "phoenix", "cctv14"].map(id => cardLive(chById(id))).join(""), "#/live", "节目指南");
   if (empty()) {
     o += `<div class="h2"><h2>开始收集你爱看的</h2></div><div class="onb">
       <a href="#/up"><b>${ic("up")}订阅一个 UP 主</b><p>B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。</p></a>
@@ -840,10 +1107,10 @@ VIEWS.home = () => {
     o += shelf("剧集追更", "", SR.filter(s => !s.done).map(cardSeries).join(""), "#/series");
     o += shelf("我的片库", "最近添加", [...LIB["电影"], ...LIB["动画"]].map(([id]) => cardLib(libById(id))).join(""), "#/lib");
   }
-  return o;
+  return o + "</div>";
 };
 
-/* ============================== 直播：节目单网格 ============================== */
+/* ============================== 直播：节目指南网格 ============================== */
 const GROUPS = ["全部", "央视", "卫视", "港澳台", "国际", "音乐"];
 function liveHead() {
   const sel = S.sel || { ch: "cctv5", i: nowI(chById("cctv5")) }, c = chById(sel.ch), p = c.pr[sel.i], nx = c.pr[sel.i + 1];
@@ -857,7 +1124,7 @@ function liveHead() {
     <div class="lnext">${st === "now" ? `还有 ${p.e - NOW} 分钟 · ` : ""}${nx ? `接下来 ${hm(nx.s)} <b>${esc(nx.n)}</b>` : ""}</div><div class="actions">${act}</div></div>`;
 }
 VIEWS.live = () => {
-  const ppm = isM() ? 3.2 : 5, chw = isM() ? 64 : 200, W = (G1 - G0) * ppm;
+  const ppm = isM() ? 3.2 : 5, chw = isM() ? 64 : 210, W = (G1 - G0) * ppm;
   const chs = CH.filter(c => S.liveGroup === "全部" || c.g === S.liveGroup), sel = S.sel || { ch: "cctv5", i: nowI(chById("cctv5")) };
   const playingCh = (IT[dev(S.mini)?.now] || {}).ch;
   let ticks = ""; for (let t = G0; t < G1; t += 30) ticks += `<span style="left:${(t - G0) * ppm}px">${hm(t)}</span>`;
@@ -865,23 +1132,23 @@ VIEWS.live = () => {
     <div class="gprogs" style="width:${W}px">${c.pr.filter(p => p.e > G0 && p.s < G1).map(p => { const i = c.pr.indexOf(p), s = Math.max(p.s, G0), e = Math.min(p.e, G1), st = p.e <= NOW ? "past" : p.s > NOW ? "" : "now";
       return `<button class="gp ${st}" style="left:${(s - G0) * ppm + 2}px;width:${(e - s) * ppm - 4}px" data-sel="${c.id}:${i}" aria-pressed="${sel.ch === c.id && sel.i === i}" aria-label="${esc(c.name)} ${hm(p.s)} 到 ${hm(p.e)} ${esc(p.n)}${st === "now" ? "，正在播" : ""}"><b>${esc(p.n)}</b><small>${hm(p.s)}–${hm(p.e)}</small>${st === "now" ? `<span class="gpb" style="width:${(NOW - p.s) / (p.e - p.s) * 100}%"></span>` : ""}</button>`; }).join("")}</div></div>`).join("");
   return `<div class="lhead" id="lhead">${liveHead()}</div>
-    <div class="chips" role="group" aria-label="分组">${GROUPS.map(g => `<button data-lg="${g}" aria-pressed="${S.liveGroup === g}">${g}<em>${g === "全部" ? CH.length : CH.filter(c => c.g === g).length}</em></button>`).join("")}<a href="#/lineup" style="margin-left:auto">${ic("guide", 16)}小电视的频道表</a></div>
+    <div class="chips" role="group" aria-label="分组">${GROUPS.map(g => `<button data-lg="${g}" aria-pressed="${S.liveGroup === g}">${g}<em>${g === "全部" ? CH.length : CH.filter(c => c.g === g).length}</em></button>`).join("")}</div>
     <div class="guide" style="--chw:${chw}px"><div class="gscroll" id="gs"><div class="ginner" style="width:${chw + W}px">
       <div class="gruler"><div class="gcorner">${isM() ? "今天" : "今天 · 10月24日 周六"}</div><div class="gticks" style="width:${W}px">${ticks}</div></div>
       ${rows}<div class="gnow" style="left:${chw + (NOW - G0) * ppm}px"><span>${hm(NOW)}</span></div></div></div></div>
-    <p class="hint">方向键在节目之间移动，回车看详情。正在播的节目底部的红线是进度；左边红边是「${esc(dev(S.mini)?.n || "")}」正在看的台。节目信息来自频道表的 EPG（每天更新），台标来自 M3U 的 tvg-logo。</p>`;
+    <p class="hint">方向键在节目之间移动，回车看详情。正在播的节目底部的线是进度；频道左边的色条是「${esc(dev(S.mini)?.n || "")}」正在看的台。节目信息来自频道表的 EPG（每天更新），台标来自 M3U 的 tvg-logo。</p>`;
 };
-// 横向滚动时，被左边切掉一半的节目把标题挪到看得见的地方（像 Plex 的节目单）。
+// 横向滚动时，被左边切掉一半的节目把标题挪到看得见的地方。
 function pinTitles() {
   const gs = $("#gs"); if (!gs) return; const x = gs.scrollLeft;
-  gs.querySelectorAll(".gp").forEach(b => { const l = b.offsetLeft, w = b.offsetWidth, pad = Math.max(10, Math.min(x - l + 10, w - 60)); b.style.paddingLeft = pad + "px"; });
+  gs.querySelectorAll(".gp").forEach(b => { const l = b.offsetLeft, w = b.offsetWidth, pad = Math.max(12, Math.min(x - l + 12, w - 60)); b.style.paddingLeft = pad + "px"; });
 }
 function afterLive() { const gs = $("#gs"); if (!gs) return; gs.scrollLeft = (NOW - G0) * (isM() ? 3.2 : 5) - (isM() ? 60 : 140); pinTitles(); gs.addEventListener("scroll", () => requestAnimationFrame(pinTitles), { passive: true }); }
 
-/* ============================== 节目单：小电视的频道表 ============================== */
+/* ============================== 小电视的频道表 ============================== */
 VIEWS.lineup = () => {
   const ts = tvs();
-  if (!ts.length) return `<div class="empty">${ic("tv", 56)}<b>还没有小电视</b><p>节目单是小电视上按「上 / 下」换台时的那张频道表。绑定小电视后在这里排。</p><a class="btn pri" href="#/devices">绑定小电视</a></div>`;
+  if (!ts.length) return emptyBox("tv", "还没有小电视", "频道表是小电视上按「上 / 下」换台时的那张表。绑定小电视后在这里排。", `<a class="btn pri" href="#/devices">绑定小电视</a>`);
   const d = ts.find(x => x.id === S.lu) || ts[0];
   const grp = (name, list, sub) => `<div class="lgrp"><header>${name}<small>${sub}</small></header>${list.map(([no, lg, nm, sm, tag, on]) => `<div class="lrow"><span class="grip" aria-hidden="true">⋮⋮</span><span class="no">${no}</span><span>${lg}</span><span class="nm">${esc(nm)}<small>${esc(sm)}</small></span><span class="tag">${tag}</span><button class="sw" role="switch" aria-checked="${on}" aria-label="在${esc(d.s)}小电视上显示 ${esc(nm)}" data-sw></button></div>`).join("")}</div>`;
   const chRows = g => CH.filter(c => c.g === g).map(c => [String(c.no).padStart(2, "0"), logo(c, 46), c.name, `现在：${c.pr[nowI(c)].n}`, "直播", c.id !== "cctv2"]);
@@ -893,17 +1160,17 @@ VIEWS.lineup = () => {
       <div class="meta">86 / 128 个台 · 5.2 / 7 KB（小电视一次收得下的上限）</div><p class="hint">拖动 ⋮⋮ 调顺序；关掉的台小电视上不出现，电脑和手机上照样能看。</p></div>
     <div class="panel"><h3>直播源</h3>
       <div class="src">${ic("check", 18)}<span>全站频道表<small>管理员维护 · 214 个台 · 含 EPG</small></span></div>
-      <div class="src">${ic("plus", 18)}<span>预设：央视卫视精简<small>40 个台 · 适合小屏</small></span><button class="btn sm ghost">加入</button></div>
-      <div class="src">${ic("plus", 18)}<span>预设：少儿动画<small>12 个台</small></span><button class="btn sm ghost">加入</button></div>
-      <div class="src">${ic("link", 18)}<span>自定义 M3U 链接<small>台标读 tvg-logo，节目单读 x-tvg-url</small></span><button class="btn sm ghost">添加</button></div></div>
+      <div class="src">${ic("plus", 18)}<span>预设：央视卫视精简<small>40 个台 · 适合小屏</small></span><button class="btn sm">加入</button></div>
+      <div class="src">${ic("plus", 18)}<span>预设：少儿动画<small>12 个台</small></span><button class="btn sm">加入</button></div>
+      <div class="src">${ic("link", 18)}<span>自定义 M3U 链接<small>台标读 tvg-logo，节目单读 x-tvg-url</small></span><button class="btn sm">添加</button></div></div>
     <div class="panel"><h3>节目信息（EPG）</h3><div class="meta">上次更新 今天 18:00 · 覆盖 168 / 214 个台</div><p class="hint">没有 EPG 的台只显示台名，不显示「正在播」。</p></div></div></div>`;
 };
 
 /* ============================== 剧集与番剧 ============================== */
 VIEWS.series = () => {
-  if (empty()) return `<div class="empty">${ic("series", 56)}<b>还没有剧集</b><p>粘贴 B 站番剧、多集视频、合集，或 YouTube 播放列表的链接；也可以在搜索里找到后「加为剧集」。</p><button class="btn pri" data-sheet="add" data-kind="series">${ic("plus", 18)}添加剧集</button></div>`;
+  if (empty()) return emptyBox("series", "还没有剧集", "粘贴 B 站番剧、多集视频、合集，或 YouTube 播放列表的链接；也可以在搜索里找到后「加为剧集」。", `<button class="btn pri" data-sheet="add" data-kind="series">${ic("plus", 18)}添加剧集</button>`);
   const F = ["全部", "追更中", "番剧", "电视剧", "纪录片", "动画", "看完了"];
-  const list = SR.filter(s => S.sf === "全部" || (S.sf === "追更中" ? !s.done && s.upd <= s.n && s.at > 0 && !s.done : S.sf === "看完了" ? s.done : s.k === S.sf));
+  const list = SR.filter(s => S.sf === "全部" || (S.sf === "追更中" ? !s.done && s.at > 0 : S.sf === "看完了" ? s.done : s.k === S.sf));
   return `${blocked() ? banner("warn", "连不上 B 站", "B 站的剧集暂时不能更新集数；已缓存的封面和进度照常显示。", "", "") : ""}
     <div class="chips" role="group" aria-label="筛选">${F.map(f => `<button data-sf="${f}" aria-pressed="${S.sf === f}">${f}</button>`).join("")}<button style="margin-left:auto" data-sheet="add" data-kind="series">${ic("plus", 16)}添加剧集</button></div>
     <div class="pgrid">${list.map(cardSeries).join("")}</div>
@@ -912,24 +1179,24 @@ VIEWS.series = () => {
 
 /* ============================== UP 主 ============================== */
 VIEWS.up = () => {
-  if (empty()) return `<div class="empty">${ic("up", 56)}<b>还没有订阅 UP 主</b><p>B 站 UP 主或 YouTube 频道，每个都会变成一个台：从最新的没看过的视频开始播。登录 B 站后可以一键导入你关注的人。</p><button class="btn pri" data-sheet="add" data-kind="up">${ic("plus", 18)}订阅 UP 主</button></div>`;
+  if (empty()) return emptyBox("up", "还没有订阅 UP 主", "B 站 UP 主或 YouTube 频道，每个都会变成一个台：从最新的没看过的视频开始播。登录 B 站后可以一键导入你关注的人。", `<button class="btn pri" data-sheet="add" data-kind="up">${ic("plus", 18)}订阅 UP 主</button>`);
   const list = UP.filter(u => !S.up || u.id === S.up);
   const vids = list.flatMap(u => u.v.map((_, i) => [u, i]));
   return `${blocked() ? banner("warn", "连不上 B 站", "B 站 UP 主的新视频暂时刷不出来，YouTube 的照常。", "", "") : ""}
-    <div class="ups" role="group" aria-label="UP 主"><button class="up" data-up="" aria-pressed="${!S.up}"><span class="av" style="display:grid;place-items:center;background:var(--card);border-radius:50%">${ic("up", 30)}</span><span>全部</span><small>${UP.length} 位</small></button>
-      ${UP.map(u => `<button class="up" data-up="${u.id}" aria-pressed="${S.up === u.id}"><span class="av">${avatar(u.n, u.hue)}${u.nw ? `<em>${u.nw}</em>` : ""}</span><span>${esc(u.n)}</span><small>${u.site} · ${u.fans}</small></button>`).join("")}
-      <button class="up" data-sheet="add" data-kind="up"><span class="av" style="display:grid;place-items:center;border:1px dashed var(--rule-hi);border-radius:50%;box-shadow:none">${ic("plus", 26)}</span><span>订阅</span><small>粘贴链接</small></button></div>
-    <div class="h2" style="margin-top:8px"><h2>${S.up ? esc(UP.find(u => u.id === S.up).n) : "最新视频"}</h2><small>按发布时间</small>${S.up ? `<span class="more">${splitPlay(`v:${S.up}:0`, "从最新的没看过的开始", "")}</span>` : ""}</div>
-    <div class="wgrid">${vids.map(([u, i]) => cardVid(u, i)).join("")}</div>`;
+    <div class="ups" role="group" aria-label="UP 主"><button class="up" data-up="" aria-pressed="${!S.up}"><span class="av pl">${ic("up", 34)}</span><span>全部</span><small>${UP.length} 位</small></button>
+      ${UP.map(u => `<button class="up" data-up="${u.id}" aria-pressed="${S.up === u.id}"><span class="av">${avatar(u.n, u.hue, 96)}${u.nw ? `<em>${u.nw}</em>` : ""}</span><span>${esc(u.n)}</span><small>${u.site} · ${u.fans}</small></button>`).join("")}
+      <button class="up" data-sheet="add" data-kind="up"><span class="av add">${ic("plus", 30)}</span><span>订阅</span><small>粘贴链接</small></button></div>
+    <div class="h2" style="margin-top:4px"><h2>${S.up ? esc(UP.find(u => u.id === S.up).n) : "最新视频"}</h2><small>按发布时间</small>${S.up ? `<span class="more">${splitPlay(`v:${S.up}:0`, "从最新的没看过的开始", "")}</span>` : ""}</div>
+    <div class="wgrid" style="margin-top:18px">${vids.map(([u, i]) => cardVid(u, i)).join("")}</div>`;
 };
 
 /* ============================== 片库 ============================== */
 VIEWS.lib = () => {
-  if (empty()) return `<div class="empty">${ic("lib", 56)}<b>片库还是空的</b><p>选电脑或 NAS 上放电影、剧集、动画或家庭视频的文件夹。会读同目录的 poster.jpg 和 .nfo，没有就从文件名猜片名，电脑本地生成缩略图。</p>
-    <div class="actions" style="justify-content:center"><button class="btn pri">${ic("plus", 18)}添加文件夹</button><button class="btn">连接 Jellyfin / Emby / Plex</button></div></div>`;
+  if (empty()) return emptyBox("lib", "片库还是空的", "选电脑或 NAS 上放电影、剧集、动画或家庭视频的文件夹。会读同目录的 poster.jpg 和 .nfo，没有就从文件名猜片名，电脑本地生成缩略图。",
+    `<div class="actions" style="justify-content:center"><button class="btn pri">${ic("plus", 18)}添加文件夹</button><button class="btn">连接 Jellyfin / Emby / Plex</button></div>`);
   const T = Object.keys(LIB);
   const items = LIB[S.lt].map(([id]) => libById(id));
-  return `<div class="srcbar"><span class="pill">${ic("lib", 16)}NAS · 影视<small>312 项 · 10 分钟前扫描</small></span><span class="pill">${ic("lib", 16)}这台电脑 · 家庭视频<small>97 段</small></span><span class="pill add">${ic("plus", 16)}添加文件夹</span><span class="pill add">${ic("link", 16)}连接 Jellyfin / Emby / Plex</span></div>
+  return `<div class="srcbar"><span class="pill">${ic("lib", 16)}NAS · 影视<small>312 项 · 10 分钟前扫描</small></span><span class="pill">${ic("pc", 16)}这台电脑 · 家庭视频<small>97 段</small></span><span class="pill add">${ic("plus", 16)}添加文件夹</span><span class="pill add">${ic("link", 16)}连接 Jellyfin / Emby / Plex</span></div>
     <div class="chips" role="group" aria-label="分类">${T.map(t => `<button data-lt="${t}" aria-pressed="${S.lt === t}">${t}<em>${LIB[t].length}</em></button>`).join("")}</div>
     <div class="${S.lt === "家庭视频" ? "wgrid" : "pgrid"}">${items.map(cardLib).join("")}</div>
     <p class="hint">片库只在这台电脑和家里的网络里能看；播放到小电视时，电脑会把画面转成小电视的分辨率。</p>`;
@@ -939,52 +1206,56 @@ VIEWS.lib = () => {
 VIEWS.search = () => {
   const q = S.q.trim(), hit = s => q && s.includes(q), mk = s => esc(s).split(esc(q)).join(`<mark>${esc(q)}</mark>`);
   const SC = ["全部", "直播", "剧集番剧", "UP 主", "视频", "片库"];
-  let o = `<label class="bigsearch">${ic("search", 22)}<input id="bigq" type="search" value="${esc(S.q)}" placeholder="搜直播、剧集、番剧、UP 主、B 站视频、片库" aria-label="搜索" autocomplete="off"></label>
+  let o = `<label class="bigsearch">${ic("search", 22)}<input id="bigq" type="search" value="${esc(S.q)}" placeholder="搜直播、剧集、番剧、UP 主、B 站视频、片库，或粘贴链接" aria-label="搜索" autocomplete="off"></label>
     <div class="chips" role="group" aria-label="范围">${SC.map(s => `<button data-scope="${s}" aria-pressed="${S.scope === s}">${s}</button>`).join("")}</div>`;
-  if (!q) return o + `<div class="h2"><h2>最近搜过</h2></div><div class="chips">${["星河", "番茄牛腩", "中超", "宝宝"].map(s => `<button data-q="${s}">${ic("hist", 16)}${s}</button>`).join("")}</div>`;
+  if (!q) return o + `<div class="h2"><h2>最近搜过</h2></div><div class="chips" style="margin-top:14px">${["星河", "番茄牛腩", "中超", "宝宝"].map(s => `<button data-q="${s}">${ic("hist", 16)}${s}</button>`).join("")}</div>`;
   if (blocked()) o += banner("warn", "连不上 B 站", "只显示直播、YouTube 和片库里的结果。", "", "");
   const sec = (name, scope, rows) => (S.scope === "全部" || S.scope === scope) && rows.length ? `<div class="h2"><h2>${name}</h2><small>${rows.length} 个</small></div><div class="rlist">${rows.join("")}</div>` : "";
-  const ri = (artH, t, sub, attrs, side = "") => `<button class="ritem" ${attrs}><span class="art">${artH}</span><span><b>${t}</b><span>${sub}</span></span>${side}</button>`;
-  const live = []; CH.forEach(c => c.pr.forEach((p, i) => { if ((hit(p.n) || hit(c.name)) && p.e > NOW) live.push(ri(`${art(p.n, c.h, "w", { title: false })}<span class="logo-on" style="width:36px;bottom:6px;left:6px">${logo(c, 36)}</span>`, mk(p.n), `${esc(c.name)} · ${p.s <= NOW ? "正在播" : "今天 " + hm(p.s)}`, `data-play="ch:${c.id}"`)); }));
+  const ri = (artH, t, sub, attrs, side = "", cls = "") => `<button class="ritem" ${attrs}><span class="art ${cls}">${artH}</span><span><b>${t}</b><span>${sub}</span></span>${side}</button>`;
+  const live = []; CH.forEach(c => c.pr.forEach(p => { if ((hit(p.n) || hit(c.name)) && p.e > NOW) live.push(ri(`${art(p.n, c.h, "w", { title: false })}<span class="logo-on" style="width:36px;bottom:6px;left:6px">${logo(c, 36)}</span>`, mk(p.n), `${esc(c.name)} · ${p.s <= NOW ? "正在播" : "今天 " + hm(p.s)}`, `data-play="ch:${c.id}"`)); }));
   const srs = SR.filter(s => hit(s.t) || s.tags.some(hit)).map(s => ri(art(s.t, s.hue, "w"), mk(s.t), `${s.k} · ${s.site} · ${s.at ? `看到第 ${s.at} 集` : `${s.n} 集`}`, `data-href="#/detail/${s.id}"`));
-  const bili = blocked() ? [] : [[`《${q}》相关番剧 · 加为剧集`, "番剧 · B站 · 12 集", 260]].map(([t, s, h]) => ri(art(t, h, "w", { title: false }), mk(t), s, `data-sheet="add" data-kind="series"`, `<span class="btn sm ghost">加为剧集</span>`));
-  const ups = UP.filter(u => hit(u.n)).map(u => `<button class="ritem" data-up-go="${u.id}"><span class="art" style="background:none;display:grid;place-items:center">${avatar(u.n, u.hue, 46)}</span><span><b>${mk(u.n)}</b><span>${u.site} · ${u.fans} 粉丝 · 已订阅</span></span></button>`);
-  if (!blocked()) ups.push(`<button class="ritem" data-sheet="add" data-kind="up"><span class="art" style="background:none;display:grid;place-items:center">${avatar(q + "探索", 300, 46)}</span><span><b>${mk(q)}探索频道</b><span>B站 · 3.1 万粉丝</span></span><span class="btn sm ghost">订阅</span></button>`);
+  const bili = blocked() ? [] : [[`《${q}》相关番剧 · 加为剧集`, "番剧 · B站 · 12 集", 260]].map(([t, s, h]) => ri(art(t, h, "w", { title: false }), mk(t), s, `data-sheet="add" data-kind="series"`, `<span class="tag">加为剧集</span>`));
+  const ups = UP.filter(u => hit(u.n)).map(u => ri(avatar(u.n, u.hue, 52), mk(u.n), `${u.site} · ${u.fans} 粉丝 · 已订阅`, `data-up-go="${u.id}"`, "", "av"));
+  if (!blocked()) ups.push(ri(avatar(q + "探索", 300, 52), `${mk(q)}探索频道`, "B站 · 3.1 万粉丝", `data-sheet="add" data-kind="up"`, `<span class="tag">订阅</span>`, "av"));
   const vids = UP.flatMap(u => u.v.map((v, i) => [u, v, i])).filter(([u, v]) => hit(v[0]) && !(blocked() && u.site === "B站")).map(([u, v, i]) => ri(itemArt(IT[`v:${u.id}:${i}`]), mk(v[0]), `${esc(u.n)} · ${v[1]} · ${v[2]}`, `data-play="v:${u.id}:${i}"`));
   if (!blocked()) [`用手机拍${q}空的 5 个技巧`, `${q}空露营一晚是什么体验`, `一口气看完《${q}河列车》前 8 集`].forEach((t, i) => vids.push(ri(art(t, 200 + i * 30, "w", { title: false }), mk(t), `B站 · ${["08:12", "15:40", "42:05"][i]} · ${["12 万", "3.4 万", "88 万"][i]}播放`, `data-play="v:ajxx:${i % 3}"`)));
   const libs = libAll().filter(x => hit(x.t)).map(x => ri(art(x.t, x.hue, "w"), mk(x.t), `片库 · ${x.k} · ${x.y}`, x.k === "家庭视频" ? `data-play="lib:${x.id}"` : `data-href="#/detail/${x.id}"`));
   const body = sec("剧集与番剧", "剧集番剧", [...srs, ...bili]) + sec("片库", "片库", libs) + sec("直播", "直播", live) + sec("UP 主", "UP 主", ups) + sec("视频", "视频", vids);
-  return o + (body || `<div class="empty"><b>没找到「${esc(q)}」</b><p>换个说法试试；B 站和 YouTube 的结果要能连上才有。</p></div>`);
+  return o + (body || emptyBox("search", `没找到「${esc(q)}」`, "换个说法试试；B 站和 YouTube 的结果要能连上才有。"));
 };
 
 /* ============================== 详情 ============================== */
 const detailTitle = id => (srById(id) || libById(id) || { t: "详情" }).t;
 VIEWS.detail = id => {
   const s = srById(id), x = libById(id);
-  if (!s && !x) return `<div class="empty"><b>找不到这个节目</b><p><a href="#/home">回首页</a></p></div>`;
+  if (!s && !x) return `<div style="padding-top:120px">${emptyBox("info", "找不到这个节目", '<a href="#/home">回首页</a>')}</div>`;
   if (x) {
-    return `<section class="dhero"><div class="bg">${art(x.t, x.hue, "w", { title: false })}</div><div class="dbody"><div class="dposter">${art(x.t, x.hue, "p")}</div>
-      <div><div class="kicker">片库 · ${x.k}</div><h2>${esc(x.t)}</h2><div class="meta">${x.y} · ${esc(x.g)} · ${x.d}</div>
+    const related = libAll().filter(o => o.k === x.k && o.id !== x.id).slice(0, 6);
+    return `<section class="dhero dk"><div class="bg">${art(x.t, x.hue, "w", { title: false, flip: 1 })}</div><div class="shade"></div><div class="dcopy">
+      <div class="kicker">片库 · ${x.k}</div><div class="tart${[...x.t].length > 6 ? " sm" : ""}" style="--h:${x.hue}" role="heading" aria-level="2">${esc(x.t)}</div>${meta([x.y, esc(x.g), x.d, x.k === "家庭视频" ? "" : '<span class="tag">1080p</span>'])}
       <p class="syn">${x.id === "xqtk" ? HERO[2].syn : "海报和简介来自同目录的 .nfo 文件；没有的话，用文件名猜片名，再从本地截一帧做海报。"}</p>
-      ${x.id === "wdlx" ? `<div class="lastw">上次在 这台电脑 看到 <b>1:15:20</b> / 2:01:00 · 前天 22:10</div>` : ""}
-      <div class="actions">${splitPlay("lib:" + x.id, x.id === "wdlx" ? "继续播放" : "播放", x.id === "wdlx" ? "1:15:20" : toWhere())}${x.id === "wdlx" ? `<button class="btn" data-play="lib:${x.id}">从头播</button>` : ""}</div></div></div></section>
+      ${x.id === "wdlx" ? `<div class="lastw"><span class="trk"><i style="width:62%"></i></span>上次在 这台电脑 看到 1:15:20 / 2:01:00 · 前天 22:10</div>` : ""}
+      <div class="actions">${splitPlay("lib:" + x.id, x.id === "wdlx" ? "继续播放" : "播放", x.id === "wdlx" ? "1:15:20" : toWhere())}${x.id === "wdlx" ? `<button class="btn" data-play="lib:${x.id}">从头播</button>` : ""}</div></div></section>
       <div class="h2"><h2>文件</h2></div><div class="facts"><span class="tag">1080p</span><span class="tag">H.264</span><span class="tag">AAC 5.1</span><span class="tag">中文字幕</span><span class="tag">4.2 GB</span><span class="tag">NAS / 影视 / 电影</span></div>
-      <p class="hint">播放到小电视时，电脑会把画面转成 ${esc((dev("living") || {}).res || "240×180")}，声音转成单声道。</p>`;
+      <p class="hint">播放到小电视时，电脑会把画面转成 ${esc((dev("living") || {}).res || "240×180")}，声音转成单声道。</p>
+      ${related.length ? shelf("同类", "", related.map(cardLib).join(""), "") : ""}`;
   }
-  const cur = s.at || 1, eps = []; const nEp = Math.min(s.n, 12);
+  const cur = s.at || 1, eps = [], nEp = Math.min(s.n, 12);
   for (let e = 1; e <= nEp; e++) {
-    const avail = e <= s.upd, watched = e < s.at || (s.done), isCur = e === s.at && !s.done;
-    const st = !avail ? `<span class="st">10月${24 + (e - s.upd) * 7 > 31 ? "下月" : 24 + (e - s.upd) * 7 + "日"} 更新</span>` : watched ? `<span class="st ok">${ic("check", 16)}看过</span>` : isCur ? `<span class="st go">看到 ${s.pos || "18:02"}</span>` : `<span class="st">${s.dur || "45:00"}</span>`;
-    eps.push(`<button class="ep ${isCur ? "cur" : ""}" ${avail ? `data-play="ep:${s.id}:${e}"` : "disabled"} aria-label="第 ${e} 集${s.ep ? " " + s.ep[e - 1] : ""}"><span class="art">${blocked() && avail && e > s.at + 1 ? noCover() : art(s.t + e, (s.hue + e * 11) % 360, "w", { title: false, ep: String(e).padStart(2, "0") })}${isCur ? `<span class="pbar"><i style="width:${(s.pct || .3) * 100}%"></i></span>` : ""}</span>
-      <span><b>第 ${e} 集${s.ep ? " · " + s.ep[e - 1] : ""}</b><span>${avail ? (e === s.upd && s.upd < s.n ? "最新一集 · " : "") + (s.dur || "45:00") : "还没更新"}</span></span>${st}</button>`);
+    const avail = e <= s.upd, watched = e < s.at || s.done, isCur = e === s.at && !s.done;
+    const st = !avail ? `${24 + (e - s.upd) * 7 > 31 ? "下月" : "10月" + (24 + (e - s.upd) * 7) + "日"} 更新` : watched ? "看过" : isCur ? `看到 ${s.pos || "18:02"}` : s.dur || "45:00";
+    const a = blocked() && avail && e > s.at + 1 ? noCover() : art(s.t + e, (s.hue + e * 11) % 360, "w", { title: false, ep: String(e).padStart(2, "0") });
+    eps.push(`<button class="card ep" ${avail ? `data-play="ep:${s.id}:${e}"` : "disabled"} aria-label="第 ${e} 集${s.ep ? " " + s.ep[e - 1] : ""}，${st}"><span class="art">${a}${watched ? `<span class="badge r">${ic("check", 12)}看过</span>` : ""}${isCur ? pbar(s.pct || .3) : ""}${e === s.upd && s.upd < s.n ? '<span class="badge new">最新</span>' : ""}</span>
+      <span class="t">第 ${e} 集${s.ep ? " · " + s.ep[e - 1] : ""}</span><span class="s${isCur ? " go" : ""}">${st}</span></button>`);
   }
   const label = s.done ? "重看第 1 集" : s.at ? `继续第 ${cur} 集` : "从第 1 集开始";
-  return `<section class="dhero"><div class="bg">${art(s.t, s.hue, "w", { title: false, motif: 1, flip: 1 })}</div><div class="dbody"><div class="dposter">${art(s.t, s.hue, "p", { kick: s.k })}</div>
-    <div><div class="kicker">${s.k} · ${s.site}${s.sched ? " · " + s.sched : ""}</div><h2>${esc(s.t)}</h2><div class="meta">${s.y} · ${s.tags.join(" / ")} · ${s.upd < s.n ? `更新到第 ${s.upd} 集 / 共 ${s.n} 集` : `${s.n} 集全`}</div></div>
-    <div class="wide"><p class="syn">${esc(s.syn)}</p>${s.at && !s.done ? `<div class="lastw">上次在 客厅小电视 看到第 ${cur} 集 <b>${s.pos || "18:02"}</b> · 昨天 21:30</div>` : ""}
-    <div class="actions">${splitPlay(`ep:${s.id}:${cur}`, label, s.pos && !s.done ? s.pos : "")}<button class="btn" data-play="ep:${s.id}:1">从第 1 集</button><button class="btn" aria-pressed="true">${ic("check", 16)}追更中</button></div></div></div></section>
-    <div class="h2"><h2>选集</h2><small>正片 · ${s.n} 集${s.n > 12 ? "（只显示前 12 集）" : ""}</small></div><div class="eps">${eps.join("")}</div>
-    <p class="hint">小电视上，这部剧是「动画影视」组里的一个台，按顺序往下播。${s.site === "B站" && s.k === "番剧" ? "部分集数需要「设置 → B 站账号」登录。" : ""}</p>
+  return `<section class="dhero dk"><div class="bg">${art(s.t, s.hue, "w", { title: false, motif: 1, flip: 1 })}</div><div class="shade"></div><div class="dcopy">
+    <div class="kicker">${s.k} · ${s.site}${s.sched ? " · " + s.sched : ""}</div><div class="tart${[...s.t].length > 6 ? " sm" : ""}" style="--h:${s.hue}" role="heading" aria-level="2">${esc(s.t)}</div>
+    ${meta([s.y, s.tags.join(" / "), s.upd < s.n ? `更新到第 ${s.upd} 集 / 共 ${s.n} 集` : `${s.n} 集全`])}<p class="syn">${esc(s.syn)}</p>
+    ${s.at && !s.done ? `<div class="lastw"><span class="trk"><i style="width:${(s.pct || .3) * 100}%"></i></span>上次在 客厅小电视 看到第 ${cur} 集 ${s.pos || "18:02"} · 昨天 21:30</div>` : ""}
+    <div class="actions">${splitPlay(`ep:${s.id}:${cur}`, label, s.pos && !s.done ? s.pos : "")}<button class="btn" data-play="ep:${s.id}:1">从第 1 集</button><button class="btn" aria-pressed="true">${ic("check", 16)}追更中</button></div></div></section>
+    ${shelf("选集", `正片 · ${s.n} 集${s.n > 12 ? "（只显示前 12 集）" : ""}`, eps.join(""), "")}
+    <p class="hint" style="margin-top:0">小电视上，这部剧是「动画影视」组里的一个台，按顺序往下播。${s.site === "B站" && s.k === "番剧" ? "部分集数需要「设置 → B 站账号」登录。" : ""}</p>
     ${shelf("同类", "", SR.filter(o => o.id !== s.id).slice(0, 6).map(cardSeries).join(""), "")}`;
 };
 
@@ -999,23 +1270,23 @@ function nowText(d) {
 VIEWS.devices = () => {
   const ts = tvs();
   const card = d => {
-    if (d.pc) return `<div class="dev"><header>${ic("pc")}<b>${d.n}</b><small><span class="dot" style="display:inline-block"></span> 就是这里</small></header><div class="model">${d.model}</div>
-      <div class="tvbox" style="height:142px;align-items:center;color:var(--dim);font:14px var(--serif)">${d.now ? esc(IT[d.now].title) : "点任何节目的「播放到 → 这台电脑」"}</div>
+    if (d.pc) return `<div class="dev"><header>${ic("pc")}<b>${d.n}</b><small><span class="dot"></span>就是这里</small></header><div class="model">${d.model}</div>
+      <div class="tvbox">${d.now ? esc(IT[d.now].title) : "点任何节目的「播放到 → 这台电脑」"}</div>
       <div class="row"><button class="btn sm" data-settarget="pc">${S.target === "pc" ? "已是默认播放位置" : "设为默认播放位置"}</button></div></div>`;
     const [n, g, x, y] = nowText(d);
-    return `<div class="dev ${d.on ? "" : "off"}"><header>${ic("tv")}<b>${esc(d.n)}</b><small><span class="dot ${d.on ? "" : "off"}" style="display:inline-block"></span> ${d.on ? (d.listen ? "在线 · 只听" : "在线") : "离线 · " + d.seen + "在线"}</small></header>
+    return `<div class="dev ${d.on ? "" : "off"}"><header>${ic("tv")}<b>${esc(d.n)}</b><small><span class="dot ${d.on ? "" : "off"}"></span>${d.on ? (d.listen ? "在线 · 只听" : "在线") : "离线 · " + d.seen + "在线"}</small></header>
       <div class="model">${d.model} · ${d.res}${d.sleep ? ` · ${d.sleep} 分钟后关` : ""}</div>
-      <div class="tvbox"><div class="tvscr ${d.on ? "" : "dark"}" style="aspect-ratio:${d.res === "320×180" ? "16/9" : "4/3"}"><span class="g">${g}</span><div class="n">${d.on ? n : "--"}</div><div class="x">${d.on ? esc(x) : "离线"}</div><div class="y">${d.on ? esc(y) : ""}</div></div></div>
+      <div class="tvbox tvface"><div class="tvscr ${d.on ? "" : "dark"}" style="aspect-ratio:${d.res === "320×180" ? "16/9" : "4/3"}"><span class="g">${g}</span><div class="n">${d.on ? n : "--"}</div><div class="x">${d.on ? esc(x) : "离线"}</div><div class="y">${d.on ? esc(y) : ""}</div></div></div>
       <div class="row"><button class="btn sm pri" data-remote="${d.id}" ${d.on ? "" : "disabled"}>${ic("remote", 16)}遥控</button><button class="btn sm" data-settarget="${d.id}" ${d.on ? "" : "disabled"}>${S.target === d.id ? "已是默认播放位置" : "设为默认播放位置"}</button>${d.on ? `<button class="btn sm ghost" data-play="${d.now}" data-to="pc">在电脑上看</button>` : ""}</div></div>`;
   };
-  const bind = `<div class="dev add">${ic("plus", 36)}<b>绑定新的小电视</b><p class="meta">小电视连上网后，屏幕上会显示绑定码。<br>也可以用手机扫它屏幕上的二维码。</p><button class="btn sm">输入绑定码</button></div>`;
-  return `${ts.length ? "" : `<div class="empty" style="margin-bottom:18px">${ic("tv", 56)}<b>还没有小电视</b><p>不影响在这台电脑上看。买了小电视以后，输入它屏幕上的绑定码，所有「播放到」里就会多出它。</p></div>`}
+  const bind = `<div class="dev add">${ic("plus", 36)}<b>绑定新的小电视</b><p>小电视连上网后，屏幕上会显示绑定码。<br>也可以用手机扫它屏幕上的二维码。</p><button class="btn sm">输入绑定码</button></div>`;
+  return `${ts.length ? "" : `<div style="margin-bottom:20px">${emptyBox("tv", "还没有小电视", `不影响用${BRAND_ZH}在这台电脑上看。买了小电视以后，输入它屏幕上的绑定码，所有「播放到」里就会多出它。`)}</div>`}
     <div class="devs">${devs().filter(d => !d.pc).map(card).join("")}${card(dev("pc"))}${bind}</div>
-    <div class="h2"><h2>手机遥控</h2></div><div class="list"><a class="li" href="#">${ic("remote")}<span>让手机登录<small>手机扫码后就是遥控器，出门在外也能用</small></span><em>›</em></a><a class="li" href="#">${ic("up")}<span>家人和访客<small>家人有自己的订阅和进度；访客只能遥控一台</small></span><em>2 位家人</em></a></div>`;
+    <div class="h2" style="margin-bottom:14px"><h2>手机遥控</h2></div><div class="list"><a class="li" href="#"><span class="ico">${ic("remote", 18)}</span><span>让手机登录<small>手机扫码后就是遥控器，出门在外也能用</small></span><em>›</em></a><a class="li" href="#"><span class="ico">${ic("up", 18)}</span><span>家人和访客<small>家人有自己的订阅和进度；访客只能遥控一台</small></span><em>2 位家人 ›</em></a></div>`;
 };
 VIEWS.remote = () => {
   const ts = tvs().filter(d => d.on);
-  if (!ts.length) return `<div class="empty">${ic("remote", 56)}<b>${tvs().length ? "小电视都离线了" : "还没有小电视"}</b><p>遥控是给小电视用的。在这台手机上直接看，选「播放到 → 这台手机」就行（以后）。</p><a class="btn pri" href="#/devices">${tvs().length ? "看看设备" : "绑定小电视"}</a></div>`;
+  if (!ts.length) return emptyBox("remote", tvs().length ? "小电视都离线了" : "还没有小电视", "遥控是给小电视用的。在这台手机上直接看，选「播放到 → 这台手机」就行（以后）。", `<a class="btn pri" href="#/devices">${tvs().length ? "看看设备" : "绑定小电视"}</a>`);
   const d = dev(S.target) && !dev(S.target).pc && dev(S.target).on ? dev(S.target) : ts[0];
   return `<div id="rbody" data-dev="${d.id}">${remoteHTML(d.id)}</div>`;
 };
@@ -1027,7 +1298,7 @@ function remoteHTML(id) {
   const prog = it.live ? (() => { const c = chById(it.ch), p = c.pr[nowI(c)], nx = c.pr[nowI(c) + 1]; return `<div class="lprog"><span>${hm(p.s)}</span><span class="trk"><i style="width:${it.pct * 100}%"></i></span><span>${hm(p.e)}</span></div><div class="y">接下来 ${hm(nx.s)} ${esc(nx.n)}</div>`; })()
     : `<div class="lprog"><span>${it.pct ? "08:24" : "00:00"}</span><span class="trk"><i style="width:${(it.pct || 0) * 100}%"></i></span><span>${esc(it.dur || "--")}</span></div>`;
   const vod = !it.live;
-  return `${pills}<div class="rscreen" aria-live="polite"><div class="r1"><span class="n">${n}</span><span class="g">${g}${d.listen ? " · 只听" : ""}${d.paused ? " · 已暂停" : ""}</span></div><div class="x">${esc(x)}</div><div class="y">${esc(y)}</div>${prog}</div>
+  return `${pills}<div class="rscreen tvface" aria-live="polite"><div class="r1"><span class="n">${n}</span><span class="g">${g}${d.listen ? " · 只听" : ""}${d.paused ? " · 已暂停" : ""}</span></div><div class="x">${esc(x)}</div><div class="y">${esc(y)}</div>${prog}</div>
     <div class="rpad">
       <button data-rk="chup" data-k="chup" aria-label="上一个台">${ic("upc")}上一台</button>
       <button class="main" data-rk="pp" data-k="pp" aria-label="${d.paused ? "继续" : "暂停"}">${ic(d.paused ? "play" : "pause")}${d.paused ? "继续" : "暂停"}</button>
@@ -1035,28 +1306,49 @@ function remoteHTML(id) {
       <button data-rk="back" data-k="back" ${vod ? "" : "disabled"}>${ic("r30")}退 30 秒</button>
       <button data-rk="next" data-k="next" ${vod ? "" : "disabled"}>${ic("next", 18)}下一个</button>
       <button data-rk="fwd" data-k="fwd" ${vod ? "" : "disabled"}>${ic("f30")}进 30 秒</button></div>
+    <div class="dials">
     <label class="dial"><span class="ico">${ic("vol")}</span><span>音量</span><input type="range" min="0" max="100" step="10" value="${d.vol}" data-vol data-k="vol" aria-label="音量"><b id="volv">${d.vol}</b></label>
     <div class="dial"><span class="ico">${ic("sun")}</span><span>亮度</span><span class="seg" role="group" aria-label="亮度">${[0, 1, 2, 3, 4].map(i => `<button data-bri="${i}" data-k="bri${i}" aria-pressed="${d.bri === i}" aria-label="亮度 ${i + 1} 档">${i + 1}</button>`).join("")}</span><b></b></div>
     <div class="dial"><span class="ico">${ic("ear")}</span><span>只听</span><em>只放声音，屏幕只显示宠物</em><button class="sw" role="switch" aria-checked="${d.listen}" data-listen data-k="listen" aria-label="只听"></button></div>
-    <div class="dial"><span class="ico">${ic("moon")}</span><span>定时关</span><span class="seg" role="group" aria-label="定时关">${[0, 15, 30, 60, 90].map(m => `<button data-sleep="${m}" data-k="sl${m}" aria-pressed="${d.sleep === m}">${m ? m : "关"}</button>`).join("")}</span><b>${d.sleep ? "分钟" : ""}</b></div>
+    <div class="dial"><span class="ico">${ic("moon")}</span><span>定时关</span><span class="seg" role="group" aria-label="定时关">${[0, 15, 30, 60, 90].map(m => `<button data-sleep="${m}" data-k="sl${m}" aria-pressed="${d.sleep === m}">${m ? m : "关"}</button>`).join("")}</span><b>${d.sleep ? "分钟" : ""}</b></div></div>
     <div class="rsec"><b>宠物</b> <span class="hint">只听时屏幕上陪着你的那只</span><div class="petgrid" role="group" aria-label="宠物">${PETS.map((p, i) => `<button data-pet="${i}" data-k="pet${i}" aria-pressed="${d.pet === i}">${pet(i)}${p[0]}</button>`).join("")}</div></div>
     <div class="actions"><button class="btn" data-play="${d.now}" data-to="pc">${ic("pc", 18)}在电脑上看这个</button><a class="btn ghost" href="#/lineup">频道表</a></div>`;
 }
 
-/* ============================== 设置 / 我的 ============================== */
-VIEWS.settings = () => {
-  const li = (icn, t, sub, val, attrs = 'href="#"', tag = "a") => `<${tag} class="li" ${attrs}><span class="ico">${ic(icn)}</span><span>${t}${sub ? `<small>${sub}</small>` : ""}</span><em>${val}</em></${tag}>`;
-  return `<div class="list"><h3>播放</h3>
-      <div class="li"><span class="ico">${ic("tv")}</span><span>「播放到」记住上次的选择<small>关掉以后，每次点播放都先问播到哪里</small></span><button class="sw" role="switch" aria-checked="${S.remember}" data-remember aria-label="记住上次的选择"></button></div>
-      ${li("pc", "在电脑上看的画质", "电脑上原画；小电视上自动转成它的分辨率", "原画")}${li("hist", "放过的", "最多 50 个，投屏和搜索点开的都在这里", "50 个")}</div>
-    <div class="list"><h3>内容来源</h3>${li("live", "直播源和节目单（EPG）", "全站频道表 · 2 个预设", "214 个台")}${li("up", "B 站账号", blocked() ? "连不上 B 站：路由器或网络拦了 bilibili.com，请检查后重试" : "登录后能导入关注、看番剧", blocked() ? "连不上" : "已登录")}${li("link", "YouTube", "需要代理；本机模式", "已开启")}${li("lib", "片库文件夹", "NAS · 影视、这台电脑 · 家庭视频", "2 个")}${li("link", "Jellyfin / Emby / Plex", "把已有媒体服务器的片库接进来", "未连接")}</div>
-    <div class="list"><h3>家里</h3>${li("remote", "设备与遥控", "", `${tvs().length} 台小电视`, 'href="#/devices"')}${li("up", "家人和访客", "", "2 位家人")}${li("set", "登录的地方", "手机、电脑和访客", "4 个")}</div>
-    <div class="list"><h3>关于</h3>${li("info", "小智电视 电脑版", "这台电脑就是家里的电视服务器", "0.3.0（原型）", "", "div")}</div>`;
+/* ============================== 设置 / 我的 / 品牌 ============================== */
+const li = (icn, t, sub, val, attrs = 'href="#"', tag = "a") => `<${tag} class="li" ${attrs}><span class="ico">${ic(icn, 18)}</span><span>${t}${sub ? `<small>${sub}</small>` : ""}</span><em>${val}</em></${tag}>`;
+VIEWS.settings = () => `<div class="list"><h3>播放</h3>
+      <div class="li"><span class="ico">${ic("tv", 18)}</span><span>「播放到」记住上次的选择<small>关掉以后，每次点播放都先问播到哪里</small></span><button class="sw" role="switch" aria-checked="${S.remember}" data-remember aria-label="记住上次的选择"></button></div>
+      ${li("pc", "在电脑上看的画质", "电脑上原画；小电视上自动转成它的分辨率", "原画 ›")}${li("hist", "放过的", "最多 50 个，投屏和搜索点开的都在这里", "50 个 ›")}</div>
+    <div class="list"><h3>内容来源</h3>${li("live", "直播源和节目单（EPG）", "全站频道表 · 2 个预设", "214 个台 ›")}${li("up", "B 站账号", blocked() ? "连不上 B 站：路由器或网络拦了 bilibili.com，请检查后重试" : "登录后能导入关注、看番剧", blocked() ? "连不上 ›" : "已登录 ›")}${li("link", "YouTube", "需要代理；本机模式", "已开启 ›")}${li("lib", "片库文件夹", "NAS · 影视、这台电脑 · 家庭视频", "2 个 ›")}${li("link", "Jellyfin / Emby / Plex", "把已有媒体服务器的片库接进来", "未连接 ›")}</div>
+    <div class="list"><h3>家里</h3>${li("remote", "设备与遥控", "", `${tvs().length} 台小电视 ›`, 'href="#/devices"')}${li("up", "家人和访客", "", "2 位家人 ›")}${li("set", "登录的地方", "手机、电脑和访客", "4 个 ›")}</div>
+    <div class="list"><h3>关于</h3><div class="li"><span class="ico" style="background:none">${icon(S.logo, 30, true)}</span><span>${BRAND_ZH} 电脑版<small>${BRAND} · 这台电脑就是家里的电视服务器</small></span><em>0.3.0（原型）</em></div>${li("brand", "图标和字标", "三个图标候选还没选定", "品牌 ›", 'href="#/brand"')}</div>`;
+VIEWS.me = () => `<div class="list">${[["series", "剧集与番剧", `${SR.length} 部`], ["up", "UP 主", `${UP.length} 位`], ["lib", "片库", "418 项"], ["lineup", "频道表（小电视上换台的那张表）", ""], ["devices", "设备", `${tvs().length} 台小电视`], ["settings", "设置", ""]].map(([r, t, v]) => li(r === "lineup" ? "guide" : r === "devices" ? "tv" : r === "settings" ? "set" : r, t, "", `${v} ›`, `href="#/${r}"`)).join("")}</div>
+  <div class="list">${li("hist", "放过的", "最多 50 个", "›")}<div class="li"><span class="me">马</span><span>马小鼠<small>主人 · 家里 3 个人</small></span></div></div>`;
+VIEWS.brand = () => {
+  const D = { a: "老式小电视里探出一只小鼠：耳朵、眼睛和粉鼻子都在屏幕里。最直白地说「小鼠 + 电视」，暖橘色底和界面的强调色一致。",
+    b: "电视本身就是小鼠的脑袋：两只圆耳朵长在电视顶上，屏幕就是脸。轮廓最简单，16 px 和托盘图标里最好认。",
+    c: "小鼠趴在电视上往外看，两只爪子搭在电视边上，屏幕里是播放键。最有故事感；小尺寸时爪子和胡子省掉。" };
+  const lock = (v, cls = "") => `<div class="lock ${cls}">${icon(v, 56)}<div style="display:grid;gap:6px">${wordmarkSVG({ h: 30, label: false })}<span class="zh">${BRAND_ZH}</span></div></div>`;
+  return `<p class="hint" style="margin:-8px 0 22px;font-size:14px">名字已定：字标写 <b>${BRAND}</b>，中文界面需要产品名的地方（窗口标题、关于、空状态）写 <b>${BRAND_ZH}</b>。原型里两个名字只在常量 <span class="code">BRAND</span> 和 <span class="code">BRAND_ZH</span> 里。图标还没选：下面三个候选都是原创的 SVG，每个给出 1024 / 180 / 64 / 32 / 16 px 和菜单栏单色图标；32 px 以下用省掉细节的小尺寸版。「在顶栏试用」把它换到页面左上角。导出的文件在 <span class="code">docs/design/media-center/brand/</span>。</p>
+  ${Object.entries(ICON_VARIANTS).map(([k, V]) => `<section class="bvar" aria-label="候选 ${k.toUpperCase()}"><header><h2>${k.toUpperCase()} · ${V.name}</h2><button class="btn sm" data-logo="${k}" aria-pressed="${S.logo === k}">${S.logo === k ? `${ic("check", 16)}顶栏正在用` : "在顶栏试用"}</button></header><p>${D[k]}</p>
+    <div class="isz"><figure>${icon(k, 200, false, `${BRAND_ZH} 图标候选 ${k.toUpperCase()}`)}<figcaption>1024（缩小显示）</figcaption></figure><figure>${icon(k, 180)}<figcaption>180</figcaption></figure><figure>${icon(k, 64)}<figcaption>64</figcaption></figure><figure>${icon(k, 32, true)}<figcaption>32 · 小尺寸版</figcaption></figure><figure>${icon(k, 16, true)}<figcaption>16</figcaption></figure></div>
+    <div class="trow"><figure><div class="mbar l">${tray(k, 18)}<i></i><i></i><span>20:12</span></div><figcaption>菜单栏 · 浅色</figcaption></figure><figure><div class="mbar d">${tray(k, 18)}<i></i><i></i><span>20:12</span></div><figcaption>菜单栏 · 深色</figcaption></figure>
+      <figure><div style="display:flex;gap:8px"><span class="tzoom l">${tray(k, 54)}</span><span class="tzoom d">${tray(k, 54)}</span></div><figcaption>托盘单色模板图 · 放大 3 倍</figcaption></figure></div>
+    <div class="locks">${lock(k, "dk")}${lock(k, "lg")}</div></section>`).join("")}
+  <div class="h2" style="margin-bottom:4px"><h2>字标</h2><small>几何圆头笔画画的，不依赖字体；「TV」用强调色</small></div>
+  <div class="locks"><div class="lock dk" style="justify-content:center;color:#f5f5f7">${wordmarkSVG({ h: 56 })}</div><div class="lock lg" style="justify-content:center">${wordmarkSVG({ h: 56 })}</div>
+    <div class="lock dk st">${icon(S.logo, 72)}${wordmarkSVG({ h: 28, label: false })}<span class="zh">${BRAND_ZH}</span></div></div>
+  <div class="h2" style="margin-bottom:12px"><h2>改名要动的地方</h2><small>名字定了，范围和时间另定</small></div>
+  <ol class="todo"><li><b>电脑版应用</b>：macOS 的「Xiaozhi TV.app」改成「${BRAND}.app」（显示名「${BRAND_ZH}」），托盘菜单、关于窗口、开机自启的条目名。</li>
+    <li><b>安装包</b>：XiaozhiTV-&lt;版本&gt;-macos / windows / linux 的文件名，Windows 安装程序里的程序名、开始菜单和桌面快捷方式、卸载项。</li>
+    <li><b>数据文件夹</b>：从 XiaozhiTV（Linux 上 xiaozhi-tv）搬到新名字：第一次启动自动搬，旧路径保留一个版本的兼容；环境变量 XIAOZHI_TV_DATA 同理。</li>
+    <li><b>页面和文档</b>：电脑版、手机页的标题和图标，README、用户文档、截图。</li>
+    <li><b>网站</b>：项目网站上的名字、标志和下载页。</li>
+    <li><b>小电视开机字样</b>：固件开机画面和设置页里的产品名（要改固件，单独评估）。</li></ol>`;
 };
-VIEWS.me = () => `<div class="list">${[["series", "剧集与番剧", `${SR.length} 部`], ["up", "UP 主", `${UP.length} 位`], ["lib", "片库", "418 项"], ["lineup", "节目单（小电视的频道表）", ""], ["devices", "设备", `${tvs().length} 台小电视`], ["settings", "设置", ""]].map(([r, t, v]) => `<a class="li" href="#/${r}"><span class="ico">${ic(r === "lineup" ? "guide" : r === "devices" ? "tv" : r === "settings" ? "set" : r)}</span><span>${t}</span><em>${v} ›</em></a>`).join("")}</div>
-  <div class="list"><a class="li" href="#">${ic("hist")}<span>放过的<small>最多 50 个</small></span><em>›</em></a><div class="li"><span class="me">马</span><span>马小鼠<small>主人 · 家里 3 个人</small></span></div></div>`;
 
-/* ============================== 迷你播放条 ============================== */
+/* ============================== 正在播放栏 ============================== */
 function renderMini() {
   const d = dev(S.mini), it = d && IT[d.now];
   const m = $("#mini");
@@ -1065,16 +1357,16 @@ function renderMini() {
   const where = d.pc ? "这台电脑 · 窗口里播放" : `${d.n}${d.listen ? " · 只听" : ""}`;
   m.innerHTML = `<div class="mprog"><i style="width:${(it.pct || 0) * 100}%"></i></div>
     <button class="mart" data-mini-open aria-label="打开正在播的">${itemArt(it, "w")}${it.live ? '<span class="badge live">直播</span>' : ""}</button>
-    <div class="mtx"><b>${esc(it.title)}</b><span><span class="dot ${d.on ? "" : "off"}"></span>${esc(where)} · ${esc(it.live ? it.line : it.line)}</span></div>
+    <div class="mtx"><b>${esc(it.title)}</b><span><span class="dot ${d.on ? "" : "off"}"></span>${esc(where)} · ${esc(it.line)}</span></div>
     <div class="mctl"><button class="iconbtn hidem" data-rk="chup" data-mini aria-label="上一个">${ic("prev", 18)}</button><button class="iconbtn big" data-rk="pp" data-mini aria-label="${d.paused ? "继续" : "暂停"}">${ic(d.paused ? "play" : "pause", 18)}</button><button class="iconbtn hidem" data-rk="chdn" data-mini aria-label="下一个">${ic("next", 18)}</button>
-    ${d.pc ? "" : `<button class="iconbtn" data-remote="${d.id}" aria-label="遥控 ${esc(d.n)}">${ic("remote")}</button>`}</div>${targetChip()}`;
+    ${d.pc ? "" : `<button class="iconbtn" data-remote="${d.id}" aria-label="遥控 ${esc(d.n)}">${ic("remote")}</button>`}</div>`;
 }
 
 /* ============================== 抽屉 ============================== */
 function openSheet(kind, html, title, sub = "") {
   S.lastFocus = document.activeElement; S.sheet = kind;
   const sh = $("#sheet");
-  sh.innerHTML = `<div class="grab" aria-hidden="true"></div><div class="shh"><div style="flex:1"><h2 id="shTitle">${title}</h2>${sub ? `<p class="hint">${sub}</p>` : ""}</div><button class="iconbtn" data-close aria-label="关闭">${ic("x")}</button></div><div class="shb" id="shb">${html}</div>`;
+  sh.innerHTML = `<div class="grab" aria-hidden="true"></div><div class="shh"><div style="flex:1"><h2 id="shTitle">${title}</h2>${sub ? `<p class="hint">${sub}</p>` : ""}</div><button class="iconbtn" data-close aria-label="关闭">${ic("x", 18)}</button></div><div class="shb" id="shb">${html}</div>`;
   sh.hidden = false; $("#scrim").hidden = false;
   const f = sh.querySelector('[aria-checked="true"], .shb button, .shb input'); (f || sh.querySelector("[data-close]")).focus();
 }
@@ -1093,7 +1385,7 @@ function targetHTML() {
       <span class="chk">${S.target === d.id ? ic("check") : ""}</span></button>`;
   }).join("");
   return `${pend}<div role="radiogroup" aria-label="播放到">${rows}</div>
-    ${S.demo === "notv" ? `<p class="hint">还没有小电视。<a href="#/devices" style="color:var(--amber)">绑定一台 ›</a></p>` : ""}
+    ${S.demo === "notv" ? `<p class="hint">还没有小电视。<a href="#/devices" style="color:var(--brand);font-weight:600">绑定一台 ›</a></p>` : ""}
     <div class="opt"><span>记住这次的选择<small>下次点「播放」直接播到这里，不再问</small></span><button class="sw" role="switch" aria-checked="${S.remember}" data-remember aria-label="记住这次的选择"></button></div>
     ${it ? "" : `<p class="hint">换了以后，所有「播放」按钮都播到新选的地方；正在播的不会被打断。</p>`}`;
 }
@@ -1105,7 +1397,7 @@ function openRemote(id) {
 }
 function openAdd(kind) {
   const up = kind === "up";
-  openSheet("add", `<label class="bigsearch" style="height:50px">${ic("link", 20)}<input type="text" placeholder="${up ? "B 站 UP 主 / YouTube 频道主页，或他们的任意视频链接" : "B 站番剧 / 多集视频 / 合集，或 YouTube 播放列表链接"}" aria-label="链接" style="font-size:15px"></label>
+  openSheet("add", `<label class="bigsearch" style="height:52px">${ic("link", 20)}<input type="text" placeholder="${up ? "B 站 UP 主 / YouTube 频道主页，或任意视频链接" : "B 站番剧 / 多集视频 / 合集，或 YouTube 播放列表"}" aria-label="链接" style="font-size:15px"></label>
     <button class="btn pri" style="width:100%">${up ? "订阅" : "添加为剧集"}</button>
     <p class="hint">${up ? "每个 UP 主是一个台，从最新的没看过的视频开始播（轮播最新的 20 个）。" : "每部剧是一个台，按顺序播，换台回来接着上次的地方。"}</p>
     ${up ? `<div class="opt"><span>从 B 站导入我关注的 UP 主<small>需要先在设置里登录 B 站</small></span><button class="btn sm">导入</button></div>` : ""}
@@ -1143,9 +1435,10 @@ function remoteKey(k, devId) {
     else if (it.up) { const u = UP.find(x => x.id === it.up), i = +d.now.split(":")[2], j = (i + (k === "chdn" ? 1 : u.v.length - 1)) % u.v.length; d.now = `v:${u.id}:${j}`; toast(u.v[j][0]); }
   } else if (k === "next") { remoteKey("chdn", devId); return; }
   else if (k === "back" || k === "fwd") toast(k === "back" ? "退 30 秒" : "进 30 秒");
-  renderMini(); refreshRemote();
+  const fk = focusKey(); renderMini(); restoreFocus(fk); refreshRemote();
   if (curRoute === "devices") render(true);
 }
+function goBack() { history.length > 1 ? history.back() : (location.hash = "#/home"); }
 
 /* ============================== 事件 ============================== */
 document.addEventListener("click", e => {
@@ -1154,13 +1447,15 @@ document.addEventListener("click", e => {
   if (t.id === "scrim") return;
   if (ds.close !== undefined) return closeSheet();
   if (ds.view) { S.view = ds.view; applyView(); render(true); return; }
+  if (ds.theme) { S.theme = ds.theme; applyTheme(); return; }
+  if (ds.logo) { S.logo = ds.logo; $("#logosel").value = S.logo; render(true); toast(`顶栏换成候选 ${S.logo.toUpperCase()}`); return; }
   if (ds.tg) { if (t.getAttribute("aria-disabled") === "true") { toast("这台离线了"); return; } if (S.pending) { const p = S.pending; S.pending = null; S.target = S.remember ? ds.tg : S.target; play(p, ds.tg); } else { S.target = ds.tg; closeSheet(); render(true); toast(`以后播放到「${dev(ds.tg).n}」`); } return; }
   if (ds.play) { e.preventDefault(); play(ds.play, ds.to); return; }
   if (ds.sheet === "target") { openTarget(ds.item || null); return; }
   if (ds.sheet === "add") { openAdd(ds.kind); return; }
   if (ds.remote) { openRemote(ds.remote); return; }
   if (ds.rk) { const id = ds.mini !== undefined ? S.mini : (document.getElementById("rbody") || {}).dataset?.dev; remoteKey(ds.rk, id); return; }
-  if (ds.rdev) { if (t.getAttribute("aria-disabled") === "true") { const rb = $("#rbody"); rb.dataset.dev = ds.rdev; refreshRemote(); return; } const rb = $("#rbody"); rb.dataset.dev = ds.rdev; refreshRemote(); return; }
+  if (ds.rdev) { const rb = $("#rbody"); rb.dataset.dev = ds.rdev; refreshRemote(); return; }
   const rdev = () => dev((document.getElementById("rbody") || {}).dataset?.dev);
   if (ds.bri !== undefined) { rdev().bri = +ds.bri; refreshRemote(); return; }
   if (ds.sleep !== undefined) { const d = rdev(); d.sleep = +ds.sleep; refreshRemote(); toast(d.sleep ? `${d.n} ${d.sleep} 分钟后关` : "定时关已取消"); return; }
@@ -1169,7 +1464,7 @@ document.addEventListener("click", e => {
   if (ds.remember !== undefined) { S.remember = !S.remember; S.ask = !S.remember; t.setAttribute("aria-checked", S.remember); return; }
   if (ds.sw !== undefined) { t.setAttribute("aria-checked", t.getAttribute("aria-checked") !== "true"); return; }
   if (ds.settarget) { S.target = ds.settarget; render(true); toast(`以后播放到「${dev(ds.settarget).n}」`); return; }
-  if (ds.hero) { { const n = empty() ? 1 : HERO.length; S.hero = (S.hero + +ds.hero + n) % n; } render(true); return; }
+  if (ds.hero) { const n = empty() ? 1 : HERO.length; S.hero = (S.hero + +ds.hero + n) % n; render(true); return; }
   if (ds.heroI !== undefined) { S.hero = +ds.heroI; render(true); return; }
   if (ds.lg) { S.liveGroup = ds.lg; S.sel = null; render(true); return; }
   if (ds.sel) { const [ch, i] = ds.sel.split(":"); S.sel = { ch, i: +i }; $("#lhead").innerHTML = liveHead(); document.querySelectorAll(".gp").forEach(b => b.setAttribute("aria-pressed", String(b === t))); return; }
@@ -1181,23 +1476,33 @@ document.addEventListener("click", e => {
   if (ds.scope) { S.scope = ds.scope; render(true); return; }
   if (ds.q) { S.q = ds.q; render(true); return; }
   if (ds.href) { location.hash = ds.href; return; }
-  if (ds.back !== undefined) { history.length > 1 ? history.back() : (location.hash = "#/home"); return; }
+  if (ds.back !== undefined) { goBack(); return; }
   if (ds.miniOpen !== undefined) { const it = IT[(dev(S.mini) || {}).now]; if (it) location.hash = it.live ? "#/live" : it.sr ? `#/detail/${it.sr}` : it.lib ? `#/detail/${it.lib}` : "#/up"; return; }
   if (t.getAttribute("href") === "#") { e.preventDefault(); toast("原型里这一项没做"); }
 });
 $("#scrim").addEventListener("click", closeSheet);
+$("#main").addEventListener("scroll", () => requestAnimationFrame(updateTop), { passive: true });
 document.addEventListener("input", e => {
   if (e.target.dataset.vol !== undefined) { const d = dev($("#rbody").dataset.dev); d.vol = +e.target.value; $("#volv").textContent = d.vol; }
   if (e.target.id === "bigq") { S.q = e.target.value; clearTimeout(window._qt); window._qt = setTimeout(() => { const pos = e.target.selectionStart; render(true); const b = $("#bigq"); if (b) { b.focus(); b.setSelectionRange(pos, pos); } }, 250); }
 });
 document.addEventListener("keydown", e => {
   const tag = (e.target.tagName || "").toLowerCase(), typing = tag === "input" || tag === "select" || tag === "textarea";
-  if (e.key === "Enter" && e.target.id === "topq") { S.q = e.target.value; location.hash = "#/search"; return; }
-  if (e.key === "Escape") { if (S.sheet) { closeSheet(); e.preventDefault(); } else if (typing) e.target.blur(); return; }
+  // Esc = 遥控器上的「返回」：关面板 → 退出输入框 → 详情页后退 → 焦点回到标签栏 → 回首页
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (S.sheet) { closeSheet(); return; }
+    if (typing) { e.target.blur(); return; }
+    if (curRoute === "detail") { goBack(); return; }
+    const bar = isM() ? "#tabs" : "#top .ttabs", a = document.activeElement;
+    if (!(a && a.closest && a.closest(bar))) { const t = $(`${bar} a[aria-current=page]`) || $(`${bar} a`); if (t) { t.focus(); return; } }
+    if (curRoute !== "home") location.hash = "#/home";
+    return;
+  }
   if (typing && !(e.target.type === "range" && (e.key === "ArrowUp" || e.key === "ArrowDown"))) return; // 滑块只吃左右键
-  if (e.key === "/") { e.preventDefault(); const i = $("#topq") || $("#bigq"); if (i) i.focus(); else location.hash = "#/search"; return; }
-  if (e.key === "Backspace" && !S.sheet && curRoute === "detail") { history.back(); return; }
-  if (e.key === "Tab" && S.sheet) { // 抽屉里 Tab 不跑出去
+  if (e.key === "/") { e.preventDefault(); if (curRoute !== "search") location.hash = "#/search"; setTimeout(() => { const i = $("#bigq"); if (i) i.focus(); }, 0); return; }
+  if (e.key === "Backspace" && !S.sheet && curRoute === "detail") { goBack(); return; }
+  if (e.key === "Tab" && S.sheet) { // 面板里 Tab 不跑出去
     const f = [...$("#sheet").querySelectorAll(FOC)].filter(vis); if (!f.length) return;
     const i = f.indexOf(document.activeElement);
     if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); }
@@ -1205,35 +1510,64 @@ document.addEventListener("keydown", e => {
   }
   if (e.key.startsWith("Arrow")) { if (spatial(e.key)) e.preventDefault(); }
 });
-// 方向键：在屏幕上找那个方向最近的可聚焦元素（电视遥控器式的导航）。
+// 方向键：在屏幕上找那个方向最近的可聚焦元素（电视遥控器式的焦点引擎）。
 const FOC = 'a[href], button:not([disabled]), input, select, [tabindex="0"]';
 const vis = el => el.offsetParent !== null || getComputedStyle(el).position === "fixed";
 function spatial(key) {
   const root = S.sheet ? $("#sheet") : $("#app"), cur = document.activeElement;
   const all = [...root.querySelectorAll(FOC)].filter(vis);
-  if (!cur || cur === document.body || !root.contains(cur)) { const f = all.find(el => el.closest("#view")) || all[0]; if (f) { f.focus(); return true; } return false; }
+  if (!cur || cur === document.body || !root.contains(cur)) { const f = all.find(el => el.closest("#view")) || all[0]; if (f) { f.focus({ preventScroll: true }); keepVisible(f); return true; } return false; }
   const r = cur.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, h = key === "ArrowLeft" || key === "ArrowRight", sg = key === "ArrowRight" || key === "ArrowDown" ? 1 : -1;
-  // 先在同一块里找（内容区、顶栏、侧栏、播放条、底栏各是一块），找不到再跨块：像电视遥控器那样走到边上才进侧栏。
-  const zone = el => el.closest("#view, #top, #side, #mini, #tabs, #sheet"), z = zone(cur);
-  return pick(all.filter(el => zone(el) === z)) || pick(all);
+  // 先在同一块里找（内容区、顶栏、播放条、底栏、面板各是一块），找不到再跨块：走到边上才进标签栏。
+  const zone = el => el.closest("#view, #top, #mini, #tabs, #sheet"), z = zone(cur);
+  // 同一排货架里左右移动只在这一排里找，排尾不会跳到别的排。
+  const row = h && cur.closest(".shelf, .ups");
+  return (row && pick([...row.querySelectorAll(FOC)].filter(vis))) || (!row && pick(all.filter(el => zone(el) === z))) || (!row && pick(all)) || false;
   function pick(list) {
-  let best = null, bs = Infinity;
-  for (const el of list) {
-    if (el === cur || el.contains(cur)) continue;
-    const b = el.getBoundingClientRect(); if (!b.width || !b.height) continue;
-    const bc = h ? b.left + b.width / 2 : b.top + b.height / 2, rc = h ? cx : cy;
-    if ((bc - rc) * sg <= 1) continue;                       // 中心必须往那个方向走了
-    const gap = Math.max(0, h ? (sg > 0 ? b.left - r.right : r.left - b.right) : (sg > 0 ? b.top - r.bottom : r.top - b.bottom));
-    const overlap = h ? Math.min(b.bottom, r.bottom) - Math.max(b.top, r.top) : Math.min(b.right, r.right) - Math.max(b.left, r.left);
-    const cross = overlap > 0 ? 0 : (h ? Math.abs(b.top + b.height / 2 - cy) : Math.abs(b.left + b.width / 2 - cx));
-    const sc = gap + Math.abs(bc - rc) * .1 + cross * 2.5;
-    if (sc < bs) { bs = sc; best = el; }
-  }
-  if (best) { best.focus({ preventScroll: true }); best.scrollIntoView({ block: "nearest", inline: "nearest" }); return true; }
-  return false;
+    let best = null, bs = Infinity;
+    for (const el of list) {
+      if (el === cur || el.contains(cur)) continue;
+      const b = el.getBoundingClientRect(); if (!b.width || !b.height) continue;
+      const bc = h ? b.left + b.width / 2 : b.top + b.height / 2, rc = h ? cx : cy;
+      if ((bc - rc) * sg <= 1) continue;                       // 中心必须往那个方向走了
+      const gap = Math.max(0, h ? (sg > 0 ? b.left - r.right : r.left - b.right) : (sg > 0 ? b.top - r.bottom : r.top - b.bottom));
+      const overlap = h ? Math.min(b.bottom, r.bottom) - Math.max(b.top, r.top) : Math.min(b.right, r.right) - Math.max(b.left, r.left);
+      const cross = overlap > 0 ? 0 : (h ? Math.abs(b.top + b.height / 2 - cy) : Math.abs(b.left + b.width / 2 - cx));
+      const sc = gap + Math.abs(bc - rc) * .1 + cross * 2.5;
+      if (sc < bs) { bs = sc; best = el; }
+    }
+    if (best) { best.focus({ preventScroll: true }); keepVisible(best); return true; }
+    return false;
   }
 }
+// 货架横向滚到焦点卡片完整可见，页面纵向滚到这一排不被顶栏和播放条挡住（scroll-margin 定的边距）。
+function keepVisible(el) {
+  if (el.closest("#top, #tabs")) return;
+  el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: RM.matches ? "auto" : "smooth" });
+}
+// 鼠标：卡片跟着指针轻微倾斜、反光点跟着走；指到一张卡片时把键盘焦点也挪过来，免得同时有两张浮起。
+let tiltEl = null, pmEv = null, pmRaf = 0;
+const resetTilt = a => ["--rx", "--ry", "--mx", "--my"].forEach(p => a.style.removeProperty(p));
+function tilt() {
+  pmRaf = 0; const e = pmEv; const a = e.target.closest ? e.target.closest(".card:not(:disabled) .art") : null;
+  if (tiltEl && tiltEl !== a) resetTilt(tiltEl);
+  tiltEl = a; if (!a || RM.matches) return;
+  const r = a.getBoundingClientRect(), x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  a.style.setProperty("--rx", ((.5 - y) * 8).toFixed(2) + "deg"); a.style.setProperty("--ry", ((x - .5) * 10).toFixed(2) + "deg");
+  a.style.setProperty("--mx", (x * 100).toFixed(1) + "%"); a.style.setProperty("--my", (y * 100).toFixed(1) + "%");
+}
+// 只认真的移动：页面重画后浏览器会对停着不动的指针补发 pointerover，那不能把键盘焦点抢走。
+let lastXY = "";
+document.addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse") return;
+  const xy = e.clientX + "," + e.clientY; if (xy === lastXY) return; lastXY = xy;
+  pmEv = e; if (!pmRaf) pmRaf = requestAnimationFrame(tilt);
+  const c = e.target.closest && e.target.closest("#view .card:not(:disabled)"), a = document.activeElement;
+  if (c && a && a !== c && a.closest && a.closest("#view") && a.matches(":focus-visible")) c.focus({ preventScroll: true });
+}, { passive: true });
+document.addEventListener("pointerleave", () => { if (tiltEl) { resetTilt(tiltEl); tiltEl = null; } });
 $("#demo").addEventListener("change", e => { S.demo = e.target.value; if (!dev(S.target)) S.target = "pc"; if (!dev(S.mini)) S.mini = S.target; render(true); });
+$("#logosel").addEventListener("change", e => { S.logo = e.target.value; render(true); });
 addEventListener("hashchange", () => { if (S.sheet) closeSheet(); applyParams(parse().q); render(); });
 addEventListener("resize", () => { const was = isM(); applyView(); if (was !== isM()) render(true); });
 applyParams(parse().q);
