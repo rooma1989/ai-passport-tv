@@ -3,8 +3,9 @@
 - 跟随小电视：看选中的小电视正在播的台（web.py 的 watch_start），小电视换台电脑上也跟着换。
 - 直接看一个台（web.py 的 watch_direct）：没有小电视、小电视没在线，或者在线但只想在电脑上看——
   全局频道表里的直播台、自己订阅的 UP 主和剧集、投屏（有设备时是那台的投屏位，没有时是自己投到电脑的）。
-  电脑上看的进度和小电视的分开记（只在内存里，见 web.py 的 _pc_cursor）：从小电视下次会播的地方起，
-  但电脑上看不标「看过」、不存进度，免得在电脑上随便翻翻就把小电视的剧集往后推了。
+  电脑上看的进度和小电视的分开记（web.py 的 _pc_cursor，存进数据目录的 pc-progress.json）：第一次从小电视
+  下次会播的地方起，之后从电脑上看到的地方起；电脑上看从不标小电视的「看过」、不改小电视的进度，免得在电脑上
+  随便翻翻就把小电视的剧集往后推了。
 
 小电视上的画面是 320x180 / 240x180 的调色板小图，放大了没法看；电脑上给的是**片源本身**：中转按设备
 正在播的台找到片源（直播台：频道表里的地址和 User-Agent；UP 主、剧集、投屏：B 站的地址，带 Referer 和
@@ -19,6 +20,9 @@ WatchPlayer，几十行，不用第三方播放器）；没有 MediaSource 的�
   初始化段里没有 AudioSpecificConfig（ffmpeg 写头时还没见到第一个包），浏览器解不了。只有声音的源（电台）
   按 2 秒切段。
 - 不和小电视同步：视频从设备此刻的位置起播，直播从现在起播，之后各走各的（页面上写明）。
+- 跳转（电脑版播放器的进度条）：重起一路（WatchService.open 的 restart），ffmpeg 带 -ss 从新的位置起，
+  新的编号和令牌；播放器换一个新的 MediaSource，按列表里的 #EXT-X-RTV-ORIGIN 和回答里的 start 把媒体时间
+  换算成视频里的位置（Window.origin）。
 - 花费：只在有人看时才有 ffmpeg，每台设备（跟随）或每个浏览器页面（直接看）至多一路，每个用户至多
   MAX_PER_USER 路，全中转至多 MAX_STREAMS 路；IDLE_S 秒没人取列表或段就停
   （和 server/listen.py 一样）。ffmpeg 的输出是到中转的管道：中转没了（崩溃、被杀），ffmpeg 下一次写就失败
@@ -355,8 +359,34 @@ def fragment_duration(moof: bytes, tracks: dict) -> float:
     return durations[chosen] / tracks.get(chosen, {}).get("timescale", 1)
 
 
+def fragment_start(moof: bytes, tracks: dict) -> float | None:
+    """一个 moof 从媒体时间的第几秒起（tfdt 的 baseMediaDecodeTime）：有画面按画面轨，否则按第一条轨；没有 tfdt 时 None。"""
+    starts: dict[int, int] = {}
+    for kind, traf in children(moof):
+        if kind != b"traf":
+            continue
+        tfhd = _child(traf, b"tfhd")
+        tfdt = _child(traf, b"tfdt")
+        if tfhd is None or len(tfhd) < 8 or tfdt is None or len(tfdt) < 8:
+            continue
+        track_id = struct.unpack(">I", tfhd[4:8])[0]
+        if tfdt[0] == 1 and len(tfdt) >= 12:
+            starts[track_id] = struct.unpack(">Q", tfdt[4:12])[0]
+        else:
+            starts[track_id] = struct.unpack(">I", tfdt[4:8])[0]
+    if not starts:
+        return None
+    video = [tid for tid in starts if tracks.get(tid, {}).get("kind") == "vide"]
+    chosen = video[0] if video else min(starts)
+    return starts[chosen] / tracks.get(chosen, {}).get("timescale", 1)
+
+
 class Window:
-    """内存里的 HLS：初始化段、最近几段、播放列表。"""
+    """内存里的 HLS：初始化段、最近几段、播放列表。
+
+    origin：第一段的媒体时间（tfdt，秒）。播放器里的 currentTime 是媒体时间，减去它再加上这一路从视频的
+    第几秒起（Source.start），就是视频里真正的位置（电脑版播放器的进度条，console.js 的 WatchPlayer）。
+    写在列表的 #EXT-X-RTV-ORIGIN 里（自定义的标签，别的播放器会忽略）。"""
 
     def __init__(self, keep: int = WINDOW_SEGMENTS, keep_bytes: int = WINDOW_BYTES):
         self.keep = keep
@@ -369,8 +399,11 @@ class Window:
         self.ended = False
         # 一共出了多少秒（停了以后也留着）：估计电脑上看到了哪里（web.py 的 _pc_position）。
         self.total_s = 0.0
+        self.origin: float | None = None
 
-    def add(self, duration: float, data: bytes) -> None:
+    def add(self, duration: float, data: bytes, start: float | None = None) -> None:
+        if self.origin is None and not self.segments and self.next_seq == 0:
+            self.origin = start if start is not None else 0.0
         self.segments.append((self.next_seq, duration, data))
         self.next_seq += 1
         self.total_s += duration
@@ -391,6 +424,8 @@ class Window:
         first = self.segments[0][0] if self.segments else self.next_seq
         lines = ["#EXTM3U", "#EXT-X-VERSION:7", f"#EXT-X-TARGETDURATION:{self.target}",
                  f"#EXT-X-MEDIA-SEQUENCE:{first}", "#EXT-X-INDEPENDENT-SEGMENTS", '#EXT-X-MAP:URI="init.mp4"']
+        if self.origin is not None:
+            lines.insert(3, f"#EXT-X-RTV-ORIGIN:{self.origin:.3f}")
         for seq, duration, _ in self.segments:
             lines += [f"#EXTINF:{duration:.3f},", f"{seq}.m4s"]
         if self.ended:
@@ -602,7 +637,8 @@ class WatchStream:
             elif kind == b"moof":
                 pending = data
             elif kind == b"mdat" and pending:
-                self.window.add(fragment_duration(pending, tracks), pending + data)
+                self.window.add(fragment_duration(pending, tracks), pending + data,
+                                fragment_start(pending, tracks))
                 pending = b""
                 produced += 1
                 self._notify()
@@ -716,12 +752,14 @@ class WatchService:
         self._lock = threading.Lock()
         self._reaper: threading.Thread | None = None
 
-    def open(self, device: str, source: Source, user: int | None = None) -> WatchStream:
+    def open(self, device: str, source: Source, user: int | None = None, restart: bool = False) -> WatchStream:
         """device 这个位置（设备 id，或直接看时的「pc<用户>-<页面>」）要看 source：同一个片源还在转就
-        接着用，否则停掉旧的、起新的。满了（全中转 max_streams 路，或这个用户 max_per_user 路）时 Busy。"""
+        接着用，否则停掉旧的、起新的。满了（全中转 max_streams 路，或这个用户 max_per_user 路）时 Busy。
+        restart：跳转（播放器上拖进度条）——同一个片源也重起一个 ffmpeg，从 source.offset / start 起；
+        新的一路有新的编号，地址（令牌）跟着换，旧地址马上失效。"""
         with self._lock:
             current = self._by_device.get(device)
-            if current is not None and current.alive and current.source.key == source.key:
+            if current is not None and current.alive and current.source.key == source.key and not restart:
                 current.touch()
                 return current
             others = [s for d, s in self._by_device.items() if d != device and s.alive]

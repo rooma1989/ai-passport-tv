@@ -441,5 +441,14 @@ audio-only 模式。
 - **台标（Q11）**：`GET /api/art/logo/<台>`（`server/relay/logos.py`）只收台 id，地址来自 `channels.txt.meta.json`。
   第一次有人要时取一次（不是读频道表时），只走 http(s)、只连公网地址，最多 256 KB，按文件头只收 PNG/JPEG/GIF/WebP
   （不收 SVG），存在 `<数据目录>/logos/`；取不到的 6 小时后再试；没有台标的台回答一个可缓存的 404，页面画徽标。
+- **电脑上的播放器（M2 之后）**：播放窗口用自己的控制条（播放 / 暂停、按视频时间线的位置和总长、能拖的进度条和已缓冲的
+  范围、后退 / 前进 10 秒、音量和静音、全屏、下一集、选集面板；有焦点、放大或全屏时可以用空格、← →、F、M、Esc）。
+  位置 = 回答里的 `start` + 媒体时间 − 第一段的媒体时间（列表里的 `#EXT-X-RTV-ORIGIN`，`watch.Window.origin`）；
+  总长 = 回答里的 `duration`（B 站的视频信息和分 P、YouTube、订阅列表）。缓冲里有的地方直接跳；没有的，页面带 `start`
+  再要一次 `POST /api/watch`，换一路新的（ffmpeg 带 `-ss`，新编号、新令牌）和新的 MediaSource；跟随小电视时跳转给这个页面
+  另起一路，不动小电视。选集：多 P 视频（`pages`）、合集（`ugc_season`）、番剧的一季、YouTube 播放列表（`Bilibili.parts`、
+  `client.series`），以及剧集台和 UP 主台；投到电脑的一项按 `{video: {site, id}, part}` 指，信息缓存 30 分钟。电脑上的进度
+  每 10 秒和关闭时报一次（`POST /api/watch/progress`、`/api/watch/stop`），按用户、节目和第几集存，连同电脑上看完了的集
+  （`done`），下次接着看（有「从头播放」）；看完的一集接着放下一集——放完时（倒数 5 秒）和下次再打开时都是。
 - **没验证的**：新播放器窗口里在电脑上真实播放（界面检查用的是生成的数据，没有联网）、Safari 和 Firefox、Windows、
-  读屏软件、真的触屏设备。
+  读屏软件、真的触屏设备；电脑上的播放器：真实的 B 站多 P、合集、番剧，YouTube 播放列表，全屏。

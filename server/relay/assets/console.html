@@ -227,9 +227,40 @@
       <button class="iconbtn" id="watchBig" title="放大" aria-label="放大" data-ic="expand" data-ics="16"></button>
       <button class="iconbtn" id="watchClose" title="关闭" aria-label="关闭" data-ic="x" data-ics="16"></button>
     </div>
-    <div class="pcbox"><video id="watchVideo" controls playsinline></video><div class="watchmsg" id="watchMsg"></div></div>
+    <div class="pcbox" id="pcBox" tabindex="0" aria-label="画面：空格暂停，左右键快退快进 10 秒，F 全屏，M 静音">
+      <video id="watchVideo" playsinline></video>
+      <div class="watchmsg" id="watchMsg"></div>
+      <div class="pcbanner" id="pcResume" hidden><span id="pcResumeText"></span><button class="pctxt" id="pcFromStart">从头播放</button><button class="pcb sm" id="pcResumeX" aria-label="知道了" data-ic="x" data-ics="14"></button></div>
+      <div class="pcupnext" id="pcUpNext" hidden role="status">
+        <small id="pcUpNextKick">下一集</small><b id="pcUpNextTitle"></b>
+        <div class="pcring"><svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17"/><circle id="pcUpNextRing" cx="20" cy="20" r="17"/></svg><span id="pcUpNextN">5</span></div>
+        <div class="row"><button class="pctxt pri" id="pcUpNextGo">立即播放</button><button class="pctxt" id="pcUpNextStop">取消</button></div>
+      </div>
+      <div class="pcparts" id="pcParts" hidden role="dialog" aria-label="选集">
+        <div class="pcphead"><div><b id="pcPartsName">选集</b><span id="pcPartsSub"></span></div><button class="pcb" id="pcPartsX" aria-label="关闭选集" data-ic="x" data-ics="16"></button></div>
+        <div class="pcplist" id="pcPartsList"></div>
+      </div>
+      <div class="pcctl" id="pcCtl">
+        <div class="pcseek" id="pcSeek" role="slider" tabindex="0" aria-label="播放进度" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+          <div class="rail"><i class="buf" id="pcBuf"></i><i class="cur" id="pcCur"></i><b class="knob" id="pcKnob"></b></div>
+          <span class="tip" id="pcTip" hidden></span>
+        </div>
+        <div class="pcrow">
+          <button class="pcb" id="pcPlay" aria-label="暂停" title="暂停（空格）" data-ic="pause"></button>
+          <button class="pcb" id="pcBack" aria-label="后退 10 秒" title="后退 10 秒（←）" data-ic="r10"></button>
+          <button class="pcb" id="pcFwd" aria-label="前进 10 秒" title="前进 10 秒（→）" data-ic="f10"></button>
+          <button class="pcb" id="pcNext" aria-label="下一集" title="下一集" data-ic="next"></button>
+          <span class="pctime" id="pcTime">0:00</span>
+          <span class="pclive" id="pcLive" hidden>直播</span>
+          <span class="sp"></span>
+          <button class="pcb" id="pcMute" aria-label="静音" title="静音（M）" data-ic="vol"></button>
+          <input type="range" id="pcVol" min="0" max="1" step="0.05" value="1" aria-label="音量">
+          <button class="pctxt" id="pcPartsBtn" aria-haspopup="dialog">选集</button>
+          <button class="pcb" id="pcFull" aria-label="全屏" title="全屏（F）" data-ic="full"></button>
+        </div>
+      </div>
+    </div>
     <div class="pcfoot">
-      <button class="ghost" id="watchNextVid">下一个</button>
       <label class="follow" id="watchFollowBox" title="小电视换台、换下一个视频时，电脑上也跟着换"><input type="checkbox" id="watchFollow" checked>跟随小电视换台</label>
       <span class="note" id="watchNote"></span>
     </div>

@@ -636,6 +636,7 @@ def _read_body(handler) -> dict | None:
     if not 0 < length <= 16 * 1024:
         return None
     try:
+        handler._read_body = True
         body = json.loads(handler.rfile.read(length))
     except ValueError:
         return None

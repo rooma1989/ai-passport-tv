@@ -638,5 +638,21 @@ from Settings (the "classic console" row), and links back.
   table load), only over http(s) to public addresses, at most 256 KB, PNG/JPEG/GIF/WebP by magic
   bytes (no SVG), stored under `<data>/logos/`; failures are retried after 6 hours, and a channel
   without a logo answers a cacheable 404 so the page draws the badge.
+- **PC player (after M2)**: the player window has its own controls (play/pause, position and length in
+  the video's timeline, a draggable bar with the buffered range, back/forward 10 s, volume and mute,
+  fullscreen, next, an episode sheet; Space, Left/Right, F, M, Esc while it has focus, is enlarged or
+  fullscreen). Position = the answer's `start` + media time − the first fragment's media time
+  (`#EXT-X-RTV-ORIGIN` in the playlist, `watch.Window.origin`); length = the answer's `duration`
+  (Bilibili view and pages, YouTube, the subscription lists). A seek inside the buffer moves the media
+  element; outside it, the page asks `POST /api/watch` again with `start` and gets a new stream (ffmpeg
+  with `-ss`, new id and token) and a new MediaSource; following a TV, a seek gives the page a stream of
+  its own and leaves the TV alone. Parts: multi-part videos (`pages`), collections (`ugc_season`),
+  bangumi seasons, YouTube playlists (`Bilibili.parts`, `client.series`) and the series and creator
+  channels; a cast item is addressed as `{video: {site, id}, part}`, its info cached 30 minutes. PC
+  progress is reported every 10 s and on close (`POST /api/watch/progress`, `/api/watch/stop`), kept per
+  user, item and part with the parts finished on the PC (`done`), and resumed with a "from the start"
+  choice; a finished part moves on to the next, both when it ends (5-second countdown) and when the
+  item is opened again.
 - **Not verified**: real playback on the PC in the new player window (the UI check used generated
-  data and no network), Safari and Firefox, Windows, screen readers, a real touch device.
+  data and no network), Safari and Firefox, Windows, screen readers, a real touch device; for the PC
+  player, real Bilibili multi-part videos, collections and bangumi, YouTube playlists and fullscreen.

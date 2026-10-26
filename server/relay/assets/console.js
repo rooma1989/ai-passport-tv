@@ -128,6 +128,11 @@ const IC = {
   hist: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   expand: '<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>',
   shrink: '<path d="M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7"/>',
+  full: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  unfull: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+  mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/>',
+  r10: '<path d="M4.6 14.5A8 8 0 1 0 7 5.8"/><path d="M7.5 2.5 7 5.8l3.3.8"/><text x="12.6" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
+  f10: '<path d="M19.4 14.5A8 8 0 1 1 17 5.8"/><path d="M16.5 2.5l.5 3.3-3.3.8"/><text x="11.4" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
 };
 const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ""}</svg>`;
 function hydrateIcons(root) {
@@ -1147,8 +1152,7 @@ function renderMiniProgress() {
   if (!bar) return;
   let pct = 0;
   if (watching && (miniWho === "pc" || !tvOnline())) {
-    const v = $("watchVideo");
-    pct = v.duration && isFinite(v.duration) ? v.currentTime / v.duration : 0;
+    pct = watching.duration ? pcPos() / watching.duration : 0;
   } else if (data && data.now.video && data.now.video.duration) {
     const v = data.now.video;
     const position = v.paused || !v.moving ? v.position : v.position + (Date.now() - fetchedAt) / 1000;
@@ -1168,22 +1172,29 @@ $("mini").addEventListener("click", (event) => {
   else if (k === "chup") stepTv(-1);
   else if (k === "chdn") stepTv(1);
   else if (k === "remote") openRemote();
-  else if (k === "pcpp") { const v = $("watchVideo"); if (v.paused) v.play().catch(() => {}); else v.pause(); }
+  else if (k === "pcpp") pcTogglePlay();
   else if (k === "pcprev") stepChannel(-1);
   else if (k === "pcnext") stepChannel(1);
   else if (k === "pcclose") stopWatch();
 });
 
-// ======================================================================= 在电脑上看（和原来一样，播放器挪到浮动窗口里）
+// ======================================================================= 在电脑上看（浮动窗口里的播放器）
 // 自建 / 电脑客户端才有（/api/state 的 watch）：中转把片源转成 HLS（fMP4 段），这里用浏览器自带的
 // MediaSource 一段段接上放（server/relay/watch.py）。两种看法：
 // - 跟随（mode "follow"）：看选中的小电视正在播的台，小电视换台这里也跟着换。
 // - 直接看（mode "direct"）：「播放到 → 这台电脑」，不动小电视（web.py 的 watch_direct）。
 //   UP 主和剧集从电脑上次看到的地方起（没有就从小电视下次会播的地方起），电脑上的进度另记，不标看过。
+// 控制条是自己画的：浏览器自带的进度条只是内存里那几段（缓冲窗口），不是视频的时间线。视频里的位置 =
+// 这一路从第几秒起（回答里的 start）+ 媒体时间 − 第一段的媒体时间（列表里的 #EXT-X-RTV-ORIGIN）；
+// 总长是回答里的 duration（B 站、YouTube 的视频信息）。跳到缓冲里没有的地方 = 中转从那里重起一路（start），
+// 换一个新的 MediaSource。
 
-let watching = null;      // {mode, device, sid, key, player, busy, channel, group, name, title, kind, index, total, series, again}
+let watching = null;      // {mode, device, sid, key, player, busy, channel, group, name, title, kind, index, total, series, again,
+                          //  start, duration, seekable, seeking, parts, part, video, own}
 // 这个页面的编号：同一个页面换台只占一路（每个用户最多两路）；每次打开页面换一个。
 const viewer = Array.from(crypto.getRandomValues(new Uint8Array(6)), (b) => b.toString(16).padStart(2, "0")).join("");
+const PC_REPORT_MS = 10000;   // 电脑上看的进度多久报一次（web.py 的 watch_progress）
+const UPNEXT_S = 5;           // 放完以后几秒自动放下一集
 
 function watchKey(now) { return [now.channel, now.title, now.episode].join("|"); }
 
@@ -1196,26 +1207,31 @@ function watchSay(text, bad, retry) {
   if (retry) box.appendChild(button("重试", "ghost", retryWatch));
 }
 function retryWatch() {
-  if (watching && watching.mode === "direct") startDirect(watching.again, { group: watching.group, again: true });
+  if (!watching) return;
+  // 视频放到一半断了：从断的地方重起；别的（直播、还没开始放）重新要一次。
+  if (watching.seekable && watching.player && watching.player.origin != null && pcPos() > 1) { seekRestart(pcPos()); return; }
+  if (watching.mode === "direct") startDirect(watching.again, { group: watching.group, again: true });
   else startWatch(false, true);
 }
 
 // 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
+// opts：say（画面上的提示）、ended（放完了）、live（直播：落后太多时追到最新附近）、gap（视频落到中转的窗口外了）。
 class WatchPlayer {
-  constructor(video, base, say, ended) {
-    this.video = video; this.base = base; this.say = say;
-    this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false;
+  constructor(video, base, opts) {
+    this.video = video; this.base = base; this.say = opts.say; this.live = !!opts.live; this.gap = opts.gap || (() => {});
+    this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
     this.onWaiting = () => this.kick();
     // 放完了：视频播完，或者直播源断了。跟随小电视时，小电视换到下一个就会自动接上。
-    this.onEnded = () => { if (this.alive) ended(); };
+    this.onEnded = () => { if (this.alive) opts.ended(); };
     video.addEventListener("waiting", this.onWaiting);
     video.addEventListener("ended", this.onEnded);
   }
   async start() {
     const v = this.video;
     if (!window.MediaSource) {
-      // 没有 MediaSource（老 iPhone Safari）：浏览器自己放 HLS。
+      // 没有 MediaSource（老 iPhone Safari）：浏览器自己放 HLS。时间从 0 起，算位置时当作 origin 0。
       if (!v.canPlayType("application/vnd.apple.mpegurl")) { this.say("这个浏览器放不了，换 Chrome、Edge 或 Safari 试试", true); return; }
+      this.origin = 0;
       v.src = this.base + "master.m3u8";
       v.play().catch(() => this.say("点一下画面开始播放"));
       return;
@@ -1268,16 +1284,29 @@ class WatchPlayer {
       try { sb.remove(from, to); } catch (error) { sb.removeEventListener("updateend", done); ok(); }
     });
   }
+  ahead() {
+    const v = this.video, b = v.buffered;
+    return b.length ? b.end(b.length - 1) - v.currentTime : 0;
+  }
   async loop() {
     while (this.alive) {
       const text = await this.fetch("index.m3u8", "text");
       const first = Number((text.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/) || [])[1] || 0);
       const count = (text.match(/^\d+\.m4s$/gm) || []).length;
       const ended = text.includes("#EXT-X-ENDLIST");
-      // 第一次从倒数第六段起（约 12 秒的余量）：直播源常常几秒才来一大段。落在窗口外就跳到窗口里。
-      if (this.next < 0) this.next = Math.max(first, first + count - 6);
-      if (this.next < first) this.next = first;
-      for (; this.next < first + count && this.alive; this.next++) {
+      const origin = text.match(/#EXT-X-RTV-ORIGIN:(-?[\d.]+)/);
+      if (origin && this.origin === null) this.origin = Number(origin[1]);
+      // 第一次：直播从倒数第六段起（约 12 秒的余量，直播源常常几秒才来一大段）；视频的这一路还从头留着时
+      // 从第一段起（从 start 那一秒起，不跳过开头），接上别人已经在看的那一路时和直播一样。
+      if (this.next < 0) this.next = !this.live && first === 0 ? 0 : Math.max(first, first + count - 6);
+      if (this.next < first) {
+        // 视频：要的那一段已经不在中转的窗口里了（暂停太久）。从现在的位置重起一路，免得跳过一截。
+        if (!this.live) { this.gap(); return; }
+        this.next = first;
+      }
+      // 视频暂停着、缓冲里已经有一分钟：先不取了（列表照取，中转知道还有人看）。
+      const full = !this.live && this.ahead() > 60;
+      for (; !full && this.next < first + count && this.alive; this.next++) {
         const chunk = await this.fetch(this.next + ".m4s", "arrayBuffer");
         if (!chunk || !this.alive) continue;
         await this.trim();
@@ -1285,13 +1314,14 @@ class WatchPlayer {
         this.kick();
       }
       if (ended && this.next >= first + count) {
+        this.ended = true;
         if (this.ms.readyState === "open") this.ms.endOfStream();
         return;
       }
       await sleep(1000);
     }
   }
-  // 起播、跳过空档、落后太多时追到最新附近。
+  // 起播、跳过空档；直播落后太多时追到最新附近（视频不追：那是暂停过）。
   kick() {
     if (!this.alive || !this.sb) return;
     const v = this.video, b = v.buffered;
@@ -1302,7 +1332,7 @@ class WatchPlayer {
     if (inside < 0) {
       const ahead = [...Array(b.length).keys()].map((i) => b.start(i)).find((t) => t > v.currentTime);
       v.currentTime = (ahead !== undefined ? ahead : b.start(0)) + 0.05;
-    } else if (end - v.currentTime > 30) v.currentTime = end - 12;
+    } else if (this.live && end - v.currentTime > 30) v.currentTime = end - 12;
     if (!this.started) {
       this.started = true;
       this.say("");
@@ -1326,50 +1356,428 @@ class WatchPlayer {
 function playerFor(answer) {
   if (watching) watching.player.stop();
   $("pcwin").hidden = false;
-  return new WatchPlayer($("watchVideo"), answer.url, watchSay, watchEnded);
+  const player = new WatchPlayer($("watchVideo"), answer.url, {
+    say: watchSay, ended: watchEnded, live: answer.kind === "live",
+    // 暂停太久、中转那边已经往前转过了：暂停着就等按「播放」时再从这里重起（那之前不占 ffmpeg），在放就马上重起。
+    gap: () => {
+      if (!watching || watching.player !== player) return;
+      if ($("watchVideo").paused) watching.stale = true; else seekRestart(pcPos());
+    },
+  });
+  return player;
 }
 
-// 一个视频放完了：直接看 UP 主、剧集时接着放下一个（下一集），像小电视一样；别的停在这里，可以重试。
-function watchEnded() {
-  if (watching && watching.mode === "direct" && watching.kind === "video" && /^(up|sr)\d\d$/.test(watching.channel)) {
-    startDirect({ channel: watching.channel, step: 1 }, { group: watching.group });
-    return;
+// ---- 视频里的位置、跳转 ----
+
+function pcPos() {
+  if (!watching) return 0;
+  if (watching.seeking != null) return watching.seeking;
+  const p = watching.player, v = $("watchVideo");
+  if (!p || p.origin == null || !p.started) return watching.start || 0;
+  return Math.max(0, (watching.start || 0) + v.currentTime - p.origin);
+}
+let seekTimer = 0;
+// 跳到 target 秒：缓冲里有就直接跳，没有就让中转从那里重起一路（拖动时停手一会儿才发）。
+function pcSeek(target, now) {
+  if (!watching || !watching.seekable) return;
+  const dur = watching.duration;
+  target = Math.max(0, dur ? Math.min(target, dur - 3) : target);
+  const p = watching.player, v = $("watchVideo");
+  if (p && p.origin != null && p.started && watching.seeking == null) {
+    const t = target - watching.start + p.origin, b = v.buffered;
+    for (let i = 0; i < b.length; i++) {
+      if (t >= b.start(i) && t <= b.end(i) - 1) { v.currentTime = t; renderPc(); return; }
+    }
   }
-  watchSay(watching && watching.kind === "live" ? "直播断了" : "这一段放完了", false, true);
+  watching.seeking = target;
+  renderPc();
+  clearTimeout(seekTimer);
+  seekTimer = setTimeout(() => seekRestart(target), now ? 0 : 450);
+}
+async function seekRestart(target) {
+  if (!watching) return;
+  clearTimeout(seekTimer);
+  watching.seeking = target;
+  hideUpNext();
+  renderPc();
+  watchSay("跳转中…");
+  const ok = watching.mode === "direct"
+    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10 }), { group: watching.group, seek: true })
+    : await startWatch(false, true, Math.round(target * 10) / 10);
+  if (!ok && watching) { watching.seeking = null; watchSay(""); renderPc(); }
+}
+function pcSkip(delta) { if (watching && watching.seekable) pcSeek(pcPos() + delta); }
+
+// ---- 进度（电脑上看的，和小电视的分开记） ----
+
+function pcBody(extra) {
+  return Object.assign({ viewer, sid: watching.sid, position: Math.round(pcPos() * 10) / 10 }, extra || {});
+}
+function pcTracked() { return watching && watching.mode === "direct" && watching.kind === "video" && watching.seeking == null && watching.player.started; }
+function pcReport(extra) {
+  if (!pcTracked()) return Promise.resolve();
+  return call("POST", "api/watch/progress", pcBody(extra)).catch(() => {});
+}
+setInterval(() => { if (pcTracked() && !$("watchVideo").paused) pcReport(); }, PC_REPORT_MS);
+// 关页面、刷新：最后看到的地方也记下（keepalive，页面没了请求照样发出去）。
+addEventListener("pagehide", () => {
+  if (!pcTracked()) return;
+  try {
+    fetch("api/watch/stop", { method: "POST", credentials: "same-origin", keepalive: true,
+                               headers: { "Content-Type": "application/json" }, body: JSON.stringify(pcBody()) });
+  } catch (error) { /* 关页面时发不出去也只是少记几秒 */ }
+});
+
+// ---- 选集、下一集 ----
+
+function partReq(n) {
+  if (!watching) return null;
+  if (/^(up|sr)\d\d$/.test(watching.channel)) return { channel: watching.channel, episode: n };
+  if (watching.video) return { video: watching.video, part: n };
+  return null;
+}
+function partWord(n) {
+  const kind = watching && watching.parts ? watching.parts.kind : "";
+  return kind === "pages" ? "P" + n : kind === "up" ? "第 " + n + " 个" : "第 " + n + " 集";
+}
+function nextPart() {
+  if (!watching || watching.mode !== "direct" || !watching.parts) return null;
+  const items = watching.parts.items, cur = watching.parts.current;
+  if (!cur || cur >= items.length) return null;
+  const item = items[cur];
+  return { n: item.n, title: item.title, body: partReq(item.n) };
+}
+async function playPart(n) {
+  if (!watching || watching.busy) return;
+  const body = partReq(n);
+  if (!body) return;
+  hideUpNext();
+  closeParts();
+  await pcReport();
+  watchSay("正在换到" + partWord(n) + "…");
+  startDirect(body, { group: watching.group });
+}
+function openParts() {
+  if (!watching || !watching.parts) return;
+  const box = $("pcParts"), list = $("pcPartsList"), parts = watching.parts;
+  $("pcPartsName").textContent = parts.name || watching.name || "选集";
+  const seen = parts.items.filter((x) => x.watched).length;
+  $("pcPartsSub").textContent = "共 " + parts.items.length + (parts.kind === "pages" ? " P" : parts.kind === "up" ? " 个视频" : " 集")
+    + (seen ? " · 电脑上看完 " + seen : "") + " · 正在放" + partWord(parts.current);
+  list.replaceChildren();
+  for (const item of parts.items) {
+    const row = el("button", "pcpart" + (item.n === parts.current ? " cur" : "") + (item.watched ? " seen" : ""));
+    row.dataset.part = item.n;
+    row.setAttribute("aria-current", item.n === parts.current ? "true" : "false");
+    row.innerHTML = `<span class="n">${parts.kind === "pages" ? "P" + item.n : item.n}</span><span class="t">${esc(item.title || partWord(item.n))}</span>`
+      + `<span class="d">${item.watched ? ic("check", 14) : ""}${item.duration ? clock(item.duration) : ""}</span>`;
+    row.setAttribute("aria-label", partWord(item.n) + " " + (item.title || "") + (item.watched ? "，看完了" : "") + (item.n === parts.current ? "，正在放" : ""));
+    row.onclick = () => { if (item.n === parts.current) closeParts(); else playPart(item.n); };
+    list.appendChild(row);
+  }
+  box.hidden = false;
+  $("pcResume").hidden = true;
+  const cur = list.querySelector(".cur") || list.firstChild;
+  if (cur) { cur.scrollIntoView({ block: "center" }); cur.focus({ preventScroll: true }); }
+  pcActive();
+}
+function closeParts() {
+  if ($("pcParts").hidden) return;
+  $("pcParts").hidden = true;
+  if ($("pcParts").contains(document.activeElement)) $("pcPartsBtn").focus({ preventScroll: true });
 }
 
-// 跟随小电视：看它正在播的台。
-async function startWatch(auto, again) {
+// 放完以后的「下一集」：倒数 5 秒自动放，可以马上放或取消。
+let upNext = null;
+function showUpNext(next) {
+  hideUpNext();
+  let left = UPNEXT_S;
+  $("pcUpNextKick").textContent = "接下来 · " + partWord(next.n);
+  $("pcUpNextTitle").textContent = next.title || partWord(next.n);
+  const ring = $("pcUpNextRing");
+  const draw = () => { $("pcUpNextN").textContent = left; ring.style.strokeDashoffset = String(106.8 * (1 - left / UPNEXT_S)); };
+  ring.style.transition = "none"; draw(); void ring.getBoundingClientRect(); ring.style.transition = "";
+  $("pcUpNext").hidden = false;
+  upNext = { next, timer: setInterval(() => {
+    left -= 1;
+    if (left <= 0) { const n = next.n; hideUpNext(); playPart(n); return; }
+    draw();
+  }, 1000) };
+  pcActive();
+}
+function hideUpNext() {
+  if (upNext) clearInterval(upNext.timer);
+  upNext = null;
+  $("pcUpNext").hidden = true;
+}
+$("pcUpNextGo").onclick = () => { if (upNext) { const n = upNext.next.n; hideUpNext(); playPart(n); } };
+$("pcUpNextStop").onclick = () => { hideUpNext(); watchSay("放完了。点「选集」或「下一集」接着看", false); };
+
+// 一个视频放完了：电脑上记「看完了」，有下一集就倒数着放下一集；片源半路断了时可以从断的地方重试。
+function watchEnded() {
+  if (!watching) return;
+  if (watching.kind === "live") { watchSay("直播断了", false, true); return; }
+  const pos = pcPos(), dur = watching.duration;
+  if (dur && pos < dur - 30) { watchSay("片源断了", true, true); return; }
+  if (watching.mode !== "direct") { watchSay("这一段放完了", false, true); return; }
+  pcReport({ ended: true, position: dur || pos });
+  if (watching.parts) {
+    const cur = watching.parts.items[watching.parts.current - 1];
+    if (cur) cur.watched = true;
+  }
+  const next = nextPart();
+  if (next) showUpNext(next);
+  else watchSay(watching.parts ? "全部放完了" : "放完了", false);
+  renderPc();
+}
+
+// ---- 控制条 ----
+
+function renderPc() {
+  if (!watching) return;
+  const v = $("watchVideo"), live = watching.kind === "live", dur = watching.duration || 0, pos = pcPos();
+  const seekable = !!watching.seekable;
+  $("pcLive").hidden = !live;
+  $("pcTime").hidden = live;
+  if (!live) $("pcTime").textContent = clock(pos) + (dur ? " / " + clock(dur) : "");
+  const bar = $("pcSeek");
+  bar.classList.toggle("off", !seekable || !dur);
+  bar.hidden = live;
+  const frac = dur ? Math.min(1, pos / dur) : 0;
+  $("pcCur").style.width = (frac * 100).toFixed(2) + "%";
+  $("pcKnob").style.left = (frac * 100).toFixed(2) + "%";
+  let buf = 0;
+  const p = watching.player;
+  if (dur && p && p.origin != null && v.buffered.length && watching.seeking == null) {
+    buf = Math.min(1, (watching.start + v.buffered.end(v.buffered.length - 1) - p.origin) / dur);
+  }
+  $("pcBuf").style.width = (Math.max(buf, frac) * 100).toFixed(2) + "%";
+  bar.setAttribute("aria-valuemax", String(Math.round(dur)));
+  bar.setAttribute("aria-valuenow", String(Math.round(pos)));
+  bar.setAttribute("aria-valuetext", clock(pos) + (dur ? " / " + clock(dur) : ""));
+  const paused = v.paused;
+  const pp = $("pcPlay");
+  if (pp.dataset.state !== String(paused)) {
+    pp.dataset.state = String(paused);
+    pp.innerHTML = ic(paused ? "play" : "pause", 20);
+    pp.setAttribute("aria-label", paused ? "播放" : "暂停");
+    pp.title = paused ? "播放（空格）" : "暂停（空格）";
+  }
+  $("pcBack").hidden = $("pcFwd").hidden = !seekable;
+  const next = nextPart();
+  const stepUp = watching.mode === "direct" && watching.kind === "video" && /^up\d\d$/.test(watching.channel);
+  $("pcNext").hidden = !(next || stepUp);
+  $("pcNext").setAttribute("aria-label", next ? "下一" + (watching.parts.kind === "up" ? "个" : "集") + "：" + (next.title || partWord(next.n)) : "下一个");
+  $("pcNext").title = $("pcNext").getAttribute("aria-label");
+  $("pcPartsBtn").hidden = !(watching.parts && watching.parts.items.length > 1 && watching.mode === "direct");
+  $("pcPartsBtn").textContent = watching.parts && watching.parts.kind === "up" ? "视频" : "选集";
+  const muted = v.muted || v.volume === 0;
+  const mb = $("pcMute");
+  if (mb.dataset.state !== String(muted)) {
+    mb.dataset.state = String(muted);
+    mb.innerHTML = ic(muted ? "mute" : "vol", 20);
+    mb.setAttribute("aria-label", muted ? "取消静音" : "静音");
+    mb.title = (muted ? "取消静音" : "静音") + "（M）";
+  }
+  $("pcVol").value = String(v.muted ? 0 : v.volume);
+  const full = document.fullscreenElement === $("pcBox");
+  const fb = $("pcFull");
+  if (fb.dataset.state !== String(full)) {
+    fb.dataset.state = String(full);
+    fb.innerHTML = ic(full ? "unfull" : "full", 20);
+    fb.setAttribute("aria-label", full ? "退出全屏" : "全屏");
+    fb.title = (full ? "退出全屏" : "全屏") + "（F）";
+  }
+  $("pcwin").classList.toggle("compact", $("pcwin").offsetWidth < 440 && !full);
+}
+function pcTogglePlay() {
+  const v = $("watchVideo");
+  if (!watching) return;
+  if (v.paused) {
+    if (watching.stale) { watching.stale = false; seekRestart(pcPos()); return; }
+    if (watching.player.ended && watching.kind === "video") { hideUpNext(); seekRestart(watching.seekable ? 0 : pcPos()); return; }
+    v.play().catch(() => {});
+  } else v.pause();
+}
+function pcToggleFull() {
+  const box = $("pcBox");
+  if (document.fullscreenElement === box) document.exitFullscreen().catch(() => {});
+  else if (box.requestFullscreen) box.requestFullscreen().catch(() => toast("这个浏览器不让全屏", true));
+}
+function pcToggleMute() {
+  const v = $("watchVideo");
+  v.muted = !v.muted;
+  if (!v.muted && v.volume === 0) v.volume = 0.5;
+  lsSet("rootv.muted", v.muted ? "1" : "0");
+  renderPc();
+}
+// 不动鼠标 3 秒后收起控制条（暂停、选集开着、焦点在控制条上时不收）。
+let idleTimer = 0;
+function pcActive() {
+  const box = $("pcBox");
+  box.classList.remove("idle");
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    const v = $("watchVideo");
+    if (!watching || v.paused || !$("pcParts").hidden || !$("pcUpNext").hidden || $("pcCtl").contains(document.activeElement)) return;
+    box.classList.add("idle");
+  }, 3000);
+}
+
+// 进度条：点、拖（停手 0.45 秒后才让中转重起）、键盘（← → 10 秒，Home / End）。
+(function seekBar() {
+  const bar = $("pcSeek"), tip = $("pcTip");
+  let drag = false;
+  const at = (event) => {
+    const r = bar.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (event.clientX - r.left) / r.width)) * (watching ? watching.duration || 0 : 0);
+  };
+  const showTip = (event) => {
+    if (!watching || !watching.duration || !watching.seekable) { tip.hidden = true; return; }
+    const r = bar.getBoundingClientRect();
+    tip.hidden = false;
+    tip.textContent = clock(at(event));
+    tip.style.left = Math.min(r.width - 24, Math.max(24, event.clientX - r.left)) + "px";
+  };
+  bar.addEventListener("pointerdown", (event) => {
+    if (!watching || !watching.seekable || !watching.duration) return;
+    drag = true;
+    bar.classList.add("drag");
+    bar.setPointerCapture(event.pointerId);
+    watching.seeking = at(event);
+    clearTimeout(seekTimer);
+    renderPc(); showTip(event);
+  });
+  bar.addEventListener("pointermove", (event) => {
+    showTip(event);
+    if (!drag || !watching) return;
+    watching.seeking = at(event);
+    renderPc();
+  });
+  const end = (event) => {
+    if (!drag) return;
+    drag = false;
+    bar.classList.remove("drag");
+    if (!watching) return;
+    const target = at(event);
+    watching.seeking = null;
+    pcSeek(target);
+  };
+  bar.addEventListener("pointerup", end);
+  bar.addEventListener("pointercancel", end);
+  bar.addEventListener("pointerleave", () => { if (!drag) tip.hidden = true; });
+  bar.addEventListener("keydown", (event) => {
+    if (!watching || !watching.seekable) return;
+    if (event.key === "Home") { event.preventDefault(); event.stopPropagation(); pcSeek(0); }
+    else if (event.key === "End" && watching.duration) { event.preventDefault(); event.stopPropagation(); pcSeek(watching.duration - 3); }
+  });
+})();
+
+$("pcPlay").onclick = pcTogglePlay;
+$("pcBack").onclick = () => pcSkip(-10);
+$("pcFwd").onclick = () => pcSkip(10);
+$("pcNext").onclick = () => {
+  const next = nextPart();
+  if (next) playPart(next.n);
+  else if (watching && !watching.busy) startDirect({ channel: watching.channel, step: 1 }, { group: watching.group });
+};
+$("pcMute").onclick = pcToggleMute;
+$("pcVol").oninput = () => {
+  const v = $("watchVideo");
+  v.volume = Number($("pcVol").value);
+  v.muted = v.volume === 0;
+  lsSet("rootv.volume", String(v.volume));
+  lsSet("rootv.muted", v.muted ? "1" : "0");
+  renderPc();
+};
+$("pcPartsBtn").onclick = () => { if ($("pcParts").hidden) openParts(); else closeParts(); };
+$("pcPartsX").onclick = closeParts;
+$("pcFull").onclick = pcToggleFull;
+$("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0); };
+$("pcResumeX").onclick = () => { $("pcResume").hidden = true; };
+$("watchVideo").addEventListener("click", () => { pcTogglePlay(); $("pcBox").focus({ preventScroll: true }); });
+$("watchVideo").addEventListener("dblclick", pcToggleFull);
+$("pcBox").addEventListener("pointermove", pcActive);
+$("pcBox").addEventListener("focusin", pcActive);
+document.addEventListener("fullscreenchange", () => { renderPc(); pcActive(); });
+{
+  const v = $("watchVideo"), volume = Number(lsGet("rootv.volume", "1"));
+  v.volume = isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
+  v.muted = lsGet("rootv.muted", "0") === "1";
+}
+for (const ev of ["play", "pause", "volumechange", "progress", "seeked"]) $("watchVideo").addEventListener(ev, () => { renderPc(); if (ev === "play" || ev === "pause") { renderMini(); pcActive(); } });
+$("watchVideo").addEventListener("play", () => { if (watching && watching.stale) { watching.stale = false; seekRestart(pcPos()); } });
+$("watchVideo").addEventListener("timeupdate", () => { renderPc(); renderMiniProgress(); });
+
+// 播放器的键：画面（或控制条）有焦点、放大了、全屏时——空格 暂停 / 继续，← → 10 秒，F 全屏，M 静音，Esc 关选集 / 取消下一集。
+// 先于整页的方向键焦点引擎（捕获阶段），用掉的键不再往下传。
+addEventListener("keydown", (event) => {
+  if (!watching || $("pcwin").hidden || $("app").hidden || anyOverlay() || event.altKey || event.metaKey || event.ctrlKey) return;
+  const a = document.activeElement, tag = (event.target.tagName || "").toLowerCase();
+  if (["input", "select", "textarea"].includes(tag) && event.target.type !== "range") return;
+  const box = $("pcBox"), inBox = box.contains(a), full = document.fullscreenElement === box;
+  const big = $("pcwin").classList.contains("big") && !(a && a.closest && a.closest("#view, #top, #mini, #tabs"));
+  if (!inBox && !full && !big) return;
+  const key = event.key, inParts = $("pcParts").contains(a);
+  const eat = () => { event.preventDefault(); event.stopPropagation(); pcActive(); };
+  if (key === "Escape") {
+    if (!$("pcParts").hidden) { eat(); closeParts(); return; }
+    if (upNext) { eat(); $("pcUpNextStop").click(); return; }
+    return;                          // 全屏时浏览器自己退出；放大时整页的处理缩小
+  }
+  if (inParts) return;                // 选集列表里方向键照常移动焦点
+  const onButton = a && a.tagName === "BUTTON" && box.contains(a);
+  if (key === " " || key === "k" || key === "K") {
+    if (key === " " && onButton) return; // 空格按的是那个按钮
+    eat(); pcTogglePlay();
+  } else if ((key === "ArrowLeft" || key === "ArrowRight") && !onButton && a !== $("pcVol")) {
+    if (!watching.seekable) return;
+    eat(); pcSkip(key === "ArrowLeft" ? -10 : 10);
+  } else if (key === "f" || key === "F") { eat(); pcToggleFull(); }
+  else if (key === "m" || key === "M") { eat(); pcToggleMute(); }
+}, true);
+
+// 跟随小电视：看它正在播的台。start 给了是在电脑上跳转（只动电脑：这个页面另起一路）。
+async function startWatch(auto, again, start) {
   const device = deviceId(), key = watchKey(data.now);
   if (watching) watching.busy = true;
   let answer;
-  try { answer = await call("POST", "api/watch", withDevice({ viewer })); }
+  const body = withDevice({ viewer });
+  if (start !== undefined) body.start = start;
+  try { answer = await call("POST", "api/watch", body); }
   catch (error) {
     if (watching) watching.busy = false;
     if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
-    return;
+    return false;
   }
   if (!answer.ok) {
     if (watching && auto) { watching.key = key; watching.busy = false; watchSay(answer.error, true, true); }
     else { if (watching) watching.busy = false; toast(answer.error, true); }
-    return;
+    return false;
   }
   if (watching && watching.mode === "follow" && watching.sid === answer.sid && watching.device === device && !again) {
-    watching.key = key; watching.busy = false; return;       // 还是同一个片源，接着放
+    watching.key = key; watching.busy = false; return true;       // 还是同一个片源，接着放
   }
   const player = playerFor(answer);
   miniWho = "pc";
   watching = { mode: "follow", device, sid: answer.sid, key, player, busy: false, channel: answer.channel, kind: answer.kind,
-               name: data.now.name || answer.channel, title: answer.title || data.now.name };
+               name: data.now.name || answer.channel, title: answer.title || data.now.name,
+               start: answer.start || 0, duration: answer.duration || 0, seekable: !!answer.seekable, seeking: null,
+               parts: null, own: !!answer.own };
   $("watchFollow").checked = true;
   watching.label = deviceName() + " · " + (data.now.name || answer.channel) + (answer.title && answer.title !== data.now.name ? " · " + answer.title : "");
+  $("pcResume").hidden = true;
+  hideUpNext(); closeParts();
   renderWatchTitle();
   renderWatch();
   renderMini();
+  renderPc();
   player.start();
+  return true;
 }
 
-// 直接看：body 是 {channel[, episode | step]}、{url}（投到电脑）或 {video: {site, id}}（投屏历史）。
+// 直接看：body 是 {channel[, episode | step]}、{url}（投到电脑）或 {video: {site, id}}（投屏历史），
+// 再可以带 part（第几集）、start（从第几秒起：跳转、从头播放）。
 async function startDirect(body, ctx) {
   ctx = ctx || {};
   if (watching) watching.busy = true;
@@ -1395,32 +1803,54 @@ function openDirect(answer, ctx) {
   ctx = ctx || {};
   const same = watching && watching.mode === "direct" && watching.sid === answer.sid && !ctx.again;
   const player = same ? watching.player : playerFor(answer);
-  // 重试用的请求：不再「下一个」，而是回到这一个（UP 主、剧集按第几个；投屏的按视频）。
+  // 重试、跳转用的请求：不再「下一个」，而是回到这一个（UP 主、剧集按第几个；投屏的按视频和第几集）。
   const again = answer.index ? { channel: answer.channel, episode: answer.index }
-    : answer.channel === "cast" && answer.video ? { video: answer.video } : { channel: answer.channel };
+    : answer.video && (answer.channel === "cast" || answer.part) ? Object.assign({ video: answer.video }, answer.part ? { part: answer.part } : {})
+    : { channel: answer.channel };
   watching = { mode: "direct", device: deviceId(), sid: answer.sid, key: "", player, busy: false, channel: answer.channel,
                group: ctx.group || groupOf(answer.channel), name: answer.name, title: answer.title, kind: answer.kind,
-               index: answer.index || 0, total: answer.total || 0, series: !!answer.series, again };
+               index: answer.index || 0, total: answer.total || 0, series: !!answer.series, again,
+               start: answer.start || 0, duration: answer.duration || 0, seekable: !!answer.seekable, seeking: null,
+               parts: answer.parts || null, part: answer.part || answer.index || 0, video: answer.video || null };
   miniWho = "pc";
   $("watchFollow").checked = false;
-  const what = answer.series ? "第 " + answer.index + " / " + answer.total + " 集" + (answer.title ? " · " + answer.title : "")
+  const parts = answer.parts;
+  const what = parts && parts.items.length > 1 && parts.kind !== "up"
+    ? partWord(parts.current) + " / " + parts.items.length + (answer.title ? " · " + answer.title : "")
     : answer.title && answer.title !== answer.name ? answer.title : "";
-  watching.label = "这台电脑 · " + (answer.name || answer.channel) + (what ? " · " + what : "");
+  const name = answer.item_title || answer.name || answer.channel;
+  watching.label = "这台电脑 · " + name + (what ? " · " + what : "");
+  if (answer.item_title) watching.name = answer.item_title;
+  hideUpNext();
+  if (!ctx.seek) closeParts();
+  else if (!$("pcParts").hidden) openParts();
+  // 接着上次看的地方：说一声，给一个「从头播放」。
+  $("pcResume").hidden = !(answer.resume > 0 && !ctx.seek);
+  if (answer.resume > 0) $("pcResumeText").textContent = "接着上次看到的 " + clock(answer.resume);
+  if (!$("pcResume").hidden) setTimeout(() => { if (watching && watching.sid === answer.sid) $("pcResume").hidden = true; }, 9000);
   renderWatchTitle();
   render();
+  renderPc();
+  pcActive();
   if (!same) player.start();
   setTimeout(() => loadHome(true), 4000);
 }
 
 function stopWatch() {
   if (watching) {
+    const body = pcTracked() ? pcBody() : { viewer };
     watching.player.stop();
     // 直接看的那一路只给这个页面用：马上停，让出名额（跟随的那一路全家共用，没人看 20 秒后自己停）。
-    if (watching.mode === "direct") call("POST", "api/watch/stop", { viewer }).catch(() => {});
+    if (watching.mode === "direct" || watching.own) call("POST", "api/watch/stop", body).catch(() => {});
   }
+  clearTimeout(seekTimer);
+  hideUpNext();
+  closeParts();
+  if (document.fullscreenElement === $("pcBox")) document.exitFullscreen().catch(() => {});
   watching = null;
   miniWho = "tv";
   watchSay("");
+  $("pcResume").hidden = true;
   $("pcwin").hidden = true;
   $("pcwin").classList.remove("big");
   if (data) render();
@@ -1458,33 +1888,32 @@ function renderWatch() {
   const direct = watching.mode === "direct";
   $("watchPrevCh").hidden = $("watchNextCh").hidden = !direct || watching.channel === "cast";
   const video = direct && watching.kind === "video" && /^(up|sr)\d\d$/.test(watching.channel);
-  $("watchNextVid").hidden = !video;
-  $("watchNextVid").textContent = watching.series ? "下一集" : "下一个";
   $("watchFollowBox").hidden = !online;
   const d = data.now.device;
   $("watchNote").textContent = direct
-    ? "直接在电脑上看，不动小电视。" + (video ? "电脑上看的进度另记（「继续观看」里有），不会把小电视那边标成看过。" : "")
+    ? "直接在电脑上看，不动小电视。" + (watching.kind === "video" ? "电脑上看的进度另记（「继续观看」里有），" + (video ? "不会把小电视那边标成看过。" : "") : "")
       + "只在开着这个画面时才转，关掉后马上停。"
     : "电脑上的画面和小电视不同步：两边各自从片源取，电脑上通常晚几秒到十几秒。"
+      + (watching.seekable ? "在电脑上拖进度只动电脑，小电视照常播。" : "")
       + (d && d.audio_only === 1 ? "小电视现在「只听」，电脑上照样有画面。" : "")
       + "关掉约 20 秒后自动停。";
   // 跟随：小电视换了台（或下一个视频）、电脑版换了设备，就重新要一次地址；还是同一个片源时不打断。
   if (!direct && $("watchFollow").checked && online && !watching.busy &&
       (watchKey(data.now) !== watching.key || watching.device !== deviceId())) startWatch(true);
+  renderPc();
 }
 $("watchOpen").onclick = () => { closeSheets(true); startWatch(false); };
 $("watchClose").onclick = stopWatch;
 $("watchPrevCh").onclick = () => stepChannel(-1);
 $("watchNextCh").onclick = () => stepChannel(1);
-$("watchNextVid").onclick = () => { if (watching && !watching.busy) startDirect({ channel: watching.channel, step: 1 }, { group: watching.group }); };
 $("watchFollow").onchange = () => { if ($("watchFollow").checked && watching && watching.mode === "direct") startWatch(false); };
 $("watchBig").onclick = () => {
   const big = $("pcwin").classList.toggle("big");
   $("watchBig").innerHTML = ic(big ? "shrink" : "expand", 16);
   $("watchBig").setAttribute("aria-label", big ? "缩小" : "放大");
   $("watchBig").title = big ? "缩小" : "放大";
+  renderPc();
 };
-for (const ev of ["play", "pause", "timeupdate"]) $("watchVideo").addEventListener(ev, () => { if (ev !== "timeupdate") renderMini(); else renderMiniProgress(); });
 
 // ======================================================================= 直播：分组 + 频道卡片
 

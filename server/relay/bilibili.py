@@ -475,6 +475,32 @@ def _count(data, *keys) -> int:
 COVERS_MAX = 4000
 
 
+# 视频信息留多久、最多留几个（parts 用，见上）。
+VIEW_KEEP_S = 600
+VIEWS_MAX = 32
+
+
+def view_parts(bvid: str, view: dict) -> tuple[str, str, list[Video]] | None:
+    """视频信息（/x/web-interface/view）→ ("pages", 名字, 各 P) 或 ("season", 合集名, 合集里的各集)；
+    一集的 id 是「<BV 号>/<cid>」（media_url 认这种 id）。只有一集时 None。"""
+    pages = view.get("pages") or []
+    if len(pages) > 1:
+        return "pages", series_name(str(view.get("title", ""))), [
+            Video(bvid=f"{bvid}/{int(p['cid'])}",
+                  title=str(p.get("part") or f"P{p.get('page')}"),
+                  duration=int(p.get("duration") or 0), pubdate=0)
+            for p in pages]
+    # 一集一个视频、由 UP 主编成「合集」的。
+    season = view.get("ugc_season") or {}
+    episodes = [Video(bvid=f"{e['bvid']}/{int(e['cid'])}", title=str(e.get("title", "")),
+                      duration=int((e.get("arc") or {}).get("duration") or 0), pubdate=0)
+                for section in season.get("sections") or []
+                for e in section.get("episodes") or []]
+    if len(episodes) > 1:
+        return "season", str(season.get("title") or series_name(str(view.get("title", "")))), episodes
+    return None
+
+
 class Bilibili:
     def __init__(self, fetch_json=None, resolve=None, quality: int = DEFAULT_QUALITY, clock=time.time):
         self.quality = quality if quality in QUALITIES else DEFAULT_QUALITY
@@ -490,6 +516,8 @@ class Bilibili:
         # 视频（BV 号、剧集的「ep…/cid」）和番剧（ss…）→ 封面；UP 主（mid）→ 头像。最多各留 COVERS_MAX 个。
         self._covers: dict[str, str] = {}
         self._faces: dict[str, str] = {}
+        # 刚取过的视频信息（BV 号 → (时刻, view)）：投到电脑时 video() 和 parts() 只访问一次 B 站。
+        self._views: dict[str, tuple[float, dict]] = {}
 
     def _keep(self, table: dict, key: str, raw) -> None:
         url = cover_url(raw)
@@ -727,22 +755,30 @@ class Bilibili:
     def _multipart(self, bvid: str) -> tuple[str, list[Video]]:
         view = self._call("/x/web-interface/view", bvid=bvid)
         self._keep(self._covers, bvid, view.get("pic"))
-        pages = view.get("pages") or []
-        if len(pages) > 1:
-            return series_name(str(view.get("title", ""))), [
-                Video(bvid=f"{bvid}/{int(p['cid'])}",
-                      title=str(p.get("part") or f"P{p.get('page')}"),
-                      duration=int(p.get("duration") or 0), pubdate=0)
-                for p in pages]
-        # 一集一个视频、由 UP 主编成「合集」的。
-        season = view.get("ugc_season") or {}
-        episodes = [Video(bvid=f"{e['bvid']}/{int(e['cid'])}", title=str(e.get("title", "")),
-                          duration=int((e.get("arc") or {}).get("duration") or 0), pubdate=0)
-                    for section in season.get("sections") or []
-                    for e in section.get("episodes") or []]
-        if len(episodes) > 1:
-            return str(season.get("title") or series_name(str(view.get("title", "")))), episodes
-        raise BilibiliError(f"{bvid}: 只有一集，不是剧集", permanent=True)
+        found = view_parts(bvid, view)
+        if found is None:
+            raise BilibiliError(f"{bvid}: 只有一集，不是剧集", permanent=True)
+        return found[1], found[2]
+
+    def parts(self, bvid: str) -> tuple[str, str, list[Video]] | None:
+        """电脑上看一个投过来的视频时的「选集」：多 P 视频的各 P（"pages"）或它所在的合集（"season"），
+        (种类, 名字, 各集)；只有一集时 None。刚取过这个视频的信息（video()）就不再访问 B 站。"""
+        kept = self._views.get(bvid)
+        if kept is not None and self._clock() - kept[0] < VIEW_KEEP_S:
+            view = kept[1]
+        else:
+            view = self._call("/x/web-interface/view", bvid=bvid)
+            self._keep_view(bvid, view)
+        try:
+            return view_parts(bvid, view)
+        except (KeyError, TypeError, ValueError) as error:
+            raise BilibiliError(f"{bvid}: 分 P 信息格式不对：{error}") from None
+
+    def _keep_view(self, bvid: str, view: dict) -> None:
+        self._views.pop(bvid, None)
+        self._views[bvid] = (self._clock(), view)
+        while len(self._views) > VIEWS_MAX:
+            self._views.pop(next(iter(self._views)))
 
     def _expand(self, text: str) -> str:
         """App 分享的 b23.tv 短链先换成真实地址。"""
@@ -784,6 +820,7 @@ class Bilibili:
     def video(self, bvid: str) -> Video:
         view = self._call("/x/web-interface/view", bvid=bvid)
         self._keep(self._covers, bvid, view.get("pic"))
+        self._keep_view(bvid, view)
         try:
             return Video(bvid=bvid, title=str(view.get("title", "")),
                          duration=int(view.get("duration", 0)), pubdate=int(view.get("pubdate", 0)))

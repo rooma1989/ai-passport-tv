@@ -556,6 +556,77 @@ button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px
 #pcwin.big { left: var(--g); right: var(--g); top: calc(var(--topH) + 6px); bottom: 104px; width: auto; display: flex; flex-direction: column; }
 #pcwin.big .pcbox { flex: 1; aspect-ratio: auto; min-height: 0; }
 
+/* 播放器自己的控制条（不用浏览器自带的：那个进度条是缓冲窗口，不是视频的时间线）。
+   画面上点一下暂停 / 继续；不动鼠标 3 秒后控制条和指针收起来（.idle）。全屏的是整个 .pcbox，选集、下一集也在里面。 */
+#pcwin .pcbox:focus { outline: none; }
+#pcwin .pcbox:focus-visible { box-shadow: inset 0 0 0 3px var(--brand); }
+#pcwin .pcbox.idle { cursor: none; }
+#pcwin .pcbox:fullscreen { aspect-ratio: auto; width: 100%; height: 100%; }
+#pcwin .pcbox:fullscreen video { object-fit: contain; }
+#pcwin .pcctl { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 10px 6px; background: linear-gradient(transparent, rgba(0,0,0,.78));
+                transition: opacity var(--t-fade) var(--ease); }
+#pcwin .pcbox.idle .pcctl, #pcwin .pcbox.noctl .pcctl { opacity: 0; pointer-events: none; }
+#pcwin .pcseek { position: relative; height: 18px; display: flex; align-items: center; cursor: pointer; touch-action: none; border-radius: 6px; }
+#pcwin .pcseek:focus { outline: none; }
+#pcwin .pcseek:focus-visible { box-shadow: 0 0 0 2px var(--brand); }
+#pcwin .pcseek .rail { position: relative; flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.24); transition: height var(--t-fast); }
+#pcwin .pcseek:hover .rail, #pcwin .pcseek.drag .rail, #pcwin .pcseek:focus-visible .rail { height: 6px; }
+#pcwin .pcseek .buf, #pcwin .pcseek .cur { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; }
+#pcwin .pcseek .buf { background: rgba(255,255,255,.42); }
+#pcwin .pcseek .cur { background: var(--brand); }
+#pcwin .pcseek .knob { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5);
+                       transform: scale(0); transition: transform var(--t-fast); }
+#pcwin .pcseek:hover .knob, #pcwin .pcseek.drag .knob, #pcwin .pcseek:focus-visible .knob { transform: scale(1); }
+#pcwin .pcseek.off { cursor: default; }
+#pcwin .pcseek.off .knob { display: none; }
+#pcwin .pcseek .tip { position: absolute; bottom: 20px; transform: translateX(-50%); padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,.8);
+                      font: 600 12px/1.5 var(--mono); white-space: nowrap; pointer-events: none; }
+#pcwin .pcrow { display: flex; align-items: center; gap: 2px; min-height: 36px; }
+#pcwin .pcrow .sp { flex: 1; }
+#pcwin .pcb { width: 36px; height: 36px; border: 0; border-radius: 10px; background: transparent; color: #f5f5f7; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
+#pcwin .pcb.sm { width: 26px; height: 26px; }
+#pcwin .pcb:hover, #pcwin .pctxt:hover { background: rgba(255,255,255,.16); }
+#pcwin .pcb:focus-visible, #pcwin .pctxt:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+#pcwin .pcb:disabled { opacity: .35; cursor: default; background: transparent; }
+#pcwin .pctxt { height: 30px; padding: 0 11px; border: 0; border-radius: 9px; background: rgba(255,255,255,.12); color: #f5f5f7; font: 600 13px var(--sans); cursor: pointer; flex: none; }
+#pcwin .pctxt.pri { background: #f5f5f7; color: #0b0b0d; }
+#pcwin .pctxt.pri:hover { background: #fff; }
+#pcwin .pctime { margin: 0 8px; font: 500 13px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: rgba(245,245,247,.92); }
+#pcwin .pclive { margin: 0 6px; padding: 1px 8px; border-radius: 6px; background: var(--live); color: #fff; font: 700 12px/20px var(--sans); }
+#pcwin #pcVol { width: 76px; accent-color: #f5f5f7; margin: 0 6px 0 0; }
+#pcwin .pcbanner { position: absolute; left: 12px; top: 12px; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 6px 6px 12px; border-radius: 12px;
+                   background: rgba(20,20,24,.82); font-size: 13px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+#pcwin .pcbanner span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pcwin .pcupnext { position: absolute; right: 14px; bottom: 74px; width: min(300px, calc(100% - 28px)); display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center;
+                   padding: 12px 14px; border-radius: 14px; background: rgba(20,20,24,.9); box-shadow: 0 12px 30px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.12); }
+#pcwin .pcupnext small { grid-column: 1; color: rgba(235,235,245,.6); font-size: 12px; }
+#pcwin .pcupnext b { grid-column: 1; font: 600 14px/1.35 var(--sans); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#pcwin .pcupnext .pcring { grid-column: 2; grid-row: 1 / span 2; position: relative; width: 40px; height: 40px; }
+#pcwin .pcupnext .pcring svg { width: 40px; height: 40px; transform: rotate(-90deg); }
+#pcwin .pcupnext .pcring circle { fill: none; stroke: rgba(255,255,255,.18); stroke-width: 3; }
+#pcwin .pcupnext .pcring circle + circle { stroke: var(--brand); stroke-dasharray: 106.8; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+#pcwin .pcupnext .pcring span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 700 15px var(--mono); }
+#pcwin .pcupnext .row { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 8px; }
+#pcwin .pcparts { position: absolute; top: 0; right: 0; bottom: 64px; border-bottom-left-radius: 14px; width: min(340px, 86%); display: flex; flex-direction: column; background: rgba(18,18,22,.94);
+                  box-shadow: -12px 0 30px rgba(0,0,0,.45); }
+#pcwin .pcphead { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 14px; border-bottom: 1px solid rgba(255,255,255,.1); }
+#pcwin .pcphead > div { flex: 1; min-width: 0; }
+#pcwin .pcphead b { display: block; font: 600 14px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pcwin .pcphead span { display: block; font-size: 12px; color: rgba(235,235,245,.6); }
+#pcwin .pcplist { flex: 1; overflow-y: auto; padding: 6px; overscroll-behavior: contain; }
+#pcwin .pcpart { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; width: 100%; padding: 8px; border: 0; border-radius: 10px; background: transparent;
+                 color: #f5f5f7; text-align: left; font: 13px/1.35 var(--sans); cursor: pointer; }
+#pcwin .pcpart:hover { background: rgba(255,255,255,.1); }
+#pcwin .pcpart:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+#pcwin .pcpart .n { font: 600 12px var(--mono); color: rgba(235,235,245,.55); text-align: center; }
+#pcwin .pcpart .t { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+#pcwin .pcpart .d { font: 12px var(--mono); color: rgba(235,235,245,.55); display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
+#pcwin .pcpart .d svg { color: var(--ok); }
+#pcwin .pcpart.seen .t { color: rgba(235,235,245,.62); }
+#pcwin .pcpart.cur { background: rgba(255,107,61,.18); box-shadow: inset 3px 0 0 var(--brand); }
+#pcwin .pcpart.cur .n { color: var(--brand); }
+#pcwin.compact .pcrow #pcVol, #pcwin.compact .pcrow #pcBack, #pcwin.compact .pcrow #pcFwd { display: none; }
+
 #toast { position: fixed; z-index: 40; left: 50%; bottom: 104px; transform: translate(-50%, 16px); opacity: 0; pointer-events: none; transition: opacity var(--t-fade) var(--ease), transform var(--t-fade) var(--ease);
          background: var(--mat-thick); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 14px 40px rgba(0,0,0,.4), inset 0 0 0 1px var(--mat-line); color: var(--label);
          padding: 12px 20px; border-radius: 999px; font: 600 14px var(--sans); max-width: 92%; text-align: center; }

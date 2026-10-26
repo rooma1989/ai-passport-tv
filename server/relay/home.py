@@ -42,6 +42,8 @@ PROGRESS_MIN_S = 30
 PROGRESS_END_S = 30
 # 进度变化不到这么多秒就不重写文件。
 PROGRESS_STEP_S = 5
+# 每条记录最多记多少个「电脑上看完了」的集（选集里打 ✓ 的）。
+DONE_MAX = 1000
 PC_NAME = "这台电脑"
 _TV_SITES = {"bilibili": "B 站", "youtube": "YouTube"}
 
@@ -86,7 +88,9 @@ def _face(relay, site: str, source: str) -> str:
 
 class PcProgress:
     """{用户 id: {键: 记录}}，键是 UP 主 / 剧集的台 id（up01、sr03），投屏的视频是 v:<网站>:<id>。
-    记录：channel、bvid、site、title、name（台名）、position、duration、index、total、series、at。"""
+    记录：channel、bvid（正在看的那一集 / 那个视频）、site、title、name（台名）、position、duration、index、
+    total、series、at；投屏的多集视频（多 P、合集、番剧、YouTube 播放列表）再有 item（投的那个视频的 id）、
+    part（第几集）、kind（"pages" 等）、list（YouTube 播放列表）。done 是电脑上看完了的各集的 bvid（选集里的 ✓）。"""
 
     def __init__(self, path: Path, clock=time.time):
         self.path = Path(path)
@@ -117,11 +121,29 @@ class PcProgress:
             if isinstance(old, dict) and old.get("bvid") == record.get("bvid") and \
                     abs(float(old.get("position") or 0) - float(record.get("position") or 0)) < PROGRESS_STEP_S:
                 return
-            mine[key] = dict(record, at=self.clock())
+            fresh = dict(record, at=self.clock())
+            if isinstance(old, dict) and old.get("done") and "done" not in record:
+                fresh["done"] = old["done"]
+            mine[key] = fresh
             while len(mine) > PROGRESS_MAX:
                 oldest = min(mine, key=lambda k: float(mine[k].get("at") or 0))
                 mine.pop(oldest)
             self._save()
+
+    def mark_done(self, user: int, key: str, bvid: str) -> None:
+        """电脑上看完了 key 这一项里的 bvid（一集）：记进 done，选集里打 ✓。从不碰小电视的「看过」。"""
+        with self.lock:
+            mine = self._data.setdefault(str(user), {})
+            record = mine.get(key)
+            if not isinstance(record, dict):
+                record = mine[key] = {"at": self.clock()}
+            done = [b for b in record.get("done") or [] if isinstance(b, str) and b != bvid]
+            record["done"] = (done + [bvid])[-DONE_MAX:]
+            self._save()
+
+    def done(self, user: int, key: str) -> set[str]:
+        found = self.get(user, key)
+        return {b for b in (found or {}).get("done") or [] if isinstance(b, str)}
 
     def forget(self, user: int, key: str) -> None:
         with self.lock:
@@ -364,8 +386,12 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                 continue
             site = rec.get("site") or "bilibili"
             if key.startswith("v:"):
-                play = {"kind": "history", "site": site, "id": rec.get("bvid") or ""}
+                # 投到电脑的视频：键里是投的那个视频的 id（多 P、合集、番剧时 bvid 是正在看的那一集）。
+                play = {"kind": "history", "site": site, "id": key.split(":", 2)[2]}
                 subtitle = rec.get("name") or "投屏"
+                if rec.get("part") and rec.get("total"):
+                    n = int(rec["part"])
+                    subtitle += f" · P{n}" if rec.get("kind") == "pages" else f" · 第 {n} 集"
             else:
                 found = names.get(key)
                 if found is None:

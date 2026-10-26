@@ -217,6 +217,7 @@ def _read_body(handler) -> dict | None:
             handler.close_connection = True
         return None
     try:
+        handler._read_body = True
         body = json.loads(handler.rfile.read(length))
     except ValueError:
         return None
