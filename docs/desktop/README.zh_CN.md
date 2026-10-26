@@ -240,6 +240,20 @@ YouTube 默认关着；B 站和直播频道不用它也能看。打开它是给�
    用一个**小号**，在浏览器的无痕（隐私）窗口里登录小号、打开 YouTube，用导出 cookies.txt 的扩展只导出 youtube.com，
    然后直接关掉无痕窗口（不要退出登录，退出会让 cookies 作废）。客户端只留 youtube.com 和 google.com 的条目，存在
    `<数据目录>/youtube/cookies.txt`（只有你能读），页面上只显示条数。这个文件就是小号的登录凭据：不要发给别人。
+
+   **也可以直接从这台电脑的浏览器读取**（不用装扩展）：在 **从浏览器读取** 里选 Chrome、Edge、Firefox、Safari 或
+   Brave（只列这台电脑上有的），除了 Safari 还要选浏览器配置（按名字列出，带着配置里登录的 Google 账号），点 **读取**。
+   yt-dlp 把这个配置的 cookies 读进一个临时文件，读完马上删掉；只留 youtube.com 和 google.com 的，存进同一个
+   `cookies.txt`（0600），页面上显示「已读取（N 条，YouTube 域名）· 账号：…」。**会读取这个浏览器里当前登录的账号，
+   通常是你的主账号**：建议专门建一个只登录小号的浏览器配置，再选它。Mac 上读 Chrome、Edge、Brave 会弹出钥匙串窗口，
+   问能否使用它们的「Safe Storage」（输入 Mac 的登录密码，点允许）；读 Safari 要先在「系统设置 → 隐私与安全性 →
+   完全磁盘访问权限」里打开小鼠电视，再重新打开小鼠电视。Windows 上先完全退出要读的浏览器（开着时 cookies 文件被锁住）；
+   新版 Chrome、Edge 的 cookies 只有浏览器自己能解开，读不了时用 Firefox 或导入文件。浏览器里 YouTube 没登录时不保存，
+   原来的 cookies 照旧。这个按钮只在**这台电脑上**用管理员打开电脑版（`http://localhost:…`）时出现：从别的设备、
+   局域网或隧道打开时服务器一律拒绝，因为它读的是运行小鼠电视的这台电脑上的浏览器。
+
+   cookies 会过期：过几周 YouTube 会让它失效，那个账号在浏览器里退出登录也会马上失效。**测试** 又说「需要登录」时，
+   重新读取或导入。
 6. YouTube 改版很勤。视频放不出来时，点 **检查更新**、**更新 yt-dlp**（新版本按它发布页自己的 `SHA2-256SUMS` 核对）。
 
 改了不用退出程序：保存后只重启变了的部分（只改代理就只重启 YouTube 的那个小服务）。之后 YouTube 视频、频道（UP 主）
@@ -258,6 +272,11 @@ YouTube 默认关着；B 站和直播频道不用它也能看。打开它是给�
 在同一个框里粘贴 YouTube 链接可以直接播放。同样的搜索 10 分钟内再搜马上出结果；同一时间只跑一个 YouTube 搜索
 （YouTube 起播也要用同一个小服务），第二个会让你等几秒。页面说「YouTube 还没开启」时按上面开启本机模式；
 说「需要导入 cookies」看第 5 步；说「YouTube 节点正忙」是它正在给电视起播，页面会自己再试。
+
+**导入 YouTube 订阅**：本机模式、有 cookies 时，管理员的 **UP 主** 页有 **从 YouTube 导入我订阅的频道**。它列出 cookies
+那个账号订阅的频道（yt-dlp 读 `youtube.com/feed/channels`，读不出时从 `feed/subscriptions` 里收集频道；列表留 10 分钟，
+最多每分钟真去取一次），可以搜索、全选、全不选，已经订阅的标出来。每个频道成为一个 UP 主台，限制和 B 站的导入一样
+（最多 12 个 UP 主、小电视的频道列表要放得下）；导入时每个频道要取一次视频列表（每个十几秒），在后台做。
 
 ## 常见问题
 
@@ -302,6 +321,9 @@ YouTube 默认关着；B 站和直播频道不用它也能看。打开它是给�
 - Linux 的托盘（GNOME 默认没有托盘区）。
 - YouTube 本机模式在 Windows、Linux 上的实际运行（照着写了，只在 Mac 上跑过），以及导入 cookies 后 YouTube 多久要求
   一次登录（Mac 上经代理、不带 cookies 时每次都要求）。
+- 从真的浏览器读取 YouTube 登录：只对着假的 yt-dlp 和准备好的 `Local State`、`profiles.ini` 开发和测试过。真的钥匙串
+  窗口、Safari 的完全磁盘访问权限、Windows 上被锁住和 App-Bound 加密的 Chrome / Edge cookies、Linux 的钥匙环都没有试过；
+  导入订阅也没有对着真的账号跑过（只用了照 yt-dlp 的 `feed/channels` 回答格式做的假数据）。
 - 「在电脑上看」直接看一个台：只用本机的测试片源（局域网 HTTP 上的一段测试视频）在 Mac 的浏览器里看过；真的 B 站、
   YouTube 片源只在单元测试里用假数据测过，Windows 上的浏览器没有试过。
 

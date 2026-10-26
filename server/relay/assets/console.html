@@ -83,6 +83,10 @@
           <div class="inline" id="biliImportRow" hidden>
             <button class="ghost" id="biliImport">从 B 站导入我关注的 UP 主</button>
           </div>
+          <div class="inline" id="ytImportRow" hidden>
+            <button class="ghost" id="ytImport">从 YouTube 导入我订阅的频道</button>
+            <small class="hint" id="ytImportWhy"></small>
+          </div>
           <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播（只轮播最新的 20 个）。<span id="subsHint"></span></p>
         </div>
       </section>
@@ -193,6 +197,18 @@
               <button class="ghost red" id="ytCookiesDelete">删除</button>
             </div>
             <p class="hint">YouTube 经常要求代理、机房的地址「登录证明不是机器人」，这时要导入 cookies。请用一个<b>小号</b>：在浏览器的无痕（隐私）窗口里登录小号、打开 YouTube，用导出 cookies.txt 的扩展只导出 youtube.com，然后关掉无痕窗口（不要在这个窗口里退出登录，退出会让 cookies 作废）。cookies 等于小号的登录凭据：只存在这台电脑上，不要发给别人。</p>
+            <!-- 从这台电脑的浏览器读取（ytaccount.py）：只在这台电脑上打开电脑版时有，经隧道、局域网打开时服务器回答 404。 -->
+            <div id="ytBrowserBox" hidden>
+              <h3 style="margin-top:14px">从浏览器读取 <small>不用装扩展：直接读这台电脑上浏览器里的 YouTube 登录</small></h3>
+              <p class="hint ytwarn"><b>会读取这个浏览器里当前登录的账号，通常是你的主账号。</b>建议专门建一个只登录小号的浏览器配置，再选它。</p>
+              <div class="inline ytbrowse">
+                <span class="segc" role="group" aria-label="从哪个浏览器读取" id="ytBrowsers"></span>
+                <select class="field" id="ytProfile" aria-label="浏览器配置" hidden></select>
+                <button class="ghost" id="ytBrowserRead" disabled>读取</button>
+              </div>
+              <p class="hint" id="ytBrowserNote"></p>
+              <p id="ytBrowserState" role="status"></p>
+            </div>
           </div>
           <p class="hint">「本机」：这台电脑经你填的代理访问 YouTube。本项目不提供代理，也不介绍怎么获得代理。</p>
         </div>

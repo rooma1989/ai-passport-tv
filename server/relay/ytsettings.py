@@ -10,6 +10,8 @@
     POST /api/youtube/cookies           {"text": cookies.txt 的内容}：校验、只留 YouTube 的条目、存成 0600
     POST /api/youtube/cookies/delete
 
+从浏览器读取登录、导入订阅的频道（/api/youtube/browsers…、/api/youtube/subscriptions…）在 ytaccount.py。
+
 cookies 的内容不进日志、不进回答；回答里只有条数。代理地址只回给管理员自己。
 设计：docs/superpowers/specs/2026-10-15-self-hosting-design.md 第 8.4 节。
 """
@@ -239,7 +241,15 @@ def _cookies(relay, body: dict) -> dict:
         return {"ok": False, "error": f"存不了 cookies：{type(error).__name__}"}
     relay.log(f"导入了 YouTube cookies（{count} 条 youtube.com）")
     relay._youtube_health = None
+    _forget_subscriptions(relay)
     return {"ok": True, "cookies": ytlocal.cookies_summary(path)}
+
+
+def _forget_subscriptions(relay) -> None:
+    """换了（删了）cookies：缓存的订阅列表是原来那个账号的，不要了（ytaccount.py）。"""
+    subs = getattr(relay, "_yt_subs", None)
+    if subs is not None:
+        subs.forget()
 
 
 def _delete_cookies(relay) -> dict:
@@ -248,10 +258,14 @@ def _delete_cookies(relay) -> dict:
     path = ytlocal.cookies_path(_paths(relay).root, config.youtube_cookies)
     if ytlocal.delete_cookies(path):
         relay.log("删除了 YouTube cookies")
+    _forget_subscriptions(relay)
     return {"ok": True, "cookies": ytlocal.cookies_summary(path)}
 
 
 def get(handler, relay, path: str) -> bool:
+    from . import ytaccount
+    if ytaccount.get(handler, relay, path):
+        return True
     if path != PREFIX + "settings":
         return False
     if not _allowed(handler, relay):
@@ -265,6 +279,9 @@ POSTS = ("settings", "detect", "test", "components", "cookies", "cookies/delete"
 
 
 def post(handler, relay, path: str) -> bool:
+    from . import ytaccount
+    if ytaccount.post(handler, relay, path):
+        return True
     if not path.startswith(PREFIX) or path[len(PREFIX):] not in POSTS:
         return False
     name = path[len(PREFIX):]

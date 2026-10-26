@@ -25,6 +25,8 @@ YouTube 会拦机房 IP（要求登录证明不是机器人），所以 yt-dlp �
     --remux       选中的格式是 H.264 + AAC 时只换封装（-c copy），不转码
     --no-check    不做启动时和每 6 小时的后台检查（家里的电脑不用定时去碰 YouTube）
     GET /yt/check 不走缓存解析一次测试视频，回答用了几秒和出错的最后一行（设置页的「测试」）
+    GET /yt/subscriptions  cookies 那个账号订阅的频道（「订阅」页的「从 YouTube 导入」）：先读
+                  feed/channels（订阅的频道列表），读不出频道时再从 feed/subscriptions（订阅的新视频）里收集频道
 """
 
 from __future__ import annotations
@@ -76,6 +78,13 @@ PLAYLIST_FILTER = "EgIQAw%3D%3D"
 # 搜索结果里视频的缩略图：去掉查询串后只认这种地址（中转的缩略图代理也只认它）。
 _THUMB = re.compile(r"^https://i\.ytimg\.com/vi/[A-Za-z0-9_-]{11}/(?:default|mqdefault|hqdefault|sddefault|maxresdefault)\.jpg$")
 _UCID = re.compile(r"^UC[0-9A-Za-z_-]{22}$")
+# 订阅的频道：最多列这么多个；feed/subscriptions 退路最多看这么多个视频。
+SUBSCRIPTIONS_MAX = 2000
+SUBSCRIPTION_VIDEOS = 300
+SUBSCRIPTION_FEEDS = ("https://www.youtube.com/feed/channels", "https://www.youtube.com/feed/subscriptions")
+# 没登录（cookies 过期、没有 cookies）时 YouTube 把这两页跳到首页，yt-dlp 说 redirected to youtube.com home page。
+LOGIN_HINTS = ("not a bot", "Sign in to confirm", "redirected to youtube.com home page", "requires authentication",
+               "This page requires", "login required", "Login required", "use --cookies")
 # 先要 360p 的 H.264+AAC 合体格式（18），没有再取 360p 以内的最好的。
 FORMAT = "18/b[height<=360]/bv*[height<=360]+ba/b"
 _ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -381,6 +390,43 @@ def _thumb(entry: dict) -> str:
     return ""
 
 
+def subscriptions_args(tools: Tools, feed: str) -> list[str]:
+    end = SUBSCRIPTIONS_MAX if feed.endswith("/channels") else SUBSCRIPTION_VIDEOS
+    return _base(tools) + ["--flat-playlist", "-J", "--playlist-end", str(end), "--", feed]
+
+
+def _handle(entry: dict) -> str:
+    for key in ("uploader_id", "channel_handle"):
+        value = str(entry.get(key) or "")
+        if value.startswith("@") and 1 < len(value) <= 100 and re.match(r"^@[^/?#\s]+$", value):
+            return value
+    url = str(entry.get("uploader_url") or "")
+    found = re.match(r"^https://www\.youtube\.com/(@[^/?#\s]+)$", url)
+    return found.group(1) if found and len(found.group(1)) <= 100 else ""
+
+
+def subscriptions_summary(listing: dict) -> dict:
+    """feed/channels（一项一个频道）或 feed/subscriptions（一项一个视频，频道在 channel_id 里）的平铺结果 →
+    {"channels": [{"id": UC…, "name", "handle": "@…" 或空串, "fans"}]}，去重，按出现的顺序。"""
+    channels, seen = [], set()
+    for e in listing.get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        is_channel = _UCID.match(str(e.get("id") or "")) is not None
+        cid = str(e.get("id") if is_channel else e.get("channel_id") or "")
+        name = " ".join(str(e.get("channel") or e.get("uploader") or (e.get("title") if is_channel else "")
+                            or "").split())[:100]
+        if not _UCID.match(cid) or cid in seen or not name:
+            continue
+        seen.add(cid)
+        fans = e.get("channel_follower_count") if is_channel else None
+        channels.append({"id": cid, "name": name, "handle": _handle(e) if is_channel else "",
+                         "fans": fans if isinstance(fans, int) and not isinstance(fans, bool) and fans > 0 else 0})
+        if len(channels) >= SUBSCRIPTIONS_MAX:
+            break
+    return {"channels": channels}
+
+
 def channel_summary(listing: dict, n: int) -> dict:
     """频道搜索的平铺结果 → {"channels": [{"id": UC…, "name", "fans", "videos"}]}。
     订阅数、视频数 yt-dlp 给不出时为 0。"""
@@ -662,6 +708,26 @@ class Node:
             self._searches[key] = (now, summary)
         return 200, summary if full else _plain(summary)
 
+    def subscriptions(self) -> tuple[int, dict | str]:
+        """cookies 那个账号订阅的频道。没有 cookies、没登录时 401 login；先 feed/channels，没读出频道再
+        feed/subscriptions。不缓存（中转缓存 10 分钟）。"""
+        tools = self.current_tools()
+        if tools is None:
+            return 503, "tools missing"
+        if not tools.cookies:
+            return 401, "login: no cookies"
+        for feed in SUBSCRIPTION_FEEDS:
+            code, data = self.ytdlp_json(subscriptions_args(tools, feed))
+            if code != 200:
+                if any(hint in str(data) for hint in LOGIN_HINTS):
+                    self._record("login")
+                    return 401, "login"
+                return code, data
+            summary = subscriptions_summary(data if isinstance(data, dict) else {})
+            if summary["channels"]:
+                return 200, dict(summary, source=feed.rsplit("/", 1)[-1])
+        return 200, {"channels": [], "source": ""}
+
     def key_ok(self, given: str | None) -> bool:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
 
@@ -726,6 +792,10 @@ def _handler(node: Node):
                 return
             if parts.path == "/yt/check":
                 self._json(200, node.check_now())
+                return
+            if parts.path == "/yt/subscriptions":
+                code, data = node.subscriptions()
+                self._json(code, data)
                 return
             tools = node.current_tools()
             if parts.path in ("/yt/list", "/yt/playlist") and tools is None:

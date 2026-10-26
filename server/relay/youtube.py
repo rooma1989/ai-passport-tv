@@ -38,6 +38,8 @@ SEARCH_TIMEOUT_S = 5.0
 # 电脑版的搜索页：一次要几个（节点最多给 20 个），等多久（本机的 yt-dlp 经代理要好几秒）。
 BROWSE_MAX = 20
 BROWSE_TIMEOUT_S = 25.0
+# 订阅的频道：节点要跑一到两次 yt-dlp（几百个订阅要翻好几页）。
+SUBSCRIPTIONS_TIMEOUT_S = 260
 
 
 # 频道 id（UC 加 22 位）：语音搜到的频道按它订阅，地址是 /channel/<id>。
@@ -262,6 +264,29 @@ class YouTube:
         """电脑版搜索页（ytsearch.py）：节点 /yt/search 的回答原样给出（{"videos"} / {"channels"} /
         {"playlists"}），整理、过滤在 ytsearch.py。full=1 让节点多给播放数等；旧节点不认它，照常回答。"""
         return self._call("/yt/search", _timeout=timeout, q=query, n=limit, kind=kind, full=1)
+
+    def subscriptions(self, timeout: float = SUBSCRIPTIONS_TIMEOUT_S) -> list[dict]:
+        """cookies 那个账号订阅的频道，经节点的 /yt/subscriptions：[{"id": UC…, "name", "handle", "fans"}]。
+        没登录时 SourceError(reason="login")。"""
+        try:
+            answer = self._call("/yt/subscriptions", _timeout=timeout)
+        except SourceError as error:
+            if ": 401 " in str(error):
+                raise SourceError(str(error), reason="login") from None
+            raise
+        found, seen = [], set()
+        for c in answer.get("channels") or []:
+            if not isinstance(c, dict) or not _UCID.match(str(c.get("id", ""))) or c["id"] in seen:
+                continue
+            name = " ".join(str(c.get("name") or "").split())[:60]
+            handle = str(c.get("handle") or "")
+            if not name:
+                continue
+            seen.add(c["id"])
+            found.append({"id": c["id"], "name": name,
+                          "handle": handle if re.match(r"^@[^/?#\s]{1,100}$", handle) else "",
+                          "fans": _count(c.get("fans"))})
+        return found
 
     def series_id(self, text: str) -> str | None:
         return parse_playlist_link(text)

@@ -454,7 +454,7 @@ function showRoute() {
   updateTop();
   if (name === "home") { renderHome(); loadHome(); }
   if (name === "devices") loadDevices();
-  if (name === "settings") { if (!isGuest()) loadSessions(); loadYouTube(); loadBili(); if (me.role === "admin") loadInvites(); renderAbout(); }
+  if (name === "settings") { if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); if (me.role === "admin") loadInvites(); renderAbout(); }
   if (name !== "settings") biliCancel();
   if (name === "me") renderMe();
   if (name === "up") renderUpLatest();
@@ -824,6 +824,7 @@ function closeSheets(quiet) {
   eps = null;
   if (typeof closeWifi === "function" && wifiDev) closeWifi();
   if (follow) follow = null;
+  if (ysub) { ysub = null; clearTimeout(ysubPoll); }
   if (!quiet && lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
   lastFocus = null;
 }
@@ -3334,6 +3335,7 @@ $("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
 let bili = null, biliQr = null, biliRun = 0, biliLoading = false;
 function biliOn() { return !!(data && data.bili && me && me.role !== "guest"); }
 function renderBiliGate() {
+  renderYtImportGate();
   $("biliBlock").hidden = !biliOn();
   $("biliImportRow").hidden = !biliOn();
   if (biliOn() && route === "settings" && !bili && !biliQr) loadBili();
@@ -3626,6 +3628,8 @@ function renderYouTube() {
   const k = yt.cookies;
   $("ytCookiesState").textContent = k.present ? "已导入（" + k.count + " 条，YouTube 域名，" + when(k.updated) + "）" : "没有导入";
   $("ytCookiesDelete").hidden = !k.present;
+  if (mode === "local" && route === "settings" && !ytBrowsers && !ytBrowserLoading) loadBrowsers();
+  renderYtImportGate();
   clearTimeout(ytPoll);
   if (c.state === "working" || yt.running !== yt.mode) ytPoll = setTimeout(() => { if (route === "settings") loadYouTube(); }, 1500);
 }
@@ -3711,6 +3715,235 @@ $("ytCookiesDelete").onclick = () => busy($("ytCookiesDelete"), async () => {
   const answer = await call("POST", "api/youtube/cookies/delete", {});
   if (answer.ok && yt) { yt.cookies = answer.cookies; renderYouTube(); toast("已删除"); }
 });
+
+// ---------- 设置 → YouTube → 从浏览器读取（只在这台电脑上打开时有；接口见 server/relay/ytaccount.py） ----------
+// 服务器只对「在运行它的这台电脑上直接打开」的电脑版回答（经隧道、局域网打开时 404），所以 404 就整块藏起来。
+// 读取在服务器的后台做（macOS 的钥匙串窗口要等人点）：页面每 1.5 秒问一次结果。
+
+let ytBrowsers = null, ytBrowserLoading = false, ytBrowserPick = "", ytBrowserPoll = 0;
+const YT_BROWSER_NOTES = {
+  mac: "macOS：读 Chrome、Edge、Brave 时会弹出钥匙串窗口，询问能否使用「Chrome Safe Storage」（Edge、Brave 是它们自己的名字）：输入这台 Mac 的登录密码，点「允许」。读 Safari 要先在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」里打开「小鼠电视」（RooTV），再退出、重新打开小鼠电视。",
+  windows: "Windows：先完全退出要读的浏览器（开着时 cookies 文件被锁住）。新版 Chrome、Edge 的 cookies 只有浏览器自己能解开，读不了时换 Firefox，或用「导入 cookies.txt」。",
+  linux: "Linux：Chrome、Edge、Brave 的 cookies 用系统钥匙环加密，可能要求解锁钥匙环。",
+};
+async function loadBrowsers() {
+  if (!me || me.role !== "admin") return;
+  ytBrowserLoading = true;
+  let answer;
+  try { answer = await call("GET", "api/youtube/browsers"); }
+  catch (error) { $("ytBrowserBox").hidden = true; ytBrowsers = { hidden: true }; return; }  // 不是在这台电脑上打开的（404）
+  finally { ytBrowserLoading = false; }
+  if (!answer.ok) return;
+  ytBrowsers = answer;
+  renderBrowsers();
+}
+function renderBrowsers() {
+  const a = ytBrowsers;
+  if (!a || a.hidden) { $("ytBrowserBox").hidden = true; return; }
+  $("ytBrowserBox").hidden = false;
+  const box = $("ytBrowsers");
+  box.replaceChildren();
+  if (!a.browsers.some((b) => b.id === ytBrowserPick)) ytBrowserPick = a.browsers.length ? a.browsers[0].id : "";
+  for (const b of a.browsers) {
+    const btn = button(b.name, "", () => { ytBrowserPick = b.id; renderBrowsers(); });
+    btn.setAttribute("aria-pressed", String(b.id === ytBrowserPick));
+    box.appendChild(btn);
+  }
+  const chosen = a.browsers.find((b) => b.id === ytBrowserPick);
+  const sel = $("ytProfile");
+  const keep = sel.dataset.browser === ytBrowserPick ? sel.value : "";
+  sel.replaceChildren();
+  for (const p of (chosen && chosen.profiles) || []) {
+    const o = el("option", "", p.name + (p.account ? " · " + p.account : ""));
+    o.value = p.id;
+    sel.appendChild(o);
+  }
+  if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  sel.dataset.browser = ytBrowserPick;
+  sel.hidden = !chosen || !chosen.profiles.length;
+  const working = a.job && a.job.state === "working";
+  $("ytBrowserRead").disabled = !chosen || working || !a.ytdlp;
+  $("ytBrowserRead").textContent = chosen ? "读取 " + chosen.name + " 里的 YouTube 登录" : "读取";
+  let note = YT_BROWSER_NOTES[a.system] || "";
+  if (!a.browsers.length) note = "这台电脑上没有找到 Chrome、Edge、Firefox、Safari 或 Brave。" ;
+  else if (!a.ytdlp) note = "读取要用到 YouTube 组件里的 yt-dlp：先在上面点「安装」。" + note;
+  $("ytBrowserNote").textContent = note + " 只存 youtube.com 和 google.com 的 cookies，别的网站的不会留下。";
+  const j = a.job || {}, st = $("ytBrowserState");
+  st.className = j.state === "failed" ? "bad" : j.state === "done" ? "ok" : "";
+  const what = (j.browser_name || "") + (j.profile_name ? "「" + j.profile_name + "」" : "");
+  if (j.state === "working") st.textContent = "正在读取 " + what + "…" + (a.system === "mac" && j.browser !== "safari" && j.browser !== "firefox" ? "弹出钥匙串窗口时点「允许」。" : "");
+  else if (j.state === "done") st.textContent = "已读取（" + j.count + " 条，YouTube 域名）· " + (j.account ? "账号：" + j.account : "浏览器配置：" + (what || "—")) + " · " + when(j.at);
+  else if (j.state === "failed") st.textContent = j.message || "读取失败";
+  else st.textContent = "";
+  clearTimeout(ytBrowserPoll);
+  if (working) ytBrowserPoll = setTimeout(pollBrowsers, 1500);
+}
+async function pollBrowsers() {
+  if (route !== "settings") return;
+  const before = ytBrowsers && ytBrowsers.job ? ytBrowsers.job.state : "";
+  await loadBrowsers();
+  if (before === "working" && ytBrowsers && ytBrowsers.job && ytBrowsers.job.state !== "working") {
+    if (ytBrowsers.job.state === "done") toast("已读取 YouTube 登录（" + ytBrowsers.job.count + " 条）");
+    loadYouTube();
+  }
+}
+$("ytBrowserRead").onclick = () => busy($("ytBrowserRead"), async () => {
+  const chosen = ytBrowsers && ytBrowsers.browsers.find((b) => b.id === ytBrowserPick);
+  if (!chosen) return;
+  const profile = chosen.profiles.length ? $("ytProfile").value : "";
+  const p = chosen.profiles.find((x) => x.id === profile);
+  const who = chosen.name + (p ? "「" + p.name + "」" + (p.account ? "（" + p.account + "）" : "") : "");
+  if (!confirm("从 " + who + " 读取 YouTube 登录？\n\n会读取这个浏览器里当前登录的账号，通常是你的主账号。建议专门建一个只登录小号的浏览器配置，再选它。\n\n只保存 youtube.com 和 google.com 的 cookies，替换现在的 cookies。")) return;
+  const answer = await call("POST", "api/youtube/browsers/read", { browser: chosen.id, profile });
+  if (!answer.ok) { toast(answer.error, true); return; }
+  ytBrowsers.job = answer.job;
+  renderBrowsers();
+});
+
+// ---------- UP 主 → 从 YouTube 导入订阅的频道（管理员、本机模式、有 cookies；接口见 server/relay/ytaccount.py） ----------
+// 订阅列表要服务器跑一次 yt-dlp（几秒到一两分钟），导入时每个频道再跑一次：都在后台做，页面每 2 秒问一次。
+
+let ysub = null, ysubPoll = 0;   // { items, picked: Set, q, max, count, total, note, importing }
+function ytImportOn() { return !!(data && data.youtube && data.youtube.kind === "local" && me && me.role === "admin"); }
+function renderYtImportGate() {
+  const on = ytImportOn();
+  $("ytImportRow").hidden = !on;
+  if (!on) return;
+  if (!yt && route === "up" && !ytImportAsked) { ytImportAsked = true; loadYouTube(); }
+  const cookies = !!(yt && yt.cookies && yt.cookies.present);
+  $("ytImport").disabled = !cookies;
+  $("ytImportWhy").textContent = !yt ? "" : cookies ? "" : "先在「设置 → YouTube」导入 cookies 或从浏览器读取登录";
+}
+let ytImportAsked = false;
+function ysubLeft() { return ysub ? Math.max(0, ysub.max - ysub.count) : 0; }
+$("ytImport").onclick = openYsub;
+function ytFans(n) { return n >= 10000 ? (n / 10000).toFixed(n >= 100000 ? 0 : 1) + " 万订阅" : n ? n + " 订阅" : ""; }
+async function openYsub() {
+  ysub = { items: null, picked: new Set(), q: "", max: 12, count: 0, total: 0, note: "", importing: false };
+  const q = el("input");
+  q.type = "search"; q.placeholder = "在订阅里找（频道名或 @）"; q.maxLength = 40; q.autocomplete = "off"; q.spellcheck = false;
+  q.oninput = () => { if (ysub) { ysub.q = q.value.trim().toLowerCase(); renderYsub(); } };
+  const tools = el("div", "followtools");
+  tools.append(q, button("全选", "ghost", ysubAll), button("全不选", "ghost", () => { if (ysub) { ysub.picked.clear(); renderYsub(); } }));
+  const sum = el("p", "followsum", "正在取你在 YouTube 订阅的频道（要跑一次 yt-dlp，订阅多时要一两分钟）…");
+  sum.id = "ysubSum";
+  const list = el("div", "follows");
+  list.id = "ysubList";
+  const go2 = button("导入选中的", "go", ysubImport);
+  go2.id = "ysubGo"; go2.disabled = true;
+  const row = el("div", "row");
+  row.append(button("关闭", "ghost", closeOverlays), go2);
+  modal("从 YouTube 导入订阅的频道", tools, sum, list,
+        el("p", "", "订阅列表来自「设置 → YouTube」里的 cookies 那个账号。最多 12 个 UP 主（YouTube 频道也算）：每个是小电视上的一个台，台名要放进小电视的设置包（大小有限）。每个频道从最新的视频开始轮播；没有视频的不会加。导入时每个频道要取一次视频列表（十几秒）。"),
+        row);
+  $("modal").classList.add("bfollow");
+  await ysubLoad(false);
+}
+async function ysubLoad(fresh) {
+  const mine = ysub;
+  for (let i = 0; i < 150 && ysub === mine; i++) {
+    let answer;
+    try { answer = await call("GET", "api/youtube/subscriptions" + (fresh && !i ? "?fresh=1" : "")); }
+    catch (error) { if (error instanceof SignedOut) signedOut(); else if ($("ysubSum")) $("ysubSum").textContent = "网络不通"; return; }
+    if (ysub !== mine) return;
+    if (!answer.ok) { $("ysubSum").textContent = answer.error || "取不到订阅列表"; if (answer.login === false) refresh(); return; }
+    if (answer.state === "ready") {
+      Object.assign(ysub, { items: answer.items, max: answer.max, count: answer.count, total: answer.total });
+      renderYsub();
+      return;
+    }
+    await sleep(2000);
+  }
+}
+function ysubShown() {
+  const q = ysub.q;
+  return ysub.items.filter((f) => !q || f.name.toLowerCase().includes(q) || (f.handle || "").toLowerCase().includes(q));
+}
+function renderYsub() {
+  if (!ysub || !ysub.items) return;
+  const list = $("ysubList");
+  list.replaceChildren();
+  const shown = ysubShown();
+  if (!ysub.items.length) list.appendChild(el("div", "empty-t", "这个账号没有订阅任何频道"));
+  else if (!shown.length) list.appendChild(el("div", "empty-t", "没有找到"));
+  for (const f of shown.slice(0, 500)) {
+    const row = el("label", "frow" + (f.subscribed ? " had" : ""));
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = f.subscribed || ysub.picked.has(f.id);
+    box.disabled = f.subscribed || ysub.importing;
+    box.onchange = () => {
+      if (box.checked && ysub.picked.size >= ysubLeft()) {
+        box.checked = false;
+        toast(ysubLeft() ? "最多还能加 " + ysubLeft() + " 个 UP 主" : "UP 主已经满 12 个了，先删掉几个", true);
+        return;
+      }
+      if (box.checked) ysub.picked.add(f.id); else ysub.picked.delete(f.id);
+      ysubSum();
+    };
+    const name = el("div", "n", f.name);
+    const sub = [f.handle, ytFans(f.fans)].filter(Boolean).join(" · ");
+    if (sub) name.appendChild(el("small", "", sub));
+    row.append(box, thumb({ cover: "", name: f.name }, "f"), name, el("span", "tag2", f.subscribed ? "已订阅" : ""));
+    list.appendChild(row);
+  }
+  ysubSum();
+}
+function ysubSum() {
+  const had = ysub.items.filter((f) => f.subscribed).length;
+  $("ysubSum").textContent = "订阅了 " + ysub.total + " 个频道（其中 " + had + " 个已订阅）· UP 主 " + ysub.count + " / " + ysub.max +
+    " · 选了 " + ysub.picked.size + " 个，还能加 " + Math.max(0, ysubLeft() - ysub.picked.size) + " 个" + (ysub.note ? " · " + ysub.note : "");
+  $("ysubGo").disabled = !ysub.picked.size || ysub.importing;
+}
+function ysubAll() {
+  if (!ysub || !ysub.items || ysub.importing) return;
+  let cut = false;
+  for (const f of ysubShown()) {
+    if (f.subscribed || ysub.picked.has(f.id)) continue;
+    if (ysub.picked.size >= ysubLeft()) { cut = true; break; }
+    ysub.picked.add(f.id);
+  }
+  if (cut) toast("只选了前 " + ysubLeft() + " 个：UP 主最多 " + ysub.max + " 个", true);
+  renderYsub();
+}
+async function ysubImport() {
+  if (!ysub || ysub.importing) return;
+  const ids = Array.from(ysub.picked);
+  let answer;
+  try { answer = await call("POST", "api/youtube/subscriptions/import", { ids }); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return; }
+  if (!answer.ok) { toast(answer.error, true); return; }
+  ysub.importing = true;
+  renderYsub();
+  ysubProgress(answer.job);
+}
+function ysubProgress(job) {
+  if (!ysub) return;
+  if (job.state === "working") {
+    ysub.note = "正在导入 " + (job.done + 1 > job.total ? job.total : job.done + 1) + " / " + job.total + (job.current ? "：" + job.current : "") + "…";
+    ysubSum();
+    clearTimeout(ysubPoll);
+    ysubPoll = setTimeout(async () => {
+      let next;
+      try { next = await call("GET", "api/youtube/subscriptions/import"); }
+      catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+      if (next.ok) ysubProgress(next.job);
+    }, 2000);
+    return;
+  }
+  const added = new Set(job.added.map((a) => a.id));
+  for (const f of ysub.items) if (added.has(f.id)) f.subscribed = true;
+  ysub.count += job.added.length;
+  ysub.picked.clear();
+  ysub.importing = false;
+  const why = job.skipped.map((x) => x.name + "（" + x.reason + "）");
+  ysub.note = why.length ? "没加：" + why.slice(0, 4).join("、") + (why.length > 4 ? " 等 " + why.length + " 个" : "") : "";
+  toast(job.error ? job.error : job.added.length ? "导入了 " + job.added.length + " 个频道" + (why.length ? "，" + why.length + " 个没加" : "")
+        : "一个也没加：" + (why[0] || ""), !job.added.length || !!job.error);
+  renderYsub();
+  refresh();
+  loadHome(true);
+}
 
 // ---------- 让手机登录：一次性的手机登录链接（5 分钟、只能用一次），手机用相机扫码在 Safari 里打开。 ----------
 let phoneRun = 0;
