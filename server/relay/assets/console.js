@@ -6,7 +6,8 @@
    - 遥控面板：右边的抽屉（手机上是「遥控」标签）：屏幕、换台、暂停、跳转、音量、亮度、只听、定时关、宠物。
    - 首页：GET /api/home 拼好的几排。
    原来电脑版的各项功能（订阅管理、B 站搜索、投屏、设备、Wi-Fi、访客码、绑定、登录列表、B 站账号、YouTube、
-   邀请、让手机登录、恢复登录提示）都搬进来了，逻辑基本照旧（console-classic.html 是原来的那一页）。 */
+   让手机登录、恢复登录提示）都搬进来了，逻辑基本照旧；原来的总后台是管理员的「管理」（#/admin，console-admin.js），
+   邀请家人也在那里。旧版电脑版和总后台的页面已经去掉（对照表见设计文档的「Classic parity」一节）。 */
 "use strict";
 
 // 产品名：界面上的字标写 RooTV；中文界面需要产品名的地方写「小鼠电视」。只在这两个常量里。
@@ -134,6 +135,12 @@ const IC = {
   r10: '<path d="M4.6 14.5A8 8 0 1 0 7 5.8"/><path d="M7.5 2.5 7 5.8l3.3.8"/><text x="12.6" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
   f10: '<path d="M19.4 14.5A8 8 0 1 1 17 5.8"/><path d="M16.5 2.5l.5 3.3-3.3.8"/><text x="11.4" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
   pip: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11" width="7" height="6" rx="1.2" fill="currentColor" stroke="none"/>',
+  shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+  chart: '<path d="M4 20V4M4 20h16"/><path d="M7 15l4-5 3 3 5-6"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.3-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.9.8 3.1 2.6 3.5 5.2"/>',
+  log: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/>',
+  sys: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  list: '<path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>',
 };
 const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ""}</svg>`;
 function hydrateIcons(root) {
@@ -279,6 +286,7 @@ let miniWho = "tv";       // 正在播放栏跟着谁：最近一次在哪儿开
 let sleepSet = {};        // 每台设备最近一次在这里设的定时（分钟），给「定时关」按钮标选中
 
 const isGuest = () => !!me && me.role === "guest";
+const isAdmin = () => !!me && me.role === "admin";
 const isM = () => $("app").classList.contains("m");
 
 // ======================================================================= 登录（和原来一样）
@@ -401,7 +409,7 @@ $("logout2").onclick = logout;
 // ======================================================================= 外框：路由、顶栏、底栏
 
 const TITLES = { home: "首页", live: "直播", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索",
-                 devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的" };
+                 devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的", admin: "管理" };
 const GUEST_ROUTES = ["home", "live", "search", "settings", "remote", "me"];
 const TOPT = [["home", "首页"], ["live", "直播"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"], ["search", "搜索", "search"]];
 const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search", "搜索", "search"], ["remote", "遥控", "remote"], ["me", "我的", "set"]];
@@ -411,8 +419,7 @@ function showApp() {
   $("login").hidden = true;
   $("app").hidden = false;
   for (const b of qsa(".noguest")) b.hidden = isGuest();
-  $("toAdmin").hidden = me.role !== "admin";     // 总后台（admin.html）：服务端也只给管理员
-  $("inviteBlock").hidden = $("inviteList").hidden = me.role !== "admin";
+  $("adminList").hidden = !isAdmin();            // 「管理」（console-admin.js）：服务端也只给管理员
   chosen = lsGet("console.device", "");
   targetPref = lsGet("rootv.target:" + me.name, "");
   remember = lsGet("rootv.remember", "1") !== "0";
@@ -430,16 +437,20 @@ function showApp() {
   schedule(5000);
 }
 
-function parseRoute() {
+function routeParts() {
   const h = decodeURIComponent(location.hash.slice(1)) || "/home";
-  return (h.split("?")[0].split("/").filter(Boolean)[0]) || "home";
+  return h.split("?")[0].split("/").filter(Boolean);
 }
+function parseRoute() { return routeParts()[0] || "home"; }
 
 function showRoute() {
   if (!me) return;
   let name = parseRoute();
   if (!TITLES[name]) name = "home";
   if (isGuest() && !GUEST_ROUTES.includes(name)) name = "home";
+  if (name === "admin" && !isAdmin()) name = "home";
+  // 进不去的地址（访客、不是管理员打开 #/admin）：地址栏也改成真正显示的那一页。
+  if (name !== parseRoute()) { history.replaceState(null, "", "#/" + name); lastHash = location.hash; }
   const was = route;
   route = name;
   lsSet("rootv.route", name === "remote" || name === "me" ? "home" : name);
@@ -454,14 +465,22 @@ function showRoute() {
   updateTop();
   if (name === "home") { renderHome(); loadHome(); }
   if (name === "devices") loadDevices();
-  if (name === "settings") { if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); if (me.role === "admin") loadInvites(); renderAbout(); }
+  if (name === "settings") { if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); }
+  if (typeof adminRoute === "function") adminRoute(name === "admin" ? routeParts()[1] || "" : null);
   if (name !== "settings") biliCancel();
   if (name === "me") renderMe();
   if (name === "up") renderUpLatest();
   if (name === "up" || name === "series") loadHome();
   if (data) render();
 }
-addEventListener("hashchange", () => { closeSheets(true); showRoute(); });
+// 「管理 → 频道表」有没保存的修改时，离开前先问（console-admin.js 的 adminCanLeave；不离开就把地址改回去）。
+let lastHash = location.hash;
+addEventListener("hashchange", () => {
+  if (typeof adminCanLeave === "function" && !adminCanLeave(location.hash)) { history.replaceState(null, "", lastHash); return; }
+  lastHash = location.hash;
+  closeSheets(true);
+  showRoute();
+});
 
 function tabOf(name) { return name; }
 function renderTop() {
@@ -472,12 +491,12 @@ function renderTop() {
   const role = me ? (me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人") : "";
   $("top").innerHTML = `<div class="tl"><a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${iconSVG(30, true)}${wordmarkSVG(21, false)}</a></div>
     <nav class="ttabs" aria-label="主导航">${tabs.map(([id, t, i]) => `<a href="#/${id}" ${cr(id)}>${i ? ic(i, 17) : ""}${t}</a>`).join("")}</nav>
-    <div class="tr">${chipHTML()}${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv")}</a>`}<a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set")}</a><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
+    <div class="tr">${chipHTML()}${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv")}</a>`}${isAdmin() ? `<a class="iconbtn" href="#/admin" aria-label="管理" title="管理：用户、设备、频道表、操作记录" ${cr("admin")}>${ic("shield")}</a>` : ""}<a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set")}</a><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
     <span class="ntitle" aria-hidden="true">${esc(TITLES[route])}</span>`;
   $("top").classList.toggle("home", route === "home");
 }
 function renderTabs() {
-  const cur = ["series", "up", "lib", "devices", "settings"].includes(route) ? "me" : route;
+  const cur = ["series", "up", "lib", "devices", "settings", "admin"].includes(route) ? "me" : route;
   $("tabs").innerHTML = TABS.map(([id, t, i]) => `<a href="#/${id}" ${id === cur ? 'aria-current="page"' : ""}>${ic(i, 24)}${t}</a>`).join("");
 }
 // 滚动时：顶栏从透明变成毛玻璃；手机上大标题滚走后，导航栏中间出现小标题。
@@ -500,7 +519,8 @@ addEventListener("resize", () => applyLayout(false));
 
 function renderMe() {
   const rows = [["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["live", "直播和分组", "live"],
-                ["devices", "设备", "tv"], ["settings", "设置", "set"]].filter(([id]) => !isGuest() || GUEST_ROUTES.includes(id));
+                ["devices", "设备", "tv"], ["settings", "设置", "set"], ["admin", "管理", "shield"]]
+    .filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && (id !== "admin" || isAdmin()));
   $("meList").innerHTML = rows.map(([id, t, i]) => `<a class="li" href="#/${id}"><span class="ico">${ic(i, 18)}</span><span class="tx">${t}</span><em>›</em></a>`).join("")
     + `<div class="li"><span class="me">${esc(me ? [...me.name][0] : "?")}</span><span class="tx">${esc(me ? me.name : "")}<small>${me && me.role === "admin" ? "管理员" : isGuest() ? "访客" : "家人"}</small></span></div>`;
 }
@@ -3987,34 +4007,6 @@ async function phoneLink() {
 }
 $("phoneLink1").onclick = phoneLink;
 $("phoneLink2").onclick = phoneLink;
-
-// ---------- 邀请（管理员） ----------
-async function loadInvites() {
-  let answer;
-  try { answer = await call("GET", "api/invites"); }
-  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
-  const rows = $("inviteRows");
-  rows.replaceChildren();
-  if (!answer.invites.length) rows.appendChild(emptyRow("还没有邀请过"));
-  for (const i of answer.invites) {
-    const state = i.state === "used" ? "已接受" + (i.used_by_name ? "：" + i.used_by_name : "") : i.state === "expired" ? "过期了" : "等待接受";
-    rows.appendChild(listRow(i.state === "open" ? "air" : "", i.name || "（没写名字）", "生成 " + when(i.created_at) + " · 到期 " + when(i.expires_at) + " · " + state, []));
-  }
-}
-$("invite").onclick = () => busy($("invite"), async () => {
-  const answer = await call("POST", "api/invites", { name: $("inviteName").value });
-  if (!answer.ok) { toast(answer.error, true); return; }
-  $("inviteName").value = "";
-  const box = el("div", "qrbox");
-  box.innerHTML = await qrSvg(answer.link);
-  const copy = button("复制链接", "ghost", async () => {
-    try { await navigator.clipboard.writeText(answer.link); toast("已复制"); } catch (error) { toast("请手动选中复制", true); }
-  });
-  const row = el("div", "row");
-  row.append(copy, button("关闭", "go", closeOverlays));
-  modal("邀请链接", box, el("p", "", "家人用手机扫码或打开这个链接，点「接受邀请」。7 天内有效、只能用一次。"), el("div", "link", answer.link), row);
-  loadInvites();
-});
 
 // ======================================================================= 首页（/api/home）
 

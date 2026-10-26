@@ -586,8 +586,8 @@ Built on branch `rootv-ui` (2026-10-25) for v0.3.0-beta. The console at `/tv/con
 static files in `server/relay/assets/`: `console.html` (markup), `console.css` (tokens, materials,
 components, the phone layout) and `console.js` (shell, focus engine, Play to, remote, Home, and the
 ported pages). `console.py` stamps a content hash into the stylesheet and script URLs; the page's CSP
-adds `style-src 'self'`. The previous console stays at `/tv/console-classic` for this beta, linked
-from Settings (the "classic console" row), and links back.
+adds `style-src 'self'`. The previous console stayed at `/tv/console-classic` during v0.3.x; it was
+removed on 2026-10-26 together with the separate admin page (section 17).
 
 - **M0 shell**: top tab bar (Home, Live, Series, Creators, Library, Search; Devices and Settings as
   icons), hash routes, now-playing bar, sheets, toasts, the spatial focus engine (arrow keys within a
@@ -605,7 +605,8 @@ from Settings (the "classic console" row), and links back.
   state ("the library is coming soon"). Devices are cards (screen readout, remote, default target, watch on this
   computer, rename, Wi-Fi, guest code, re-pair, unbind) plus bind and "let a phone sign in".
   Settings holds Play-to memory, appearance, history ("played before"), sessions, the Bilibili
-  account, YouTube, invites, the admin link, the classic console and About.
+  account, YouTube, invites, the admin link, the classic console and About (invites and the admin
+  link became the Admin section in section 17; the classic console row is gone).
 - **M1 Play to**: `GET /api/targets` (each TV with online state, last seen, model, what it plays,
   capabilities; "this computer" only where watching on the PC exists, so never on the cloud relay)
   and `POST /api/play {target, item, viewer}` (`server/relay/home.py`), which dispatches to switch,
@@ -668,7 +669,80 @@ from Settings (the "classic console" row), and links back.
   before the first frame switches to HLS (`vod` left out); a failure mid-play reopens at the same position
   once. A signed-in Bilibili account gets a 720P (VOD, default) / 1080P (HLS) menu, remembered per browser.
   Live channels, YouTube (the node only gives a real-time MPEG-TS stream, no ranged file), multi-segment,
-  FLV and HEVC files, the classic console and TVs stay on HLS / the relay streams.
+  FLV and HEVC files and TVs stay on HLS / the relay streams.
 - **Not verified**: real playback on the PC in the new player window (the UI check used generated
   data and no network), Safari and Firefox, Windows, screen readers, a real touch device; for the PC
   player, real Bilibili multi-part videos, collections and bangumi, YouTube playlists and fullscreen.
+
+## 17. Admin section and classic parity (2026-10-26)
+
+Built on branch `rootv-admin` (based on v0.3.1-beta). The owner asked for everything behind the two
+About rows "admin backend (channel table, programme guide, users and devices)" and "classic console"
+to live in the new console, and for the old pages to go.
+
+**Admin.** The separate admin page (`/tv/admin`, `assets/admin.html`) became the console's **Admin**
+section, route `#/admin/<section>`, in its own pair of files `assets/console-admin.js` and
+`console-admin.css` (stamped like the console's; the names do not start with `admin` because
+`server/front.py` closes `/tv/admin…` on the tunnel port). Entry points, for admins only: a shield
+icon in the desktop top bar between Devices and Settings, a "Household" group in Settings (family and
+invites, Admin), and a row in the phone's Me tab; non-admins never see it and are routed home, and
+the server still answers 404 to them on every `/api/admin/*` call. Sections are chips under the large
+title: Overview, Users, Devices, Channels, Audit log, System. It reuses the console's lists, panels,
+chips, materials, sheets and modals and the spatial focus engine; tables (processes, sessions,
+channel table, import list) scroll sideways inside a rounded panel; the phone layout turns the stats
+into two columns and the section chips into a scrolling strip. The endpoints are unchanged; the
+system view gains the server version, the release's firmware version and the PC-watch warm-channel
+count (read-only, `config.toml` `[pc] warm_channels`). When `/api/admin/*` answers 404 while the
+session is still valid (the home server's tunnel port closes it unless `admin_over_tunnel`), the
+section says "this is not available here" instead of signing out. Inviting family moved from
+Settings to Admin > Users (with the "also an admin" option the old page had). On the cloud relay the
+same section works; the self-host-only parts stay gated by the server's answers (playlist import and
+"try" only when `import` is true, the warm-channel row only on self-host, the pairing-token switch
+only on the cloud).
+
+**Retired.** `assets/console-classic.html` and `assets/admin.html` are deleted. `/tv/console-classic`,
+`/tv/console/classic` and `/tv/console/` answer 302 to `/tv/console`; `/tv/admin` and `/tv/admin/` to
+`/tv/console#/admin` (`console.LEGACY_REDIRECTS`). The phone remote's admin row opens the console's
+Admin section.
+
+**Classic parity.** Every feature of the classic console, and where it is now:
+
+| Classic console | New console | State |
+| --- | --- | --- |
+| Scan-to-sign-in (QR, 6-digit code, ticket renewal) | same sign-in screen | same |
+| Recovery-login notice | same toast after sign-in; the session row says "device recovery" | same |
+| Device picker (auto / each TV) | Play-to chip in the top bar, device pills in the remote panel | redesigned (M1) |
+| Remote: screen readout, seek, back/forward 30 s, pause, next, previous episode, episodes | remote panel (sheet; the Remote tab on the phone) | same |
+| Volume, brightness, listen only | remote panel dials | same |
+| Pets | remote panel (all 11) | same |
+| Sleep timer (voice command only) | remote panel, `POST /api/sleep` | new |
+| Watch on this computer (follow the TV, previous/next channel, close) | floating player window with its own controls | extended |
+| "When I tap a channel: switch the TV / watch here" | Play to (remembered target, "Play to…" per item) | replaced by Play to |
+| Groups and channel grid with EPG line | Live page cards (logo, now/next) | same |
+| Adjust groups (move a channel to another group) | Live > "Adjust groups" | same |
+| "No TV yet" hint | Home banner, Live hint, Play-to picker, Remote tab | same |
+| "Let a phone sign in" | Devices & remote and Settings | same |
+| Devices: name, mine/shared, model and firmware, online and last seen, now playing, guests; rename, Wi-Fi, guest code (rotate), re-pair, unbind | Devices & remote cards | same |
+| Wi-Fi per device (list, move up, switch now, delete, add) | same dialog from the device card | same |
+| Bind by code (20 characters or 6 digits) | "Bind a new TV" card | same |
+| Creators: add, import Bilibili followings, list with play / play to TV / on PC / delete | Creators page (plus YouTube subscriptions import) | same |
+| Series: add, list, episodes drawer, delete | Series page (poster grid and list) | same |
+| Bilibili search (videos, creators, bangumi), subscribe, add as series | Search page (plus YouTube) | same |
+| Cast: paste a link, play on the TV or on this computer; "YouTube is off" hint | paste into Search: "Play this link" with Play to | moved |
+| Cast history: replay, delete | Settings > Played before (play, play to, delete) | same |
+| Sessions: list, sign out one, sign out others (with the explanation), sign out this PC | Settings | same |
+| Bilibili account sign-in/out | Settings | same |
+| YouTube node state; local YouTube (mode, proxy, detect, test, components, mirror, cookies) | Settings (plus reading the login from a local browser) | same |
+| Help link | Settings > About | same |
+| Invites (admin) | Admin > Users | moved |
+| "Admin backend ›" link | Admin section | moved |
+| YouTube warning banner | console banner (not on Home) | same |
+
+Nothing in the classic console is left without a home. Not ported because they had no UI there
+either: per-user hiding and ordering of live channels, device members other than the owner.
+
+**Verified** in the built-in browser pane of the desktop app against a local relay with a temporary
+database and generated data (`admintest.localhost`): every section at 1440x900 and the phone width
+(375x812), dark theme, the login-link, rename and confirm dialogs, section switching by URL. **Not
+verified**: the light theme on every section, Safari and Firefox, a real cloud relay, a real tunnel
+(the 404 path was reasoned from `front.py`, not exercised), keyboard-only use of the channel table.

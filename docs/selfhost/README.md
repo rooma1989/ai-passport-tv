@@ -165,8 +165,9 @@ port). Five wrong codes from one network in 10 minutes means a wait.
 
 ## Step 3: add channels (your own)
 
-The server ships no channels. The administrator opens
-`http://<address>:8080/tv/admin` on a computer → **Channels**:
+The server ships no channels. The administrator opens the console
+`http://<address>:8080/tv/console` on a computer → **Admin** (the shield icon in
+the top bar) → **Channels** (`/tv/console#/admin/channels`):
 
 - **CCTV and provincial satellite channels in one click**: under "Import a
   playlist", pick one of the public playlists (iptv-org China or Chinese,
@@ -252,7 +253,7 @@ vouch for any programme information.
      `xiaozhi-tv-flasher.zip` under `/flash/` on any **https** site (the
      project website's copy comes with phase S4; its address goes here once
      published) and open it on the computer the TV is plugged into.
-   - The admin backend's Devices page marks TVs whose firmware can be updated
+   - The console's Admin > Devices section marks TVs whose firmware can be updated
      and links to `/flash/`.
 2. **Wi-Fi by sound**: when the TV shows its setup page, open
    `http://<address>:8080/tv/wifi` on the phone (the setup page links to it),
@@ -350,7 +351,7 @@ take effect on restart. The common keys:
 | --- | --- | --- |
 | `[server] lan_port` | 8080 | Port of the pages |
 | `[server] device_address` | empty | What the TVs dial; empty = the address the browser used at first setup |
-| `[server] public_port` | 0 | A port for a tunnel (Cloudflare Tunnel, Tailscale serve), e.g. 8081; it has no admin backend, setup page or key sign-in |
+| `[server] public_port` | 0 | A port for a tunnel (Cloudflare Tunnel, Tailscale serve), e.g. 8081; it has no admin section (the console's Admin), setup page or key sign-in |
 | `[devices] allow_internet` | false | Accept TVs from public addresses (only for port forwarding) |
 | `[accounts] signup_via_device` | "lan" | Self-registration by scanning an unbound TV: home network only / tunnel too / off |
 | `[youtube] mode`, `proxy` | "off", empty | YouTube: off / `local` (this machine, through `proxy`) / `node` (your own node); the console's Settings → YouTube rewrites these two lines and applies them without a restart |

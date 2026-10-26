@@ -16,7 +16,7 @@ What is checked, over real sockets like the other relay tests:
 - The logo cache fetches once, keeps raster images up to the size cap, refuses SVG, non-http(s) and
   private addresses, remembers failures; the thumbnail proxy accepts only i.ytimg.com's fixed names.
 - The console page, its stylesheet and script are served with a CSP that allows the stylesheet; the
-  classic console stays reachable at /tv/console-classic.
+  classic console's old addresses redirect to /tv/console.
 """
 
 from __future__ import annotations
@@ -346,17 +346,22 @@ class HomeTests(unittest.TestCase):
         self.assertRegex(text, r'href="console\.css\?v=[0-9a-f]{12}"')
         self.assertRegex(text, r'src="console\.js\?v=[0-9a-f]{12}"')
         self.assertNotIn("https://", text.replace("http://www.w3.org", ""))
-        for name, kind in (("console.css", "text/css"), ("console.js", "text/javascript")):
+        self.assertRegex(text, r'href="console-admin\.css\?v=[0-9a-f]{12}"')
+        self.assertRegex(text, r'src="console-admin\.js\?v=[0-9a-f]{12}"')
+        for name, kind in (("console.css", "text/css"), ("console.js", "text/javascript"),
+                           ("console-admin.css", "text/css"), ("console-admin.js", "text/javascript")):
             status, headers, body = self.request("GET", "/tv/" + name)
             self.assertEqual(status, 200, name)
             self.assertTrue(headers["Content-Type"].startswith(kind), name)
             # Links the page sends to the relay (a Bilibili space URL to subscribe) are fine; loading from elsewhere is not.
             self.assertIsNone(re.search(r"""(?:src=["']?|url\(|@import\s+|fetch\(["'])https?:""", body.decode("utf-8")),
                               f"{name}: nothing loaded from elsewhere")
-        status, headers, classic = self.request("GET", "/tv/console-classic")
-        self.assertEqual(status, 200)
-        self.assertIn("style-src 'unsafe-inline'", headers["Content-Security-Policy"])
-        self.assertIn("旧版界面", classic.decode("utf-8"))
+        # The classic console is gone; its old addresses (bookmarks) go to the new console.
+        for old in ("/tv/console-classic", "/tv/console/classic", "/tv/console/"):
+            status, headers, _ = self.request("GET", old, "alice")
+            self.assertEqual((status, headers["Location"]), (302, "/tv/console"), old)
+        self.assertNotIn("console-classic", text)
+        self.assertNotIn("旧版界面", text)
 
 
 class CloudHomeTests(HomeTests):

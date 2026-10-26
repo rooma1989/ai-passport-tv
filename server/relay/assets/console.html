@@ -10,10 +10,11 @@
 <link rel="alternate icon" href="favicon.ico">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="stylesheet" href="console.css?v=__CONSOLE_CSS__">
+<link rel="stylesheet" href="console-admin.css?v=__ADMIN_CSS__">
 <title>小鼠电视</title>
 <!-- 媒体中心界面（docs/superpowers/specs/2026-10-24-media-center-ui-design.md，阶段 M0–M2）。
-     样式在 console.css，脚本在 console.js（console.py 给两者带上内容的散列当版本号）。
-     原来的电脑版还在 /tv/console-classic（console-classic.html），这个测试版里留着备用。 -->
+     样式在 console.css，脚本在 console.js；管理员的「管理」（原来的总后台）在 console-admin.css / console-admin.js
+     （console.py 给它们带上内容的散列当版本号）。原来的电脑版和总后台的旧地址都转到这里。 -->
 </head>
 <body>
 <!-- 没登录：二维码 + 6 位登录码，等手机确认。 -->
@@ -153,6 +154,7 @@
           <button class="ghost" id="logout2">退出这台电脑</button>
           <button class="ghost noguest" id="phoneLink2">让手机登录</button>
         </div>
+        <p class="hint noguest" style="margin:-12px 0 22px">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机再扫一次邀请或小电视的码，或者在这里点「让手机登录」；电脑再扫码）；访客不受影响，可以单独退出。</p>
         <!-- B 站账号：家庭服务器和电脑客户端，每个人登录自己的（bililogin.py）；云端没有。 -->
         <div class="panel" id="biliBlock" hidden>
           <h3>B 站账号 <small id="biliSum"></small></h3>
@@ -212,24 +214,21 @@
           </div>
           <p class="hint">「本机」：这台电脑经你填的代理访问 YouTube。本项目不提供代理，也不介绍怎么获得代理。</p>
         </div>
-        <!-- 邀请家人（管理员） -->
-        <div class="panel" id="inviteBlock" hidden>
-          <h3>邀请家人 <small>链接 7 天内有效、只能用一次</small></h3>
-          <div class="inline">
-            <input type="text" id="inviteName" placeholder="家人的名字（可不填）" maxlength="20" autocomplete="off">
-            <button class="go" id="invite">生成邀请</button>
-          </div>
-          <p class="hint">发给家人，在手机浏览器里打开、点「接受邀请」，那台手机就登录了；之后电脑扫码登录。</p>
+        <!-- 家人和邀请（管理员）：在「管理 → 用户」里 -->
+        <div class="list" id="adminList" hidden>
+          <h3>家庭</h3>
+          <a class="li" href="#/admin/users"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">家人和邀请<small>邀请家人、给登录链接、改名、封禁</small></span><em>›</em></a>
+          <a class="li" href="#/admin"><span class="ico" data-ic="shield" data-ics="18"></span><span class="tx">管理<small>概览、所有用户和设备、频道表、节目单、操作记录、系统</small></span><em>›</em></a>
         </div>
-        <div class="list" id="inviteList" hidden><h3>最近的邀请</h3><div class="rows" id="inviteRows"></div></div>
         <div class="list">
           <h3>关于</h3>
           <div class="li"><span class="ico" id="aboutIcon" style="background:none"></span><span class="tx" id="aboutText">电脑版<small>这台电脑就是家里的电视服务器</small></span></div>
-          <a class="li" href="admin" id="toAdmin" hidden><span class="ico" data-ic="set" data-ics="18"></span><span class="tx">总后台<small>频道表、节目单、用户和设备（管理员）</small></span><em>›</em></a>
-          <a class="li" href="console-classic"><span class="ico" data-ic="hist" data-ics="18"></span><span class="tx">旧版界面<small>测试版里暂时留着原来的电脑版，以防新界面缺了什么</small></span><em>›</em></a>
           <a class="li" href="/TV/" target="_blank" rel="noreferrer"><span class="ico" data-ic="info" data-ics="18"></span><span class="tx">使用说明</span><em>›</em></a>
         </div>
       </section>
+
+      <!-- 管理（管理员）：概览、用户、设备、频道表、操作记录、系统。内容由 console-admin.js 画；服务端只给管理员回答 /api/admin/* -->
+      <section class="page adm" data-route="admin" aria-label="管理"><div id="admBody"></div></section>
 
       <!-- 手机：遥控标签（遥控面板挪到这里） -->
       <section class="page" data-route="remote" aria-label="遥控"><header class="ph"><h1 class="lt">遥控</h1></header><div id="remoteSlot"></div></section>
@@ -367,5 +366,6 @@
   <div id="toast" role="status" aria-live="polite"></div>
 </div>
 <script src="console.js?v=__CONSOLE_JS__"></script>
+<script src="console-admin.js?v=__ADMIN_JS__"></script>
 </body>
 </html>

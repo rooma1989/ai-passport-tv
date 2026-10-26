@@ -1,4 +1,4 @@
-"""电脑版（多用户阶段 2）：/tv/console 页面（媒体中心界面，旧版在 /tv/console-classic）、扫码登录、登录列表、设备详情、邀请列表、二维码。
+"""电脑版（多用户阶段 2）：/tv/console 页面（媒体中心界面，管理员的「管理」也在里面）、扫码登录、登录列表、设备详情、邀请列表、二维码。
 
 只在多用户（--db）时有；单用户的中转对这些路径一律 404（电脑上想用，先上 --db）。
 遥控、订阅、投屏用的是手机同一套接口（web.py）：「一套接口，两种排版」。这里只放电脑版
@@ -33,15 +33,28 @@ QR_TEXT_MAX = 300
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 # 电脑版（媒体中心界面）：页面 + 样式 + 脚本三个文件。样式和脚本当静态文件给（web.ASSETS，浏览器缓存一天），
 # 页面里写的地址带着内容的散列（?v=…），改了文件浏览器就会取新的。
+# 「管理」（原来的总后台，admin.py 的 /api/admin/*）另放一对文件：console-admin.css / console-admin.js。
+# 名字不以 admin 开头：server/front.py 在公网隧道上拦 /tv/admin…，样式和脚本不能被一起拦掉。
 CONSOLE_CSS = (_ASSET_DIR / "console.css").read_bytes()
 CONSOLE_JS = (_ASSET_DIR / "console.js").read_bytes()
+CONSOLE_ADMIN_CSS = (_ASSET_DIR / "console-admin.css").read_bytes()
+CONSOLE_ADMIN_JS = (_ASSET_DIR / "console-admin.js").read_bytes()
+
+
+def _stamp(data: bytes) -> bytes:
+    return hashlib.sha256(data).hexdigest()[:12].encode()
+
+
 CONSOLE_PAGE = (_ASSET_DIR / "console.html").read_bytes() \
-    .replace(b"__CONSOLE_CSS__", hashlib.sha256(CONSOLE_CSS).hexdigest()[:12].encode()) \
-    .replace(b"__CONSOLE_JS__", hashlib.sha256(CONSOLE_JS).hexdigest()[:12].encode())
+    .replace(b"__CONSOLE_CSS__", _stamp(CONSOLE_CSS)).replace(b"__CONSOLE_JS__", _stamp(CONSOLE_JS)) \
+    .replace(b"__ADMIN_CSS__", _stamp(CONSOLE_ADMIN_CSS)).replace(b"__ADMIN_JS__", _stamp(CONSOLE_ADMIN_JS))
 CONSOLE_ASSETS = {"/console.css": ("text/css; charset=utf-8", CONSOLE_CSS),
-                  "/console.js": ("text/javascript; charset=utf-8", CONSOLE_JS)}
-# 旧版电脑版：测试版里留在 /tv/console-classic（和 /tv/console 同一层，页面里的相对地址不用改）。
-CLASSIC_PAGE = (_ASSET_DIR / "console-classic.html").read_bytes()
+                  "/console.js": ("text/javascript; charset=utf-8", CONSOLE_JS),
+                  "/console-admin.css": ("text/css; charset=utf-8", CONSOLE_ADMIN_CSS),
+                  "/console-admin.js": ("text/javascript; charset=utf-8", CONSOLE_ADMIN_JS)}
+# 旧版电脑版（console-classic.html）和旧的总后台（admin.html）都去掉了：书签里的旧地址转到新电脑版里对应的地方。
+LEGACY_REDIRECTS = {"/console/": "/tv/console", "/console-classic": "/tv/console", "/console/classic": "/tv/console",
+                    "/admin": "/tv/console#/admin", "/admin/": "/tv/console#/admin"}
 LOGIN_PAGE = (_ASSET_DIR / "login.html").read_bytes()
 PHONE_PAGE = (_ASSET_DIR / "phone.html").read_bytes()
 # 登录确认页和电脑版都不许被别的网站嵌进框里（防止骗点「确认」）。
@@ -119,11 +132,8 @@ def get(handler, relay, path: str) -> bool:
     if path == "/console":
         handler._send(200, CONSOLE_PAGE, "text/html; charset=utf-8", CONSOLE_HEADERS)
         return True
-    if path == "/console-classic":
-        handler._send(200, CLASSIC_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
-        return True
-    if path == "/console/":
-        handler._send(302, b"", "text/plain", {"Location": "/tv/console"})
+    if path in LEGACY_REDIRECTS:
+        handler._send(302, b"", "text/plain", {"Location": LEGACY_REDIRECTS[path]})
         return True
     if path == "/login" or _LOGIN_LINK.match(path):
         handler._send(200, LOGIN_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)

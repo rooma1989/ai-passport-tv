@@ -134,7 +134,8 @@ docker compose logs tv        # 在这里找「设置码」
 
 ## 第三步：添加频道（你自己的）
 
-服务器不带任何频道。管理员在电脑上打开 `http://<地址>:8080/tv/admin` → **频道表**：
+服务器不带任何频道。管理员在电脑上打开电脑版 `http://<地址>:8080/tv/console` → **管理**（顶栏的盾牌图标）→ **频道表**
+（`/tv/console#/admin/channels`）：
 
 - **一键添加央视、卫视**：在「导入播放列表」里选一个公开播放列表（iptv-org 中国或中文、vbskycn/iptv、myIPTV、Guovin iptv-api、APTV），
   点「读取」（GitHub 慢的时候点上游提供的加速按钮，例如 gh-proxy）。列表出来后点**央视**或**卫视**，再点「全选」、
@@ -182,7 +183,7 @@ docker compose logs tv        # 在这里找「设置码」
      Docker 镜像构建时已经带了最新发布的固件，数据文件夹的 `firmware/` 里有的话优先用它。
    - 服务器在 NAS 上、或小电视插在另一台电脑上：把 `xiaozhi-tv-flasher.zip` 解压后放到任何 **https** 网站的 `/flash/` 下
      （项目网站上的刷机页由阶段 S4 发布，地址公布后写在这里），在插着小电视的电脑上打开。
-   - 总后台「设备」页会标出可以更新固件的小电视，并链到 `/flash/`。
+   - 电脑版「管理 → 设备」会标出可以更新固件的小电视，并链到 `/flash/`。
 2. **配网（声波）**：小电视开机进入配网页后，用手机打开 `http://<地址>:8080/tv/wifi`（设置完成页上也有链接），填 Wi-Fi 名称和
    密码，服务器地址会自动填成上面横幅里的地址（不用写端口），点「发送」，把手机靠近小电视。
    **热点配网**（备用）：手机连上小电视的热点，打开 `192.168.4.1`，填 Wi-Fi 和服务器地址。
@@ -242,7 +243,7 @@ Docker 里的 `127.0.0.1` 是容器自己：代理要写主机的局域网地址
 | --- | --- | --- |
 | `[server] lan_port` | 8080 | 网页端口 |
 | `[server] device_address` | 空 | 小电视连的地址；空 = 第一次设置时记下浏览器用的地址 |
-| `[server] public_port` | 0 | 给隧道（Cloudflare Tunnel、Tailscale serve）用的端口，例如 8081；隧道端口上没有总后台、设置页和密钥登录 |
+| `[server] public_port` | 0 | 给隧道（Cloudflare Tunnel、Tailscale serve）用的端口，例如 8081；隧道端口上没有「管理」（总后台）、设置页和密钥登录 |
 | `[devices] allow_internet` | false | 允许公网地址的设备连进来（只在端口转发时需要） |
 | `[accounts] signup_via_device` | "lan" | 扫未绑定小电视的码自己注册：只在家里网络 / 隧道也行 / 不允许 |
 | `[youtube] mode`、`proxy` | "off"、空 | YouTube：关闭 / `local`（这台机器经 `proxy` 取）/ `node`（自己的节点）；电脑版「设置 → YouTube」会改这两行并且不用重启就生效 |

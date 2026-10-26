@@ -38,7 +38,7 @@ AGENT_MAX = 120
 LINE_MAX = 512               # live.MAX_CHANNEL_LINE_BYTES
 BACKUP_KEEP = 30
 CHECK_TIMEOUT_S = 30
-HEADER = ("# 由总后台生成（/tv/admin 的「频道表」）。每行： id | 显示名 | 地址 | User-Agent（可选）\n"
+HEADER = ("# 由电脑版「管理 → 频道表」生成（/tv/console#/admin/channels）。每行： id | 显示名 | 地址 | User-Agent（可选）\n"
           "# 顺序就是设备上换台的顺序。id 不要改：用户的分组和设备记住的台都按 id 记。\n"
           "# 手动编辑同样有效；电视服务在每个新会话开始时发现文件变了就重读，不用重启。\n\n")
 _NEW_ID = re.compile(r"^ch(\d{3,6})$")
