@@ -16,7 +16,12 @@
   用不带 4K 的那个（CCTV4K、CCTV8K 是单独的台，不这样退）。几个来源都有的台用排在前面的来源。
 
 给页面的：GET /api/epg?channels=ch000,ch001（web.py，和别的遥控接口一样要登录，访客也行）回答每个台的
-now / next（title、start、end，Unix 秒）。总后台：GET/POST /api/admin/epg（admin.py 转过来）。
+now / next（title、start、end，Unix 秒）。加上 from / to（Unix 秒）就是电脑版「节目表」要的一段时间：每个台
+再多一个 programmes（和这段时间有重叠的节目，按时间排）；时间段夹在内存里留的那一天里（现在前 1 小时到后
+24 小时），一次最多 RANGE_CHANNELS_MAX 个台、每台最多 RANGE_PER_CHANNEL_MAX 条（max 可以再少）。
+总后台：GET/POST /api/admin/epg（admin.py 转过来）。
+
+标题：央视的节目单在标题后面带一串「-2026-248」（年份和期数）或日期，页面上没用，读的时候去掉（tidy_title）。
 
 实测（2026-10，见 docs/selfhost/README.md「节目单」）：fanmingming 的 7 MB 文件读一遍约 1 秒 CPU，
 解析时多用十来 MB 内存，留下的 128 个台一天的节目不到 1 MB。
@@ -67,6 +72,10 @@ CHANNELS_SEEN_MAX = 20000
 DEFAULT_OFFSET_S = 8 * 3600
 # /api/epg 一次最多问这么多个台。
 QUERY_MAX = 200
+# 带 from / to 的（节目表）：台少一点、每台的条数有上限，一次的回答最多几百 KB。
+RANGE_CHANNELS_MAX = 60
+RANGE_PER_CHANNEL_MAX = 64
+RANGE_PER_CHANNEL_DEFAULT = 48
 USER_AGENT = "xiaozhi-tv-epg/1"
 _CHUNK = 64 * 1024
 
@@ -103,6 +112,16 @@ def parse_time(text) -> int | None:
     if time.gmtime(stamp)[:3] != (year, month, day):
         return None
     return stamp - offset
+
+
+_YEAR_ISSUE = re.compile(r"[-_ ]?(?:19|20)\d\d(?:-\d{1,2}-\d{1,2}|-\d{1,4})$")
+
+
+def tidy_title(title: str) -> str:
+    """「第一动画乐园-2026-248」→「第一动画乐园」（央视节目单的年份和期数，或者「-2026-10-26」这样的日期）；
+    别的原样。去掉后空了也原样。"""
+    shorter = _YEAR_ISSUE.sub("", title).rstrip(" -_")
+    return shorter or title
 
 
 # ---- 对台 ----
@@ -318,7 +337,7 @@ def _programme(elem, names, resolved, kept, order, matcher, start_s, end_s) -> N
     if stop is None and start < start_s - 12 * 3600:
         return          # 很早以前的、又没写结束时间：用不上
     if len(items) < PER_CHANNEL_MAX * 2:
-        items.append([start, stop, title[:TITLE_MAX]])
+        items.append([start, stop, tidy_title(title)[:TITLE_MAX]])
 
 
 def _finish(items: list[list], start_s: int, end_s: int) -> list[tuple]:
@@ -614,6 +633,18 @@ class Guide:
                 out[cid] = {"now": _shown(current), "next": _shown(upcoming)}
         return out
 
+    def programmes(self, cids, start_s: int, end_s: int, limit: int, now: float | None = None) -> dict[str, dict]:
+        """节目表：{台 id: {"now", "next", "programmes": [和 [start_s, end_s) 有重叠的节目，最多 limit 条]}}；
+        没有节目单的台不在里面。"""
+        now = self.clock() if now is None else now
+        with self._lock:
+            data = self._data
+        out = self.lookup(cids, now)
+        for cid in list(out):
+            shown = [_shown(item) for item in data.get(cid, ()) if item[1] > start_s and item[0] < end_s]
+            out[cid]["programmes"] = shown[:limit]
+        return out
+
     def status(self) -> dict:
         with self._lock:
             return {"sources": [dict(self._status.get(url, {"url": url})) for url in self.sources],
@@ -649,17 +680,46 @@ def attach(relay, folder: Path) -> Guide:
 _CID = re.compile(r"^[!-~]{1,15}$")
 
 
-def api(relay, channels: str | None) -> dict:
-    """GET /api/epg?channels=ch000,ch001：每个台现在和下一个节目。没开节目单时 enabled 为 False。"""
+def _int(text) -> int | None:
+    if not isinstance(text, str) or not re.fullmatch(r"-?\d{1,12}", text.strip()):
+        return None
+    return int(text)
+
+
+def api(relay, query) -> dict:
+    """GET /api/epg?channels=ch000,ch001：每个台现在和下一个节目。没开节目单时 enabled 为 False。
+
+    再加 from=&to=（Unix 秒，max= 每台最多几条）：节目表，每个台多一个 programmes。时间段夹在内存里留的那一天
+    （window：现在前 WINDOW_BEFORE_S 到后 WINDOW_AFTER_S）里，回答里的 range 是夹过的；看不懂的数是 ok: False。
+    query：查询参数的字典；旧的调用方式（只给 channels 字符串）也认。"""
+    if not isinstance(query, dict):
+        query = {"channels": query}
     guide = getattr(relay, "guide", None)
     if guide is None or not guide.enabled:
         return {"ok": True, "enabled": False, "channels": {}}
+    ranged = "from" in query or "to" in query
+    cap = RANGE_CHANNELS_MAX if ranged else QUERY_MAX
+    channels = query.get("channels")
     if channels:
-        wanted = [cid for cid in channels.split(",")[:QUERY_MAX] if _CID.match(cid)]
+        wanted = list(dict.fromkeys(cid for cid in channels.split(",")[:QUERY_MAX] if _CID.match(cid)))[:cap]
     else:
-        wanted = [cid for cid, _name in table_rows(relay.main_channels)][:QUERY_MAX]
+        wanted = [cid for cid, _name in table_rows(relay.main_channels)][:cap]
     now = relay.clock()
-    return {"ok": True, "enabled": True, "now": int(now), "channels": guide.lookup(wanted, now)}
+    answer = {"ok": True, "enabled": True, "now": int(now),
+              "window": {"before": WINDOW_BEFORE_S, "after": WINDOW_AFTER_S}}
+    if not ranged:
+        answer["channels"] = guide.lookup(wanted, now)
+        return answer
+    start, end = _int(query.get("from", str(int(now)))), _int(query.get("to", str(int(now) + 3600)))
+    limit = _int(query.get("max", str(RANGE_PER_CHANNEL_DEFAULT)))
+    if start is None or end is None or limit is None:
+        return {"ok": False, "error": "from / to / max 要是整数（Unix 秒）"}
+    start = max(start, int(now) - WINDOW_BEFORE_S)
+    end = min(end, int(now) + WINDOW_AFTER_S)
+    end = max(end, start)
+    limit = max(1, min(limit, RANGE_PER_CHANNEL_MAX))
+    answer.update(range={"from": start, "to": end}, max=limit, channels=guide.programmes(wanted, start, end, limit, now))
+    return answer
 
 
 def admin_view(relay) -> dict:

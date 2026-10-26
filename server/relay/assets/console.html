@@ -11,7 +11,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="stylesheet" href="console.css?v=__CONSOLE_CSS__">
 <title>小鼠电视</title>
-<!-- 媒体中心界面（docs/superpowers/specs/2026-10-24-media-center-ui-design.md，阶段 M0–M2）。
+<!-- 媒体中心界面（docs/superpowers/specs/2026-10-24-media-center-ui-design.md，阶段 M0–M3）。
      样式在 console.css，脚本在 console.js（console.py 给两者带上内容的散列当版本号）。
      原来的电脑版还在 /tv/console-classic（console-classic.html），这个测试版里留着备用。 -->
 </head>
@@ -42,14 +42,27 @@
       <!-- 首页：/api/home 拼出来的几排 -->
       <section class="page" data-route="home" aria-label="首页"><div id="homeBody"></div></section>
 
-      <!-- 直播：分组 + 频道卡片（节目指南网格是 M3） -->
+      <!-- 直播：分组，然后是频道卡片或节目表（M3：时间尺、现在线、节目块；手机上是每台的现在和接下来） -->
       <section class="page" data-route="live" aria-label="直播">
-        <header class="ph"><h1 class="lt">直播</h1><p class="hint" id="liveHint"></p></header>
+        <header class="ph"><h1 class="lt">直播</h1>
+          <div class="segc" id="liveSeg" role="group" aria-label="显示方式"><button data-lv="grid" data-k="lv-grid" aria-pressed="true">频道</button><button data-lv="guide" data-k="lv-guide" aria-pressed="false">节目表</button></div>
+          <p class="hint" id="liveHint"></p></header>
         <div class="chips" id="groups" role="group" aria-label="分组"></div>
-        <div class="wgrid" id="channels"></div>
-        <p class="hint"><span id="tapHint">点一下，在「播放到」选的地方播放。</span>
-          <button class="linkbtn noguest" id="adjust">调整分组</button></p>
+        <div id="liveGrid">
+          <div class="wgrid" id="channels"></div>
+          <p class="hint"><span id="tapHint">点一下，在「播放到」选的地方播放。</span>
+            <button class="linkbtn noguest" id="adjust">调整分组</button></p>
+        </div>
+        <div id="liveGuide" hidden>
+          <div class="gtools" id="guideTools">
+            <div class="segc" id="guideSpan" role="group" aria-label="往后看多久"><button data-span="3" data-k="gs-3" aria-pressed="false">后 3 小时</button><button data-span="6" data-k="gs-6" aria-pressed="true">后 6 小时</button><button data-span="12" data-k="gs-12" aria-pressed="false">后 12 小时</button></div>
+            <button class="btn sm" id="guideNow" data-k="gnow">回到现在</button>
+          </div>
+          <div id="guide" class="guide"></div>
+          <p class="hint" id="guideHint"></p>
+        </div>
       </section>
+      <div class="gpop" id="gpop" role="dialog" aria-labelledby="gpopT" hidden></div>
 
       <!-- 剧集与番剧 -->
       <section class="page" data-route="series" aria-label="剧集与番剧">

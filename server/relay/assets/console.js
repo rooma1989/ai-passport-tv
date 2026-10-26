@@ -101,6 +101,7 @@ const IC = {
   up: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/>',
   lib: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  guide: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 9v11M12 14h6M12 17h4"/>',
   remote: '<rect x="7" y="2" width="10" height="20" rx="4"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17h4"/>',
   set: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
   play: '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z" fill="currentColor" stroke="none"/>',
@@ -453,6 +454,7 @@ function showRoute() {
   if (was !== name) $("main").scrollTop = 0;
   updateTop();
   if (name === "home") { renderHome(); loadHome(); }
+  if (name === "live" && was !== name) loadEpg();
   if (name === "devices") loadDevices();
   if (name === "settings") { if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); if (me.role === "admin") loadInvites(); renderAbout(); }
   if (name !== "settings") biliCancel();
@@ -461,7 +463,7 @@ function showRoute() {
   if (name === "up" || name === "series") loadHome();
   if (data) render();
 }
-addEventListener("hashchange", () => { closeSheets(true); showRoute(); });
+addEventListener("hashchange", () => { closeSheets(true); closeGuidePop(false); showRoute(); });
 
 function tabOf(name) { return name; }
 function renderTop() {
@@ -536,13 +538,18 @@ function schedule(delay) {
       await refresh();
       ticks++;
       if (ticks % 3 === 0) loadTargets();
-      if (route === "home" && ticks % 6 === 0) loadHome(true);
+      if (route === "home" && (ticks % 6 === 0 || homeDue())) loadHome(true);
     }
     schedule(pending || listenPending ? 1000 : 5000);
   }, delay);
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("app").hidden) { refresh(); loadTargets(); } });
 
+// 首页「直播 · 正在播」里有节目到点了（正在播的结束了）：马上再问，不等半分钟。
+function homeDue() {
+  const now = Date.now() / 1000;
+  return !!homeData && Date.now() - homeAt > 15000 && (homeData.live_now || []).some((x) => x.live && x.live.end && x.live.end <= now);
+}
 async function loadHome(force) {
   if (!me) return;
   if (!force && homeData && Date.now() - homeAt < 20000) return;
@@ -566,27 +573,117 @@ async function loadTargets() {
 }
 
 // ---------- 节目单 ----------
-// 服务器打开了节目单（/api/state 的 epg，server/relay/epg.py）才问 /api/epg：每个直播台现在和下一个节目。
-let epg = {}, epgAt = 0;
-async function loadEpg() {
-  if (!data || !data.epg) { epg = {}; return; }
-  if (Date.now() - epgAt < 60000) return;
+// 服务器打开了节目单（/api/state 的 epg，server/relay/epg.py）才问 /api/epg。卡片、遥控屏幕、播放器标题用
+// now / next：只问看得见的那一组台和正在播的台，一分钟一次，某个台的节目到点换了就马上再问（不等一分钟）。
+// 直播 → 节目表另问一段时间（from / to，每台的节目列表），见下面的 loadGuide。
+
+// ---- 节目表的几个纯函数（tests/console_guide_test.mjs 截出这一段单独测）----
+// SPANS：节目表往后看几个小时（可选）；BEFORE_S：往前看多久（服务器只留前 1 小时）；PPM：每分钟几像素。
+const GUIDE = { BEFORE_S: 3600, SPANS: [3, 6, 12], SPAN: 6, STEP_S: 1800, PPM: 5, CHW: 210, ROWS: 120, CHUNK: 60, MAX: 64 };
+// 节目表的时间段：现在前 1 小时（往前取整到半点）到现在后 spanH 小时（往后取整到半点），夹在服务器留的那段
+// （/api/epg 回答的 window：{before, after} 秒）里。每过半点才变一次，所以不会每分钟重新问。
+function guideWindow(now, spanH, win) {
+  const before = Math.min(GUIDE.BEFORE_S, win && win.before >= 0 ? win.before : GUIDE.BEFORE_S);
+  const after = win && win.after > 0 ? win.after : 24 * 3600;
+  const from = Math.floor((now - before) / GUIDE.STEP_S) * GUIDE.STEP_S;
+  const to = Math.max(from + GUIDE.STEP_S, Math.min(Math.ceil((now + spanH * 3600) / GUIDE.STEP_S) * GUIDE.STEP_S, Math.floor(now + after)));
+  return { from, to };
+}
+// 时间尺上的刻度：每半点一个。
+function guideTicks(from, to, step) {
+  const out = [];
+  for (let t = Math.ceil(from / step) * step; t < to; t += step) out.push(t);
+  return out;
+}
+// 一个台的节目 → 网格里的块（像素）：left、width，state 是 past / now / future，正在播的有进度 pct（0–1）。
+// 只要和 [from, to) 有重叠的；两个节目时间重叠（节目单写错）时后一个从前一个结束处开始。
+function guideBlocks(list, from, to, now, ppm) {
+  const out = [];
+  let edge = from;
+  const sorted = (list || []).filter((p) => p && p.end > p.start).slice().sort((a, b) => a.start - b.start);
+  for (const p of sorted) {
+    const s = Math.max(p.start, from, edge), e = Math.min(p.end, to);
+    if (e <= s) continue;
+    edge = e;
+    const state = p.end <= now ? "past" : p.start > now ? "future" : "now";
+    out.push({ p, left: (s - from) / 60 * ppm, width: (e - s) / 60 * ppm, state,
+               pct: state === "now" ? (now - p.start) / (p.end - p.start) : 0 });
+  }
+  return out;
+}
+// 一串节目（节目表的一段，或者只是 [now, next]，可以有 null 和重复）里现在播的和下一个。
+function nowNext(list, now) {
+  const items = (list || []).filter((p) => p && p.end > p.start);
+  const cur = items.find((p) => p.start <= now && now < p.end) || null;
+  const after = cur ? cur.end : now;
+  let next = null;
+  for (const p of items) if (p.start >= after && (!next || p.start < next.start)) next = p;
+  return { now: cur, next };
+}
+// 缓存的 now / next 里有没有已经过了点的（正在播的结束了，或者下一个开始了）：有就该马上再问。
+function epgStale(map, ids, now) {
+  return ids.some((id) => {
+    const e = map[id];
+    if (!e) return false;
+    return (e.now && e.now.end <= now) || (!e.now && e.next && e.next.start <= now);
+  });
+}
+// 正在播的进度（0–1）。
+function progressOf(p, now) { return p && p.end > p.start ? Math.min(1, Math.max(0, (now - p.start) / (p.end - p.start))) : 0; }
+// 卡片第二行：「正在播：运动一起赢 · 20:00–21:00」。fmt 把 Unix 秒写成「时:分」。
+function epgText(p, fmt) { return p ? "正在播：" + p.title + " · " + fmt(p.start) + "–" + fmt(p.end) : ""; }
+// 横向滚动时，被左边切掉一截的节目块把标题挪到看得见的地方：返回块的左内边距（像素）。
+function pinPad(left, width, scrollX) { return Math.max(12, Math.min(scrollX - left + 12, width - 60)); }
+// ---- 节目表的纯函数到此 ----
+
+let epg = {}, epgAt = 0, epgAsked = new Set(), epgBusy = false, epgWin = null;
+// 要问的台：直播页这一组里的直播台，加上小电视和电脑上正在播的台（UP 主、剧集、投屏台没有节目单）。
+function epgIds() {
+  const ids = new Set();
+  if (route === "live") {
+    const g = data.groups.find((x) => x.name === group);
+    if (g) for (const c of g.channels) if (!isRelay(c.id)) ids.add(c.id);
+  }
+  for (const id of [data.now && data.now.channel, watching && watching.channel]) if (id && !isRelay(id)) ids.add(id);
+  return [...ids].slice(0, 200);
+}
+async function loadEpg(force) {
+  if (!data || !data.epg) { epg = {}; epgAsked = new Set(); guideData = null; return; }
+  const ids = epgIds();
+  if (!ids.length || epgBusy) return;
+  const since = Date.now() - epgAt;
+  const due = force || since >= 60000 || ids.some((id) => !epgAsked.has(id)) || (since >= 15000 && epgStale(epg, ids, Date.now() / 1000));
+  if (!due) return;
+  epgBusy = true;
+  let answer = null;
+  try { answer = await call("GET", "api/epg?channels=" + ids.map(encodeURIComponent).join(",")); } catch (error) { /* 下次再问 */ }
+  epgBusy = false;
+  if (!answer || !answer.ok) return;
   epgAt = Date.now();
-  try { epg = (await call("GET", "api/epg")).channels || {}; } catch (error) { return; }
-  if (data) { renderChannels(); renderWatchTitle(); }
+  if (answer.window) epgWin = answer.window;
+  for (const id of ids) {
+    epgAsked.add(id);
+    const e = (answer.channels || {})[id];
+    if (e) epg[id] = { now: e.now, next: e.next }; else delete epg[id];
+  }
+  epgChanged();
+}
+function epgChanged() {
+  if (!data) return;
+  renderChannels();
+  renderGuide();
+  renderWatchTitle();
+  renderScreen();
+  renderMini();
 }
 function epgNow(id) {
   const e = data && data.epg ? epg[id] : null;
-  const now = Date.now() / 1000;
-  const p = e && [e.now, e.next].find((x) => x && x.start <= now && now < x.end);
-  const n = e && [e.now, e.next].find((x) => x && x.start >= now);
-  return { now: p || null, next: n || null };
+  const g = guideData && guideData.channels[id];
+  if (!e && !g) return { now: null, next: null };
+  return nowNext((g || []).concat(e ? [e.now, e.next] : []), Date.now() / 1000);
 }
-// 「正在播：新闻联播 19:00–19:30」；没有节目单的台为空。
-function epgLine(id) {
-  const p = epgNow(id).now;
-  return p ? "正在播：" + p.title + " " + hm(p.start) + "–" + hm(p.end) : "";
-}
+// 「正在播：新闻联播 · 19:00–19:30」；没有节目单的台为空。
+function epgLine(id) { return epgText(epgNow(id).now, hm); }
 
 function render() {
   if (!data) return;
@@ -599,7 +696,7 @@ function render() {
   renderPets();
   renderWatch();
   renderMini();
-  if (route === "live") { renderGroups(); renderChannels(); renderLiveHint(); }
+  if (route === "live") renderLive();
   if (route === "series") renderSeriesGrid();
   renderSubs();
   renderHistory();
@@ -1129,7 +1226,7 @@ function renderMini2() {
     m.className = "";
     m.innerHTML = `<div class="mprog"><i id="miniBar" style="width:0%"></i></div>
       <button class="mart" data-mini-open aria-label="打开播放器">${art(watching.name || watching.title || "电脑", "w")}${watching.kind === "live" ? '<span class="badge live">直播</span>' : ""}</button>
-      <div class="mtx"><b>${esc(watching.title || watching.name || "在电脑上看")}</b><span><span class="dot"></span>这台电脑 · ${esc(watching.mode === "follow" ? "跟着" + deviceName() : watching.name || "窗口里播放")}</span></div>
+      <div class="mtx"><b>${esc(watchHeadline())}</b><span><span class="dot"></span>这台电脑 · ${esc(watching.mode === "follow" ? "跟着" + deviceName() : watching.name || "窗口里播放")}</span></div>
       <div class="mctl">${watching.mode === "direct" ? `<button class="iconbtn hidem" data-mk="pcprev" aria-label="上一台">${ic("prev", 18)}</button>` : ""}<button class="iconbtn big" data-mk="pcpp" aria-label="${paused ? "继续" : "暂停"}">${ic(paused ? "play" : "pause", 18)}</button>${watching.mode === "direct" ? `<button class="iconbtn hidem" data-mk="pcnext" aria-label="下一台">${ic("next", 18)}</button>` : ""}
       <button class="iconbtn" data-mk="pcclose" aria-label="关闭电脑上的播放器">${ic("x", 18)}</button></div>`;
     renderMiniProgress();
@@ -2211,11 +2308,25 @@ function stepChannel(delta) {
   startDirect({ channel: next.id }, { group: g.name });
 }
 
+// 播放器标题：直播台有节目单时是「CCTV5 · 运动一起赢」，下面一行是时间和接下来的节目。
+function watchEpg() {
+  const live = watching && watching.channel && !isRelay(watching.channel) && watching.kind !== "video";
+  return live ? epgNow(watching.channel) : { now: null, next: null };
+}
+function watchHeadline() {
+  if (!watching) return "";
+  const p = watchEpg().now;
+  return p ? (watching.name || watching.channel) + " · " + p.title : watching.title || watching.name || "在电脑上看";
+}
 function renderWatchTitle() {
   if (!watching) return;
-  const line = epgLine(watching.channel);
-  $("watchWhat").textContent = watching.title || watching.name || "在电脑上看";
-  $("watchSub").textContent = (watching.label || "") + (line ? " · " + line : "");
+  const e = watchEpg();
+  $("watchWhat").textContent = watchHeadline();
+  $("watchSub").textContent = e.now
+    ? [watching.mode === "direct" ? "这台电脑" : (watching.label || ""), hm(e.now.start) + "–" + hm(e.now.end),
+       e.next ? "接下来 " + hm(e.next.start) + " " + e.next.title : ""].filter(Boolean).join(" · ")
+    : (watching.label || "");
+  $("watchWhat").title = $("watchWhat").textContent;
 }
 
 function renderWatch() {
@@ -2258,63 +2369,132 @@ $("watchBig").onclick = () => {
   renderPc();
 };
 
-// ======================================================================= 直播：分组 + 频道卡片
+// ======================================================================= 直播：分组 + 频道卡片 / 节目表
 
+// 直播页上面的分段：频道（卡片）| 节目表（网格；手机上是每台的现在和接下来）。每个浏览器记住选的哪个。
+let liveView = lsGet("rootv.liveView", "grid") === "guide" ? "guide" : "grid";
+let guideSpan = GUIDE.SPANS.includes(Number(lsGet("rootv.guideSpan", ""))) ? Number(lsGet("rootv.guideSpan", "")) : GUIDE.SPAN;
+function setLiveView(view) {
+  liveView = view === "guide" ? "guide" : "grid";
+  lsSet("rootv.liveView", liveView);
+  guideScroll = null;       // 打开节目表时从「现在」开始看
+  closeGuidePop(true);
+  renderLive();
+}
+for (const b of qsa("#liveSeg [data-lv]")) b.onclick = () => setLiveView(b.dataset.lv);
+for (const b of qsa("#guideSpan [data-span]")) b.onclick = () => {
+  guideSpan = Number(b.dataset.span);
+  lsSet("rootv.guideSpan", String(guideSpan));
+  renderGuide(true);
+};
+$("guideNow").onclick = () => guideToNow(true);
+
+function renderLive() {
+  if (route !== "live" || !data) return;
+  renderGroups();
+  for (const b of qsa("#liveSeg [data-lv]")) b.setAttribute("aria-pressed", String(b.dataset.lv === liveView));
+  $("liveGrid").hidden = liveView !== "grid";
+  $("liveGuide").hidden = liveView !== "guide";
+  if (liveView === "grid") renderChannels(); else renderGuide();
+  renderLiveHint();
+}
 function renderLiveHint() {
   const to = currentTarget();
-  $("tapHint").textContent = !to ? "还没有小电视。" + (data.watch ? "" : "绑定以后点台就能换台。")
+  const tap = !to ? "还没有小电视。" + (data.watch ? "" : "绑定以后点台就能换台。")
     : to === PC ? "点一下，在这台电脑上看（不动小电视）。" : "点一下，「" + targetName(to) + "」就换到这个台。";
+  $("tapHint").textContent = tap;
   $("liveHint").textContent = data.epg ? "节目信息来自节目单（EPG）" : "";
+  $("guideHint").textContent = (liveView === "guide" && !isM() ? "方向键在节目之间移动，回车播放或看详情。" : "")
+    + "点台名或正在播的节目就播放：" + (to === PC ? "在这台电脑上看。" : to ? "「" + targetName(to) + "」换到这个台。" : "先绑定小电视。")
+    + (data.now.online && data.now.channel ? "左边有色条的是「" + deviceName() + "」正在播的台。" : "");
 }
+// 小电视没在播时，默认选第一个有直播台的组（不是只有一张投屏卡片的「我的投屏」）。
+function defaultGroup() {
+  const names = data.groups.map((g) => g.name);
+  if (data.now.group && names.includes(data.now.group) && data.now.online) return data.now.group;
+  const live = data.groups.find((g) => g.channels.some((c) => !isRelay(c.id)));
+  return (live || data.groups[0] || {}).name || "";
+}
+let groupsSig = "";
 function renderGroups() {
   const names = data.groups.map((g) => g.name);
-  if (!names.includes(group)) group = data.now.group && names.includes(data.now.group) ? data.now.group : names[0];
+  if (!names.includes(group)) group = defaultGroup();
   const box = $("groups");
+  const sig = JSON.stringify([group, data.groups.map((g) => [g.name, g.channels.length])]);
+  if (sig === groupsSig && box.childElementCount) return;
+  groupsSig = sig;
+  const fk = focusKey();
   box.replaceChildren();
   for (const g of data.groups) {
     const b = el("button", "", g.name);
     b.setAttribute("aria-pressed", String(g.name === group));
     b.appendChild(el("em", "", String(g.channels.length)));
     b.dataset.k = "grp-" + g.name;
-    b.onclick = () => { group = g.name; renderGroups(); renderChannels(); };
+    b.onclick = () => { group = g.name; closeGuidePop(true); renderLive(); loadEpg(); };
     box.appendChild(b);
   }
+  restoreFocus(fk);
 }
 const isRelay = (id) => /^(up|sr)\d\d$/.test(id) || id === "cast";
+// 点一个台：播到「播放到」选的地方（小电视在播的这个台、又是对着它，就打开遥控）。
+function playChannel(c) {
+  if (!c) return;
+  const air = !pending && c.id === data.now.channel && data.now.online;
+  if (air && currentTarget() === deviceId()) { openRemote(); return; }
+  play({ kind: isRelay(c.id) ? "channel" : "live", channel: c.id, title: c.name }, null, c.name);
+}
+function channelById(id) {
+  for (const g of data.groups) { const c = g.channels.find((x) => x.id === id); if (c) return c; }
+  return null;
+}
+const logoImg = (id) => `<img src="api/art/logo/${encodeURIComponent(id)}" alt="" loading="lazy" decoding="async">`;
+// 没有节目单时（UP 主、剧集、投屏台）在节目表里写的一句话。
+function relayLine(c, sites) {
+  if (c.id === "cast") return "投屏：手机或电脑投过来的视频";
+  if (/^up/.test(c.id)) return (sites[c.id] ? siteTag(sites[c.id]) + " · " : "") + "UP 主的视频，一个接一个播";
+  return (sites[c.id] ? siteTag(sites[c.id]) + " · " : "") + "剧集，按顺序接着上次播";
+}
+function relaySites() {
+  const sites = {};
+  for (const c of data.creators) sites[c.id] = c.site;
+  for (const s of data.series || []) sites[s.id] = s.site;
+  return sites;
+}
 let channelsSig = "";
 function renderChannels() {
-  if (route !== "live" || !data) return;
+  if (route !== "live" || liveView !== "grid" || !data) return;
   const grid = $("channels");
   const current = data.groups.find((g) => g.name === group);
+  const shown = current ? current.channels.map((c) => epgNow(c.id)) : [];
   const sig = JSON.stringify([group, current, data.now.channel, data.now.online, pending, watching && watching.channel, adjusting,
-                              Math.floor(Date.now() / 60000), Object.keys(epg).length, deviceId()]);
+                              Math.floor(Date.now() / 60000), shown, deviceId()]);
   if (sig === channelsSig && grid.childElementCount) return;
   channelsSig = sig;
   const fk = focusKey();
   grid.replaceChildren();
   if (!current) return;
-  const sites = {};
-  for (const c of data.creators) sites[c.id] = c.site;
-  for (const s of data.series || []) sites[s.id] = s.site;
+  const sites = relaySites();
   const movable = !["我的投屏", "UP 主"].includes(group);
-  for (const c of current.channels) {
+  const nowS = Date.now() / 1000;
+  current.channels.forEach((c, i) => {
     const air = !pending && c.id === data.now.channel && data.now.online;
     const going = pending && pending.kind === "switch" && c.id === pending.channel;
     const pc = watching && watching.mode === "direct" && watching.channel === c.id;
     const card = el("button", "card" + (air ? " air" : "") + (going ? " going" : "") + (pc ? " pcair" : ""));
     card.dataset.k = "ch-" + c.id;
-    const e = epgNow(c.id);
+    const e = shown[i];
     const relay = isRelay(c.id);
-    const badge = relay ? (c.id === "cast" ? "投屏" : sites[c.id] ? siteTag(sites[c.id]) : "") : "直播";
-    const logo = relay ? "" : `<span class="logo-big">${badgeSVG(c.name)}<img src="api/art/logo/${encodeURIComponent(c.id)}" alt="" loading="lazy" style="position:absolute;inset:0;margin:auto"></span>`;
-    let pct = 0;
-    if (e.now) pct = (Date.now() / 1000 - e.now.start) / (e.now.end - e.now.start);
-    card.innerHTML = `<span class="art">${art(c.name, "w", { title: relay ? c.name : "" })}${logo}${badge ? `<span class="badge ${relay ? "" : "live"}">${esc(badge)}</span>` : ""}`
-      + `<span class="badge r">${pad(c.n)}</span>${pct > 0 ? `<span class="pbar"><i style="width:${(Math.min(1, pct) * 100).toFixed(1)}%"></i></span>` : ""}</span>`
-      + `<span class="t">${esc(e.now ? e.now.title : c.name)}</span>`
-      + `<span class="s">${esc(going ? "切换中…" : pc ? "电脑上在放" : air ? (deviceName() + "在播 · " + c.name) : e.now ? c.name + " · " + hm(e.now.start) + "–" + hm(e.now.end) : c.name)}</span>`
-      + (e.next ? `<span class="s2">接下来 ${hm(e.next.start)} ${esc(e.next.title)}</span>` : "");
-    card.setAttribute("aria-label", "播放 " + c.name + (e.now ? "，正在播 " + e.now.title : ""));
+    const badge = air ? deviceName() + "在播" : pc ? "电脑上在放" : relay ? (c.id === "cast" ? "投屏" : sites[c.id] ? siteTag(sites[c.id]) : "") : "直播";
+    const logo = relay ? "" : `<span class="logo-big">${badgeSVG(c.name)}${logoImg(c.id)}</span>`;
+    const pct = progressOf(e.now, nowS);
+    const line = going ? "切换中…" : e.now ? epgText(e.now, hm) : relay ? relayLine(c, sites) : "";
+    card.innerHTML = `<span class="art">${art(c.name, "w", { title: relay ? c.name : "" })}${logo}${badge ? `<span class="badge ${relay && !air && !pc ? "" : "live"}">${esc(badge)}</span>` : ""}`
+      + `<span class="badge r">${pad(c.n)}</span>${e.now ? `<span class="pbar"><i style="width:${(pct * 100).toFixed(1)}%"></i></span>` : ""}</span>`
+      + `<span class="t">${esc(c.name)}</span>`
+      + (e.now && !going ? `<span class="s onair"><span class="et">正在播：${esc(e.now.title)}</span><span class="tm">&nbsp;· ${hm(e.now.start)}–${hm(e.now.end)}</span></span>`
+        : `<span class="s">${esc(line) || "&nbsp;"}</span>`)
+      + `<span class="s2">${e.next ? "接下来 " + hm(e.next.start) + " " + esc(e.next.title) : "&nbsp;"}</span>`;
+    card.setAttribute("aria-label", "播放 " + c.name + (e.now ? "，正在播 " + e.now.title + "，" + hm(e.now.start) + " 到 " + hm(e.now.end) : ""));
     if (adjusting && movable) {
       const select = el("select", "field");
       select.style.marginTop = "8px";
@@ -2336,17 +2516,13 @@ function renderChannels() {
       wrap.append(card, select);
       card.onclick = null;
       grid.appendChild(wrap);
-      continue;
+      return;
     }
     // 这台电脑上正在看直播、点台也是在电脑上放：鼠标停在直播台上就先转起来（预热）。
     if (!relay) warmOnHover(card, () => (currentTarget() === PC ? c.id : null));
-    card.onclick = () => {
-      if (going) return;
-      if (air && currentTarget() === deviceId()) { openRemote(); return; }
-      play({ kind: relay ? "channel" : "live", channel: c.id, title: c.name }, null, c.name);
-    };
+    card.onclick = () => { if (!going) playChannel(c); };
     grid.appendChild(card);
-  }
+  });
   restoreFocus(fk);
 }
 $("adjust").onclick = () => {
@@ -2355,6 +2531,202 @@ $("adjust").onclick = () => {
   $("adjust").classList.toggle("on", adjusting);
   if (data) renderChannels();
 };
+
+// ---------- 节目表：行是这一组的台，横着是时间（现在前 1 小时到后几个小时），竖线是现在 ----------
+let guideData = null;     // {key, at, from, to, channels: {台 id: [节目…]}}
+let guideBusy = "";
+// 节目表要的台：这一组的台（直播台问节目单；UP 主、剧集、投屏台也列出来，写一句它播什么）。
+function guideChannels() {
+  const g = data.groups.find((x) => x.name === group);
+  return g ? g.channels.slice(0, GUIDE.ROWS) : [];
+}
+async function loadGuide(force) {
+  if (route !== "live" || liveView !== "guide" || !data || !data.epg) return;
+  const ids = guideChannels().map((c) => c.id).filter((id) => !isRelay(id));
+  const w = guideWindow(Date.now() / 1000, guideSpan, epgWin);
+  const key = [group, w.from, w.to, ids.join(",")].join("|");
+  if (!ids.length || guideBusy === key) return;
+  if (!force && guideData && guideData.key === key && Date.now() - guideData.at < 300000) return;
+  guideBusy = key;
+  const chunks = [];
+  for (let i = 0; i < ids.length; i += GUIDE.CHUNK) chunks.push(ids.slice(i, i + GUIDE.CHUNK));
+  let answers;
+  try {
+    answers = await Promise.all(chunks.map((c) => call("GET", "api/epg?channels=" + c.map(encodeURIComponent).join(",")
+      + "&from=" + w.from + "&to=" + w.to + "&max=" + GUIDE.MAX)));
+  } catch (error) { guideBusy = ""; if (error instanceof SignedOut) signedOut(); return; }
+  guideBusy = "";
+  if (answers.some((a) => !a || !a.ok)) return;
+  const channels = {};
+  for (const a of answers) {
+    if (a.window) epgWin = a.window;
+    for (const [id, e] of Object.entries(a.channels || {})) {
+      channels[id] = e.programmes || [];
+      epg[id] = { now: e.now, next: e.next };
+    }
+  }
+  for (const id of ids) { epgAsked.add(id); if (!channels[id]) delete epg[id]; }
+  guideData = { key, at: Date.now(), from: w.from, to: w.to, channels };
+  renderGuide(true);
+}
+function dayLabel(at) {
+  const d = new Date(at * 1000), t = new Date();
+  const same = (x, y) => x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+  const tomorrow = new Date(t.getFullYear(), t.getMonth(), t.getDate() + 1);
+  const word = same(d, t) ? "今天" : same(d, tomorrow) ? "明天" : "";
+  return (word ? word + " · " : "") + (d.getMonth() + 1) + "月" + d.getDate() + "日 周" + "日一二三四五六"[d.getDay()];
+}
+let guideSig = "", guideScroll = null;
+function renderGuide(force) {
+  if (route !== "live" || liveView !== "guide" || !data) return;
+  const box = $("guide");
+  $("guideTools").hidden = !data.epg;
+  if (!data.epg) {
+    guideSig = "";
+    box.innerHTML = `<div class="empty"><div class="eic">${ic("guide", 40)}</div><b>还没有节目单</b><p>${me && me.role === "admin"
+      ? "在总后台的「频道表 → 节目单」里打开一个来源（网上公开的节目单，或者自己填的地址），这里就有每个台现在和接下来播什么。"
+      : "请管理员在总后台的「频道表 → 节目单」里打开节目单。没有节目单时，直播台照样能看。"}</p>${me && me.role === "admin" ? `<a class="btn sm" href="admin">打开总后台</a>` : ""}</div>`;
+    return;
+  }
+  const nowS = Date.now() / 1000;
+  const m = isM();
+  const chans = guideChannels();
+  const w = guideWindow(nowS, guideSpan, epgWin);
+  const have = guideData && guideData.from === w.from && guideData.to === w.to && guideData.key.startsWith(group + "|") ? guideData : null;
+  for (const b of qsa("#guideSpan [data-span]")) b.setAttribute("aria-pressed", String(Number(b.dataset.span) === guideSpan));
+  const sig = JSON.stringify([group, m, w, have && have.at, Math.floor(nowS / 60), data.now.channel, data.now.online,
+                              watching && watching.channel, pending && pending.channel, chans.map((c) => [c.id, c.name, epgNow(c.id)])]);
+  // 详情弹着时不重画（它指着的那个节目块会没了）；关掉以后下一次刷新再画。
+  if (box.childElementCount && (!$("gpop").hidden || (!force && sig === guideSig))) { loadGuide(); return; }
+  guideSig = sig;
+  const fk = focusKey();
+  const sc = qs(".gscroll", box);
+  const keep = sc ? { x: sc.scrollLeft, y: sc.scrollTop } : null;
+  const sites = relaySites();
+  const listOf = (c) => (have && have.channels[c.id]) || (() => { const e = epg[c.id]; return e ? [e.now, e.next].filter(Boolean) : []; })();
+  const onTv = data.now.online ? data.now.channel : "";
+  if (!chans.length) box.innerHTML = `<div class="empty"><p>这一组没有台。</p></div>`;
+  else if (m) box.innerHTML = guideListHTML(chans, listOf, nowS, sites, onTv);
+  else box.innerHTML = guideGridHTML(chans, listOf, w, nowS, sites, onTv, !have);
+  const sc2 = qs(".gscroll", box);
+  if (sc2) {
+    // 同一组重画：停在原来看的时间（半点一过时间段往后挪了，滚动位置跟着挪）；换了组、第一次画：回到现在。
+    if (keep && guideScroll && guideScroll.group === group) {
+      sc2.scrollLeft = keep.x - (w.from - guideScroll.from) / 60 * GUIDE.PPM;
+      sc2.scrollTop = keep.y;
+    } else guideToNow(false);
+    guideScroll = { group, from: w.from };
+    pinGuide();
+    sc2.addEventListener("scroll", () => requestAnimationFrame(pinGuide), { passive: true });
+  }
+  restoreFocus(fk);
+  loadGuide();
+}
+function guideGridHTML(chans, listOf, w, nowS, sites, onTv, loading) {
+  const ppm = GUIDE.PPM, W = (w.to - w.from) / 60 * ppm;
+  const ticks = guideTicks(w.from, w.to, GUIDE.STEP_S).map((t) => {
+    const label = hm(t) === "00:00" ? dayLabel(t).replace(/^.* · /, "").replace(/ 周.$/, "") : hm(t);
+    return `<span style="left:${((t - w.from) / 60 * ppm).toFixed(1)}px">${esc(label)}</span>`;
+  }).join("");
+  const rows = chans.map((c) => {
+    const relay = isRelay(c.id), list = relay ? [] : listOf(c);
+    const blocks = guideBlocks(list, w.from, w.to, nowS, ppm);
+    const cur = nowNext(list, nowS).now;
+    const head = `<button class="gch${c.id === onTv ? " cur" : ""}" data-gplay="${esc(c.id)}" data-k="gch-${esc(c.id)}" aria-label="播放 ${esc(c.name)}${cur ? "，正在播 " + esc(cur.title) : ""}">`
+      + `<span class="no">${pad(c.n)}</span><span class="lg">${relay ? avatarSVG(c.name, 34) : badgeSVG(c.name) + logoImg(c.id)}</span>`
+      + `<span class="nm">${esc(c.name)}${cur ? `<small>${esc(cur.title)}</small>` : ""}</span></button>`;
+    let cells;
+    if (blocks.length) {
+      cells = blocks.map((b) => `<button class="gp ${b.state}" style="left:${(b.left + 2).toFixed(1)}px;width:${Math.max(4, b.width - 4).toFixed(1)}px" data-gp="${esc(c.id)}:${b.p.start}" data-k="gp-${esc(c.id)}-${b.p.start}" data-left="${b.left.toFixed(1)}" data-w="${b.width.toFixed(1)}"`
+        + ` aria-label="${esc(c.name)} ${hm(b.p.start)} 到 ${hm(b.p.end)} ${esc(b.p.title)}${b.state === "now" ? "，正在播，回车播放" : b.state === "past" ? "，已经播完" : ""}">`
+        + `<b>${esc(b.p.title)}</b><small>${hm(b.p.start)}–${hm(b.p.end)}</small>${b.state === "now" ? `<span class="gpb" style="width:${(b.pct * 100).toFixed(1)}%"></span>` : ""}</button>`).join("");
+    } else {
+      const text = relay ? relayLine(c, sites) : loading && epgAsked.has(c.id) === false ? "正在读节目单…" : "没有节目信息 · 点这里看这个台";
+      cells = `<button class="gp none" style="left:2px;width:${(W - 4).toFixed(1)}px" data-gplay="${esc(c.id)}" data-k="gp-${esc(c.id)}-none" data-left="0" data-w="${W.toFixed(1)}" aria-label="播放 ${esc(c.name)}"><b>${esc(text)}</b></button>`;
+    }
+    return `<div class="grow"><div class="gcell">${head}</div><div class="gprogs" style="width:${W.toFixed(1)}px">${cells}</div></div>`;
+  }).join("");
+  const nowX = GUIDE.CHW + (nowS - w.from) / 60 * ppm;
+  return `<div class="gscroll" style="--chw:${GUIDE.CHW}px"><div class="ginner" style="width:${(GUIDE.CHW + W).toFixed(0)}px">`
+    + `<div class="gruler"><div class="gcorner">${esc(dayLabel(nowS))}</div><div class="gticks" style="width:${W.toFixed(0)}px">${ticks}`
+    + `<b class="gnowtag" style="left:${(nowX - GUIDE.CHW).toFixed(1)}px" aria-hidden="true">${hm(nowS)}</b></div></div>`
+    + rows + `<div class="gnow" style="left:${nowX.toFixed(1)}px" aria-hidden="true"></div></div></div>`;
+}
+// 手机：每个台一行，现在播的（进度）和接下来的；点一行就播这个台。
+function guideListHTML(chans, listOf, nowS, sites, onTv) {
+  return `<div class="glist">` + chans.map((c) => {
+    const relay = isRelay(c.id), nn = relay ? { now: null, next: null } : nowNext(listOf(c), nowS);
+    const p = nn.now, n = nn.next;
+    const body = p ? `<span class="gn">${esc(p.title)}</span><span class="gtm"><span>${hm(p.start)}–${hm(p.end)}</span><span class="trk"><i style="width:${(progressOf(p, nowS) * 100).toFixed(1)}%"></i></span></span>`
+      : `<span class="gn dim">${esc(relay ? relayLine(c, sites) : "没有节目信息")}</span>`;
+    return `<button class="gli${c.id === onTv ? " cur" : ""}" data-gplay="${esc(c.id)}" data-k="gli-${esc(c.id)}" aria-label="播放 ${esc(c.name)}${p ? "，正在播 " + esc(p.title) : ""}">`
+      + `<span class="lg">${relay ? avatarSVG(c.name, 40) : badgeSVG(c.name) + logoImg(c.id)}</span>`
+      + `<span class="gtx"><span class="gname"><span class="no">${pad(c.n)}</span>${esc(c.name)}${c.id === onTv ? `<em>${esc(deviceName())}在播</em>` : ""}</span>${body}`
+      + (n ? `<span class="gx">接下来 ${hm(n.start)} ${esc(n.title)}</span>` : "") + `</span></button>`;
+  }).join("") + `</div>`;
+}
+// 横向滚动：被左边切掉一截的节目把标题挪到看得见的地方。
+function pinGuide() {
+  const sc = qs("#guide .gscroll");
+  if (!sc) return;
+  const x = sc.scrollLeft;
+  for (const b of qsa(".gp", sc)) b.style.paddingLeft = pinPad(Number(b.dataset.left), Number(b.dataset.w), x) + "px";
+}
+// 「回到现在」：把现在那条线挪到左边台名旁边一点的地方。
+function guideToNow(smooth) {
+  const sc = qs("#guide .gscroll");
+  if (!sc) return;
+  const w = guideWindow(Date.now() / 1000, guideSpan, epgWin);
+  const x = Math.max(0, (Date.now() / 1000 - w.from) / 60 * GUIDE.PPM - 150);
+  sc.scrollTo({ left: x, behavior: smooth && !RM.matches ? "smooth" : "auto" });
+}
+// 点节目表：台名、正在播的节目 → 播；过去和以后的节目 → 弹出详情。
+$("guide").addEventListener("click", (event) => {
+  const t = event.target.closest("[data-gplay], [data-gp]");
+  if (!t || !data) return;
+  if (t.dataset.gplay) { playChannel(channelById(t.dataset.gplay)); return; }
+  const [id, start] = t.dataset.gp.split(":");
+  const c = channelById(id), list = (guideData && guideData.channels[id]) || [];
+  const e = epg[id] || {};
+  const p = list.concat([e.now, e.next]).find((x) => x && String(x.start) === start);
+  if (!c || !p) return;
+  const nowS = Date.now() / 1000;
+  if (p.start <= nowS && nowS < p.end) { playChannel(c); return; }
+  openGuidePop(t, c, p);
+});
+let popFrom = null;
+function openGuidePop(anchor, c, p) {
+  const pop = $("gpop"), nowS = Date.now() / 1000, cur = epgNow(c.id).now;
+  const past = p.end <= nowS, mins = Math.round((p.end - p.start) / 60), wait = Math.max(1, Math.round((p.start - nowS) / 60));
+  const waitText = wait >= 60 ? Math.floor(wait / 60) + " 小时" + (wait % 60 ? " " + (wait % 60) + " 分钟" : "") : wait + " 分钟";
+  pop.innerHTML = `<div class="gpc">${pad(c.n)} · ${esc(c.name)}</div><h4 id="gpopT">${esc(p.title)}</h4>`
+    + `<div class="gpt">${dayLabel(p.start).replace(/ 周.$/, "")} ${hm(p.start)}–${hm(p.end)} · ${mins} 分钟</div>`
+    + `<p>${past ? "已经播完，暂时不能回看。" : hm(p.start) + " 开始，还有 " + waitText + "。到时候再来点它，或者现在先看这个台正在播的。"}</p>`
+    + `<div class="actions"><button class="btn pri sm" data-popplay>${ic("play", 16)}看这个台现在播的${cur ? `<small>${esc(cur.title)}</small>` : ""}</button><button class="btn sm" data-popclose>关闭</button></div>`;
+  popFrom = anchor;
+  pop.hidden = false;
+  const r = anchor.getBoundingClientRect(), pw = Math.min(340, innerWidth - 24);
+  pop.style.width = pw + "px";
+  const ph = pop.offsetHeight, below = r.bottom + 8 + ph < innerHeight - 90;
+  pop.style.left = Math.max(12, Math.min(innerWidth - pw - 12, r.left + Math.min(r.width, 300) / 2 - pw / 2)) + "px";
+  pop.style.top = Math.max(12, below ? r.bottom + 8 : r.top - 8 - ph) + "px";
+  pop.querySelector("[data-popplay]").onclick = () => { closeGuidePop(true); playChannel(c); };
+  pop.querySelector("[data-popclose]").onclick = () => closeGuidePop(true);
+  pop.querySelector("[data-popplay]").focus({ preventScroll: true });
+}
+// back：把焦点还给打开它的那个节目块（Esc、关闭按钮）；点了别处、滚动了就不还。
+function closeGuidePop(back) {
+  const pop = $("gpop");
+  if (pop.hidden) return;
+  pop.hidden = true;
+  if (back && popFrom && document.contains(popFrom)) popFrom.focus({ preventScroll: true });
+  popFrom = null;
+}
+document.addEventListener("pointerdown", (event) => {
+  if (!$("gpop").hidden && !event.target.closest("#gpop, [data-gp]")) closeGuidePop(false);
+});
+// 用户滚动了（滚轮、触摸）：详情不跟着走，关掉。
+document.addEventListener("wheel", (event) => { if (!$("gpop").hidden && !event.target.closest("#gpop")) closeGuidePop(false); }, { passive: true });
 
 // ======================================================================= 选集（抽屉）
 
@@ -4172,6 +4544,7 @@ const FOC = 'a[href], button:not([disabled]), input:not([type=hidden]):not([disa
 const vis = (node) => node.offsetParent !== null || getComputedStyle(node).position === "fixed";
 function overlayRoot() {
   if (!$("modal").hidden) return $("modal");
+  if (!$("gpop").hidden) return $("gpop");
   for (const id of SHEETS) if (!$(id).hidden) return $(id);
   return null;
 }
@@ -4207,6 +4580,7 @@ document.addEventListener("keydown", (event) => {
   const tag = (event.target.tagName || "").toLowerCase(), typing = ["input", "select", "textarea"].includes(tag) && event.target.type !== "range" && event.target.type !== "checkbox" && event.target.type !== "radio";
   // Esc = 遥控器上的「返回」：关面板 → 退出输入框 → 焦点回到标签栏 → 回首页
   if (event.key === "Escape") {
+    if (!$("gpop").hidden) { event.preventDefault(); closeGuidePop(true); return; }
     if (anyOverlay()) { event.preventDefault(); if (wifiDev) closeWifi(); closeSheets(); return; }
     if (typing) { event.target.blur(); return; }
     if (!$("pcwin").hidden && $("pcwin").classList.contains("big")) { $("watchBig").click(); return; }
@@ -4222,7 +4596,7 @@ document.addEventListener("keydown", (event) => {
     setTimeout(() => $("bsQuery").focus(), 0);
     return;
   }
-  if (event.key === "Tab" && anyOverlay()) {   // 面板里 Tab 不跑出去
+  if (event.key === "Tab" && (anyOverlay() || !$("gpop").hidden)) {   // 面板里 Tab 不跑出去
     const f = qsa(FOC, overlayRoot()).filter(vis);
     if (!f.length) return;
     const i = f.indexOf(document.activeElement);
@@ -4245,7 +4619,7 @@ function spatial(key) {
   // 先在同一块里找（内容区、顶栏、播放器、播放条、底栏、面板各是一块），找不到再跨块：走到边上才进标签栏。
   const zone = (n) => n.closest("#view, #top, #pcwin, #mini, #tabs, .sheet, #modal"), z = zone(cur);
   // 同一排货架里左右移动只在这一排里找，排尾不会跳到别的排。
-  const row = h && cur.closest(".shelf, .chips, .rdevs, .seg, .petgrid");
+  const row = h && cur.closest(".shelf, .chips, .rdevs, .seg, .segc, .petgrid, .grow");
   return (row && pick2(qsa(FOC, row).filter(vis))) || (!row && pick2(all.filter((n) => zone(n) === z))) || (!row && pick2(all)) || false;
   function pick2(list) {
     let best = null, bs2 = Infinity;

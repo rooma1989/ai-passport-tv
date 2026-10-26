@@ -1,5 +1,7 @@
 """The programme guide (server/relay/epg.py): XMLTV parsing, channel matching,
-the download cache, the background refresh, and the APIs.
+the download cache, the background refresh, and the APIs (including the guide's
+time-range query: clamped to the kept window, capped per channel and in channels,
+same sign-in rule as the now/next query).
 
 Nothing here touches the network: downloads go through a fake opener. The guide
 is off by default; when it is on it keeps only the channels in the table and only
@@ -10,6 +12,8 @@ import email.message
 import gzip
 import io
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -167,6 +171,16 @@ class ParseTests(unittest.TestCase):
         result = self.parse(guide_xml(("CCTV1", "yesterday", stamp(600), "坏时间"), ("CCTV1", stamp(0), stamp(600), ""),
                                       ("CCTV1", stamp(600), stamp(0), "倒着的"), ("CCTV1", stamp(0), stamp(600), "好的")))
         self.assertEqual([p[2] for p in result["programmes"]["ch000"]], ["好的"])
+
+    def test_year_and_issue_suffix_is_dropped_from_titles(self):
+        self.assertEqual(epg.tidy_title("第一动画乐园-2026-248"), "第一动画乐园")
+        self.assertEqual(epg.tidy_title("远方的家2026-222"), "远方的家")
+        self.assertEqual(epg.tidy_title("精彩音乐汇-我的爱对你说-2026-420"), "精彩音乐汇-我的爱对你说")
+        self.assertEqual(epg.tidy_title("生活有道-2026-10-26"), "生活有道")
+        for kept in ("新大头儿子和小头爸爸3[128]", "巅峰赛场:2022LPL夏季赛(45)", "凤凰正点播报 0100", "2026-1"):
+            self.assertEqual(epg.tidy_title(kept), kept)
+        result = self.parse(guide_xml(("CCTV1", stamp(0), stamp(600), "今日说法-2026-188")))
+        self.assertEqual(result["programmes"]["ch000"][0][2], "今日说法")
 
     def test_size_limit_and_per_channel_cap(self):
         many = guide_xml(*[("CCTV1", stamp(n * 60), stamp(n * 60 + 60), f"第{n}条") for n in range(1000)])
@@ -489,6 +503,57 @@ class EpgApiTests(unittest.TestCase):
         self.assertTrue(self.call("admin", "POST", "/api/admin/epg", {"sources": []})[1]["ok"])
         self.assertFalse(self.call("alice", "GET", "/api/epg")[1]["enabled"])
 
+    def guide_on(self, *programmes):
+        self.guide.opener = lambda request, timeout: Answer(guide_xml(*programmes))
+        self.call("admin", "POST", "/api/admin/epg", {"sources": [presets.EPG_PRESETS[0]["url"]]})
+        self.guide.tick()
+
+    def test_range_query_for_the_guide(self):
+        hour = 3600
+        self.guide_on(*[("CCTV1", stamp(n * 1800), stamp((n + 1) * 1800), f"节目{n}") for n in range(-4, 60)],
+                      ("湖南卫视", stamp(-600), stamp(hour), "快乐大本营"))
+        status, answer = self.call("guest", "GET", f"/api/epg?channels=ch000,ch001,ch004&from={NOW - 3 * hour}"
+                                                   f"&to={NOW + 2 * hour}")
+        self.assertEqual(status, 200)
+        self.assertEqual(answer["range"], {"from": NOW - epg.WINDOW_BEFORE_S, "to": NOW + 2 * hour},
+                         "clamped to the hour before now that the server keeps")
+        self.assertEqual(answer["window"], {"before": epg.WINDOW_BEFORE_S, "after": epg.WINDOW_AFTER_S})
+        self.assertEqual(answer["max"], epg.RANGE_PER_CHANNEL_DEFAULT)
+        cctv1 = answer["channels"]["ch000"]
+        self.assertEqual([p["title"] for p in cctv1["programmes"]], [f"节目{n}" for n in range(-2, 4)])
+        self.assertEqual(cctv1["now"]["title"], "节目0")
+        self.assertEqual(cctv1["next"]["title"], "节目1")
+        self.assertEqual(answer["channels"]["ch001"]["programmes"],
+                         [{"title": "快乐大本营", "start": NOW - 600, "end": NOW + hour}])
+        self.assertNotIn("ch004", answer["channels"], "no guide for that channel")
+        # Far into the future: clamped to the day the server keeps; max caps each channel.
+        answer = self.call("alice", "GET", f"/api/epg?channels=ch000&from={NOW}&to={NOW + 99 * hour}&max=5")[1]
+        self.assertEqual(answer["range"]["to"], NOW + epg.WINDOW_AFTER_S)
+        self.assertEqual(len(answer["channels"]["ch000"]["programmes"]), 5)
+        answer = self.call("alice", "GET", f"/api/epg?channels=ch000&from={NOW}&to={NOW + 99 * hour}&max=9999")[1]
+        self.assertEqual(answer["max"], epg.RANGE_PER_CHANNEL_MAX)
+        self.assertEqual(len(answer["channels"]["ch000"]["programmes"]), 48, "the whole kept day, under the cap")
+        # An empty or inverted range: no programmes, now/next still there.
+        answer = self.call("alice", "GET", f"/api/epg?channels=ch000&from={NOW + 5 * hour}&to={NOW}")[1]
+        self.assertEqual(answer["range"]["from"], answer["range"]["to"])
+        self.assertEqual(answer["channels"]["ch000"]["programmes"], [])
+        self.assertEqual(answer["channels"]["ch000"]["now"]["title"], "节目0")
+        # Not numbers: refused, nothing else said.
+        for bad in ("from=abc&to=1", "from=1&to=1e9", "from=1&to=2&max=x", "from=-&to=2"):
+            self.assertEqual(self.call("alice", "GET", "/api/epg?channels=ch000&" + bad)[1],
+                             {"ok": False, "error": "from / to / max 要是整数（Unix 秒）"}, bad)
+        # At most RANGE_CHANNELS_MAX channels in one range query (the now/next query keeps its 200).
+        filler = [f"x{n:03d}" for n in range(epg.RANGE_CHANNELS_MAX)]
+        late = ",".join(filler + ["ch000"])
+        self.assertEqual(self.call("alice", "GET", f"/api/epg?channels={late}&from={NOW}&to={NOW + hour}")[1]["channels"], {})
+        self.assertIn("ch000", self.call("alice", "GET", f"/api/epg?channels={late}")[1]["channels"])
+        # Signed out: the same 404 as every other remote API.
+        self.assertEqual(self.call("nobody", "GET", f"/api/epg?channels=ch000&from={NOW}&to={NOW + hour}")[0], 404)
+
+    def test_range_query_when_the_guide_is_off(self):
+        self.assertEqual(self.call("alice", "GET", f"/api/epg?channels=ch000&from={NOW}&to={NOW + 3600}"),
+                         (200, {"ok": True, "enabled": False, "channels": {}}))
+
     def test_saving_the_table_keeps_tvg_ids_of_imported_rows(self):
         version = admin.channels(self.relay)["version"]
         caller = type("Caller", (), {"user": self.admin})()
@@ -505,6 +570,16 @@ class EpgApiTests(unittest.TestCase):
         self.assertEqual(channeltable.meta_of(self.main), {new_id: {"tvg_id": "CCTV13", "logo": "https://l/13.png"}})
         answer = admin.save_channels(self.relay, {"version": answer["version"], "rows": ["ch000"]}, caller)
         self.assertFalse(channeltable.meta_path(self.main).exists(), "deleted with its channel")
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class GuideLayoutJsTests(unittest.TestCase):
+    """The console's guide layout (time window, blocks, now/next, stale cache) as pure JS functions."""
+
+    def test_pure_functions(self):
+        result = subprocess.run(["node", str(ROOT / "tests" / "console_guide_test.mjs")], capture_output=True,
+                                text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

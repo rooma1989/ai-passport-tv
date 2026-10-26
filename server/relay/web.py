@@ -2651,7 +2651,7 @@ def _manage_handler(relay: Relay):
                 ytsearch.get(self, relay, caller, path)
             elif path == "/api/epg":
                 # 节目单（epg.py）：直播台现在和下一个节目；和频道列表一样，登录了的（访客也算）都能看。
-                self._json(epg.api(relay, self._query().get("channels")))
+                self._json(epg.api(relay, self._query()))
             elif path == "/api/home":
                 # 电脑版首页的几排（home.py）：按调用者，访客只有直播。
                 self._json(home.home(relay, caller))

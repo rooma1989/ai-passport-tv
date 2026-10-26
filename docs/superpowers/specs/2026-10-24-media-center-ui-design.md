@@ -5,7 +5,8 @@
 # Home media center UI — design
 
 Status: **design accepted 2026-10-24; phases M0, M1 and M2 implemented on branch `rootv-ui` for
-v0.3.0-beta (2026-10-25)**, see section 16 for what was built and where it differs. First version on
+v0.3.0-beta (2026-10-25); the M3 programme guide on branch `rootv-live` (2026-10-26, Lineup still
+open)**, see section 16 for what was built and where it differs. First version on
 branch `media-center-design` (based on `v0.2.4-beta`); the owner accepted every
 recommendation in section 13. **Revised the same day** on branch
 `media-center-appletv` (based on main `136571d`): a visual language closer to a
@@ -410,7 +411,7 @@ time. Each phase ships on its own; the console keeps working between phases.
 | M0 Shell (**done**, `rootv-ui`) | Shared tokens (dark, light prepared) and components (cards with focus lift and tilt, shelves, materials, sheets, chips, floating now-playing bar, spatial focus engine with row scrolling and focus restore) as one CSS/JS asset; top tab bar and routes in `console.html`; today's pages mounted under the new entries unchanged | 3 |
 | M1 Play to and remote (**done**, `rootv-ui`) | `/api/targets`, `POST /api/play` dispatcher, the picker, the remote panel (moving today's dials, pets and pad), `POST /api/sleep`, remembered target | 3.5 |
 | M2 Home (**done**, `rootv-ui`) | `/api/home` aggregator, Home rows, YouTube thumbnails in the proxy, cached M3U logos | 3 |
-| M3 Live and lineup | Guide grid (needs `desktop-epg`), selected-programme header, Lineup as the second segment of Live (moves "adjust groups", presets, size budget) | 3 |
+| M3 Live and lineup (guide **done**, `rootv-live`; selected-programme header and Lineup open) | Guide grid (needs `desktop-epg`), selected-programme header, Lineup as the second segment of Live (moves "adjust groups", presets, size budget) | 3 |
 | M4 Series, creators, detail, progress | Poster grid, creator page, detail pages, `/api/progress`, continue-watching rules (Q4) | 4 |
 | M5 Search | Aggregated search, paste-a-link result, add/subscribe from results | 2 |
 | M6 Phone | `remote.html` rebuilt on the same shell with bottom tabs (or one responsive page, Q1); guest view | 3 |
@@ -580,7 +581,7 @@ sizes are produced from icon B by `python3 tools/make_icons.py` (phase R).
 | Website | `packaging/site/` with the download page | name, icon, download file names |
 | Tiny TV boot text | product name on the firmware's boot screen and settings page | firmware change, assessed separately; not in phase R's estimate |
 
-## 16. Implementation status (M0 to M2)
+## 16. Implementation status (M0 to M3)
 
 Built on branch `rootv-ui` (2026-10-25) for v0.3.0-beta. The console at `/tv/console` is now three
 static files in `server/relay/assets/`: `console.html` (markup), `console.css` (tokens, materials,
@@ -669,6 +670,30 @@ from Settings (the "classic console" row), and links back.
   once. A signed-in Bilibili account gets a 720P (VOD, default) / 1080P (HLS) menu, remembered per browser.
   Live channels, YouTube (the node only gives a real-time MPEG-TS stream, no ranged file), multi-segment,
   FLV and HEVC files, the classic console and TVs stay on HLS / the relay streams.
+- **M3 Live (guide)**, branch `rootv-live` (2026-10-26): the Live page has a **Channels | Guide** segment
+  (remembered per browser, `rootv.liveView`). Channel tiles read the channel name, then "Now: <title> ·
+  HH:MM–HH:MM" with a progress bar and "next"; the console asks `/api/epg?channels=` only for the visible
+  group plus the channels the TV and this computer are playing, once a minute and again as soon as a cached
+  programme has ended. The guide grid follows section 6 (210 px channel column with number, logo and name,
+  5 px per minute, sticky ruler and channel column, a now-line with the time in the ruler, past programmes at
+  half opacity, the current one with a progress line, titles pinned when a block is cut by the left edge). Its
+  range starts an hour before now (rounded to the half hour) and ends 3, 6 (default) or 12 hours ahead,
+  remembered as `rootv.guideSpan` and clamped to what the server keeps; it is fetched with
+  `/api/epg?channels=&from=&to=&max=` in batches of 60 channels and refetched when the half hour moves or after
+  5 minutes. Clicking a channel or the current programme plays it through Play to; a past or future programme
+  opens a popover (time, duration, "starts in N minutes" or "finished, catch-up not supported", "watch what this
+  channel shows now"). Creator, series and cast channels in a group get one full-width block saying what they
+  play; a channel without a guide gets "no programme information" (section 7). The focus engine treats a guide
+  row like a shelf (left and right stay in the row); Esc closes the popover and returns focus to the block. Below
+  700 px the guide is a list per channel with the current programme, its progress and the next one (no time
+  ruler). The player window and the now-playing bar read "CCTV5 · <programme>" with the time and next programme
+  underneath. Home's "Live now" row already used now/next from `/api/home` and now also refreshes at a programme
+  boundary. `GET /api/epg` gained `from`, `to` (Unix seconds) and `max`: each channel then carries
+  `programmes` overlapping the range, clamped to the kept window (reported as `window: {before, after}`), at most
+  60 channels and 64 programmes per channel; malformed numbers answer `ok: false`. Titles drop CCTV's trailing
+  "-2026-248" (year and issue) or "-2026-10-26" when the guide is read (`epg.tidy_title`). With the TV idle the
+  Live page opens on the first group that has live channels instead of the cast group. Not built: the
+  selected-programme header and the Lineup segment; "remind me" for future programmes.
 - **Not verified**: real playback on the PC in the new player window (the UI check used generated
   data and no network), Safari and Firefox, Windows, screen readers, a real touch device; for the PC
   player, real Bilibili multi-part videos, collections and bangumi, YouTube playlists and fullscreen.
