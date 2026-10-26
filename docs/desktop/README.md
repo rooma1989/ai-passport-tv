@@ -360,6 +360,27 @@ Changes apply without quitting: saving restarts only the parts that changed
 playlists (series) then work as on the cloud service. "Own node" is for a
 YouTube node you run yourself (`secrets/youtube-node.json`).
 
+### Searching YouTube
+
+Open **Search** (the magnifier tab, or press `/`) and switch the **Bilibili | YouTube**
+toggle at the top to **YouTube**; the page remembers the choice in this browser. Pick
+**Videos**, **Channels** or **Playlists**, type a few words and press Enter (it
+also searches after you stop typing for a moment). Each search runs yt-dlp
+through your proxy, so it takes a few seconds; the line under the box counts
+the seconds and gives up after 25 s. Results show the thumbnail, title,
+channel, length, views and roughly when it was uploaded:
+
+- **Play** sends the video to the TV you picked in "Play to", or to this computer.
+- **Subscribe to channel** makes the channel a TV channel; new videos queue up.
+- **Add as series** (playlists) plays the list in order and remembers the episode.
+
+Pasting a YouTube link into the same box plays it directly. The same search a
+second time within 10 minutes answers at once; only one YouTube search runs at
+a time (YouTube playback uses the same helper), so a second one is told to wait
+a few seconds. When the page says YouTube is not turned on, turn on local mode
+as above; when it asks for cookies, see step 5; when it says the YouTube node is
+busy, the helper is starting a video and the page retries by itself.
+
 ## Common problems
 
 - **Bilibili videos, creators or series never start (stuck on loading)**: open

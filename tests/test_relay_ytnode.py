@@ -61,6 +61,16 @@ CHANNEL_LISTING = {"_type": "playlist", "entries": [
      "channel_follower_count": None, "playlist_count": 120},
     {"_type": "url", "ie_key": "Youtube", "id": "n61ULEU7CO0", "title": "a video, not a channel"},
 ]}
+# Playlist search (the results page with the playlist filter), trimmed: thumbnails carry a query string.
+PLAYLIST_LISTING = {"_type": "playlist", "entries": [
+    {"_type": "url", "ie_key": "YoutubeTab", "id": "PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw",
+     "url": "https://www.youtube.com/playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw", "title": "灌篮高手  全集",
+     "thumbnails": [{"url": "https://i.ytimg.com/vi/n61ULEU7CO0/hqdefault.jpg?sqp=-oaymwEW&rs=AOn4"}]},
+    {"_type": "url", "ie_key": "YoutubeTab", "id": "PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw", "title": "again"},
+    {"_type": "url", "ie_key": "YoutubeTab", "id": "PLotherAAAAAAAAAAA", "title": "other", "channel": "Someone",
+     "playlist_count": 12, "thumbnails": [{"url": "https://evil.example/vi/n61ULEU7CO0/hqdefault.jpg"}]},
+    {"_type": "url", "ie_key": "Youtube", "id": "n61ULEU7CO0", "title": "a video, not a playlist"},
+]}
 
 
 class CommandTests(unittest.TestCase):
@@ -128,6 +138,25 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(ytnode.channel_summary(CHANNEL_LISTING, 10), {"channels": [
             {"id": "UCSJ4gkVC6NrvII8umztf0Ow", "name": "Lofi Girl", "fans": 15200000, "videos": 0},
             {"id": "UCOxqgCwgOqC2lMqC5PYz_Dg", "name": "lofi geek", "fans": 0, "videos": 120}]})
+
+    def test_console_search_args_and_summaries(self):
+        args = ytnode.search_args(TOOLS, "slam dunk", 7, "playlist")
+        self.assertEqual(args[-1], "https://www.youtube.com/results?search_query=slam+dunk&sp=EgIQAw%3D%3D")
+        self.assertEqual(args[args.index("--playlist-end") + 1], "7")
+        self.assertEqual(ytnode.playlist_search_summary(PLAYLIST_LISTING, 10), {"playlists": [
+            {"id": "PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw", "title": "灌篮高手 全集", "channel": "", "count": 0,
+             "thumb": "https://i.ytimg.com/vi/n61ULEU7CO0/hqdefault.jpg"},
+            {"id": "PLotherAAAAAAAAAAA", "title": "other", "channel": "Someone", "count": 12, "thumb": ""}]})
+        listing = {"entries": [dict(SEARCH_LISTING["entries"][1], view_count=51000000, timestamp=1600000000,
+                                    channel_id="UCSJ4gkVC6NrvII8umztf0Ow"),
+                               dict(SEARCH_LISTING["entries"][-1], channel_id="not-a-channel", view_count=None)]}
+        self.assertEqual(ytnode.search_summary(listing, 10, full=True)["videos"], [
+            {"id": "n61ULEU7CO0", "title": "Lofi Girl - 1 A.M Study Session", "duration": 3615, "uploader": "Lofi Girl",
+             "views": 51000000, "channel_id": "UCSJ4gkVC6NrvII8umztf0Ow", "date": 1600000000},
+            {"id": "4xDzrJKXOOY", "title": "synthwave radio", "duration": 1801, "uploader": "Lofi Girl",
+             "views": 0, "channel_id": "", "date": 0}])
+        self.assertEqual(ytnode.search_summary(listing, 10), ytnode._plain(ytnode.search_summary(listing, 10, full=True)))
+        self.assertIn("youtubetab:approximate_date", ytnode.search_args(TOOLS, "lofi", 5))
 
     def test_clean_query(self):
         self.assertEqual(ytnode.clean_query("  lofi   girl "), "lofi girl")
@@ -212,6 +241,25 @@ class NodeTests(unittest.TestCase):
         self.assertEqual([c["name"] for c in json.loads(answer.read())["channels"]], ["Lofi Girl", "lofi geek"])
         self.assertEqual(self.node.health["state"], "ok")
 
+    def test_console_search_full_and_playlists(self):
+        self.search_runs()
+        plain = json.loads(self.get("/yt/search?q=lofi&n=5").read())
+        self.assertEqual(set(plain["videos"][0]), {"id", "title", "duration", "uploader"},
+                         "without full=1 the answer is what the voice search always got")
+        full = json.loads(self.get("/yt/search?q=lofi&n=5&full=1").read())
+        self.assertEqual(set(full["videos"][0]), {"id", "title", "duration", "uploader", "views", "channel_id", "date"})
+        self.assertEqual(len(self.runs), 1, "one cached answer serves both")
+        node_run = self.node.run
+
+        def run(args):
+            if "sp=EgIQAw%3D%3D" in args[-1]:
+                self.runs.append(args)
+                return 0, json.dumps(PLAYLIST_LISTING), ""
+            return node_run(args)
+        self.node.run = run
+        answer = json.loads(self.get("/yt/search?q=slam&n=5&kind=playlist&full=1").read())
+        self.assertEqual([p["id"] for p in answer["playlists"]], ["PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw", "PLotherAAAAAAAAAAA"])
+
     def test_search_is_cached(self):
         self.search_runs()
         for _ in range(3):
@@ -236,7 +284,7 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(self.runs, [])
 
     def test_bad_search_never_reaches_yt_dlp(self):
-        for query in ("q=&n=5", "q=lofi&n=0", "q=lofi&n=21", "q=lofi&n=x", "q=lofi&n=5&kind=playlist",
+        for query in ("q=&n=5", "q=lofi&n=0", "q=lofi&n=21", "q=lofi&n=x", "q=lofi&n=5&kind=live",
                       "q=" + "x" * 81 + "&n=5", "n=5"):
             self.assertEqual(self.get(f"/yt/search?{query}").status, 400, query)
         self.assertEqual(self.runs, [])

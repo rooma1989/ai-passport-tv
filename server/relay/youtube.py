@@ -35,6 +35,9 @@ MAX_ANSWER_BYTES = 1024 * 1024
 # 语音搜索：要几个结果，等节点多久。节点一次只跑一个 yt-dlp，正在解析别的视频时会回答 busy。
 SEARCH_MAX = 12
 SEARCH_TIMEOUT_S = 5.0
+# 电脑版的搜索页：一次要几个（节点最多给 20 个），等多久（本机的 yt-dlp 经代理要好几秒）。
+BROWSE_MAX = 20
+BROWSE_TIMEOUT_S = 25.0
 
 
 # 频道 id（UC 加 22 位）：语音搜到的频道按它订阅，地址是 /channel/<id>。
@@ -193,8 +196,11 @@ class YouTube:
             # 503 busy：节点正在跑别的 yt-dlp（搜索不排队等太久）；504：yt-dlp 超时。
             reason = ("busy" if error.status == 503 and "busy" in str(error)
                       else "slow" if error.status == 504 else "")
-            raise SourceError(f"youtube {path}: {error}", permanent=error.status == 404,
-                              reason=reason) from None
+            failure = SourceError(f"youtube {path}: {error}", permanent=error.status == 404, reason=reason)
+            # 节点回答的 HTTP 码（电脑版的搜索页据此分开说：要登录、组件没装好、节点不支持）；
+            # 连不上节点时没有这一项。
+            failure.status = error.status
+            raise failure from None
         except (OSError, ValueError) as error:
             raise SourceError(f"youtube {path}: {type(error).__name__}: {error}",
                               reason="slow" if timed_out(error) else "") from None
@@ -250,6 +256,12 @@ class YouTube:
                 hits.append({"id": c["id"], "name": name, "fans": _count(c.get("fans")),
                              "videos": _count(c.get("videos")), "latest": None})
         return hits[:limit]
+
+    def browse(self, query: str, kind: str = "video", limit: int = BROWSE_MAX,
+               timeout: float = BROWSE_TIMEOUT_S) -> dict:
+        """电脑版搜索页（ytsearch.py）：节点 /yt/search 的回答原样给出（{"videos"} / {"channels"} /
+        {"playlists"}），整理、过滤在 ytsearch.py。full=1 让节点多给播放数等；旧节点不认它，照常回答。"""
+        return self._call("/yt/search", _timeout=timeout, q=query, n=limit, kind=kind, full=1)
 
     def series_id(self, text: str) -> str | None:
         return parse_playlist_link(text)

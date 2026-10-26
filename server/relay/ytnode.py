@@ -6,9 +6,10 @@
     GET /yt/list?channel=<频道地址>   最新 20 个投稿
     GET /yt/playlist?list=<列表 id>   播放列表的全部视频（剧集用，按列表顺序）
     GET /yt/info?id=<视频 id>         标题、时长、所属频道
-    GET /yt/search?q=<关键词>&n=<个数>[&kind=channel]
+    GET /yt/search?q=<关键词>&n=<个数>[&kind=channel|playlist][&full=1]
                                       语音搜索：视频按 YouTube 的排序，去掉直播、预告和 Shorts；
-                                      kind=channel 搜频道（名字、订阅数）
+                                      kind=channel 搜频道（名字、订阅数），kind=playlist 搜播放列表；
+                                      full=1（电脑版的搜索页）视频多给播放数、频道 id、大约的上传时间
     GET /yt/stream?id=<视频 id>&ss=<秒> 压成小码流的 MPEG-TS，实时速度输出
 
 流用分块编码发送：正常播完发结束块，转码出错则不发直接断开，对端据此分辨。
@@ -68,9 +69,12 @@ SEARCH_EXTRA = 5
 SEARCH_CACHE_S = 10 * 60
 SEARCH_WAIT_S = 3
 QUERY_MAX = 80
-SEARCH_KINDS = ("video", "channel")
-# YouTube 搜索页只看频道的筛选参数（sp=EgIQAg==）。
+SEARCH_KINDS = ("video", "channel", "playlist")
+# YouTube 搜索页只看频道（sp=EgIQAg==）、只看播放列表（sp=EgIQAw==）的筛选参数。
 CHANNEL_FILTER = "EgIQAg%3D%3D"
+PLAYLIST_FILTER = "EgIQAw%3D%3D"
+# 搜索结果里视频的缩略图：去掉查询串后只认这种地址（中转的缩略图代理也只认它）。
+_THUMB = re.compile(r"^https://i\.ytimg\.com/vi/[A-Za-z0-9_-]{11}/(?:default|mqdefault|hqdefault|sddefault|maxresdefault)\.jpg$")
 _UCID = re.compile(r"^UC[0-9A-Za-z_-]{22}$")
 # 先要 360p 的 H.264+AAC 合体格式（18），没有再取 360p 以内的最好的。
 FORMAT = "18/b[height<=360]/bv*[height<=360]+ba/b"
@@ -353,13 +357,28 @@ def info_args(tools: Tools, video_id: str) -> list[str]:
 
 
 def search_args(tools: Tools, query: str, n: int, kind: str = "video") -> list[str]:
-    if kind == "channel":
-        # 搜索页加频道筛选；只取前 n 个（不然 yt-dlp 会一页页翻下去）。
+    if kind in ("channel", "playlist"):
+        # 搜索页加频道（播放列表）筛选；只取前 n 个（不然 yt-dlp 会一页页翻下去）。
         url = (f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
-               f"&sp={CHANNEL_FILTER}")
+               f"&sp={CHANNEL_FILTER if kind == 'channel' else PLAYLIST_FILTER}")
         return _base(tools) + ["--flat-playlist", "-J", "--playlist-end", str(n), "--", url]
     # 「ytsearchN:」是 yt-dlp 的搜索前缀；放在「--」之后，搜索词以「-」开头也不会被当成参数。
-    return _base(tools) + ["--flat-playlist", "-J", "--", f"ytsearch{n + SEARCH_EXTRA}:{query}"]
+    # approximate_date：把「3 年前」换算成大约的时刻（只是解析文字，不多访问 YouTube）。
+    return _base(tools) + ["--flat-playlist", "-J", "--extractor-args", "youtubetab:approximate_date",
+                           "--", f"ytsearch{n + SEARCH_EXTRA}:{query}"]
+
+
+def _int(value) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _thumb(entry: dict) -> str:
+    """平铺结果里的缩略图（最大的那张）→ 不带查询串的 i.ytimg.com 地址；没有就空串。"""
+    for t in reversed(entry.get("thumbnails") or []):
+        url = str(t.get("url") or "").split("?", 1)[0] if isinstance(t, dict) else ""
+        if _THUMB.match(url):
+            return url
+    return ""
 
 
 def channel_summary(listing: dict, n: int) -> dict:
@@ -381,9 +400,10 @@ def channel_summary(listing: dict, n: int) -> dict:
     return {"channels": channels[:n]}
 
 
-def search_summary(listing: dict, n: int) -> dict:
+def search_summary(listing: dict, n: int, full: bool = False) -> dict:
     """平铺的搜索结果 → 能投屏的视频：去掉直播中、预告、刚播完还在处理的直播、Shorts，
-    没有时长的（直播和预告都没有）。"""
+    没有时长的（直播和预告都没有）。full：多给 views（播放数）、channel_id、date（大约的上传时刻，秒），
+    没有的为 0 / 空串。"""
     videos = []
     for e in listing.get("entries") or []:
         if not isinstance(e, dict) or not _ID.match(str(e.get("id", ""))):
@@ -397,9 +417,42 @@ def search_summary(listing: dict, n: int) -> dict:
         title = e.get("title") or ""
         if duration <= 0 or not title or title in ("[Deleted video]", "[Private video]"):
             continue
-        videos.append({"id": e["id"], "title": title, "duration": duration,
-                       "uploader": e.get("channel") or e.get("uploader") or ""})
+        video = {"id": e["id"], "title": title, "duration": duration,
+                 "uploader": e.get("channel") or e.get("uploader") or ""}
+        if full:
+            cid = str(e.get("channel_id") or "")
+            video.update(views=_int(e.get("view_count")), channel_id=cid if _UCID.match(cid) else "",
+                         date=_int(e.get("timestamp")))
+        videos.append(video)
     return {"videos": videos[:n]}
+
+
+def playlist_search_summary(listing: dict, n: int) -> dict:
+    """播放列表搜索的平铺结果 → {"playlists": [{"id", "title", "channel", "count", "thumb"}]}。
+    视频数、频道名 yt-dlp 给不出时为 0 / 空串。"""
+    playlists, seen = [], set()
+    for e in listing.get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        pid = str(e.get("id") or "")
+        title = " ".join(str(e.get("title") or "").split())
+        if not _PLAYLIST.match(pid) or pid in seen or not title:
+            continue
+        seen.add(pid)
+        playlists.append({"id": pid, "title": title,
+                          "channel": " ".join(str(e.get("channel") or e.get("uploader") or "").split()),
+                          "count": _int(e.get("playlist_count")), "thumb": _thumb(e)})
+    return {"playlists": playlists[:n]}
+
+
+_FULL_ONLY = ("views", "channel_id", "date")
+
+
+def _plain(summary: dict) -> dict:
+    """完整的搜索回答 → 不带 full=1 时的回答（和以前一样，语音搜索用）。"""
+    if "videos" not in summary:
+        return summary
+    return {"videos": [{k: v for k, v in video.items() if k not in _FULL_ONLY} for video in summary["videos"]]}
 
 
 def info_summary(info: dict) -> dict:
@@ -580,12 +633,13 @@ class Node:
                 self._info[video_id] = (now, info)
         return code, info
 
-    def search(self, query: str, n: int, kind: str = "video") -> tuple[int, dict | str]:
+    def search(self, query: str, n: int, kind: str = "video", full: bool = False) -> tuple[int, dict | str]:
+        """缓存里存完整的回答（full），不要 full 时去掉多出来的几项。"""
         key = (kind, query.lower(), n)
         with self._info_lock:
             cached = self._searches.get(key)
             if cached and self.clock() - cached[0] < SEARCH_CACHE_S:
-                return 200, cached[1]
+                return 200, cached[1] if full else _plain(cached[1])
         tools = self.current_tools()
         if tools is None:
             return 503, "tools missing"
@@ -598,13 +652,15 @@ class Node:
             self._ytdlp.release()
         if code != 200:
             return code, data
-        summarise = channel_summary if kind == "channel" else search_summary
-        summary = summarise(data if isinstance(data, dict) else {}, n)
+        listing = data if isinstance(data, dict) else {}
+        summary = (channel_summary(listing, n) if kind == "channel"
+                   else playlist_search_summary(listing, n) if kind == "playlist"
+                   else search_summary(listing, n, full=True))
         now = self.clock()
         with self._info_lock:
             self._searches = {k: v for k, v in self._searches.items() if now - v[0] < SEARCH_CACHE_S}
             self._searches[key] = (now, summary)
-        return 200, summary
+        return 200, summary if full else _plain(summary)
 
     def key_ok(self, given: str | None) -> bool:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
@@ -703,7 +759,7 @@ def _handler(node: Node):
                         or kind not in SEARCH_KINDS:
                     self._json(400, "bad query")
                     return
-                code, data = node.search(text, int(n), kind)
+                code, data = node.search(text, int(n), kind, full=query.get("full") == "1")
                 self._json(code, data)
             elif parts.path == "/yt/stream":
                 self._stream(query)

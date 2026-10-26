@@ -29,7 +29,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import bililogin, ytsettings
+from . import bililogin, ytsearch, ytsettings
 from .bilibili import PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, \
     MemberOnly, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -231,6 +231,8 @@ class Relay:
         # 电脑版「订阅」页的 B 站搜索和封面缩略图（bilisearch.py）：缓存和次数限制。
         self.bili_search = bilisearch.BiliSearch(clock=monotonic, log=lambda message: self.log(message))
         self.bili_search.youtube_proxy = self.youtube_proxy
+        # 电脑版「搜索」页的 YouTube 搜索（ytsearch.py）：缓存、次数限制，同时只让一个搜索去节点。
+        self.yt_search = ytsearch.YtSearch(clock=monotonic, log=lambda message: self.log(message))
         # 每个用户自己的 B 站登录（bililogin.py）：只在自建 / 电脑客户端有，存在数据目录的 secrets/bilibili/。
         self.bili_accounts = (bililogin.BiliAccounts(Path(accounts.path).parent / "secrets" / "bilibili",
                                                      log=lambda message: self.log(message))
@@ -2518,6 +2520,9 @@ def _manage_handler(relay: Relay):
             elif path in bilisearch.PATHS:
                 # 电脑版「订阅」页的 B 站搜索和封面缩略图；和订阅接口一样要账号（访客 404）。
                 bilisearch.get(self, relay, caller, path)
+            elif path in ytsearch.PATHS:
+                # 电脑版「搜索」页的 YouTube 搜索；和 B 站搜索一样要账号（访客 404）。
+                ytsearch.get(self, relay, caller, path)
             elif path == "/api/epg":
                 # 节目单（epg.py）：直播台现在和下一个节目；和频道列表一样，登录了的（访客也算）都能看。
                 self._json(epg.api(relay, self._query().get("channels")))
