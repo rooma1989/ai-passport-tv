@@ -429,7 +429,7 @@ background.
   to start or dies soon after, the PC player and the TV move on to the next
   one by themselves ("CCTV2 line 1 failed, switching to line 2…") and try the
   line that worked last time first next time. When the player says every line
-  failed, open Admin → Channel table: "Check lines" (one channel) or
+  failed, open the console's Admin → Channels: "Check lines" (one channel) or
   "Check all lines" connects to each line's playlist and a few KB of one segment
   -- no decoding, light enough for the cloud relay -- and marks it ✓/✗ with the
   reason; reorder or remove lines, set another one as the primary, or import a

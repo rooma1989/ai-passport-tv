@@ -687,7 +687,10 @@ section, route `#/admin/<section>`, in its own pair of files `assets/console-adm
 icon in the desktop top bar between Devices and Settings, a "Household" group in Settings (family and
 invites, Admin), and a row in the phone's Me tab; non-admins never see it and are routed home, and
 the server still answers 404 to them on every `/api/admin/*` call. Sections are chips under the large
-title: Overview, Users, Devices, Channels, Audit log, System. It reuses the console's lists, panels,
+title: Overview, Users, Devices, Channels, Audit log, System. Channels carries the backup lines merged
+from `desktop-liveroutes` (`server/routes.py`): a Lines column with ✓/✗ counts and the check time, a
+line editor (set primary, reorder, delete, add, check one channel), "Check all lines" with stop, and
+"Merge as backup lines" / "Merge all duplicates as backup lines" in the import list. It reuses the console's lists, panels,
 chips, materials, sheets and modals and the spatial focus engine; tables (processes, sessions,
 channel table, import list) scroll sideways inside a rounded panel; the phone layout turns the stats
 into two columns and the section chips into a scrolling strip. The endpoints are unchanged; the
