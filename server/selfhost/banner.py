@@ -47,7 +47,7 @@ def lines(address: str, lan_port: int, code: str, device_address: str, in_contai
         elif in_container:
             out += [f"  （容器里看不到局域网地址：把「{THIS_COMPUTER}」换成运行 Docker 的电脑或 NAS 在家里网络中的 IP）"]
     else:
-        out += [f"  手机遥控：{base}/tv/    电脑版：{base}/tv/console    总后台：{base}/tv/admin"]
+        out += [f"  手机遥控：{base}/tv/    电脑版：{base}/tv/console    管理：{base}/tv/console#/admin"]
     # 本机回环地址（只在本机试用时）设备连不到，不给它看。
     shown = device_address or (address if address and not address.startswith("127.") else THIS_COMPUTER)
     out += [f"  小电视上的服务器地址填：{shown}（不用写端口）", ""]

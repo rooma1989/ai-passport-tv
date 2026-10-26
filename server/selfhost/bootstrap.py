@@ -24,7 +24,7 @@ from ..tenancy.gate import LEGACY_TOKEN_KEY
 
 DIRS = ("secrets", "devices", "backups", "exports", "run", "youtube", "firmware")
 SETUP_CODE_LENGTH = 10
-CHANNELS_HEADER = ("# 直播频道表：在总后台（/tv/admin）的「频道表」里添加或导入你自己的播放列表。\n"
+CHANNELS_HEADER = ("# 直播频道表：在电脑版的「管理 → 频道表」（/tv/console#/admin/channels）里添加或导入你自己的播放列表。\n"
                    "# 每行： id | 显示名 | 地址 | User-Agent（可选）\n")
 # 数据库里的标记：这是自建的服务器（SELFHOST_META，accounts.py：绑定码因此是 6 位数字）；
 # 上次启动时的表结构版本（变了就先备份，见 pre_upgrade_backup）。

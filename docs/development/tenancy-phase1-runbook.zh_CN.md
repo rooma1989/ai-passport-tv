@@ -270,7 +270,7 @@ database …`，然后 `voice: on, relay per device`），每次调中转都点�
 | 页面 | `Content-Security-Policy` 不允许任何外部来源，`frame-ancestors 'none'`，`X-Frame-Options: DENY`；二维码由中转自己画（`server/relay/qr.py`，移植自固件用的同一个库） |
 
 管理员的密钥链接仍是应急登录：在电脑上打开 `https://<site>/tv/?k=<密钥>`，再打开 `/tv/console`。
-电脑版的「邀请」页（只有管理员看得到）发的邀请链接和手机上的一样；完整的管理后台是 `/tv/admin`（阶段 3，见下）。
+电脑版的「管理」（只有管理员看得到，`/tv/console#/admin`）发的邀请链接和手机上的一样，完整的管理后台也在那里（阶段 3，见下）。
 
 电脑版里还没有：每个用户隐藏、排序直播台和提议新台；主人以外的设备成员（电脑版显示设备的访客码，
 就是现有的访客链接）。
@@ -342,7 +342,7 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
 sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv.db login-link <用户 id>
 ```
 
-打印 `HTTPS://<网站>/TV/P/<令牌>`（5 分钟、一次）；发给本人，在手机上打开、点按钮。总后台的「用户」页上
+打印 `HTTPS://<网站>/TV/P/<令牌>`（5 分钟、一次）；发给本人，在手机上打开、点按钮。电脑版「管理 → 用户」里
 有同样的按钮（阶段 3，见下）。
 
 | | |
@@ -356,12 +356,14 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
 
 ## 阶段 3：总后台
 
-`https://<网站>/tv/admin`，只给管理员：电脑版（名字下面）和手机遥控「我的」（「邀请家人」下面）各有一个入口。
-别的会话、访客、没登录的打开页面会被送回 `/tv/console`，每个 `/api/admin/*` 接口对他们都回 404；
+2026-10-26 起总后台是电脑版里的「管理」：`https://<网站>/tv/console#/admin/<分区>`（`assets/console-admin.js`、
+`console-admin.css`），只给管理员：电脑版顶栏的盾牌图标、「设置」和「我的」里各有入口，手机遥控「我的」（「邀请家人」下面）
+也有一个链接。原来的页面 `/tv/admin`（`assets/admin.html`）已经去掉，这个地址回 302 转到 `/tv/console#/admin`，书签照样能用。
+别的会话看不到「管理」，每个 `/api/admin/*` 接口对他们都回 404；
 密钥（`X-Key` 或 `?k=` 登录）算管理员。POST 和电脑版一样过同源检查，每个改动都写进操作记录，
 记下管理员和他的 /24 网段。
 
-| 页面 | 做什么 |
+| 分区 | 做什么 |
 | --- | --- |
 | 概览 | 设备在线/离线、主人、在播的台和标题、这次会话多久；最近约 10 秒发出的字节、每秒画面数、字节率目标（来自电视服务的「正在播放」文件）；主机 CPU、内存、出站流量的现值和 24 小时曲线；电视服务、中转、ffmpeg、muse-asr、nginx 几个进程；YouTube 节点状态和在放几路（共 2 路） |
 | 用户 | 怎么来的（邀请、自己注册、最早的账号）；自己注册的标「待查看」，点「知道了」消失；改名；封禁/解封；删除（输入名字确认，先导出）；一次性登录链接和二维码（5 分钟、一次，和命令行 `login-link` 一样）；他的登录（含他设备上的访客），可以退出；邀请 |
@@ -390,14 +392,14 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
   用户在手机上自己调的盖在它上面。
 
 部署：复制 `server/`（中转和电视服务都改了）和 `packaging/help/`（使用说明加了一节），重启 `tv-relay`、`tv-xingzhi`、`tv-passport`。nginx 不用改
-（`/tv/admin` 在 `/tv/` 下面；页面把没改的台只发 id，每个请求都在 nginx 的 8 KB 请求体限制以内）。中转第一次
+（电脑版和 `/tv/api/admin/*` 都在 `/tv/` 下面；页面把没改的台只发 id，每个请求都在 nginx 的 8 KB 请求体限制以内）。中转第一次
 启动时加上 `user.reviewed_at` 列。中转的用户要能写 `--main-channels` 所在目录（备份和整份替换）和数据库所在目录
 （`exports/`）；模板里两个都是 `/var/lib/ai-passport-tv`。不重启电视服务的话，流量指标是空的、`reconnect` 被忽略，
 其余照常。
 
 | | |
 | --- | --- |
-| 路径 | 页面 `/tv/admin`；`GET /api/admin/overview[?history=1]`、`users`、`users/<id>/sessions`、`users/<id>/export`、`devices`、`audit?user=&device=&action=&before=`、`system`、`channels`；`POST /api/admin/users/<id>/rename\|ban\|unban\|reviewed\|login-link\|delete\|sessions/revoke`、`invites`、`devices/<id>/unbind\|ban\|unban\|reconnect\|repair\|rename`、`channels` `{version, rows, dry}`、`system/legacy-token` |
+| 路径 | 页面 `/tv/console#/admin`（`/tv/admin` 转到那里）；`GET /api/admin/overview[?history=1]`、`users`、`users/<id>/sessions`、`users/<id>/export`、`devices`、`audit?user=&device=&action=&before=`、`system`、`channels`；`POST /api/admin/users/<id>/rename\|ban\|unban\|reviewed\|login-link\|delete\|sessions/revoke`、`invites`、`devices/<id>/unbind\|ban\|unban\|reconnect\|repair\|rename`、`channels` `{version, rows, dry}`、`system/legacy-token` |
 | 指标 | 「正在播放」多了 `bytes_10s`、`fps`（每秒发出的画面数；只有默认的发送器数，`TV_LIVE_ENGINE=v2` 时是 0）、`target_rate`；主机采样每 5 秒读 `/proc/stat`、`/proc/meminfo`、`/proc/net/dev`，内存里留 15 分钟的 5 秒点和 24 小时的分钟平均（重启就没了）；没有 `/proc`（macOS）时不运行 |
 | 审计 | `user.rename`、`user.reviewed`、`user.ban`/`unban`、`user.export`、`user.delete`、`admin.session.revoke`/`revoke_all`、`phone_link.admin`、`invite.create`、`device.reconnect`、`device.banned`/`active`/`unclaimed`、`device.unbind`、`device.repair`、`device.rename`、`channels.save`（台数变化和备份文件名）、`legacy_token.on`/`off` |
 

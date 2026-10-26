@@ -31,6 +31,8 @@ from server.tenancy.accounts import Accounts
 
 from test_relay_web import KEY, FakeClient, FakeYouTube
 
+ASSETS = Path(__file__).resolve().parents[1] / "server" / "relay" / "assets"
+ADMIN_JS = (ASSETS / "console-admin.js").read_text(encoding="utf-8")
 ALICE_DEVICE = "aaaaaaaaaaa1"
 BOB_DEVICE = "bbbbbbbbbbb2"
 SECRET = "s" * 43
@@ -149,14 +151,40 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual([u["name"] for u in answer["users"]], ["管理员", "Alice", "Bob"])
 
-    def test_page_is_for_admins_and_sends_others_to_the_console(self):
-        status, headers, body = self.raw("GET", "/tv/admin", self.cookies["admin"])
+    def test_old_page_address_goes_to_the_console_admin_section(self):
+        # The admin backend is the console's 管理 section now (assets/console-admin.js); the old
+        # address is a bookmark that keeps working. The console shows the section to admins only.
+        for who in ("admin", "alice", "guest", "nobody"):
+            for path in ("/tv/admin", "/tv/admin/"):
+                status, headers, _ = self.raw("GET", path, self.cookies[who])
+                self.assertEqual((status, headers["Location"]), (302, "/tv/console#/admin"), (who, path))
+        status, headers, body = self.raw("GET", "/tv/console", self.cookies["admin"])
         self.assertEqual(status, 200)
-        self.assertIn("总后台".encode(), body)
         self.assertEqual(headers["X-Frame-Options"], "DENY")
-        for who in ("alice", "guest", "nobody"):
-            status, headers, _ = self.raw("GET", "/tv/admin", self.cookies[who])
-            self.assertEqual((status, headers["Location"]), (302, "/tv/console"), who)
+        page = body.decode("utf-8")
+        self.assertRegex(page, r'src="console-admin\.js\?v=[0-9a-f]{12}"')
+        self.assertRegex(page, r'href="console-admin\.css\?v=[0-9a-f]{12}"')
+        self.assertIn('data-route="admin"', page)
+        self.assertNotIn('href="admin"', page)
+        for name in ("console-admin.js", "console-admin.css"):
+            self.assertEqual(self.raw("GET", "/tv/" + name, "")[0], 200, name)
+        script = ADMIN_JS
+        # Every section of the old page is in the console, against the same endpoints.
+        for path in ("api/admin/overview", "api/admin/users", "api/admin/devices", "api/admin/channels",
+                     "api/admin/audit?", "api/admin/system", "api/admin/epg", "api/admin/invites",
+                     "api/admin/channels/import", "api/admin/channels/probe", "api/admin/channels/check", "合并为备用线路", "检测全部线路", "/login-link", "/sessions/revoke",
+                     "/reconnect", "/repair", "/unbind", "api/admin/system/legacy-token"):
+            self.assertIn(path, script, path)
+        console_js = (ASSETS / "console.js").read_text(encoding="utf-8")
+        self.assertIn('admin: "管理"', console_js)
+        self.assertIn('if (name === "admin" && !isAdmin()) name = "home";', console_js)
+
+    def test_system_reports_versions_and_pc_watch(self):
+        from server.selfhost.version import VERSION
+        answer = self.call("admin", "GET", "/api/admin/system")[1]
+        self.assertEqual(answer["version"], VERSION)
+        self.assertEqual(answer["firmware_version"], "")
+        self.assertEqual((answer["pc_watch"], answer["pc_warm"]), (self.relay.watch is not None, 0))
 
     def test_cross_site_post_is_refused(self):
         status, _ = self.call("admin", "POST", f"/api/admin/users/{self.alice}/rename", {"name": "Eve"},
@@ -339,9 +367,8 @@ class AdminApiTests(unittest.TestCase):
         self.now += 1
         self.accounts.touch_device(ALICE_DEVICE)
         self.assertFalse(flagged()[ALICE_DEVICE])
-        page = admin.ADMIN_PAGE.decode()
-        self.assertIn("密钥不匹配：点「重新配对」", page)
-        self.assertIn("d.key_mismatch", page)
+        self.assertIn("密钥不匹配：点「重新配对」", ADMIN_JS)
+        self.assertIn("d.key_mismatch", ADMIN_JS)
 
     def test_devices_carry_the_firmware_version_and_the_release_s(self):
         self.accounts.touch_device(ALICE_DEVICE, fw="v0.1.0")
@@ -363,9 +390,8 @@ class AdminApiTests(unittest.TestCase):
         for bad in ("javascript:alert(1)", "//evil.example/", '/flash/"><b>'):
             self.assertEqual(admin.firmware_info({admin.FLASHER_URL_ENV: bad})["flasher"], "", bad)
         self.assertEqual(admin.firmware_info({admin.FIRMWARE_MANIFEST_ENV: str(self.root / "missing.json")})["latest"], {})
-        page = admin.ADMIN_PAGE.decode()
-        self.assertIn('id="devUpdate"', page)
-        self.assertIn("可更新到", page)
+        self.assertIn('panel.id = "devUpdate"', ADMIN_JS)
+        self.assertIn("可更新到", ADMIN_JS)
 
     def test_devices_and_overview_show_metrics(self):
         files = device_files.device_files(self.devices_dir, ALICE_DEVICE)

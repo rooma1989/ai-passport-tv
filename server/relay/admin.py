@@ -1,10 +1,11 @@
-"""总后台（多用户阶段 3）：/tv/admin 页面和 /api/admin/* 接口。
+"""总后台（多用户阶段 3）：/api/admin/* 接口。页面是电脑版里管理员的「管理」（assets/console-admin.js，#/admin）；
+旧地址 /tv/admin 由 console.py 转到那里。
 
 设计见 docs/superpowers/specs/2026-10-12-multi-tenant-design.md 第 6 节。只在多用户（--db）时有；
 web.py 的处理类在最前面转过来（get()/post() 返回 True 表示处理过了），和 console.py 一样。
 
 谁能用：只有管理员（管理员的手机或电脑会话，或带密钥的请求）。每个接口都在服务端查角色：
-不是管理员（家人、访客、没登录）一律 404，和不存在一样；页面本身对他们跳回电脑版。
+不是管理员（家人、访客、没登录）一律 404，和不存在一样；电脑版也只给管理员显示「管理」。
 POST 和电脑版一样只收本站页面发的（web.py 的 do_POST 先过 console.same_origin），
 每个改东西的操作都写进操作记录（谁、什么时候、哪个网段、做了什么、对谁）。
 
@@ -30,8 +31,6 @@ from ..tenancy.manage import AdminOps
 from . import channeltable, console, epg, events, playlist, presets, qr, routecheck, table
 from .ytnode import MAX_STREAMS
 
-_ASSET_DIR = Path(__file__).resolve().parent / "assets"
-ADMIN_PAGE = (_ASSET_DIR / "admin.html").read_bytes()
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
 BODY_MAX = 8000
 # 自建模式（没有 nginx，前面是 server/front.py，它给普通接口 64 KB）保存频道表时可以大一些：一次从播放列表
@@ -95,13 +94,6 @@ def _read_body(handler, limit: int = BODY_MAX) -> dict | None:
 # ---- GET ----
 
 def get(handler, relay, path: str) -> bool:
-    if path in ("/admin", "/admin/"):
-        if _admin(handler) is None:
-            # 不是管理员（或没登录）：回电脑版，那里登录、或者本来就该在那里。
-            handler._send(302, b"", "text/plain", {"Location": "/tv/console"})
-        else:
-            handler._send(200, ADMIN_PAGE, "text/html; charset=utf-8", console.PAGE_HEADERS)
-        return True
     if not path.startswith("/api/admin/"):
         return False
     caller = _admin(handler)
@@ -285,7 +277,17 @@ def system(relay) -> dict:
             "recover_limit": phonelinks.DEVICE_LIMIT[0], "sessions_days": {k: v // 86400 for k, v in SESSION_S.items()},
             "db": {"name": path.name, "bytes": size, **counts},
             "channels": {"file": str(main) if main else "", "backups": backups[-5:], "backup_count": len(backups)},
-            "sampler": bool(stats and stats.available), "youtube": relay.clients.get("youtube") is not None}
+            "sampler": bool(stats and stats.available), "youtube": relay.clients.get("youtube") is not None,
+            **_versions(relay)}
+
+
+def _versions(relay) -> dict:
+    """「系统」里的版本和电脑上看（只显示）：服务端的版本号、这次发布的固件版本、在电脑上看开没开、换台预热几路
+    （自建 / 电脑客户端的 config.toml [pc] warm_channels；云端没有在电脑上看）。"""
+    from ..selfhost.version import VERSION
+    watch = getattr(relay, "watch", None)
+    return {"version": VERSION, "firmware_version": firmware_info()["version"],
+            "pc_watch": watch is not None, "pc_warm": int(getattr(watch, "warm_max", 0) or 0) if watch is not None else 0}
 
 
 # ---- 频道表 ----

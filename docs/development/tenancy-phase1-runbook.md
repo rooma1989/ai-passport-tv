@@ -304,9 +304,9 @@ How it works and its limits:
 | Pages | `Content-Security-Policy` without any external source, `frame-ancestors 'none'`, `X-Frame-Options: DENY`; QR codes are drawn by the relay (`server/relay/qr.py`, a port of the library the firmware uses) |
 
 The admin's key link stays the break-glass sign-in: open `https://<site>/tv/?k=<key>`
-on the computer, then `/tv/console`. The console's Invite page (admin only) makes
-the same invite links as the phone; the full admin backend is `/tv/admin`
-(phase 3, below).
+on the computer, then `/tv/console`. The console's **Admin** section (admin only,
+`/tv/console#/admin`) makes the same invite links as the phone and holds the full
+admin backend (phase 3, below).
 
 Not in the console yet: per-user hiding and ordering of live channels and
 channel proposals; device members other than the owner (the console shows the
@@ -408,8 +408,8 @@ sudo -u tvserver python3 -m server.tenancy.admin --db /var/lib/ai-passport-tv/tv
 ```
 
 prints `HTTPS://<SITE>/TV/P/<TOKEN>` (5 minutes, single use); send it to the
-person, who opens it on the phone and taps the button. The admin backend's Users
-page has the same thing as a button (phase 3, below).
+person, who opens it on the phone and taps the button. The console's Admin > Users
+section has the same thing as a button (phase 3, below).
 
 | | |
 | --- | --- |
@@ -422,15 +422,18 @@ page has the same thing as a button (phase 3, below).
 
 ## Phase 3: the admin backend
 
-`https://<site>/tv/admin`, for admins only: a link appears in the PC console
-(under your name) and in the phone remote's Me tab (under Invite family). Any
-other session, a guest or nobody is sent back to `/tv/console`, and every
-`/api/admin/*` call answers 404 to them; the key (`X-Key`, or the
-`?k=` sign-in) counts as the admin. POSTs pass the console's same-origin check,
+Since 2026-10-26 the admin backend is the **Admin** section of the PC console,
+`https://<site>/tv/console#/admin/<section>` (`assets/console-admin.js` and
+`console-admin.css`), for admins only: a shield icon in the console's top bar, an
+entry under Settings and Me, and a link in the phone remote's Me tab (under Invite
+family). The old page `/tv/admin` (`assets/admin.html`) is gone; that address
+answers 302 to `/tv/console#/admin` so bookmarks keep working. Other sessions never
+see the section, and every `/api/admin/*` call answers 404 to them; the key
+(`X-Key`, or the `?k=` sign-in) counts as the admin. POSTs pass the console's same-origin check,
 and every change is written to the audit log with the admin and their /24
 network.
 
-| Page | What it does |
+| Section | What it does |
 | --- | --- |
 | Overview | devices online/offline, owner, channel and title, session length; bytes sent in the last ~10 s, frames per second and the byte-rate target (from the media server's now-playing file); host CPU, memory and outbound traffic now and as 24-hour curves; the tv_server, relay, ffmpeg, muse-asr and nginx processes; YouTube node state and streams in use (of 2) |
 | Users | origin (invite, self-registered, the first accounts); self-registered users are flagged "to review" until you press "got it"; rename; ban/unban; delete (type the name; the user's data is exported first); one-time login link with QR code (5 minutes, single use, the CLI's `login-link`); their sessions (and their devices' guests) with sign-out; invites |
@@ -473,8 +476,8 @@ What the actions do:
 
 Deploy: copy `server/` (relay and media server both changed) and
 `packaging/help/` (the help page has a new section), and restart
-`tv-relay`, `tv-xingzhi` and `tv-passport`. No nginx change (`/tv/admin` is under
-`/tv/`; the page keeps each request under nginx's 8 kB body limit by sending
+`tv-relay`, `tv-xingzhi` and `tv-passport`. No nginx change (the console and
+`/tv/api/admin/*` are under `/tv/`; the page keeps each request under nginx's 8 kB body limit by sending
 unchanged channels as their id only). The relay adds the column
 `user.reviewed_at` on its first start. The relay user needs write access to the
 directory of `--main-channels` (for the backup and the atomic replace) and to
@@ -484,7 +487,7 @@ in the templates. Without the media-server restart, metrics stay empty and
 
 | | |
 | --- | --- |
-| Paths | page `/tv/admin`; `GET /api/admin/overview[?history=1]`, `users`, `users/<id>/sessions`, `users/<id>/export`, `devices`, `audit?user=&device=&action=&before=`, `system`, `channels`; `POST /api/admin/users/<id>/rename\|ban\|unban\|reviewed\|login-link\|delete\|sessions/revoke`, `invites`, `devices/<id>/unbind\|ban\|unban\|reconnect\|repair\|rename`, `channels` `{version, rows, dry}`, `system/legacy-token` |
+| Paths | page `/tv/console#/admin` (`/tv/admin` redirects there); `GET /api/admin/overview[?history=1]`, `users`, `users/<id>/sessions`, `users/<id>/export`, `devices`, `audit?user=&device=&action=&before=`, `system`, `channels`; `POST /api/admin/users/<id>/rename\|ban\|unban\|reviewed\|login-link\|delete\|sessions/revoke`, `invites`, `devices/<id>/unbind\|ban\|unban\|reconnect\|repair\|rename`, `channels` `{version, rows, dry}`, `system/legacy-token` |
 | Metrics | now-playing gains `bytes_10s`, `fps` (frames sent per second; the legacy sender only, `TV_LIVE_ENGINE=v2` reports 0) and `target_rate`; the host sampler reads `/proc/stat`, `/proc/meminfo`, `/proc/net/dev` every 5 s and keeps 15 minutes of 5-second points and 24 hours of minute averages in memory (lost on restart); without `/proc` (macOS) it does not run |
 | Audit | `user.rename`, `user.reviewed`, `user.ban`/`unban`, `user.export`, `user.delete`, `admin.session.revoke`/`revoke_all`, `phone_link.admin`, `invite.create`, `device.reconnect`, `device.banned`/`active`/`unclaimed`, `device.unbind`, `device.repair`, `device.rename`, `channels.save` (counts and the backup's name), `legacy_token.on`/`off` |
 

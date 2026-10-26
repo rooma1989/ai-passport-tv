@@ -161,7 +161,7 @@ remote, Me > "let another phone sign in".
      settings area holding Wi-Fi, server address and the device's secret is
      not, so settings and binding stay. If a new version changes the
      partition table the page says so first and offers only a clean
-     reinstall (followed by "re-pair" in the admin backend).
+     reinstall (followed by "re-pair" in the console's Admin > Devices).
 2. **Wi-Fi by sound**: when the device shows its setup screen, open the setup
    page on the phone: scan the code on the device's screen, or open
    `http://<the computer's LAN address>:8080/tv/wifi` (the finished setup page
@@ -175,8 +175,8 @@ remote, Me > "let another phone sign in".
    10 minutes pause binding for up to 10 minutes; after 30 every unbound device
    also gets a new code. A device still showing a 20-character code from an
    earlier version shows a 6-digit one after its next reconnect.
-4. **Add channels**: in the console (tray > "Open the console") > admin
-   backend > Channels, import a playlist from an address or a file, or pick
+4. **Add channels**: in the console (tray > "Open the console") > **Admin**
+   (the shield icon in the top bar) > Channels, import a playlist from an address or a file, or pick
    one of the public playlists listed there and press "Read"; then the CCTV
    or satellite quick filter, "Select all", **Add to the channel table**
    and **Save** gives you CCTV and the provincial satellite channels in one go
@@ -235,7 +235,7 @@ source's own picture and sound:
 
 ## Programme guide (optional)
 
-Off by default. In the console > admin backend > **Channels → Programme
+Off by default. In the console > **Admin** > **Channels → Programme
 guide**, tick one of the public guides (112114, fanmingming) or paste an XMLTV
 address and save: the channel tiles, the phone remote's list and the PC
 player's title then show what is on now and until when. These
@@ -433,7 +433,7 @@ background.
   to start or dies soon after, the PC player and the TV move on to the next
   one by themselves ("CCTV2 line 1 failed, switching to line 2…") and try the
   line that worked last time first next time. When the player says every line
-  failed, open Admin → Channel table: "Check lines" (one channel) or
+  failed, open the console's Admin → Channels: "Check lines" (one channel) or
   "Check all lines" connects to each line's playlist and a few KB of one segment
   -- no decoding, light enough for the cloud relay -- and marks it ✓/✗ with the
   reason; reorder or remove lines, set another one as the primary, or import a
@@ -473,8 +473,8 @@ background.
   cleared -- the flasher of v0.2.0-beta and earlier wrote it blank even
   under "Update" (fixed since), and a clean reinstall does so too -- so it
   made a new device secret while the household server still has the old one
-  and refuses it. Set up its Wi-Fi by sound again, then open Devices in the
-  admin backend: the refused device carries a red "key mismatch" badge.
+  and refuses it. Set up its Wi-Fi by sound again, then open the console's
+  Admin > Devices: the refused device carries a red "key mismatch" badge.
   Press "**re-pair**" on it; within 10 minutes it connects and is
   remembered, with its channels and binding.
 - **The device stops when the laptop lid closes**: closing the lid sleeps the

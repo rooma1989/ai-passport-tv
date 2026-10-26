@@ -213,7 +213,7 @@ class BannerTests(unittest.TestCase):
     def test_no_code_once_set_up(self):
         text = "\n".join(banner.lines("192.168.1.20", 8080, "", "192.168.1.20", in_container=False))
         self.assertNotIn("设置码", text)
-        self.assertIn("/tv/admin", text)
+        self.assertIn("/tv/console#/admin", text)
 
     def test_terminal_qr_is_square(self):
         lines = banner.terminal_qr("http://192.168.1.20:8080/tv/setup#K7P4QX2M9A")

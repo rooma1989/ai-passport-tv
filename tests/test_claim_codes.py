@@ -311,8 +311,8 @@ class PageTests(unittest.TestCase):
     ASSETS = ROOT / "server" / "relay" / "assets"
 
     def test_typed_code_pages_accept_both_formats(self):
-        # The console's script is console.js now; the classic console page keeps its own copy for this beta.
-        for name in ("remote.html", "console.js", "console-classic.html"):
+        # The console's script is console.js (the classic console page is gone).
+        for name in ("remote.html", "console.js"):
             page = (self.ASSETS / name).read_text(encoding="utf-8")
             match = re.search(r"const CLAIM_CODE = /(.+?)/;", page)
             self.assertIsNotNone(match, name)
