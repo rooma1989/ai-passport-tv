@@ -57,7 +57,11 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
               "transfer-encoding", "upgrade", "proxy-connection"}
 # 客户端带来的这些头不转发：由前端自己填（或根本不该从外面来）。
 _DROPPED_IN = HOP_BY_HOP | {"x-real-ip", "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host",
-                            "cf-connecting-ip", "forwarded", "content-length"}
+                            "cf-connecting-ip", "forwarded", "content-length", "x-front-local"}
+# 带着这些头来的请求是别的程序转来的（本机的隧道、反向代理），不算「在这台电脑上打开的」。
+_FORWARDING = ("x-real-ip", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded",
+               "cf-connecting-ip", "cf-ray", "tailscale-user-login", "via")
+LOCAL_HEADER = "X-Front-Local"
 SIGNUP_POLICIES = ("lan", "anywhere", "off")
 
 
@@ -161,6 +165,38 @@ def caller_address(headers, peer: str, public: bool) -> str:
             except ValueError:
                 continue
     return peer
+
+
+def _loopback(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def local_host(host: str) -> bool:
+    """Host 头是不是本机的名字：localhost、*.localhost、127.x、[::1]（可带端口）。"""
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        name = host[1:].split("]", 1)[0]
+    else:
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    return _loopback(name)
+
+
+def from_this_computer(headers, peer: str, public: bool) -> bool:
+    """在这台电脑上的浏览器里直接打开的：局域网端口、对端是回环、Host 是本机的名字、没有任何转发的头。
+    中转据此只给本机放「从浏览器读取 YouTube 登录」（server/relay/ytaccount.py）。经隧道（公开端口，或本机的
+    隧道程序转到局域网端口）、经局域网 IP 来的都不算。"""
+    if public or not _loopback(peer) or not local_host(headers.get("Host") or ""):
+        return False
+    present = {str(name).lower() for name in headers.keys()}
+    return not any(name in present for name in _FORWARDING)
 
 
 def forwarded_proto(headers, public: bool) -> str:
@@ -277,6 +313,8 @@ def _handler(options: Options, public: bool):
                 headers = {k: v for k, v in headers.items() if k.lower() != "x-key"}
             headers["X-Real-IP"] = caller_address(self.headers, self.client_address[0], public)
             headers["X-Forwarded-Proto"] = forwarded_proto(self.headers, public)
+            if from_this_computer(self.headers, self.client_address[0], public):
+                headers[LOCAL_HEADER] = "1"
             if body is not None:
                 headers["Content-Length"] = str(len(body))
             upstream = http.client.HTTPConnection("127.0.0.1", port, timeout=UPSTREAM_TIMEOUT_S)

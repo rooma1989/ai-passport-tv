@@ -725,3 +725,10 @@ button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px
 .m .petgrid { grid-template-columns: repeat(4, 1fr); }
 .m .wifiform { grid-template-columns: 1fr; }
 @media (max-width: 760px) { .signin { grid-template-columns: minmax(0, 1fr); justify-items: center; padding: 28px 20px; gap: 24px; } }
+/* 设置 → YouTube：从浏览器读取登录（ytaccount.py） */
+.ytwarn { border-left: 3px solid var(--warn); padding-left: 10px; }
+.ytwarn b { color: var(--warn); }
+.ytbrowse select.field { width: auto; min-width: 180px; max-width: 100%; }
+#ytBrowserState.bad { color: var(--bad); }
+#ytBrowserState.ok { color: var(--ok); }
+#ytImportWhy { margin: 0; }

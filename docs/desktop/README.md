@@ -351,6 +351,32 @@ getting one.**
    cookies). The client keeps only the youtube.com and google.com lines, stores
    them in `<data>/youtube/cookies.txt` readable only by you, and shows only
    how many there are. The file is that account's login: do not share it.
+
+   **Or read the login from a browser on this computer** (no extension needed):
+   under **Read from a browser**, pick Chrome, Edge, Firefox, Safari or Brave
+   (only those found on this computer are listed) and, for all but Safari, the
+   browser profile (listed by name, with the Google account signed in to it),
+   then press **Read**. yt-dlp reads that profile's cookies into a temporary
+   file that is deleted straight away; only the youtube.com and google.com ones
+   are kept, in the same `cookies.txt` (0600), and the page shows "read (N,
+   YouTube domains) · account: …". **It reads whatever account is signed in to
+   that browser, which is usually your main account**: create a browser
+   profile that is signed in only to the secondary account and pick that one.
+   On a Mac, Chrome, Edge and Brave make the Keychain ask whether their "Safe
+   Storage" key may be used (enter your Mac password and allow), and Safari
+   needs RooTV to have **Full Disk Access** (System Settings → Privacy &
+   Security), then a restart of RooTV. On Windows, quit the browser first (it
+   locks its cookie file); recent Chrome and Edge encrypt cookies so that only
+   the browser itself can read them, so use Firefox or the file import there.
+   A browser that is not signed in to YouTube is refused and the old cookies
+   are kept. This button only appears when the console is opened on this
+   computer itself (`http://localhost:…`) by the admin: opened from another
+   device, over the LAN or a tunnel, the server refuses it, because it reads the
+   browser of the computer running RooTV.
+
+   Cookies expire: YouTube logs them out after some weeks, or as soon as the
+   account signs out in that browser. When **Test** says "needs sign-in" again,
+   read or import them again.
 6. YouTube changes often. When videos stop playing, press **Check for updates**
    and **Update yt-dlp** (the new version is verified against the release's
    own `SHA2-256SUMS`).
@@ -359,6 +385,17 @@ Changes apply without quitting: saving restarts only the parts that changed
 (a new proxy restarts the YouTube helper alone). YouTube videos, creators and
 playlists (series) then work as on the cloud service. "Own node" is for a
 YouTube node you run yourself (`secrets/youtube-node.json`).
+
+**Import your YouTube subscriptions**: with This computer mode and cookies in
+place, the admin's **Creators** page has **Import the channels I subscribe to
+on YouTube**. It lists the cookies account's subscriptions (yt-dlp reads
+`youtube.com/feed/channels`, falling back to the channels in
+`feed/subscriptions`; the list is kept 10 minutes and fetched again at most
+once a minute), with search, select all / none and the channels already
+subscribed marked. Each one becomes a creator channel, within the same limits
+as the Bilibili import (at most 12 creators, and what fits in the TV's channel
+list); adding fetches each channel's video list, about ten seconds each, in the
+background.
 
 ## Common problems
 
@@ -429,6 +466,10 @@ Developer notes (code map, building, CI, the interface with the core):
 - The Linux tray (GNOME has no tray area by default).
 - YouTube local mode on Windows and Linux (written for them, run only on a Mac), and how often YouTube
   asks for sign-in with imported cookies (on the Mac, through a proxy, it asked every time without).
+- Reading the YouTube login from a real browser: developed and tested against a fake yt-dlp and canned
+  `Local State` / `profiles.ini` files only. The real Keychain prompt, Safari's Full Disk Access, Windows'
+  locked and app-bound-encrypted Chrome/Edge cookies, and Linux keyrings have not been tried; nor has the
+  subscription import against a real account (only canned yt-dlp output shaped like its `feed/channels` answer).
 - Watching a channel directly on the PC: seen in a browser on a Mac only with a local test source (a short test
   video over local HTTP); real Bilibili and YouTube sources were exercised only with canned answers in unit tests,
   and browsers on Windows have not been tried.
