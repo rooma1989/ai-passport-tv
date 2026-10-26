@@ -113,6 +113,34 @@ def ytnode_child_args(layout, config, ffmpeg: str, port: int) -> list[str]:
             "--cookies", str(cookies_path(layout.root, config.youtube_cookies)), "--remux", "--no-check"]
 
 
+# 预热（server/relay/watch.py 的 WARM_MAX）要多一两个 ffmpeg 和十几秒的段：内存少于这些的机器（小盒子、
+# 树莓派）上「auto」不开。
+PC_WARM_MEMORY = 4 * 1024 ** 3
+
+
+def physical_memory() -> int | None:
+    """这台机器的内存（字节）；查不到（Windows）时 None。"""
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def pc_warm_streams(config, desktop: bool, memory: int | None = None) -> int:
+    """中转的 --pc-warm：电脑上看直播时预热几路（config.toml 的 [pc] warm_channels）。「auto」在内存够的机器上开；
+    查不到内存时只有电脑客户端开（它本来就是一台电脑）。"""
+    from ..relay.watch import WARM_MAX
+    if config.pc_warm == "off":
+        return 0
+    if config.pc_warm == "on":
+        return WARM_MAX
+    if memory is None:
+        memory = physical_memory()
+    if memory is None:
+        return WARM_MAX if desktop else 0
+    return WARM_MAX if memory >= PC_WARM_MEMORY else 0
+
+
 def build_children(layout, config, ffmpeg: str, device_address: str, public_url: str, log,
                    in_container: bool = False, firmware: Path | None = None, desktop: bool = False) -> list:
     """firmware：网页刷机用的固件文件夹（bootstrap.firmware_dir），没有时 None。
@@ -139,6 +167,9 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         relay += ["--device-address", config.device_address or device_address]
     # 电脑版「设置 → YouTube」要知道数据目录（改 config.toml、存 cookies、下载组件）。
     relay += ["--selfhost-data", str(layout.root)]
+    warm = pc_warm_streams(config, desktop)
+    if warm:
+        relay += ["--pc-warm", str(warm)]
     local_youtube = config.youtube_mode == "local"
     if config.youtube_mode == "node" and layout.youtube_node.is_file():
         relay += ["--cstone", str(layout.youtube_node)]

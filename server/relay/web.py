@@ -1418,6 +1418,31 @@ class Relay:
         self.forget_home(caller)
         return {"ok": True, "stopped": self.watch.close(self._pc_slot(caller, viewer))}
 
+    def watch_warm(self, caller: Caller, body: dict) -> dict:
+        """POST /api/watch/warm {channels: [台 id, …]}：电脑上看直播时，先把接下来可能换到的直播台转起来
+        （上一台、下一台，鼠标停在哪个台上），换过去时马上有画面（watch.WatchService.warm）。至多两个台，
+        只认全局频道表里的直播台；没开预热时 off 为真，页面就不再问。"""
+        if self.watch is None:
+            raise NotFound("watch")
+        if caller.guest or caller.user is None:
+            return {"ok": False, "error": "请求格式不对"}
+        channels = body.get("channels")
+        if not isinstance(channels, list) or len(channels) > 2 or \
+                not all(isinstance(c, str) and c for c in channels):
+            return {"ok": False, "error": "请求格式不对"}
+        if not self.watch.warm_max:
+            return {"ok": True, "off": True, "warm": {}}
+        table_ids = {c for c, _ in channel_groups.read_table(self.main_channels)} \
+            if self.main_channels is not None else set()
+        done = {}
+        for cid in dict.fromkeys(channels):
+            if cid not in table_ids or _relay_channel(cid) or cid == table.CAST_ID:
+                done[cid] = "live"
+                continue
+            source = self._live_source(cid)
+            done[cid] = source if isinstance(source, str) else self.watch.warm(caller.user, source)
+        return {"ok": True, "warm": done}
+
     def watch_direct(self, caller: Caller, device: str | None, body: dict) -> dict:
         """电脑版「在电脑上看」一个台，不经小电视（没有小电视、小电视没在线、或者只想在电脑上看）。
 
@@ -1483,8 +1508,9 @@ class Relay:
             return {"ok": False, "error": source}
         video = source.key[0] == "video"
         try:
+            # keep_old：这个页面刚才在看的直播台再转一会儿，换回来马上有画面（开了预热时，watch.py）。
             stream = self.watch.open(self._pc_slot(caller, viewer), source, user=caller.user,
-                                     restart=video and start is not None)
+                                     restart=video and start is not None, keep_old=True)
         except watch_pc.Busy as busy:
             return {"ok": False, "error": self._watch_busy(busy)}
         if key and video:
@@ -1876,6 +1902,9 @@ class Relay:
             if self.watch is not None and not caller.guest:
                 # 在电脑上看（watch.py）：只有自建 / 电脑客户端有，电脑版据此显示按钮。
                 summary["watch"] = True
+                if self.watch.warm_max:
+                    # 换台快一点：电脑版看直播时让中转预热相邻的台（watch_warm）。
+                    summary["watch_warm"] = True
             if self.bili_accounts is not None and not caller.guest and caller.user is not None:
                 # 自建：每个人自己的 B 站登录（bililogin.py），电脑版据此显示「设置 → B 站账号」和导入关注。
                 summary["bili"] = self.bili_accounts.status(caller.user)
@@ -2709,6 +2738,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/watch/progress":
                 self._json(relay.watch_progress(caller, body))
+                return
+            if path == "/api/watch/warm":
+                self._json(relay.watch_warm(caller, body))
                 return
             if path == "/api/pet":
                 self._json(relay.set_pet(body.get("pet"), caller, device))

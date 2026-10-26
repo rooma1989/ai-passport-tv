@@ -70,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="B 站清晰度：16=360p，32=480p，64=720p；默认云端 16、自建 64")
     parser.add_argument("--setup-code-file", type=Path, help="自建：一次性设置码文件（还没有管理员时）")
     parser.add_argument("--device-address", default="", help="自建：设备该连的地址（不带端口）；空的话用设置时记下的")
+    parser.add_argument("--pc-warm", type=int, default=0, metavar="路数",
+                        help="自建：电脑上看直播时预热相邻的台、刚换走的台再转 30 秒，至多几路（0 = 不开，见 watch.py）")
     args = parser.parse_args(argv)
 
     key = args.key_file.read_text(encoding="utf-8").strip()
@@ -169,6 +171,9 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 「设置 → YouTube」（server/relay/ytsettings.py）：现在用的是哪种 YouTube、数据目录在哪。
     relay.youtube_kind = args.youtube_kind
     relay.selfhost_data = args.selfhost_data if selfhost is not None else None
+    if relay.watch is not None:
+        # 换台快一点：预热相邻的直播台（server/selfhost 按 config.toml 的 [pc] warm_channels 和内存给）。
+        relay.watch.warm_max = max(0, args.pc_warm)
     # 本机模式第一次用：组件还没装好就在后台下载（server/relay/ytsettings.py）。
     from . import ytsettings
     ytsettings.autostart(relay)

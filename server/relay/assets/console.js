@@ -725,17 +725,21 @@ async function play(item, to, label) {
 }
 async function playOnPc(item, label) {
   if (watching) watching.busy = true;
+  // 直播台：马上说在切换（上一台的画面停住），不等中转回答。
+  if (item.kind === "live" && !$("pcwin").hidden) switching(label || item.title || item.channel);
   const body = { target: PC, item, viewer };
   if (item.channel === "cast" && deviceId()) body.device = deviceId();
   let answer;
   try { answer = await call("POST", "api/play", body); }
   catch (error) {
     if (watching) watching.busy = false;
+    switched();
     if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
     return null;
   }
   if (!answer.ok) {
     if (watching) watching.busy = false;
+    switched();
     toast(answer.error, true);
     return answer;
   }
@@ -1199,6 +1203,7 @@ const UPNEXT_S = 5;           // 放完以后几秒自动放下一集
 function watchKey(now) { return [now.channel, now.title, now.episode].join("|"); }
 
 function watchSay(text, bad, retry) {
+  if (bad) switched();
   const box = $("watchMsg");
   box.className = "watchmsg" + (bad ? " bad" : "");
   box.replaceChildren();
@@ -1214,13 +1219,41 @@ function retryWatch() {
   else startWatch(false, true);
 }
 
+// ---- 直播起播的几个纯函数（tests/console_live_test.mjs 截出这一段单独测）----
+// 直播源常常几秒才来一大段：第一段一到就开始放，先放慢一点（LIVE.SLOW）把缓冲攒到 LIVE.OK 秒，攒够了再恢复原速；
+// 起播阶段（缓冲不到 LIVE.OK 秒、开始放的头 LIVE.STARTUP_MS）每半秒取一次列表，把片源一开始的那一阵段尽快接上。
+const LIVE = { BACK: 6, LOW: 6, OK: 10, SLOW: 0.94, FAST_POLL_MS: 500, POLL_MS: 1000, STARTUP_MS: 30000 };
+// 第一次取列表时从第几段起：倒数第 LIVE.BACK 段（约 12 秒的余量；接上预热的、别人已经在看的那一路时马上就有）；
+// 刚起的一路只有一两段时从第一段起。
+function liveStartSeq(first, count) { return Math.max(first, first + count - LIVE.BACK); }
+// 播放速度：缓冲少于 LIVE.LOW 秒放慢，到 LIVE.OK 秒恢复原速，中间保持（不来回抖）。
+function liveRate(ahead, rate) { return ahead < LIVE.LOW ? LIVE.SLOW : ahead >= LIVE.OK ? 1 : rate; }
+// 多久再取一次列表：起播阶段半秒，之后一秒。
+function livePoll(ahead, sinceStartMs) { return ahead < LIVE.OK && sinceStartMs < LIVE.STARTUP_MS ? LIVE.FAST_POLL_MS : LIVE.POLL_MS; }
+// 一组台里 id 的上一台、下一台（首尾相接）；只有直播台（不是 UP 主、剧集、投屏）。没有时 null。
+function liveNeighbours(ids, id) {
+  const live = ids.filter((x) => !/^(up|sr)\d\d$/.test(x) && x !== "cast");
+  const at = live.indexOf(id);
+  if (at < 0 || live.length < 2) return { prev: null, next: null };
+  return { prev: live[(at - 1 + live.length) % live.length], next: live[(at + 1) % live.length] };
+}
+// ---- 直播起播的纯函数到此 ----
+
 // 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
 // opts：say（画面上的提示）、ended（放完了）、live（直播：落后太多时追到最新附近）、gap（视频落到中转的窗口外了）。
 class WatchPlayer {
   constructor(video, base, opts) {
     this.video = video; this.base = base; this.say = opts.say; this.live = !!opts.live; this.gap = opts.gap || (() => {});
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
+    this.t0 = performance.now(); this.playedAt = 0;
     this.onWaiting = () => this.kick();
+    // 出画面了（换台时收起上一台停住的画面，见 switching）。
+    this.onPlaying = () => {
+      if (!this.alive || this.playedAt) return;
+      this.playedAt = performance.now();
+      if (opts.playing) opts.playing(Math.round(this.playedAt - this.t0));
+    };
+    video.addEventListener("playing", this.onPlaying);
     // 放完了：视频播完，或者直播源断了。跟随小电视时，小电视换到下一个就会自动接上。
     this.onEnded = () => { if (this.alive) opts.ended(); };
     video.addEventListener("waiting", this.onWaiting);
@@ -1236,7 +1269,8 @@ class WatchPlayer {
       v.play().catch(() => this.say("点一下画面开始播放"));
       return;
     }
-    this.say("正在连片源…（要几秒钟）");
+    // 直播：画面上是「正在切换…」（switching），不再另说。
+    if (!this.live) this.say("正在连片源…（要几秒钟）");
     try {
       const master = await this.fetch("master.m3u8", "text");
       if (!this.alive) return;
@@ -1296,9 +1330,10 @@ class WatchPlayer {
       const ended = text.includes("#EXT-X-ENDLIST");
       const origin = text.match(/#EXT-X-RTV-ORIGIN:(-?[\d.]+)/);
       if (origin && this.origin === null) this.origin = Number(origin[1]);
-      // 第一次：直播从倒数第六段起（约 12 秒的余量，直播源常常几秒才来一大段）；视频的这一路还从头留着时
-      // 从第一段起（从 start 那一秒起，不跳过开头），接上别人已经在看的那一路时和直播一样。
-      if (this.next < 0) this.next = !this.live && first === 0 ? 0 : Math.max(first, first + count - 6);
+      // 第一次：直播从倒数第六段起（约 12 秒的余量，直播源常常几秒才来一大段；刚起的一路从第一段起，
+      // 见 liveStartSeq）；视频的这一路还从头留着时从第一段起（从 start 那一秒起，不跳过开头），
+      // 接上别人已经在看的那一路时和直播一样。
+      if (this.next < 0) this.next = !this.live && first === 0 ? 0 : liveStartSeq(first, count);
       if (this.next < first) {
         // 视频：要的那一段已经不在中转的窗口里了（暂停太久）。从现在的位置重起一路，免得跳过一截。
         if (!this.live) { this.gap(); return; }
@@ -1318,8 +1353,15 @@ class WatchPlayer {
         if (this.ms.readyState === "open") this.ms.endOfStream();
         return;
       }
-      await sleep(1000);
+      this.pace();
+      await sleep(this.live ? livePoll(this.ahead(), performance.now() - this.t0) : 1000);
     }
+  }
+  // 直播：缓冲少时放慢一点，攒够了恢复原速（liveRate）。视频不动速度。
+  pace() {
+    if (!this.live || !this.started) return;
+    const v = this.video, rate = liveRate(this.ahead(), v.playbackRate);
+    if (v.playbackRate !== rate) v.playbackRate = rate;
   }
   // 起播、跳过空档；直播落后太多时追到最新附近（视频不追：那是暂停过）。
   kick() {
@@ -1338,6 +1380,7 @@ class WatchPlayer {
       this.say("");
       v.play().catch(() => this.say("点一下画面开始播放"));
     }
+    this.pace();
   }
   async trim() {
     const v = this.video, b = this.sb.buffered;
@@ -1348,16 +1391,26 @@ class WatchPlayer {
     const v = this.video;
     v.removeEventListener("waiting", this.onWaiting);
     v.removeEventListener("ended", this.onEnded);
+    v.removeEventListener("playing", this.onPlaying);
+    v.playbackRate = 1;
     v.pause();
     v.removeAttribute("src");
     v.load();
   }
 }
 function playerFor(answer) {
+  const live = answer.kind === "live";
+  if (live) switching(answer.name || answer.title || answer.channel);
   if (watching) watching.player.stop();
   $("pcwin").hidden = false;
   const player = new WatchPlayer($("watchVideo"), answer.url, {
-    say: watchSay, ended: watchEnded, live: answer.kind === "live",
+    say: watchSay, ended: watchEnded, live,
+    playing: (ms) => {
+      if (!watching || watching.player !== player) return;
+      switched();
+      if (live) warmSoon();
+      if (window.console && console.debug) console.debug("在电脑上看：出画面用了 " + ms + " ms");
+    },
     // 暂停太久、中转那边已经往前转过了：暂停着就等按「播放」时再从这里重起（那之前不占 ffmpeg），在放就马上重起。
     gap: () => {
       if (!watching || watching.player !== player) return;
@@ -1366,6 +1419,67 @@ function playerFor(answer) {
   });
   return player;
 }
+
+// ---- 换台：上一台的画面停住，盖上台名和「正在切换…」，新的台出画面时收起 ----
+
+function switching(name, text) {
+  const v = $("watchVideo"), canvas = $("pcFreeze");
+  $("pcSwitchName").textContent = name || "";
+  $("pcSwitchText").textContent = text || (watching ? "正在切换…" : "正在连接…");
+  $("pcSwitch").hidden = false;
+  watchSay("");
+  // 画面停在上一台最后一帧（还在放、有画面时；MediaSource 的画面同源，能画到 canvas 上）。
+  if (canvas.hidden && watching && v.readyState >= 2 && v.videoWidth) {
+    try {
+      canvas.width = v.videoWidth; canvas.height = v.videoHeight;
+      canvas.getContext("2d").drawImage(v, 0, 0);
+      canvas.hidden = false;
+    } catch (error) { canvas.hidden = true; }
+  }
+}
+function switched() {
+  $("pcSwitch").hidden = true;
+  $("pcFreeze").hidden = true;
+}
+
+// ---- 预热：电脑上看直播时，让中转先把上一台、下一台（和鼠标停着的台）转起来，换过去马上有画面 ----
+// 中转没开预热（云端没有在电脑上看；自建看 config.toml 的 [pc] warm_channels 和内存）时 /api/state 没有 watch_warm。
+const WARM_AFTER_MS = 5000;     // 一个台放了几秒以后预热它的上一台、下一台
+const WARM_AGAIN_MS = 20000;    // 同一个台多久内不再问（中转那边转 30 秒）
+let warmTimer = 0, warmOff = false;
+const warmedAt = {};
+function canWarm() {
+  return !warmOff && !!(data && data.watch_warm) && !!watching && watching.mode === "direct" && watching.kind === "live";
+}
+function warm(ids) {
+  if (!canWarm()) return;
+  const now = Date.now();
+  const want = ids.filter((id) => id && id !== watching.channel && !(now - (warmedAt[id] || 0) < WARM_AGAIN_MS)).slice(0, 2);
+  if (!want.length) return;
+  for (const id of want) warmedAt[id] = now;
+  call("POST", "api/watch/warm", { viewer, channels: want }).then((answer) => { if (answer && answer.off) warmOff = true; }).catch(() => {});
+}
+// 正在看的台在它那一组里的上一台、下一台。
+function neighbourIds() {
+  if (!watching || !data) return { prev: null, next: null };
+  const g = data.groups.find((x) => x.name === watching.group && x.channels.some((c) => c.id === watching.channel))
+    || data.groups.find((x) => x.channels.some((c) => c.id === watching.channel));
+  return g ? liveNeighbours(g.channels.map((c) => c.id), watching.channel) : { prev: null, next: null };
+}
+function warmSoon() {
+  clearTimeout(warmTimer);
+  warmTimer = setTimeout(() => { const n = neighbourIds(); warm([n.next, n.prev]); }, WARM_AFTER_MS);
+}
+// 鼠标停在上一台 / 下一台的按钮上、停在直播台的卡片上（这台电脑是播放的地方时）：先转起来。
+let hoverTimer = 0;
+function warmOnHover(node, id) {
+  const go = () => { clearTimeout(hoverTimer); hoverTimer = setTimeout(() => warm([typeof id === "function" ? id() : id]), 300); };
+  node.addEventListener("mouseenter", go);
+  node.addEventListener("focus", go);
+  node.addEventListener("mouseleave", () => clearTimeout(hoverTimer));
+}
+warmOnHover($("watchPrevCh"), () => neighbourIds().prev);
+warmOnHover($("watchNextCh"), () => neighbourIds().next);
 
 // ---- 视频里的位置、跳转 ----
 
@@ -1787,11 +1901,13 @@ async function startDirect(body, ctx) {
   try { answer = await call("POST", "api/watch", request); }
   catch (error) {
     if (watching) watching.busy = false;
+    switched();
     if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
     return false;
   }
   if (!answer.ok) {
     if (watching) watching.busy = false;
+    switched();
     toast(answer.error, true);
     return false;
   }
@@ -1802,6 +1918,7 @@ async function startDirect(body, ctx) {
 function openDirect(answer, ctx) {
   ctx = ctx || {};
   const same = watching && watching.mode === "direct" && watching.sid === answer.sid && !ctx.again;
+  if (same) switched();      // 还是正在放的那一路（又点了同一个台）
   const player = same ? watching.player : playerFor(answer);
   // 重试、跳转用的请求：不再「下一个」，而是回到这一个（UP 主、剧集按第几个；投屏的按视频和第几集）。
   const again = answer.index ? { channel: answer.channel, episode: answer.index }
@@ -1844,6 +1961,8 @@ function stopWatch() {
     if (watching.mode === "direct" || watching.own) call("POST", "api/watch/stop", body).catch(() => {});
   }
   clearTimeout(seekTimer);
+  clearTimeout(warmTimer);
+  switched();
   hideUpNext();
   closeParts();
   if (document.fullscreenElement === $("pcBox")) document.exitFullscreen().catch(() => {});
@@ -1865,6 +1984,7 @@ function stepChannel(delta) {
   if (!g) return;
   const list = g.channels, at = list.findIndex((c) => c.id === watching.channel);
   const next = list[(at + delta + list.length) % list.length];
+  if (watching.kind === "live" && !isRelay(next.id)) switching(next.name);
   startDirect({ channel: next.id }, { group: g.name });
 }
 
@@ -1995,6 +2115,8 @@ function renderChannels() {
       grid.appendChild(wrap);
       continue;
     }
+    // 这台电脑上正在看直播、点台也是在电脑上放：鼠标停在直播台上就先转起来（预热）。
+    if (!relay) warmOnHover(card, () => (currentTarget() === PC ? c.id : null));
     card.onclick = () => {
       if (going) return;
       if (air && currentTarget() === deviceId()) { openRemote(); return; }
