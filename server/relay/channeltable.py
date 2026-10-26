@@ -29,7 +29,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .. import channel_groups
+from .. import channel_groups, routes
 
 ID_MAX = 15                  # live.TV_CHANNEL_ID_MAX - 1
 NAME_MAX = 40
@@ -47,7 +47,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 # 频道表旁边的 <文件名>.meta.json：每个台的 tvg-id、tvg-name、台标地址（从播放列表导入时带来的，
 # 节目单对台用，见 server/relay/epg.py）。channels.txt 的格式不变（电视服务和 live.parse_channels 不认第五列），
-# 这个文件坏了、没有都不要紧：节目单退回按台名对。键是台的 id，值只有这三项、都是短字符串。
+# 这个文件坏了、没有都不要紧：节目单退回按台名对。键是台的 id。同一个文件里还有每个台的备用线路、上次好用的线路和
+# 检测结果（server/routes.py：routes、good、checks）；meta_of 只给节目单和台标用的这三项。
 META_SUFFIX = ".meta.json"
 META_FIELDS = ("tvg_id", "tvg_name", "logo")
 TVG_MAX = 64
@@ -103,6 +104,54 @@ def save_meta(path: Path, meta: dict[str, dict]) -> None:
     tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=0, sort_keys=True), encoding="utf-8")
     os.chmod(tmp, 0o644)
     os.replace(tmp, target)
+
+
+def routes_view(path: Path, rows: list[dict]) -> dict[str, dict]:
+    """总后台页面看的每个台的线路（server/routes.py）：{台 id: {routes: [{url, ua?}]（备用线路）,
+    checks: {地址: {ok, why, at}}（上次检测的结果）, good: 上次放得起来的那条的地址（没有时空串）}}。"""
+    meta = routes.read_meta(path)
+    view = {}
+    for row in rows:
+        entry = meta.get(row["id"], {})
+        backups = routes.clean_routes(entry.get("routes"), row["url"])
+        checks, good = {}, ""
+        stored = entry.get("checks") if isinstance(entry.get("checks"), dict) else {}
+        for url in [row["url"]] + [b["url"] for b in backups]:
+            mark = routes.fingerprint(url)
+            found = stored.get(mark)
+            if isinstance(found, dict) and isinstance(found.get("ok"), bool):
+                checks[url] = {"ok": found["ok"], "why": str(found.get("why") or "")[:routes.WHY_MAX],
+                               "at": found.get("at") if isinstance(found.get("at"), int) else 0}
+            if entry.get("good") == mark:
+                good = url
+        view[row["id"]] = {"routes": backups, "checks": checks, "good": good}
+    return view
+
+
+def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
+    """保存频道表时整理 meta（原地改 data，见 routes.update_meta）：
+    - tvg-id / 台标：新台用页面带来的（从播放列表导入的才有），留下的台照旧，删掉的台跟着删；
+    - 备用线路：页面给了 routes 的用页面的，没给的照旧；和主线路一样的去掉；
+    - 上次好的线路、检测结果：只留还在这个台的线路里的。"""
+    old = dict(data)
+    data.clear()
+    for item, row in zip(items, rows):
+        kept = isinstance(item, str) or (isinstance(item, dict) and item.get("id") is not None)
+        prev = old.get(row["id"], {}) if kept else {}
+        entry = dict(clean_meta(item) or clean_meta(prev))
+        given = item.get("routes") if isinstance(item, dict) and "routes" in item else prev.get("routes")
+        backups = routes.clean_routes(given, row["url"])
+        if backups:
+            entry["routes"] = backups
+        marks = {routes.fingerprint(row["url"])} | {routes.fingerprint(b["url"]) for b in backups}
+        if prev.get("good") in marks:
+            entry["good"] = prev["good"]
+        checks = prev.get("checks") if isinstance(prev.get("checks"), dict) else {}
+        checks = {k: v for k, v in checks.items() if k in marks and isinstance(v, dict)}
+        if checks:
+            entry["checks"] = checks
+        if entry:
+            data[row["id"]] = entry
 
 
 def version_of(text: str) -> str:

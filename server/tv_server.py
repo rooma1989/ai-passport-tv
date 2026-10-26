@@ -28,7 +28,7 @@ class SessionState(str, enum.Enum):
     RECOVERING = "RECOVERING"
     CLOSED = "CLOSED"
 
-from . import frames, live, netident
+from . import frames, live, netident, routes
 from .timeline import SourceState
 from .rate import ADAPTIVE, ByteRate
 from .live import (CHANNELS, CHANNEL_AGENTS, DEFAULT_CHANNEL, LiveChannel, LiveError,
@@ -859,9 +859,46 @@ class AVServer:
         return payload
 
     def make_channel(self) -> LiveChannel:
-        """为会话的频道 id 创建新的未启动频道。"""
+        """为会话的频道 id 创建新的未启动频道：有备用线路时用现在轮到的那条（route_cycle）。"""
+        cycle = getattr(self, "route_cycle", None)
+        if cycle is not None and getattr(self, "_route_channel", None) == self.channel_name:
+            url, agent = cycle.current
+            return self.channel_factory(url, self.ffmpeg, agent)
         return self.channel_factory(CHANNELS[self.channel_name], self.ffmpeg,
                                     CHANNEL_AGENTS.get(self.channel_name, ""))
+
+    # ---- 备用线路（server/routes.py）：起不来换下一条，放得起来的记住，下次先试 ----
+
+    def _start_routes(self, channel_id: str) -> tuple[str, str]:
+        """会话开始：这个台的线路和顺序（上次好用的先试）；返回先用的（地址, UA）。"""
+        lines, good = live.channel_routes(channel_id, CHANNELS[channel_id], CHANNEL_AGENTS.get(channel_id, ""))
+        self.route_cycle = routes.RouteCycle(lines, good)
+        self._route_channel = channel_id
+        return self.route_cycle.current
+
+    def route_failed(self, reason: str) -> None:
+        """现在这条线路起不来或断了（reconnect.hold 和会话开始时调）：该换就换到下一条。"""
+        cycle = getattr(self, "route_cycle", None)
+        if cycle is None or cycle.count < 2:
+            return
+        before = cycle.index
+        moved = cycle.failed()
+        if moved:
+            self.logger(f"channel={self._route_channel} route {before + 1}/{cycle.count} failed ({reason}), "
+                        f"trying route {cycle.index + 1}")
+
+    def route_ok(self) -> None:
+        """现在这条线路出数据了：记住（几条线路时写进 meta，变了才写）。"""
+        cycle = getattr(self, "route_cycle", None)
+        if cycle is None:
+            return
+        cycle.started()
+        if cycle.count > 1:
+            live.remember_good_route(self._route_channel, cycle.current[0])
+
+    def route_extra_s(self) -> float:
+        cycle = getattr(self, "route_cycle", None)
+        return cycle.extra_s(reconnect.ATTEMPT_TIMEOUT_S) if cycle is not None else 0.0
 
     def _live_session(self, connection: socket.socket, channel_id: str) -> None:
         """以单一单调时钟起点调度一个直播频道。
@@ -870,9 +907,9 @@ class AVServer:
         视频晚于呈现时刻则丢弃，不得为视频阻塞音频。
         """
         self.phase = "live_start"
-        # 频道对应的 User-Agent 一并传入：不少镜像只响应抓取时的播放器。
-        channel = self.channel_factory(CHANNELS[channel_id], self.ffmpeg,
-                                       CHANNEL_AGENTS.get(channel_id, ""))
+        # 频道对应的 User-Agent 一并传入：不少镜像只响应抓取时的播放器。有备用线路时先用上次好用的那条。
+        url, agent = self._start_routes(channel_id)
+        channel = self.channel_factory(url, self.ffmpeg, agent)
         self.channel_name = channel_id
         self._loading_shown = None
         self.progress.reset()
@@ -952,7 +989,11 @@ class AVServer:
             if not failed:
                 # 片源的第一块声音时间戳为 0（见 _pace_live 的 stamp_base）。
                 self.progress_begin(0)
+            if not failed:
+                self.route_ok()
             if failed:
+                # 这条线路起不来：有备用线路时下面的重连从下一条起。
+                self.route_failed(failed)
                 wire = reconnect.WireState(seq=2, audio_pts=0)
                 now = time.monotonic()
                 held = reconnect.hold(self, connection, session, channel, wire,

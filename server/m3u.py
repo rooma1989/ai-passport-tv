@@ -39,7 +39,8 @@ def _title(extinf: str) -> str:
 
 
 def parse_playlist(text: str) -> list[dict]:
-    """[{name, url, agent, tvg_id, tvg_name, logo}]（后三个没有时是空串）。
+    """[{name, url, agent, tvg_id, tvg_name, logo, routes}]（tvg 三项没有时是空串；routes 是 TXT 一行里
+    用 # 隔开的其余地址，M3U 的为空——M3U 里同一个台的几行由调用方合并，见 server/relay/playlist.py）。
 
     也读 TXT 直播源（「台名,地址」一行一个、「分组,#genre#」分组行），见下面的说明。
 
@@ -72,17 +73,22 @@ def parse_playlist(text: str) -> list[dict]:
             continue
         if not line.startswith(("http://", "https://")) and pending is None:
             # TXT 直播源（国内常见，DIYP 格式）：「台名,地址」一行一个，「分组,#genre#」是分组行；
-            # 一个台写几条线路时用 # 隔开，地址后面的 $说明 是线路名——都只取第一条地址。
+            # 一个台写几条线路时用 # 隔开，地址后面的 $说明 是线路名。第一条是地址，其余的（http/https 的）
+            # 放进 routes（备用线路，见 server/routes.py）。
             label, comma, rest = line.partition(",")
+            found = [part.split("$", 1)[0].strip() for part in rest.split("#")]
+            found = [u for u in found if u.startswith(("http://", "https://"))]
             first = rest.split("#", 1)[0].split("$", 1)[0].strip()
             if comma and label.strip() and first.startswith(("http://", "https://")):
                 channels.append({"name": label.strip(), "url": first, "agent": "",
-                                 "tvg_id": "", "tvg_name": "", "logo": ""})
+                                 "tvg_id": "", "tvg_name": "", "logo": "",
+                                 "routes": list(dict.fromkeys(u for u in found[1:] if u != first))})
             continue
         if line.startswith(("http://", "https://")):
             name = pending if pending else line.rsplit("/", 1)[-1]
             channels.append({"name": name, "url": line, "agent": pending_agent,
-                             **(pending_tvg if pending else {"tvg_id": "", "tvg_name": "", "logo": ""})})
+                             **(pending_tvg if pending else {"tvg_id": "", "tvg_name": "", "logo": ""}),
+                             "routes": []})
             pending = None
             pending_agent = ""
             pending_tvg = {}

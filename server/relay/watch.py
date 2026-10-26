@@ -51,11 +51,11 @@ import struct
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
-from .. import listen as listen_audio
+from .. import listen as listen_audio, routes as live_routes
 from ..frames import DEFAULT_USER_AGENT
 from ..proxyenv import loopback_bypass
 from .bilibili import BLOCKED_HINT as _BILIBILI_BLOCKED_HINT, blocked as _bilibili_blocked
@@ -98,6 +98,14 @@ MODE_CACHE_MAX = 256
 # 每一步约 1 秒；记住了下次直接从它起，出第一段从六七秒变成三四秒。地址里带会话参数，量过 9 分钟以后还能用；
 # 记的时间短一点，失效了（打不开、一段也没出）就忘掉、从频道表里的地址重来。只在内存里，从不写日志。
 RESOLVED_S = 600.0
+# 直播台有几条线路（server/routes.py）时：一条线路起来以后这么久还没出第一段就算它不行（源站超时），换下一条。
+FIRST_SEGMENT_S = 20.0
+# 有备用线路时等 ffmpeg 报出输入流编码最多这么久（只有一条线路时照旧 PROBE_WAIT_S）。
+ROUTE_PROBE_WAIT_S = 20.0
+# 一条线路上至多起几次 ffmpeg（按编码重起、记住的地址失效重来、只换封装失败改转码）。
+LEG_TRIES = 4
+# 坏了的线路记多久（这么久内再开这个台时排在最后）。
+BAD_ROUTE_S = 600.0
 _OPENING = re.compile(r"Opening '(https?://[^']+)' for reading")
 _SID = re.compile(r"^[0-9a-f]{16}$")
 _PATH = re.compile(r"^/watch/([0-9a-f]{16})/([0-9]{1,12}\.[A-Za-z0-9_-]{16,32})/"
@@ -134,6 +142,9 @@ class Source:
     start: float = 0.0
     # 电脑版播放器的清晰度菜单：登录了 B 站、选了 1080P 时是 "1080p"（点播 vod.py 那条路最高 720p）；别的为空。
     quality: str = ""
+    # 直播台的所有线路 ((地址, UA), …)，频道表的顺序（server/routes.py）；第一条和 url / user_agent 一样。
+    # 只有一条（或没给）时和以前一样只用 url。
+    routes: tuple = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -174,8 +185,24 @@ def mode_for(video: str | None, audio: str | None) -> Mode | None:
 
 
 def is_live(source: Source) -> bool:
-    """直播台（全局频道表里的）：键是 ("live", 台, 地址, UA)。"""
+    """直播台（全局频道表里的）：键是 ("live", 台, 地址, UA)，有备用线路时后面再接上其余的线路。"""
     return bool(source.key) and source.key[0] == "live"
+
+
+def live_key(cid: str, routes: list[tuple[str, str]]) -> tuple:
+    """直播台的键：一条线路时 ("live", 台, 地址, UA)（和以前一样）；几条时后面接上其余线路，线路变了键就变。"""
+    url, agent = routes[0]
+    return ("live", cid, url, agent) + ((tuple(routes[1:]),) if len(routes) > 1 else ())
+
+
+def legs_of(source: Source, order: list[int] | None = None) -> list[tuple[int, Source]]:
+    """[(线路在频道表里的下标, 这条线路的片源)]，按 order 的顺序。一条线路的就是片源自己；几条的每条一个片源，
+    键是 ("live", 台, 地址, UA)：记住的转法和跳转后的地址按线路记（LiveMemory）。"""
+    if not is_live(source) or len(source.routes) < 2:
+        return [(0, source)]
+    order = list(range(len(source.routes))) if order is None else order
+    return [(i, replace(source, key=("live", source.key[1], *source.routes[i]), url=source.routes[i][0],
+                        user_agent=source.routes[i][1], routes=())) for i in order]
 
 
 def fits(mode: Mode, video: str | None, audio: str | None) -> bool:
@@ -433,6 +460,9 @@ class Window:
         self.next_seq = 0
         self.target = 2
         self.ended = False
+        # 直播台放了一阵断了、还有别的线路：列表收尾时加上 #EXT-X-RTV-REOPEN（自定义的标签），播放器放到这里
+        # 就自己重开一次（从下一条线路起，console.js 的 routeReopen）。
+        self.reopen = False
         # 一共出了多少秒（停了以后也留着）：估计电脑上看到了哪里（web.py 的 _pc_position）。
         self.total_s = 0.0
         self.origin: float | None = None
@@ -465,6 +495,8 @@ class Window:
         for seq, duration, _ in self.segments:
             lines += [f"#EXTINF:{duration:.3f},", f"{seq}.m4s"]
         if self.ended:
+            if self.reopen:
+                lines.append("#EXT-X-RTV-REOPEN")
             lines.append("#EXT-X-ENDLIST")
         return "\n".join(lines) + "\n"
 
@@ -522,6 +554,51 @@ class LiveMemory:
             self._urls.pop(key, None)
 
 
+class RouteMemory:
+    """每个直播台上次放得起来的线路（先试它）和最近坏了的线路（BAD_ROUTE_S 秒内排在最后）。
+    好的线路也记进频道表旁边的 meta（routes.remember_good，变了才写），下次启动先试它；path() 给频道表的路径。"""
+
+    def __init__(self, path: Callable[[], Path | None] = lambda: None, clock=time.monotonic,
+                 bad_s: float = BAD_ROUTE_S, log=print):
+        self.path = path
+        self.clock = clock
+        self.bad_s = bad_s
+        self.log = log
+        self._good: dict[str, str] = {}
+        self._bad: dict[tuple[str, str], float] = {}
+        self._lock = threading.Lock()
+
+    def order(self, cid: str, routes: list[tuple[str, str]]) -> list[int]:
+        now = self.clock()
+        with self._lock:
+            good = self._good.get(cid)
+            bad = {mark for (c, mark), at in self._bad.items() if c == cid and now - at < self.bad_s}
+        if good is None:
+            good = live_routes.good_of(self.path(), cid)
+        return live_routes.preferred(routes, good, bad)
+
+    def ok(self, cid: str, url: str, count: int) -> None:
+        mark = live_routes.fingerprint(url)
+        with self._lock:
+            before = self._good.get(cid)
+            self._good[cid] = mark
+            self._bad.pop((cid, mark), None)
+        if count > 1 and before != mark:
+            try:
+                live_routes.remember_good(self.path(), cid, url)
+            except OSError as error:
+                self.log(f"在电脑上看：记不下好用的线路（{type(error).__name__}）")
+
+    def failed(self, cid: str, url: str) -> None:
+        mark = live_routes.fingerprint(url)
+        with self._lock:
+            self._bad[(cid, mark)] = self.clock()
+            if self._good.get(cid) == mark:
+                del self._good[cid]
+            while len(self._bad) > MODE_CACHE_MAX:
+                del self._bad[min(self._bad, key=self._bad.get)]
+
+
 def resolved_playlist(line: str, given: str) -> str | None:
     """ffmpeg 的一行输出里打开的列表地址（跳转和主列表之后真正的那个 .m3u8）；不是、或者就是频道表里的地址时 None。"""
     match = _OPENING.search(line)
@@ -542,7 +619,8 @@ class WatchStream:
 
     def __init__(self, sid: str, device: str, source: Source, ffmpeg: str, log=print,
                  clock=time.monotonic, popen=subprocess.Popen, user: int | None = None,
-                 mode: Mode = FIRST_MODE, memory: LiveMemory | None = None, cheap: bool = False):
+                 mode: Mode = FIRST_MODE, memory: LiveMemory | None = None, cheap: bool = False,
+                 route_memory: RouteMemory | None = None):
         self.sid = sid
         self.device = device
         self.user = user
@@ -572,6 +650,19 @@ class WatchStream:
         self._cond = threading.Condition()
         self._thread: threading.Thread | None = None
         self.stderr: collections.deque[str] = collections.deque(maxlen=12)
+        # 直播台：ffmpeg 说的能认出原因的几行（routes.classify 认得的：403、超时、中途断开……）。片段坏了时 ffmpeg
+        # 会刷一大堆解码错误，原因那一行早就挤出了上面那 12 行。
+        self.telling: collections.deque[str] = collections.deque(maxlen=4)
+        # 有备用线路的直播台：现在在试的线路（片源和它在频道表里的下标）、换线路时给播放器看的话（notice），
+        # 放了一阵又断了、还有别的线路可换时 reopen 为真（播放器自己重开一次，见 get() 的 410）。
+        self.route_memory = route_memory if is_live(source) else None
+        self.leg = source
+        self.route = 0
+        self.notice = ""
+        self.reopen = False
+        self._leg_segments = 0
+        self._leg_since: float | None = None
+        self._starved = False
 
     # ---- 状态 ----
 
@@ -589,8 +680,10 @@ class WatchStream:
     def wait_ready(self, timeout: float) -> bool:
         """等到有初始化段和至少一段、或者出错 / 结束 / 停了；返回是否有东西可放。"""
         deadline = time.monotonic() + timeout
+        notice = self.notice
         with self._cond:
-            while not self.ready() and self.alive:
+            # 换线路了（notice 变了）也先回去：页面马上能说「正在换线路 2…」。
+            while not self.ready() and self.alive and self.notice == notice:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     break
@@ -622,41 +715,52 @@ class WatchStream:
                 pass
 
     def _run(self) -> None:
-        mode, retried = self.first_mode, False
         try:
-            while not self.stopped:
-                outcome, detail = self._attempt(mode)
-                if outcome == "restart":
-                    self.log(f"在电脑上看 {self.device}：片源是 {detail[1]}，"
-                             f"{'画面转码' if detail[0].video == 'encode' else '没有画面' if detail[0].video is None else '画面只换封装'}")
-                    mode = detail[0]
-                    if self.cheap and mode.video == "encode":
-                        # 预热的台要转码：记下转法（真要看时直接按它起），这一路不转了。
-                        self._decided(mode)
-                        self.stopped = True
-                        self.log(f"在电脑上看 {self.device}：要转码，不预热")
-                        return
-                    continue
-                if outcome in ("failed", "copy_failed") and self._via_memory and not self.window.segments \
-                        and not self.stopped:
-                    # 记住的地址失效了（会话过期之类）：忘掉，从频道表里的地址重来。
-                    self.memory.forget_url(self.source.key)
-                    self.log(f"在电脑上看 {self.device}：记住的地址打不开了，重新连")
-                    continue
-                if outcome == "copy_failed" and not retried:
-                    # 复制画面失败、一段也没出（少见的 H.264 变体）：转码再试一次。
-                    retried = True
-                    mode = Mode("encode", mode.audio)
-                    self.log(f"在电脑上看 {self.device}：只换封装不行，改成转码")
-                    continue
+            source = self.source
+            order = None
+            if self.route_memory is not None and len(source.routes) > 1:
+                order = self.route_memory.order(source.key[1], list(source.routes))
+            legs = legs_of(source, order)
+            last = ""
+            for n, (index, leg) in enumerate(legs):
+                self.leg, self.route = leg, index
+                self._leg_segments, self._leg_since = 0, None
+                outcome, detail = self._run_leg()
+                if self.stopped or outcome == "stopped":
+                    return
                 if outcome == "ended":
                     self.window.ended = True
-                elif not self.stopped:
-                    self.error = explain(self.source.site, detail or "片源打不开")
-                    # 已经有段的：列表收尾，播放器放完已有的就停。
-                    self.window.ended = bool(self.window.segments)
-                    self.log(f"在电脑上看 {self.device} 停了：{self.error}")
+                    return
+                last = detail or "片源打不开"
+                if len(legs) > 1:
+                    self.log(f"在电脑上看 {self.device}：{source.label or source.key[1]} 线路 {index + 1} 不行："
+                             f"{live_routes.redact(last)}")
+                    early = self._leg_since is None or self.clock() - self._leg_since < live_routes.EARLY_S
+                    if early and self.route_memory is not None:
+                        self.route_memory.failed(source.key[1], leg.url)
+                if self._leg_segments:
+                    # 放了一阵断了：这一路的段已经给了播放器（换线路得换初始化段），不在这一路里接着换；
+                    # 还有别的线路时让播放器重开一次（RouteMemory 把这条排到了最后）。
+                    self.reopen = self.window.reopen = len(legs) > 1
+                    break
+                if n + 1 < len(legs):
+                    self.notice = live_routes.switching(source.label or source.key[1], index + 1, last,
+                                                        legs[n + 1][0] + 1)
+                    self._notify()
+            if self.stopped:
                 return
+            if is_live(source):
+                if self._leg_segments:
+                    self.error = (f"{live_routes.friendly(last)}，正在换线路…" if self.reopen
+                                  else f"直播断了（{live_routes.friendly(last)}）")
+                else:
+                    self.error = live_routes.all_failed(last, len(legs))
+            else:
+                self.error = explain(source.site, last)
+            # 已经有段的：列表收尾，播放器放完已有的就停。
+            self.window.ended = bool(self.window.segments)
+            self.log(f"在电脑上看 {self.device} 停了：{self.error}"
+                     + (f"（{live_routes.redact(last)}）" if is_live(source) else ""))
         except Exception as error:  # noqa: BLE001 —— 后台线程不能悄悄死：记下来，页面上看到出错
             self.error = f"{type(error).__name__}: {error}"
             self.log(f"在电脑上看 {self.device} 出错：{self.error}")
@@ -664,10 +768,57 @@ class WatchStream:
             self._kill()
             self._notify()
 
+    def _run_leg(self) -> tuple[str, str]:
+        """在一条线路（self.leg）上起 ffmpeg，必要时按编码重起、改转码、忘掉失效的地址重来（至多 LEG_TRIES 次）。
+        返回 ("ended", "")、("stopped", "") 或 ("failed", 原因的原话)。"""
+        leg = self.leg
+        if leg is self.source:
+            mode = self.first_mode
+        else:
+            mode = (self.memory.mode(leg.key) if self.memory is not None else None) or FIRST_MODE
+        retried, detail = False, ""
+        for _ in range(LEG_TRIES):
+            if self.stopped:
+                return "stopped", ""
+            outcome, detail = self._attempt(mode)
+            if outcome == "restart":
+                self.log(f"在电脑上看 {self.device}：片源是 {detail[1]}，"
+                         f"{'画面转码' if detail[0].video == 'encode' else '没有画面' if detail[0].video is None else '画面只换封装'}")
+                mode = detail[0]
+                if self.cheap and mode.video == "encode":
+                    # 预热的台要转码：记下转法（真要看时直接按它起），这一路不转了。
+                    self._decided(mode)
+                    self.stopped = True
+                    self.log(f"在电脑上看 {self.device}：要转码，不预热")
+                    return "stopped", ""
+                detail = ""
+                continue
+            if outcome in ("failed", "copy_failed") and self._via_memory and not self._leg_segments \
+                    and not self.stopped:
+                # 记住的地址失效了（会话过期之类）：忘掉，从频道表里的地址重来。
+                self.memory.forget_url(leg.key)
+                self.log(f"在电脑上看 {self.device}：记住的地址打不开了，重新连")
+                continue
+            if outcome == "copy_failed" and not retried and not self._starved and \
+                    (not is_live(self.source) or live_routes.classify(str(detail)) in ("other", "invalid")):
+                # （直播台的原因是网络上的——403、超时、中途断开——时不转码再试：换封装没错，是线路坏了。）
+                # 复制画面失败、一段也没出（少见的 H.264 变体）：转码再试一次。
+                retried = True
+                mode = Mode("encode", mode.audio)
+                self.log(f"在电脑上看 {self.device}：只换封装不行，改成转码")
+                continue
+            if outcome == "ended":
+                return "ended", ""
+            return ("stopped", "") if self.stopped else ("failed", str(detail or ""))
+        return "failed", str(detail or "片源打不开")
+
     def _attempt(self, mode: Mode) -> tuple[str, object]:
         """起一次 ffmpeg。返回 ("restart", (新的 Mode, 编码说明))、("ended", None)、("copy_failed", 原因)、("failed", 原因)。"""
-        source = self.source
+        source = self.leg
         url = ""
+        self.stderr.clear()
+        self.telling.clear()
+        self._starved = False
         if source.opener is None:
             try:
                 url = source.url() if callable(source.url) else source.url
@@ -696,7 +847,7 @@ class WatchStream:
                     pass
 
     def _follow(self, proc, mode: Mode) -> tuple[str, object]:
-        source = self.source
+        source = self.leg
         if self.stopped:
             self._kill()
             return "failed", ""
@@ -705,7 +856,7 @@ class WatchStream:
         threading.Thread(target=self._read_stderr, args=(proc, lines, probed, self._given), daemon=True).start()
         if source.opener is not None:
             threading.Thread(target=self._feed, args=(proc,), daemon=True).start()
-        probed.wait(PROBE_WAIT_S)
+        probed.wait(ROUTE_PROBE_WAIT_S if len(self.source.routes) > 1 else PROBE_WAIT_S)
         done, video, audio = input_codecs(lines)
         wanted = mode_for(video, audio)
         # 输入信息打出来了、但这种转法 ffmpeg 起不来（例如只有声音的源用了按关键帧切段）：照编码换一种转法。
@@ -723,20 +874,47 @@ class WatchStream:
             return "restart", (wanted, f"{video or '无画面'} + {audio or '无声音'}")
         self.mode = mode
         self._decided(mode)
-        produced = self._segment(proc.stdout)
+        watchdog = None
+        if is_live(self.source):
+            # 直播：编码报出来了、却迟迟不出第一段（列表在、片段取不到）：FIRST_SEGMENT_S 秒后算源站超时。
+            watchdog = threading.Timer(FIRST_SEGMENT_S, self._no_segments, args=(proc, self._leg_segments))
+            watchdog.daemon = True
+            watchdog.start()
+        try:
+            produced = self._segment(proc.stdout)
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
         code = proc.wait()
         if self.stopped:
             return "failed", ""
-        if code == 0:
+        if code == 0 and not self._starved:
             return "ended", None
-        reason = self._reason(lines) or f"ffmpeg 退出码 {code}"
+        reason = ("没有出片段（timed out）" if self._starved else "") or self._reason(lines) or f"ffmpeg 退出码 {code}"
         if not produced and mode.video == "copy":
             return "copy_failed", reason
         return "failed", reason
 
     def _decided(self, mode: Mode) -> None:
         if self.memory is not None:
-            self.memory.remember_mode(self.source.key, mode)
+            self.memory.remember_mode(self.leg.key, mode)
+
+    def _no_segments(self, proc, before: int) -> None:
+        if self.stopped or self._leg_segments != before:
+            return
+        self._starved = True
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+    def _first_segment(self) -> None:
+        """这条线路出了第一段：记住它好用（RouteMemory），换线路的话收起来。"""
+        self._leg_since = self.clock()
+        if self.notice:
+            self.notice = ""
+        if self.route_memory is not None and self.source.routes:
+            self.route_memory.ok(self.source.key[1], self.leg.url, len(self.source.routes))
 
     def _segment(self, stdout) -> int:
         """读 ffmpeg 的分片 MP4：ftyp+moov 是初始化段，每个 moof+mdat 是一段。返回出了几段。"""
@@ -766,6 +944,9 @@ class WatchStream:
                                 fragment_start(pending, tracks))
                 pending = b""
                 produced += 1
+                self._leg_segments += 1
+                if self._leg_segments == 1:
+                    self._first_segment()
                 self._notify()
         return produced
 
@@ -785,8 +966,11 @@ class WatchStream:
                     if input_codecs(lines)[0]:
                         probed.set()
                         if len(opened) == 1:
-                            self.memory.remember_url(self.source.key, opened[0])
+                            self.memory.remember_url(self.leg.key, opened[0])
                 self.stderr.append(line)
+                if self.route_memory is not None or is_live(self.source):
+                    if routes_known(line):
+                        self.telling.append(line)
         except (OSError, ValueError):
             pass
         finally:
@@ -816,6 +1000,10 @@ class WatchStream:
     def _reason(self, lines: list[str]) -> str:
         """给人看的失败原因：ffmpeg 最后几行里像错误的那一行（去掉地址，地址里可能有令牌）。"""
         recent = list(self.stderr) or lines
+        if is_live(self.source):
+            found = live_routes.telling(list(self.telling) + recent)
+            if found:
+                return re.sub(r"^\[[^\]]* @ 0x[0-9a-f]+\]\s*", "", found.strip())[:200]
         for line in recent:
             if any(word in line for word in _GENERIC):
                 continue
@@ -824,6 +1012,10 @@ class WatchStream:
                 line = re.sub(r"^\[[^\]]* @ 0x[0-9a-f]+\]\s*", "", line.strip())
                 return re.sub(r"https?://\S+", "<地址>", line)[:200]
         return ""
+
+
+def routes_known(line: str) -> bool:
+    return live_routes.classify(line) != "other"
 
 
 # ffmpeg 收尾时的套话，不是原因。
@@ -901,6 +1093,9 @@ class WatchService:
         # 预热的和刚换走的：片源的键 → 那一路（stream.user 是谁的）。
         self._warm: dict[tuple, WatchStream] = {}
         self.memory = LiveMemory(clock=clock)
+        # 直播台的线路：上次好用的先试，坏了的排最后（RouteMemory）；routes_path 由中转设成全局频道表的路径。
+        self.routes_path: Callable[[], Path | None] = lambda: None
+        self.routes = RouteMemory(lambda: self.routes_path(), clock=clock, log=log)
         self._lock = threading.Lock()
         self._reaper: threading.Thread | None = None
         # 别处占着的名额：点播（vod.py 的 VodService.load）的 [(位置, 用户)]，和这里的一起数。
@@ -999,7 +1194,7 @@ class WatchService:
     def _new(self, device: str, source: Source, user: int | None, cheap: bool = False) -> WatchStream:
         return WatchStream(secrets.token_hex(8), device, source, self.ffmpeg, log=self.log, clock=self.clock,
                            popen=self.popen, user=user, mode=self.mode_of(source), memory=self.memory,
-                           cheap=cheap)
+                           cheap=cheap, route_memory=self.routes)
 
     def mode_of(self, source: Source) -> Mode:
         """这个片源先按哪种转法起：记住了的直播台按记住的，别的先试只换封装。"""
@@ -1145,6 +1340,16 @@ def live_source(path: Path | None, channel: str) -> tuple[str, str] | None:
     return None
 
 
+def live_lines(path: Path | None, channel: str) -> list[tuple[str, str]]:
+    """这个台的所有线路 [(地址, UA)]：频道表里的（主线路）在前，再是频道表旁边 meta 里的备用线路
+    （server/routes.py），频道表的顺序。不在表里时为空。"""
+    found = live_source(path, channel)
+    if found is None:
+        return []
+    url, agent = found
+    return live_routes.table_routes(path, channel, url, agent, DEFAULT_USER_AGENT)
+
+
 # ---------------------------------------------------------------- HTTP（中转的网页端口）
 
 PLAYLIST_TYPE = "application/vnd.apple.mpegurl"
@@ -1165,9 +1370,15 @@ def get(handler, relay, path: str) -> bool:
     if name in ("master.m3u8", "index.m3u8"):
         if not stream.wait_ready(READY_WAIT_S):
             if stream.alive:
-                handler._send(503, "还在连片源，稍后再试".encode(), "text/plain; charset=utf-8")
+                # 换线路时正文是「CCTV2 线路 1 失效（…），正在换线路 2…」，带 X-RTV-Notice：播放器显示出来、
+                # 接着等（不算进它「503 至多等几次」的次数，线路有几条就可能要等几轮）。
+                notice = stream.notice
+                handler._send(503, (notice or "还在连片源，稍后再试").encode(), "text/plain; charset=utf-8",
+                              {"X-RTV-Notice": "1"} if notice else None)
             else:
-                handler._send(410, (stream.error or "这一路已经停了").encode(), "text/plain; charset=utf-8")
+                # 放了一阵断了、还有别的线路：X-RTV-Reopen，播放器自己重开一次（会从下一条线路起）。
+                handler._send(410, (stream.error or "这一路已经停了").encode(), "text/plain; charset=utf-8",
+                              {"X-RTV-Reopen": "1"} if stream.reopen else None)
             return True
         stream.touch()
         text = stream.window.master() if name == "master.m3u8" else stream.window.playlist()

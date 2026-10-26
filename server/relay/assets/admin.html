@@ -158,6 +158,21 @@
   .chtab td.st { font: 12px var(--mono); color: var(--dim); white-space: nowrap; }
   .chtab td.st.ok { color: var(--amber); }
   .chtab td.st.dead { color: var(--red); }
+  /* 线路（备用地址，server/routes.py） */
+  .chtab td.ln { white-space: nowrap; font-size: 13px; }
+  .chtab td.ln .ok { color: var(--amber); }
+  .chtab td.ln .bad { color: var(--red); }
+  .chtab td.ln small { display: block; font-size: 11px; color: var(--faint); max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  .routes { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
+  .routes td { padding: 6px 8px 6px 0; vertical-align: top; border-bottom: 1px dotted var(--rule); font-size: 13px; }
+  .routes td.u { font: 12px/1.5 var(--mono); color: var(--dim); word-break: break-all; }
+  .routes td.u b { font: 600 13px var(--serif); color: var(--paper-hi); display: block; }
+  .routes td.s { white-space: nowrap; }
+  .routes td.s .ok { color: var(--amber); }
+  .routes td.s .bad { color: var(--red); }
+  .routes td.a { white-space: nowrap; text-align: right; }
+  .routes td.a button + button { margin-left: 6px; }
+  .routeadd { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; gap: 8px; }
 
   /* ---- 系统 ---- */
   dl.kv { display: grid; grid-template-columns: 200px minmax(0, 1fr); margin: 0; }
@@ -309,8 +324,13 @@
             <input type="text" id="chFilter" placeholder="找台：输入名字的一部分" style="max-width: 320px">
             <span class="hint" style="margin: 0">改名、调分组直接在表里改；顺序就是设备上换台的顺序。</span>
           </div>
+          <div class="inline" style="margin-bottom: 10px">
+            <button class="ghost" id="chCheckAll">检测全部线路</button>
+            <span class="hint" id="chCheckState" style="margin: 0">一个台可以有几条线路（主线路 + 备用）：放不起来时自动换下一条。
+              「检测」只连一下列表和一个片段，不解码，很轻；能连上不等于一定能放。</span>
+          </div>
           <div class="scroll"><table class="chtab">
-            <thead><tr><th>#</th><th>id</th><th>名字</th><th>分组</th><th>地址</th><th>User-Agent</th><th></th></tr></thead>
+            <thead><tr><th>#</th><th>id</th><th>名字</th><th>分组</th><th>地址（主线路）</th><th>User-Agent</th><th>线路</th><th></th></tr></thead>
             <tbody id="chRows"></tbody>
           </table></div>
         </div>
@@ -338,17 +358,20 @@
               <button class="ghost" id="impAll">全选</button>
               <button class="ghost" id="impNone">全不选</button>
               <button class="ghost" id="impProbe">试一下选中的（最多 20 个）</button>
+              <button class="ghost" id="impMergeAll">重复的都合并为备用线路</button>
               <span class="hint" id="impCount" style="margin: 0"></span>
             </div>
             <div class="implist"><table class="chtab">
-              <thead><tr><th></th><th>名字</th><th>分组</th><th>地址</th><th>重复</th><th>能不能放</th></tr></thead>
+              <thead><tr><th></th><th>名字</th><th>分组</th><th>地址</th><th>线路</th><th>重复</th><th>能不能放</th></tr></thead>
               <tbody id="impRows"></tbody>
             </table></div>
             <p class="hint" id="impRoom"></p>
             <p><button class="go" id="impAdd">加入频道表</button></p>
           </div>
           <p class="hint">地址只在点「读取」时取一次，不会保存。请只添加你有权观看的来源。
-            地址或名字已经在表里的台、列表里重复的台标成「重复」，默认不勾、「全选」也不选；确实要的可以自己勾上（同一个地址的不会再加）。
+            列表里同名（或同 tvg-id）的几行、TXT 列表一行里 # 隔开的几个地址，合成一个台的几条线路（每个台最多 5 条）。
+            地址或名字已经在表里的台标成「重复」，默认不勾、「全选」也不选：点「合并为备用线路」把它的地址加给表里那个台；
+            确实要另加一个台的可以自己勾上（同一个地址的不会再加）。
             小电视最多收 128 个台，挑常看的就好。「试一下」要一个一个开 ffmpeg，只在你点的时候试选中的，一次最多 20 个。</p>
         </div>
         <div class="block">
@@ -1031,8 +1054,9 @@ async function banDevice(d) {
 // 在页面里改一份副本，保存时整张发过去：没改的台只发 id，改了的发改了的字段，新台没有 id。
 
 let chData = null;
-let chRows = [];      // {id?, name, url, agent, group, orig?}
-function chKey(r) { return [r.name, r.url, r.agent, r.group].join("\u0001"); }
+let chRows = [];      // {id?, name, url, agent, group, routes: [{url, ua?}]（备用线路）, checks: {地址: {ok, why, at}}, good, orig?}
+function routesKey(routes) { return JSON.stringify((routes || []).map((x) => [x.url, x.ua || ""])); }
+function chKey(r) { return [r.name, r.url, r.agent, r.group, routesKey(r.routes)].join("\u0001"); }
 function chDirty() {
   if (!chData) return false;
   if (chRows.length !== chData.rows.length) return true;
@@ -1045,7 +1069,8 @@ async function loadChannels(keepMessage) {
   if (!chData.configured) return;
   $("importBlock").hidden = !chData.import;
   if (chData.import) renderPresets();
-  chRows = chData.rows.map((r) => ({ id: r.id, name: r.name, url: r.url, agent: r.agent, group: r.group, orig: r }));
+  chRows = chData.rows.map((r) => ({ id: r.id, name: r.name, url: r.url, agent: r.agent, group: r.group,
+                                     routes: (r.routes || []).map((x) => ({ ...x })), checks: { ...(r.checks || {}) }, good: r.good || "", orig: r }));
   if (!keepMessage) $("chProblems").hidden = true;
   if (chData.bad.length) showProblems(["文件里第 " + chData.bad.join("、") + " 行看不懂：为了不把它们弄丢，这里不能保存。请先在服务器上改好文件。"]);
   renderFit(chData.fit);
@@ -1102,18 +1127,140 @@ function renderChannels() {
     const ua = el("input", "ua");
     ua.type = "text"; ua.value = r.agent; ua.placeholder = "默认";
     ua.oninput = () => { ua.title = ua.value; r.agent = ua.value.trim(); chState(); };
-    const cells = [td("no", String(i + 1)), td("id", r.id || "新"), td(""), td(""), td(""), td(""), td("a")];
+    const cells = [td("no", String(i + 1)), td("id", r.id || "新"), td(""), td(""), td(""), td(""), td("ln"), td("a")];
     cells[2].appendChild(name); cells[2].style.minWidth = "140px";
     cells[3].appendChild(groupSelect(r));
     cells[4].appendChild(url); cells[4].style.minWidth = "220px";
     cells[5].appendChild(ua); cells[5].style.width = "130px";
-    cells[6].append(button("↑", "", () => move(i, -1)), button("↓", "", () => move(i, 1)),
+    cells[6].append(lineSummary(r));
+    cells[7].append(button("↑", "", () => move(i, -1)), button("↓", "", () => move(i, 1)),
                     button("删除", "linkbtn red", () => { chRows.splice(i, 1); renderChannels(); }));
     tr.append(...cells);
     body.appendChild(tr);
   });
-  if (!body.children.length) body.appendChild(emptyRow(filter ? "没有名字里带「" + filter + "」的台" : "表是空的", 7));
+  if (!body.children.length) body.appendChild(emptyRow(filter ? "没有名字里带「" + filter + "」的台" : "表是空的", 8));
   chState();
+}
+
+// ---------- 线路（主线路 + 备用线路，server/routes.py） ----------
+// 主线路就是表里的「地址」和 User-Agent（channels.txt）；备用线路存在频道表旁边的 meta 里。设备和电脑上看都先试
+// 上次放得起来的那条，起不来换下一条。改线路和改别的一样，要点下面的「保存」。
+
+function routesMax() { return (chData && chData.routes_max) || 5; }
+function linesOf(r) { return [{ url: r.url, ua: r.agent || "" }].concat((r.routes || []).map((x) => ({ url: x.url, ua: x.ua || "" }))); }
+function setLines(r, lines) {
+  r.url = lines[0].url; r.agent = lines[0].ua || "";
+  r.routes = lines.slice(1).map((x) => (x.ua ? { url: x.url, ua: x.ua } : { url: x.url }));
+}
+function checkText(c) {
+  if (!c) return "";
+  return (c.ok ? "✓ 能连上" : "✗ " + (c.why || "连不上")) + (c.at ? " · " + when(c.at) : "");
+}
+// 表里「线路」一格：几条线路、检测过的几条通几条不通；点开是线路编辑。
+function lineSummary(r) {
+  const lines = linesOf(r), box = el("div");
+  const checked = lines.map((x) => r.checks && r.checks[x.url]).filter(Boolean);
+  const ok = checked.filter((c) => c.ok).length, bad = checked.length - ok;
+  const b = button(lines.length + " 条", "linkbtn", () => routeEditor(r));
+  b.title = "查看、检测、调整这个台的线路";
+  box.appendChild(b);
+  if (checked.length) {
+    if (ok) box.append(" ", el("span", "ok", "✓" + ok));
+    if (bad) box.append(" ", el("span", "bad", "✗" + bad));
+    const last = Math.max(...checked.map((c) => c.at || 0));
+    if (last) box.appendChild(el("small", "", "检测于 " + when(last)));
+  }
+  if (r.id && !(r.routes || []).length && !checked.length) box.append(" ", button("检测", "linkbtn", () => checkOne(r)));
+  return box;
+}
+// 检测一个台（已保存的线路）：服务端一条一条连（列表 + 一个片段的头几 KB），结果记在 meta 里。
+async function checkOne(r, quiet) {
+  if (!r.id) { if (!quiet) toast("新加的台先保存，再检测", true); return null; }
+  if (r.orig && routesKey(linesOf(r)) !== routesKey(linesOf(r.orig))) { if (!quiet) toast("这个台的线路改过了：先保存，再检测", true); return null; }
+  const answer = await call("POST", "api/admin/channels/check", { id: r.id });
+  if (!answer.ok) { if (!quiet) toast(answer.error || "没检测成", true); return null; }
+  for (const x of answer.results) {
+    r.checks[x.url] = { ok: x.ok, why: x.why, at: x.at };
+    if (r.orig) { r.orig.checks = r.orig.checks || {}; r.orig.checks[x.url] = r.checks[x.url]; }
+  }
+  return answer;
+}
+let checking = false;
+$("chCheckAll").onclick = async () => {
+  if (checking) { checking = false; return; }
+  const todo = chRows.filter((r) => r.id);
+  if (!todo.length) { toast("表里还没有保存过的台", true); return; }
+  checking = true;
+  $("chCheckAll").textContent = "停止检测";
+  let next = 0, done = 0, bad = 0;
+  const state = () => { $("chCheckState").textContent = "检测中：" + done + " / " + todo.length + " 个台" + (bad ? "，" + bad + " 个台有线路不通" : ""); };
+  state();
+  // 同时至多两个台（服务端也只让两个台同时测）。
+  async function worker() {
+    while (checking && next < todo.length) {
+      const r = todo[next++];
+      try {
+        const answer = await checkOne(r, true);
+        if (answer && answer.results.some((x) => !x.ok)) bad++;
+      } catch (error) { if (error instanceof Gone) { checking = false; failed(error); } }
+      done++;
+      state();
+      renderChannels();
+    }
+  }
+  await Promise.all([worker(), worker()]);
+  const stopped = !checking;
+  checking = false;
+  $("chCheckAll").textContent = "检测全部线路";
+  $("chCheckState").textContent = (stopped && done < todo.length ? "停了：" : "检测完了：") + done + " 个台" +
+    (bad ? "，" + bad + " 个台有线路不通（点「线路」一格看是哪条、为什么）" : "，线路都能连上");
+};
+function routeEditor(r) {
+  const lines = linesOf(r);
+  const table = el("table", "routes");
+  lines.forEach((x, k) => {
+    const tr = el("tr");
+    const u = td("u");
+    u.append(el("b", "", "线路 " + (k + 1) + (k === 0 ? "（主线路）" : "") + (r.good === x.url && lines.length > 1 ? " · 上次放得起来" : "")),
+             document.createTextNode(x.url));
+    if (x.ua) u.appendChild(el("div", "", "UA：" + x.ua));
+    const c = r.checks && r.checks[x.url];
+    const st = td("s");
+    if (c) st.appendChild(el("span", c.ok ? "ok" : "bad", checkText(c))); else st.textContent = "没检测过";
+    const a = td("a");
+    const edit = (change) => { const copy = linesOf(r); change(copy); setLines(r, copy); renderChannels(); routeEditor(r); };
+    if (k > 0) a.append(button("设为主线路", "linkbtn", () => edit((l) => l.unshift(l.splice(k, 1)[0]))));
+    if (k > 0) a.append(button("↑", "linkbtn", () => edit((l) => { [l[k - 1], l[k]] = [l[k], l[k - 1]]; })));
+    if (k < lines.length - 1) a.append(button("↓", "linkbtn", () => edit((l) => { [l[k + 1], l[k]] = [l[k], l[k + 1]]; })));
+    if (lines.length > 1) a.append(button("删除", "linkbtn red", () => edit((l) => l.splice(k, 1))));
+    tr.append(u, st, a);
+    table.appendChild(tr);
+  });
+  const nodes = [el("p", "", "放不起来时按这个顺序换线路；上次放得起来的那条先试。改了要点频道表下面的「保存」。"), table];
+  if (lines.length < routesMax()) {
+    const add = el("div", "routeadd"), url = el("input"), ua = el("input");
+    url.type = ua.type = "text"; url.placeholder = "备用线路地址 http(s)://…"; ua.placeholder = "User-Agent（可不填）";
+    add.append(url, ua, button("加上", "ghost", () => {
+      const v = url.value.trim();
+      if (!/^https?:\/\/\S+$/.test(v) || v.includes("|")) { toast("地址要以 http:// 或 https:// 开头，不能有空格和竖线", true); return; }
+      if (lines.some((x) => x.url === v)) { toast("这条线路已经有了", true); return; }
+      const copy = linesOf(r);
+      copy.push({ url: v, ua: ua.value.trim() });
+      setLines(r, copy); renderChannels(); routeEditor(r);
+    }));
+    nodes.push(add);
+  } else nodes.push(el("p", "", "一个台最多 " + routesMax() + " 条线路。"));
+  const row = el("div", "row");
+  const check = button("检测这些线路", "ghost");
+  check.onclick = () => busy(check, async () => {
+    check.textContent = "正在检测…";
+    const answer = await checkOne(r);
+    if (answer) { renderChannels(); routeEditor(r); }
+    else check.textContent = "检测这些线路";
+  });
+  row.append(check, button("好", "go", closeModal));
+  nodes.push(row);
+  modal((r.name || "新台") + " 的线路", nodes, true);
 }
 function move(i, step) {
   const j = i + step;
@@ -1134,7 +1281,7 @@ $("chFilter").oninput = renderChannels;
 $("addCh").onclick = () => {
   const name = $("newName").value.trim(), url = $("newUrl").value.trim(), agent = $("newUa").value.trim();
   if (!name || !/^https?:\/\//.test(url)) { toast("要有名字，地址要以 http:// 或 https:// 开头", true); return; }
-  chRows.push({ name, url, agent, group: "" });
+  chRows.push({ name, url, agent, group: "", routes: [], checks: {}, good: "" });
   $("newName").value = $("newUrl").value = $("newUa").value = "";
   $("chFilter").value = "";
   renderChannels();
@@ -1144,12 +1291,14 @@ $("chReset").onclick = () => { if (confirm("放弃所有没保存的修改？"))
 function chPayload(dry) {
   const rows = chRows.map((r) => {
     // 从播放列表导入的新台带着 tvg-id / 台标（服务器存在 channels.txt 旁边，节目单对台用）。
-    if (!r.id) return { name: r.name, url: r.url, agent: r.agent, group: r.group, tvg_id: r.tvg_id, tvg_name: r.tvg_name, logo: r.logo };
+    if (!r.id) return { name: r.name, url: r.url, agent: r.agent, group: r.group, tvg_id: r.tvg_id, tvg_name: r.tvg_name, logo: r.logo, routes: r.routes || [] };
     const o = r.orig, item = { id: r.id };
     if (r.name !== o.name) item.name = r.name;
     if (r.url !== o.url) item.url = r.url;
     if (r.agent !== o.agent) item.agent = r.agent;
     if (r.group !== o.group) item.group = r.group;
+    // 备用线路（只在改过时发，云端的请求体只有 8 KB）。
+    if (routesKey(r.routes) !== routesKey(o.routes)) item.routes = r.routes || [];
     return Object.keys(item).length === 1 ? r.id : item;
   });
   return { version: chData.version, rows, dry };
@@ -1161,6 +1310,7 @@ function describe(s) {
   if (s.changed) parts.push("改了 " + s.changed + " 个");
   if (s.moved) parts.push("调了顺序");
   if (s.groups) parts.push("改了分组");
+  if (s.routes) parts.push(s.routes + " 个台的线路有改动");
   return (parts.join("，") || "没有实质改动") + "；保存后一共 " + s.total + " 个台";
 }
 async function chSubmit(dry) {
@@ -1298,11 +1448,12 @@ const DUP_TEXT = { url: "已在表里", name: "表里有同名", list: "列表�
 function nameKey(name) { return name.replace(/[\s\-_]+/g, "").toLowerCase(); }
 // 和 playlist.mark 一样，但对照的是页面上这张表（包括还没保存的修改）。
 function impMark() {
-  const urls = new Set(chRows.map((r) => r.url)), names = new Set(chRows.map((r) => nameKey(r.name)));
+  const urls = new Set(chRows.flatMap((r) => linesOf(r).map((x) => x.url))), names = new Set(chRows.map((r) => nameKey(r.name)));
   const seen = new Set();
   for (const r of impRows) {
     const key = nameKey(r.name);
-    r.dup = urls.has(r.url) ? "url" : names.has(key) ? "name" : seen.has(key) ? "list" : "";
+    const known = [r.url].concat((r.routes || []).map((x) => x.url)).some((u) => urls.has(u));
+    r.dup = known ? "url" : names.has(key) ? "name" : seen.has(key) ? "list" : "";
     seen.add(key);
   }
 }
@@ -1335,6 +1486,7 @@ async function impRead(body, source) {
   impKind = "";
   $("impFilter").value = "";
   $("impSource").textContent = "来源：" + source + "。读到 " + answer.total + " 个台" +
+    (answer.merged ? "（同一个台的 " + answer.merged + " 行合成了备用线路）" : "") +
     (answer.total > answer.entries.length ? "（只列出前 " + answer.entries.length + " 个）" : "") +
     (answer.skipped ? "，另有 " + answer.skipped + " 个地址不合格没列出" : "") + "。";
   $("impList").hidden = false;
@@ -1355,16 +1507,51 @@ function renderImport() {
     box.type = "checkbox"; box.checked = r.on;
     box.onchange = () => { r.on = box.checked; impCount(); };
     const st = r.state;
-    const cells = [td(""), td("name", r.name), td("kind", r.kind), td("st", r.url), td("dup", DUP_TEXT[r.dup] || ""),
+    const cells = [td(""), td("name", r.name), td("kind", r.kind), td("st", r.url), td("kind", (1 + (r.routes || []).length) + " 条"),
+                   td("dup", r.merged ? "已合并为备用线路" : DUP_TEXT[r.dup] || ""),
                    td("st " + (st === "能放" ? "ok" : st === "放不了" ? "dead" : ""), st)];
     cells[0].appendChild(box);
-    cells[3].title = r.url;
+    cells[3].title = [r.url].concat((r.routes || []).map((x) => x.url)).join("\n");
+    if (r.dup && !r.merged && impTarget(r)) cells[5].append(" ", button("合并为备用线路", "linkbtn", () => { impMerge([r]); }));
     tr.append(...cells);
     body.appendChild(tr);
   }
-  if (!body.children.length) body.appendChild(emptyRow(impKind ? "这个列表里没有「" + impKind + "」的台" : "没有名字里带这几个字的台", 6));
+  if (!body.children.length) body.appendChild(emptyRow(impKind ? "这个列表里没有「" + impKind + "」的台" : "没有名字里带这几个字的台", 7));
   impCount();
 }
+// 导入的一项重复了表里的哪个台：地址是它的某条线路、或者名字一样。
+function impTarget(r) {
+  const key = nameKey(r.name);
+  // 先按它的主地址，再按名字，最后按它的备用地址。
+  const has = (urls) => chRows.find((c) => linesOf(c).some((x) => urls.includes(x.url)));
+  return has([r.url]) || chRows.find((c) => nameKey(c.name) === key) || has((r.routes || []).map((x) => x.url)) || null;
+}
+// 把导入的几项的地址加成表里对应的台的备用线路（已经有的地址不重复加，每个台至多 routesMax() 条）。
+function impMerge(items) {
+  let added = 0, touched = new Set(), full = 0;
+  for (const r of items) {
+    const target = impTarget(r);
+    if (!target) continue;
+    const lines = linesOf(target);
+    for (const x of [{ url: r.url, ua: r.agent || "" }].concat(r.routes || [])) {
+      if (lines.some((y) => y.url === x.url)) continue;
+      if (lines.length >= routesMax()) { full++; break; }
+      lines.push({ url: x.url, ua: x.ua || "" });
+      added++; touched.add(target);
+    }
+    setLines(target, lines);
+    r.merged = true; r.on = false;
+  }
+  renderChannels();
+  renderImport();
+  if (!added) { toast(full ? "这些台的线路已经满了（每个台最多 " + routesMax() + " 条）" : "没有新的线路可加：地址都已经在表里了", true); return; }
+  toast("给 " + touched.size + " 个台加了 " + added + " 条备用线路" + (full ? "（有的台满了，没加完）" : "") + "，记得点「保存」");
+}
+$("impMergeAll").onclick = () => {
+  const dups = impVisible().filter((r) => r.dup && !r.merged && impTarget(r));
+  if (!dups.length) { toast("没有可以合并的重复台", true); return; }
+  impMerge(dups);
+};
 // 设备上的频道列表（CONFIG 包）大约多大：和 server/channel_groups.config_bytes 的算法一样（JSON 转义后每个汉字 6 字节）。
 function cfgEntry(id, name) {
   let n = 26 + id.length;     // {"id":"…","name":"…","g":0} 加一个逗号
@@ -1443,7 +1630,8 @@ $("impAdd").onclick = () => {
   }
   if (!added.length) { toast("放不下了：小电视最多 " + chData.limits.channels + " 个台、" + chData.limits.bytes + " 字节的频道列表。先删几个台", true); return; }
   for (const r of added) {
-    chRows.push({ name: r.name, url: r.url, agent: r.agent, group: "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "" });
+    chRows.push({ name: r.name, url: r.url, agent: r.agent, group: "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
+                  routes: (r.routes || []).map((x) => ({ ...x })), checks: {}, good: "" });
     r.on = false;
   }
   impMark();

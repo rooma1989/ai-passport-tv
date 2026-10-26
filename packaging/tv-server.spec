@@ -53,6 +53,8 @@ hiddenimports = [
     "server.adpcm",
     "server.perceptual",
     "server.reconnect",
+    # A live channel's backup lines (imported by live.py and tv_server.py).
+    "server.routes",
     "server.overlay",
     "tools",
     "tools.certs",

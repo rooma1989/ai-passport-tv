@@ -1235,6 +1235,9 @@ class WatchPlayer {
       if (!this.alive) throw new Error("");
       const response = await fetch(this.base + name, { credentials: "same-origin", cache: "no-store" });
       if (response.ok) return response[kind]();
+      // 换线路时（X-RTV-Notice）正文是「CCTV2 线路 1 失效…正在换线路 2…」：显示出来接着等，不算次数（至多约两分钟）。
+      const notice = response.status === 503 && response.headers.get("X-RTV-Notice");
+      if (notice && round < 120) { this.say(await response.text()); await sleep(1000); continue; }
       if (response.status === 503 && round < 8) { await sleep(1000); continue; }
       if (response.status === 410) throw new Error((await response.text()) || "片源断了");
       if (response.status === 404 && name.endsWith(".m4s")) return null;      // 落在窗口外了，跳过

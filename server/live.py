@@ -20,7 +20,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import adpcm, channel_groups, degrade, frames, perceptual, pts
+from . import adpcm, channel_groups, degrade, frames, perceptual, pts, routes
 from .timeline import (BASIS_COMMON_DECODE, ContentTimeline,
                        SessionClock, SourceState, VERDICT_IN_HOLE,
                        VERDICT_PLACED)
@@ -266,6 +266,29 @@ def reload_channels_if_changed() -> bool:
         print(f"警告：频道表有改动但读取失败，继续用原来的频道表：{error}", flush=True)
         return False
     return True
+
+
+def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tuple[str, str]], str]:
+    """([(地址, UA)], 上次好用的线路的指纹)：频道表里的主线路（url、agent）在前，再是主表旁边 meta 里的备用线路
+    （server/routes.py，总后台导入时存的）。中转的台、内置台、没有 meta 的只有一条。"""
+    main = _LOADED.get("main")
+    if main is None:
+        return [(url, agent)], ""
+    try:
+        return (routes.table_routes(main, channel_id, url, agent, frames.DEFAULT_USER_AGENT if agent else ""),
+                routes.good_of(main, channel_id))
+    except (OSError, ValueError):
+        return [(url, agent)], ""
+
+
+def remember_good_route(channel_id: str, url: str) -> None:
+    """记住这个台放得起来的线路（写进 meta，和上次一样不写）；写不了不要紧。"""
+    main = _LOADED.get("main")
+    if main is not None:
+        try:
+            routes.remember_good(main, channel_id, url)
+        except OSError:
+            pass
 
 
 def channel_list() -> list[dict]:
