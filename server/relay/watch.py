@@ -114,6 +114,8 @@ class Source:
     site: str = ""
     # 视频从第几秒起（给人和进度估计看的；ffmpeg 只认 offset，YouTube 节点自己从 start 起，offset 为 0）。
     start: float = 0.0
+    # 电脑版播放器的清晰度菜单：登录了 B 站、选了 1080P 时是 "1080p"（点播 vod.py 那条路最高 720p）；别的为空。
+    quality: str = ""
 
 
 @dataclass(frozen=True)
@@ -754,6 +756,8 @@ class WatchService:
         self._by_device: dict[str, WatchStream] = {}
         self._lock = threading.Lock()
         self._reaper: threading.Thread | None = None
+        # 别处占着的名额：点播（vod.py 的 VodService.load）的 [(位置, 用户)]，和这里的一起数。
+        self.also: Callable[[], list] = lambda: []
 
     def open(self, device: str, source: Source, user: int | None = None, restart: bool = False) -> WatchStream:
         """device 这个位置（设备 id，或直接看时的「pc<用户>-<页面>」）要看 source：同一个片源还在转就
@@ -765,10 +769,11 @@ class WatchService:
             if current is not None and current.alive and current.source.key == source.key and not restart:
                 current.touch()
                 return current
-            others = [s for d, s in self._by_device.items() if d != device and s.alive]
+            others = [s.user for d, s in self._by_device.items() if d != device and s.alive]
+            others += [u for d, u in self.also() if d != device]
             if len(others) >= self.max_streams:
                 raise Busy()
-            if user is not None and sum(1 for s in others if s.user == user) >= self.max_per_user:
+            if user is not None and others.count(user) >= self.max_per_user:
                 raise Busy(per_user=True)
             if current is not None:
                 current.stop()

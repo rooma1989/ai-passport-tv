@@ -218,7 +218,8 @@
 
   <header id="top"></header>
 
-  <!-- 在电脑上看：浮在右下角的播放器（server/relay/watch.py 转的 HLS，用 MediaSource 放） -->
+  <!-- 在电脑上看：浮在右下角的播放器。B 站的视频是点播（server/relay/vod.py 转发原文件，<video> 直接放）；
+       直播和放不了原文件的照旧是 server/relay/watch.py 转的 HLS（用 MediaSource 放） -->
   <div id="pcwin" role="region" aria-label="在电脑上看" hidden>
     <div class="pchead">
       <div><b id="watchWhat">在电脑上看</b><span id="watchSub"></span></div>
@@ -227,7 +228,7 @@
       <button class="iconbtn" id="watchBig" title="放大" aria-label="放大" data-ic="expand" data-ics="16"></button>
       <button class="iconbtn" id="watchClose" title="关闭" aria-label="关闭" data-ic="x" data-ics="16"></button>
     </div>
-    <div class="pcbox" id="pcBox" tabindex="0" aria-label="画面：空格暂停，左右键快退快进 10 秒，F 全屏，M 静音">
+    <div class="pcbox" id="pcBox" tabindex="0" aria-label="画面：空格暂停，左右键快退快进 10 秒，F 全屏，M 静音，P 画中画，&lt; &gt; 调速度">
       <video id="watchVideo" playsinline></video>
       <div class="watchmsg" id="watchMsg"></div>
       <div class="pcbanner" id="pcResume" hidden><span id="pcResumeText"></span><button class="pctxt" id="pcFromStart">从头播放</button><button class="pcb sm" id="pcResumeX" aria-label="知道了" data-ic="x" data-ics="14"></button></div>
@@ -240,6 +241,7 @@
         <div class="pcphead"><div><b id="pcPartsName">选集</b><span id="pcPartsSub"></span></div><button class="pcb" id="pcPartsX" aria-label="关闭选集" data-ic="x" data-ics="16"></button></div>
         <div class="pcplist" id="pcPartsList"></div>
       </div>
+      <div class="pcmenu" id="pcMenu" role="menu" hidden></div>
       <div class="pcctl" id="pcCtl">
         <div class="pcseek" id="pcSeek" role="slider" tabindex="0" aria-label="播放进度" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
           <div class="rail"><i class="buf" id="pcBuf"></i><i class="cur" id="pcCur"></i><b class="knob" id="pcKnob"></b></div>
@@ -255,7 +257,10 @@
           <span class="sp"></span>
           <button class="pcb" id="pcMute" aria-label="静音" title="静音（M）" data-ic="vol"></button>
           <input type="range" id="pcVol" min="0" max="1" step="0.05" value="1" aria-label="音量">
+          <button class="pctxt" id="pcRate" aria-haspopup="menu" aria-label="播放速度" title="播放速度（&lt; &gt;）" hidden>1×</button>
+          <button class="pctxt" id="pcQuality" aria-haspopup="menu" aria-label="清晰度" title="清晰度" hidden>720P</button>
           <button class="pctxt" id="pcPartsBtn" aria-haspopup="dialog">选集</button>
+          <button class="pcb" id="pcPip" aria-label="画中画" title="画中画（P）" data-ic="pip" hidden></button>
           <button class="pcb" id="pcFull" aria-label="全屏" title="全屏（F）" data-ic="full"></button>
         </div>
       </div>

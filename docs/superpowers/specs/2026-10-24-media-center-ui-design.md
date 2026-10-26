@@ -653,6 +653,22 @@ from Settings (the "classic console" row), and links back.
   user, item and part with the parts finished on the PC (`done`), and resumed with a "from the start"
   choice; a finished part moves on to the next, both when it ends (5-second countdown) and when the
   item is opened again.
+- **On-demand playback (VOD)**: Bilibili videos the browser can play natively — the single-segment
+  H.264 MP4 of the html5 playurl (720p at most) — no longer go through ffmpeg: the page asks with
+  `vod: true` (and `quality`), and `web.py`'s `_vod_source` answers `mode: "vod"` with
+  `vod/<id>/<token>/media`, the start position and the duration; the item, part and start come from the
+  same planners as the HLS path. `server/relay/vod.py` forwards the file with Range passed through
+  (206/Content-Range/Content-Length/Accept-Ranges, Referer and User-Agent added), streams it in 64 KB
+  chunks without the disk, closes the upstream when the browser drops a request, re-resolves the address
+  once on 403/404/410 (and after 90 minutes), allows four requests per stream (the oldest is cut), shares
+  `watch.py`'s caps, and reaps a stream after 180 s without requests or progress reports (a paused page
+  reports once a minute). `VodPlayer` in `console.js` is a native `<video>` behind the same controls:
+  position = `currentTime`, seeks are the browser's, buffered range from the element, speed 0.75–2×
+  (remembered; `<` `>`), picture-in-picture (`P`), the start via `#t=` and `loadedmetadata`. A failure
+  before the first frame switches to HLS (`vod` left out); a failure mid-play reopens at the same position
+  once. A signed-in Bilibili account gets a 720P (VOD, default) / 1080P (HLS) menu, remembered per browser.
+  Live channels, YouTube (the node only gives a real-time MPEG-TS stream, no ranged file), multi-segment,
+  FLV and HEVC files, the classic console and TVs stay on HLS / the relay streams.
 - **Not verified**: real playback on the PC in the new player window (the UI check used generated
   data and no network), Safari and Firefox, Windows, screen readers, a real touch device; for the PC
   player, real Bilibili multi-part videos, collections and bangumi, YouTube playlists and fullscreen.

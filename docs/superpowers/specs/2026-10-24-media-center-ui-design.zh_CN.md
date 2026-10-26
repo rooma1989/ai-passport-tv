@@ -450,5 +450,16 @@ audio-only 模式。
   `client.series`），以及剧集台和 UP 主台；投到电脑的一项按 `{video: {site, id}, part}` 指，信息缓存 30 分钟。电脑上的进度
   每 10 秒和关闭时报一次（`POST /api/watch/progress`、`/api/watch/stop`），按用户、节目和第几集存，连同电脑上看完了的集
   （`done`），下次接着看（有「从头播放」）；看完的一集接着放下一集——放完时（倒数 5 秒）和下次再打开时都是。
+- **点播（VOD）**：浏览器能直接放的 B 站视频——html5 playurl 的单段 H.264 MP4（最高 720p）——不再经 ffmpeg：
+  页面请求里带 `vod: true`（和 `quality`），`web.py` 的 `_vod_source` 回答 `mode: "vod"`、`vod/<编号>/<令牌>/media`、
+  起点和时长；放哪一项、哪一集、从哪里起，和 HLS 那条路用同一套代码选。`server/relay/vod.py` 转发文件，Range 原样带过去
+  （206 / Content-Range / Content-Length / Accept-Ranges，补上 Referer 和 User-Agent），每次 64 KB 边收边发不落盘，浏览器
+  掐掉请求时关上游，403 / 404 / 410 时（以及取到 90 分钟后）重新取一次地址，每一路同时至多 4 个请求（多了掐掉最早的），
+  名额和 `watch.py` 一起算，180 秒没有请求、没有进度报告就收掉（暂停的页面每分钟报一次）。`console.js` 的 `VodPlayer`
+  是同一套控制条后面的 `<video>`：位置就是 `currentTime`，跳转交给浏览器，已缓冲的范围取自播放器，倍速 0.75–2 倍
+  （记住；`<` `>`），画中画（`P`），起点用 `#t=` 和 `loadedmetadata`。第一帧之前出错就换成 HLS（请求里不带 `vod`）；
+  放到一半出错从同一个位置重新打开一次。登录了 B 站的账号有 720P（点播，默认）/ 1080P（HLS）的菜单，每个浏览器记住。
+  直播、YouTube（节点只给实时速度的 MPEG-TS 流，没有能按 Range 取的文件）、分段的、FLV、HEVC，旧版电脑版和小电视
+  照旧是 HLS / 中转的播放流。
 - **没验证的**：新播放器窗口里在电脑上真实播放（界面检查用的是生成的数据，没有联网）、Safari 和 Firefox、Windows、
   读屏软件、真的触屏设备；电脑上的播放器：真实的 B 站多 P、合集、番剧，YouTube 播放列表，全屏。

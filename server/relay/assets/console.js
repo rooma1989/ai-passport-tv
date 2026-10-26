@@ -133,6 +133,7 @@ const IC = {
   mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/>',
   r10: '<path d="M4.6 14.5A8 8 0 1 0 7 5.8"/><path d="M7.5 2.5 7 5.8l3.3.8"/><text x="12.6" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
   f10: '<path d="M19.4 14.5A8 8 0 1 1 17 5.8"/><path d="M16.5 2.5l.5 3.3-3.3.8"/><text x="11.4" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
+  pip: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><rect x="12" y="11" width="7" height="6" rx="1.2" fill="currentColor" stroke="none"/>',
 };
 const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ""}</svg>`;
 function hydrateIcons(root) {
@@ -725,7 +726,7 @@ async function play(item, to, label) {
 }
 async function playOnPc(item, label) {
   if (watching) watching.busy = true;
-  const body = { target: PC, item, viewer };
+  const body = vodAsk({ target: PC, item, viewer });
   if (item.channel === "cast" && deviceId()) body.device = deviceId();
   let answer;
   try { answer = await call("POST", "api/play", body); }
@@ -1179,8 +1180,12 @@ $("mini").addEventListener("click", (event) => {
 });
 
 // ======================================================================= 在电脑上看（浮动窗口里的播放器）
-// 自建 / 电脑客户端才有（/api/state 的 watch）：中转把片源转成 HLS（fMP4 段），这里用浏览器自带的
-// MediaSource 一段段接上放（server/relay/watch.py）。两种看法：
+// 自建 / 电脑客户端才有（/api/state 的 watch）。两种放法，按回答里的 mode：
+// - "vod"（点播）：B 站的视频，中转按 Range 转发原文件（server/relay/vod.py），<video> 直接放（VodPlayer）：
+//   秒开、拖到哪里浏览器自己去取、能倍速和画中画。放不了原文件的（分段、FLV、HEVC、YouTube、选了 1080P）走下面的。
+// - "hls"：中转把片源转成 HLS（fMP4 段），这里用浏览器自带的 MediaSource 一段段接上放（server/relay/watch.py，
+//   WatchPlayer）。直播一律这样。
+// 两种看法：
 // - 跟随（mode "follow"）：看选中的小电视正在播的台，小电视换台这里也跟着换。
 // - 直接看（mode "direct"）：「播放到 → 这台电脑」，不动小电视（web.py 的 watch_direct）。
 //   UP 主和剧集从电脑上次看到的地方起（没有就从小电视下次会播的地方起），电脑上的进度另记，不标看过。
@@ -1353,9 +1358,81 @@ class WatchPlayer {
     v.load();
   }
 }
+
+// 点播：<video> 直接放中转转发的原文件（server/relay/vod.py）。位置就是 currentTime，跳转、倍速、缓冲都是浏览器的。
+// opts：say、ended、start（从第几秒起）、fallback（还没放起来就出错：多半是浏览器放不了，改要 HLS）、
+// broken（放到一半出错：地址过期、这一路被收了，按现在的位置重要一路）。
+const VOD_OK = (() => { try { return !!document.createElement("video").canPlayType('video/mp4; codecs="avc1.64001F, mp4a.40.2"'); } catch (error) { return false; } })();
+const RATES = [0.75, 1, 1.25, 1.5, 2];
+function savedRate() { const r = Number(lsGet("rootv.rate", "1")); return RATES.includes(r) ? r : 1; }
+class VodPlayer {
+  constructor(video, url, opts) {
+    this.vod = true; this.video = video; this.url = url; this.say = opts.say; this.at = Math.max(0, opts.start || 0);
+    this.alive = true; this.started = false; this.ready = false; this.ended = false; this.origin = 0; this.failed = false;
+    this.stats = { start: null, seeks: [] };
+    const on = (name, fn) => { video.addEventListener(name, fn); this.offs.push(() => video.removeEventListener(name, fn)); };
+    this.offs = [];
+    on("loadedmetadata", () => {
+      if (!this.alive) return;
+      // 有的浏览器不认 #t=：自己跳过去。倍速每次换片源都会被重置。
+      if (this.at > 0 && Math.abs(video.currentTime - this.at) > 1.5) video.currentTime = this.at;
+      video.defaultPlaybackRate = video.playbackRate = savedRate();
+      this.ready = true;
+      if (opts.meta) opts.meta();
+    });
+    on("playing", () => {
+      if (!this.alive) return;
+      if (!this.started) { this.started = true; this.stats.start = Math.round(performance.now() - this.t0); this.say(""); }
+      if (this.seekT) { this.stats.seeks.push(Math.round(performance.now() - this.seekT)); this.seekT = 0; }
+    });
+    on("seeking", () => { if (this.alive) { this.ended = false; this.seekT = performance.now(); } });
+    on("seeked", () => { if (this.alive && video.paused && this.seekT) { this.stats.seeks.push(Math.round(performance.now() - this.seekT)); this.seekT = 0; } });
+    on("waiting", () => { if (this.alive && this.started) this.slow = setTimeout(() => { if (this.alive && video.readyState < 3) this.say("缓冲中…"); }, 1500); });
+    on("canplay", () => { clearTimeout(this.slow); if (this.alive && this.started) this.say(""); });
+    on("ended", () => { if (this.alive) { this.ended = true; opts.ended(); } });
+    on("error", () => {
+      if (!this.alive || this.failed) return;
+      this.failed = true;
+      const code = video.error ? video.error.code : 0;
+      if (!this.started) opts.fallback(code); else opts.broken(code);
+    });
+  }
+  start() {
+    const v = this.video;
+    this.t0 = performance.now();
+    this.say("正在打开…");
+    v.src = this.url + (this.at > 0 ? "#t=" + this.at.toFixed(1) : "");
+    v.play().catch((error) => { if (this.alive && error && error.name === "NotAllowedError") this.say("点一下画面开始播放"); });
+  }
+  seek(target) { if (this.alive) this.video.currentTime = Math.max(0, target); }
+  stop() {
+    this.alive = false;
+    clearTimeout(this.slow);
+    for (const off of this.offs) off();
+    const v = this.video;
+    v.pause();
+    // 倍速只给点播：换成 HLS（ffmpeg 按实时速度出段）时不能还是 2 倍。
+    v.defaultPlaybackRate = v.playbackRate = 1;
+    v.removeAttribute("src");
+    v.load();
+  }
+}
 function playerFor(answer) {
   if (watching) watching.player.stop();
   $("pcwin").hidden = false;
+  if (answer.mode === "vod") {
+    const player = new VodPlayer($("watchVideo"), answer.url, {
+      say: watchSay, ended: watchEnded, start: answer.start || 0,
+      meta: () => {
+        // 文件自己的时长最准（B 站信息里的时长有时差几秒、投屏历史里重播的可能没有）。
+        const d = $("watchVideo").duration;
+        if (watching && watching.player === player && isFinite(d) && d > 0) { watching.duration = d; renderPc(); }
+      },
+      fallback: () => { if (watching && watching.player === player) vodFallback(); },
+      broken: () => { if (watching && watching.player === player) vodBroken(); },
+    });
+    return player;
+  }
   const player = new WatchPlayer($("watchVideo"), answer.url, {
     say: watchSay, ended: watchEnded, live: answer.kind === "live",
     // 暂停太久、中转那边已经往前转过了：暂停着就等按「播放」时再从这里重起（那之前不占 ffmpeg），在放就马上重起。
@@ -1373,6 +1450,7 @@ function pcPos() {
   if (!watching) return 0;
   if (watching.seeking != null) return watching.seeking;
   const p = watching.player, v = $("watchVideo");
+  if (p && p.vod) return p.ready ? v.currentTime : watching.start || 0;      // 点播：就是 currentTime
   if (!p || p.origin == null || !p.started) return watching.start || 0;
   return Math.max(0, (watching.start || 0) + v.currentTime - p.origin);
 }
@@ -1383,6 +1461,15 @@ function pcSeek(target, now) {
   const dur = watching.duration;
   target = Math.max(0, dur ? Math.min(target, dur - 3) : target);
   const p = watching.player, v = $("watchVideo");
+  if (p && p.vod && !p.failed) {
+    // 点播：浏览器自己去取那一段（中转转发 Range），不用重起什么。
+    clearTimeout(seekTimer);
+    watching.seeking = null;
+    hideUpNext();
+    if (p.ready) p.seek(target); else p.at = target;
+    renderPc();
+    return;
+  }
   if (p && p.origin != null && p.started && watching.seeking == null) {
     const t = target - watching.start + p.origin, b = v.buffered;
     for (let i = 0; i < b.length; i++) {
@@ -1396,13 +1483,16 @@ function pcSeek(target, now) {
 }
 async function seekRestart(target) {
   if (!watching) return;
+  if (watching.player.vod && !watching.player.failed) { pcSeek(target); return; }
   clearTimeout(seekTimer);
   watching.seeking = target;
   hideUpNext();
   renderPc();
   watchSay("跳转中…");
+  // 点播的播放器坏了（地址过期、这一路被收了）才会走到这里：同一路也要换一个新的播放器（again）。
+  const again = !!watching.player.vod;
   const ok = watching.mode === "direct"
-    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10 }), { group: watching.group, seek: true })
+    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10 }), { group: watching.group, seek: true, again })
     : await startWatch(false, true, Math.round(target * 10) / 10);
   if (!ok && watching) { watching.seeking = null; watchSay(""); renderPc(); }
 }
@@ -1416,9 +1506,15 @@ function pcBody(extra) {
 function pcTracked() { return watching && watching.mode === "direct" && watching.kind === "video" && watching.seeking == null && watching.player.started; }
 function pcReport(extra) {
   if (!pcTracked()) return Promise.resolve();
+  pcReported = Date.now();
   return call("POST", "api/watch/progress", pcBody(extra)).catch(() => {});
 }
-setInterval(() => { if (pcTracked() && !$("watchVideo").paused) pcReport(); }, PC_REPORT_MS);
+let pcReported = 0;
+setInterval(() => {
+  if (!pcTracked()) return;
+  // 点播暂停着时浏览器不取数据：每分钟报一次，中转知道这一路还有人看（vod.py 的 IDLE_S）。
+  if (!$("watchVideo").paused || (watching.player.vod && Date.now() - pcReported > 60000)) pcReport();
+}, PC_REPORT_MS);
 // 关页面、刷新：最后看到的地方也记下（keepalive，页面没了请求照样发出去）。
 addEventListener("pagehide", () => {
   if (!pcTracked()) return;
@@ -1548,7 +1644,12 @@ function renderPc() {
   $("pcKnob").style.left = (frac * 100).toFixed(2) + "%";
   let buf = 0;
   const p = watching.player;
-  if (dur && p && p.origin != null && v.buffered.length && watching.seeking == null) {
+  if (dur && p && p.vod && v.buffered.length && watching.seeking == null) {
+    // 点播：现在的位置所在的那一段缓冲（跳过以后前面的缓冲不算）。
+    for (let i = 0; i < v.buffered.length; i++) {
+      if (v.buffered.start(i) <= pos + 0.5 && v.buffered.end(i) >= pos) buf = Math.min(1, v.buffered.end(i) / dur);
+    }
+  } else if (dur && p && p.origin != null && v.buffered.length && watching.seeking == null) {
     buf = Math.min(1, (watching.start + v.buffered.end(v.buffered.length - 1) - p.origin) / dur);
   }
   $("pcBuf").style.width = (Math.max(buf, frac) * 100).toFixed(2) + "%";
@@ -1570,6 +1671,12 @@ function renderPc() {
   $("pcNext").setAttribute("aria-label", next ? "下一" + (watching.parts.kind === "up" ? "个" : "集") + "：" + (next.title || partWord(next.n)) : "下一个");
   $("pcNext").title = $("pcNext").getAttribute("aria-label");
   $("pcPartsBtn").hidden = !(watching.parts && watching.parts.items.length > 1 && watching.mode === "direct");
+  const vod = !!(p && p.vod);
+  $("pcRate").hidden = !vod;
+  if (vod) $("pcRate").textContent = rateLabel(v.playbackRate);
+  $("pcQuality").hidden = !watching.quality;
+  if (watching.quality) $("pcQuality").textContent = watching.quality.current.toUpperCase();
+  $("pcPip").hidden = !pipOk(v);
   $("pcPartsBtn").textContent = watching.parts && watching.parts.kind === "up" ? "视频" : "选集";
   const muted = v.muted || v.volume === 0;
   const mb = $("pcMute");
@@ -1595,7 +1702,12 @@ function pcTogglePlay() {
   if (!watching) return;
   if (v.paused) {
     if (watching.stale) { watching.stale = false; seekRestart(pcPos()); return; }
-    if (watching.player.ended && watching.kind === "video") { hideUpNext(); seekRestart(watching.seekable ? 0 : pcPos()); return; }
+    if (watching.player.ended && watching.kind === "video") {
+      hideUpNext();
+      if (watching.player.vod && !watching.player.failed) { watching.player.seek(0); v.play().catch(() => {}); return; }
+      seekRestart(watching.seekable ? 0 : pcPos());
+      return;
+    }
     v.play().catch(() => {});
   } else v.pause();
 }
@@ -1611,7 +1723,100 @@ function pcToggleMute() {
   lsSet("rootv.muted", v.muted ? "1" : "0");
   renderPc();
 }
-// 不动鼠标 3 秒后收起控制条（暂停、选集开着、焦点在控制条上时不收）。
+// ---- 点播：倍速、清晰度、画中画，和出错时换一种放法 ----
+
+function qualityPref() { return lsGet("rootv.quality", "720p") === "1080p" ? "1080p" : "720p"; }
+// 请求里说这个页面会放点播（新的电脑版才说；旧版只会放 HLS），和要的清晰度（web.py 的 _prefer）。
+function vodAsk(body, hls) {
+  if (VOD_OK && !hls) { body.vod = true; body.quality = qualityPref(); }
+  return body;
+}
+function rateLabel(r) { return (Math.round(r * 100) / 100) + "×"; }
+function setRate(r) {
+  const v = $("watchVideo");
+  v.defaultPlaybackRate = v.playbackRate = r;
+  lsSet("rootv.rate", String(r));
+  renderPc();
+}
+function stepRate(delta) {
+  if (!watching || !watching.player.vod) return;
+  const at = RATES.indexOf(savedRate()), next = RATES[Math.min(RATES.length - 1, Math.max(0, at + delta))];
+  setRate(next);
+  toast("播放速度 " + rateLabel(next));
+}
+function pipOk(v) {
+  if (document.pictureInPictureEnabled && typeof v.requestPictureInPicture === "function" && !v.disablePictureInPicture) return true;
+  return typeof v.webkitSupportsPresentationMode === "function" && v.webkitSupportsPresentationMode("picture-in-picture");
+}
+function pcTogglePip() {
+  const v = $("watchVideo");
+  if (!watching || !pipOk(v)) return;
+  if (document.pictureInPictureElement) { document.exitPictureInPicture().catch(() => {}); return; }
+  if (typeof v.requestPictureInPicture === "function") v.requestPictureInPicture().catch(() => toast("这个浏览器现在不让画中画", true));
+  else v.webkitSetPresentationMode(v.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
+}
+// 换清晰度：720P 是点播，1080P 走 HLS（要登录 B 站）。从现在的位置接着放，选的记在这个浏览器里。
+function pickQuality(q) {
+  if (!watching || !watching.quality) return;
+  lsSet("rootv.quality", q);
+  if (watching.quality.current === q) return;
+  const at = Math.round(pcPos() * 10) / 10;
+  watchSay("正在换成 " + q.toUpperCase() + "…");
+  if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: at }), { group: watching.group, seek: true, again: true });
+  else startWatch(false, true, at);
+}
+// 速度、清晰度的小菜单。
+function openMenu(kind) {
+  const menu = $("pcMenu"), anchor = kind === "rate" ? $("pcRate") : $("pcQuality");
+  if (!menu.hidden && menu.dataset.kind === kind) { closeMenu(); return; }
+  menu.dataset.kind = kind;
+  menu.setAttribute("aria-label", kind === "rate" ? "播放速度" : "清晰度");
+  menu.replaceChildren();
+  const items = kind === "rate"
+    ? RATES.map((r) => ({ value: r, label: rateLabel(r) + (r === 1 ? " 正常" : ""), on: r === savedRate() }))
+    : [{ value: "720p", label: "720P", note: "秒开，拖到哪里都快" }, { value: "1080p", label: "1080P", note: "要转一下，拖动时稍等" }]
+        .map((x) => Object.assign(x, { on: watching.quality && watching.quality.current === x.value }));
+  for (const item of items) {
+    const b = el("button");
+    b.setAttribute("role", "menuitemradio");
+    b.setAttribute("aria-checked", String(item.on));
+    b.innerHTML = ic("check", 16) + `<span><b>${esc(item.label)}</b>${item.note ? `<small>${esc(item.note)}</small>` : ""}</span>`;
+    b.onclick = () => { closeMenu(); if (kind === "rate") setRate(item.value); else pickQuality(item.value); };
+    menu.appendChild(b);
+  }
+  menu.hidden = false;
+  const box = $("pcBox").getBoundingClientRect(), r = anchor.getBoundingClientRect();
+  menu.style.right = Math.max(6, box.right - r.right) + "px";
+  (menu.querySelector('[aria-checked="true"]') || menu.firstChild).focus({ preventScroll: true });
+  pcActive();
+}
+function closeMenu() {
+  const menu = $("pcMenu");
+  if (menu.hidden) return;
+  const back = menu.dataset.kind === "rate" ? $("pcRate") : $("pcQuality");
+  menu.hidden = true;
+  if (menu.contains(document.activeElement)) back.focus({ preventScroll: true });
+}
+document.addEventListener("pointerdown", (event) => {
+  const menu = $("pcMenu");
+  if (!menu.hidden && !menu.contains(event.target) && event.target !== $("pcRate") && event.target !== $("pcQuality")) closeMenu();
+}, true);
+// 点播还没放起来就出错：多半是这个浏览器放不了这个文件（或者地址不通），改要 HLS（中转用 ffmpeg 转）。
+function vodFallback() {
+  watchSay("换一种方式放…");
+  if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: Math.round((watching.start || 0) * 10) / 10 }), { group: watching.group, seek: true, again: true, hls: true });
+  else startWatch(false, true, undefined, true);
+}
+// 放到一半出错（地址过期、这一路空闲太久被收了）：从现在的位置重要一路；30 秒内又坏了就让人点「重试」。
+let vodBrokenAt = 0;
+function vodBroken() {
+  const pos = pcPos();
+  if (Date.now() - vodBrokenAt < 30000) { watchSay("片源断了", true, true); return; }
+  vodBrokenAt = Date.now();
+  seekRestart(pos);
+}
+
+// 不动鼠标 3 秒后收起控制条（暂停、选集或菜单开着、焦点在控制条上时不收）。
 let idleTimer = 0;
 function pcActive() {
   const box = $("pcBox");
@@ -1619,7 +1824,7 @@ function pcActive() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     const v = $("watchVideo");
-    if (!watching || v.paused || !$("pcParts").hidden || !$("pcUpNext").hidden || $("pcCtl").contains(document.activeElement)) return;
+    if (!watching || v.paused || !$("pcParts").hidden || !$("pcMenu").hidden || !$("pcUpNext").hidden || $("pcCtl").contains(document.activeElement)) return;
     box.classList.add("idle");
   }, 3000);
 }
@@ -1693,6 +1898,16 @@ $("pcVol").oninput = () => {
 $("pcPartsBtn").onclick = () => { if ($("pcParts").hidden) openParts(); else closeParts(); };
 $("pcPartsX").onclick = closeParts;
 $("pcFull").onclick = pcToggleFull;
+$("pcPip").onclick = pcTogglePip;
+$("pcRate").onclick = () => openMenu("rate");
+$("pcQuality").onclick = () => openMenu("quality");
+$("pcMenu").addEventListener("keydown", (event) => {
+  const items = [...$("pcMenu").querySelectorAll("button")], at = items.indexOf(document.activeElement);
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault(); event.stopPropagation();
+    items[(at + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
+  }
+});
 $("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0); };
 $("pcResumeX").onclick = () => { $("pcResume").hidden = true; };
 $("watchVideo").addEventListener("click", () => { pcTogglePlay(); $("pcBox").focus({ preventScroll: true }); });
@@ -1705,11 +1920,12 @@ document.addEventListener("fullscreenchange", () => { renderPc(); pcActive(); })
   v.volume = isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
   v.muted = lsGet("rootv.muted", "0") === "1";
 }
-for (const ev of ["play", "pause", "volumechange", "progress", "seeked"]) $("watchVideo").addEventListener(ev, () => { renderPc(); if (ev === "play" || ev === "pause") { renderMini(); pcActive(); } });
+for (const ev of ["play", "pause", "volumechange", "progress", "seeked", "ratechange", "durationchange"]) $("watchVideo").addEventListener(ev, () => { renderPc(); if (ev === "play" || ev === "pause") { renderMini(); pcActive(); } });
 $("watchVideo").addEventListener("play", () => { if (watching && watching.stale) { watching.stale = false; seekRestart(pcPos()); } });
 $("watchVideo").addEventListener("timeupdate", () => { renderPc(); renderMiniProgress(); });
 
-// 播放器的键：画面（或控制条）有焦点、放大了、全屏时——空格 暂停 / 继续，← → 10 秒，F 全屏，M 静音，Esc 关选集 / 取消下一集。
+// 播放器的键：画面（或控制条）有焦点、放大了、全屏时——空格 暂停 / 继续，← → 10 秒，F 全屏，M 静音，P 画中画，
+// < > 慢一档 / 快一档（点播），Esc 关菜单 / 选集 / 取消下一集。
 // 先于整页的方向键焦点引擎（捕获阶段），用掉的键不再往下传。
 addEventListener("keydown", (event) => {
   if (!watching || $("pcwin").hidden || $("app").hidden || anyOverlay() || event.altKey || event.metaKey || event.ctrlKey) return;
@@ -1721,11 +1937,12 @@ addEventListener("keydown", (event) => {
   const key = event.key, inParts = $("pcParts").contains(a);
   const eat = () => { event.preventDefault(); event.stopPropagation(); pcActive(); };
   if (key === "Escape") {
+    if (!$("pcMenu").hidden) { eat(); closeMenu(); return; }
     if (!$("pcParts").hidden) { eat(); closeParts(); return; }
     if (upNext) { eat(); $("pcUpNextStop").click(); return; }
     return;                          // 全屏时浏览器自己退出；放大时整页的处理缩小
   }
-  if (inParts) return;                // 选集列表里方向键照常移动焦点
+  if (inParts || $("pcMenu").contains(a)) return;   // 选集列表、菜单里方向键照常移动焦点
   const onButton = a && a.tagName === "BUTTON" && box.contains(a);
   if (key === " " || key === "k" || key === "K") {
     if (key === " " && onButton) return; // 空格按的是那个按钮
@@ -1735,14 +1952,16 @@ addEventListener("keydown", (event) => {
     eat(); pcSkip(key === "ArrowLeft" ? -10 : 10);
   } else if (key === "f" || key === "F") { eat(); pcToggleFull(); }
   else if (key === "m" || key === "M") { eat(); pcToggleMute(); }
+  else if (key === "p" || key === "P") { if (pipOk($("watchVideo"))) { eat(); pcTogglePip(); } }
+  else if (key === "<" || key === ">") { if (watching.player.vod) { eat(); stepRate(key === ">" ? 1 : -1); } }
 }, true);
 
 // 跟随小电视：看它正在播的台。start 给了是在电脑上跳转（只动电脑：这个页面另起一路）。
-async function startWatch(auto, again, start) {
+async function startWatch(auto, again, start, hls) {
   const device = deviceId(), key = watchKey(data.now);
   if (watching) watching.busy = true;
   let answer;
-  const body = withDevice({ viewer });
+  const body = vodAsk(withDevice({ viewer }), hls);
   if (start !== undefined) body.start = start;
   try { answer = await call("POST", "api/watch", body); }
   catch (error) {
@@ -1763,7 +1982,7 @@ async function startWatch(auto, again, start) {
   watching = { mode: "follow", device, sid: answer.sid, key, player, busy: false, channel: answer.channel, kind: answer.kind,
                name: data.now.name || answer.channel, title: answer.title || data.now.name,
                start: answer.start || 0, duration: answer.duration || 0, seekable: !!answer.seekable, seeking: null,
-               parts: null, own: !!answer.own };
+               parts: null, own: !!answer.own, quality: answer.quality || null };
   $("watchFollow").checked = true;
   watching.label = deviceName() + " · " + (data.now.name || answer.channel) + (answer.title && answer.title !== data.now.name ? " · " + answer.title : "");
   $("pcResume").hidden = true;
@@ -1782,7 +2001,7 @@ async function startDirect(body, ctx) {
   ctx = ctx || {};
   if (watching) watching.busy = true;
   let answer;
-  const request = Object.assign({ viewer }, body);
+  const request = vodAsk(Object.assign({ viewer }, body), ctx.hls);
   if (body.channel === "cast" && deviceId()) request.device = deviceId();
   try { answer = await call("POST", "api/watch", request); }
   catch (error) {
@@ -1811,7 +2030,8 @@ function openDirect(answer, ctx) {
                group: ctx.group || groupOf(answer.channel), name: answer.name, title: answer.title, kind: answer.kind,
                index: answer.index || 0, total: answer.total || 0, series: !!answer.series, again,
                start: answer.start || 0, duration: answer.duration || 0, seekable: !!answer.seekable, seeking: null,
-               parts: answer.parts || null, part: answer.part || answer.index || 0, video: answer.video || null };
+               parts: answer.parts || null, part: answer.part || answer.index || 0, video: answer.video || null,
+               quality: answer.quality || null };
   miniWho = "pc";
   $("watchFollow").checked = false;
   const parts = answer.parts;
@@ -1846,6 +2066,7 @@ function stopWatch() {
   clearTimeout(seekTimer);
   hideUpNext();
   closeParts();
+  closeMenu();
   if (document.fullscreenElement === $("pcBox")) document.exitFullscreen().catch(() => {});
   watching = null;
   miniWho = "tv";
