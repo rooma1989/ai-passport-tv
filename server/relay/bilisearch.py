@@ -179,7 +179,8 @@ class BiliSearch:
             found = client.browse(query, kind, page)
         except SourceError as error:
             self.log(f"B 站搜索失败：{error}")
-            return {"ok": False, "error": REFUSED if error.permanent else UNREACHABLE}
+            return {"ok": False, "error": REFUSED if error.permanent else
+                    (bilibili.BLOCKED_HINT if bilibili.blocked(error) else UNREACHABLE)}
         answer = {"ok": True, "q": query, "kind": kind, **found}
         with self.lock:
             self._results[key] = (now, answer)

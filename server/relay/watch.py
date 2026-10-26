@@ -54,6 +54,7 @@ from typing import Callable
 from .. import listen as listen_audio
 from ..frames import DEFAULT_USER_AGENT
 from ..proxyenv import loopback_bypass
+from .bilibili import BLOCKED_HINT as _BILIBILI_BLOCKED_HINT, blocked as _bilibili_blocked
 from .stream import RECONNECT
 
 # 多久没人取列表或段就停掉这一路（播放器按段长刷新列表，暂停时也刷新）。
@@ -708,6 +709,8 @@ def explain(site: str, reason: str) -> str:
     refused = any(word in reason for word in _REFUSED)
     network = not refused and any(word in reason for word in _NETWORK)
     if site == "bilibili":
+        if network and _bilibili_blocked(reason):
+            return _BILIBILI_BLOCKED_HINT
         if network:
             return f"B 站连不上：检查路由器或代理（{reason}）"
         if refused:

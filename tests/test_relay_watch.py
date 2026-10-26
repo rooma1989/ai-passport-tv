@@ -822,3 +822,17 @@ class LivePacingTests(unittest.TestCase):
             self.assertFalse(source.paced)
             args = watch.ffmpeg_args("ffmpeg", source, source.url, watch.Mode("copy", "encode"))
             self.assertNotIn("-re", args)
+
+
+class BlockedBilibiliTests(unittest.TestCase):
+    """B 站被路上的网络掐断（TLS 握手断开）时，说人话：是路由器或代理拦了，不贴技术原文。"""
+
+    def test_tls_eof_reads_as_blocked(self):
+        text = watch.explain("bilibili", "取不到片源地址：/x/web-interface/view: URLError: <urlopen error "
+                                         "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol>")
+        self.assertIn("网络把 B 站拦了", text)
+        self.assertNotIn("SSL", text)
+
+    def test_other_network_errors_unchanged(self):
+        self.assertEqual(watch.explain("bilibili", "取不到片源地址：offline"),
+                         "B 站连不上：检查路由器或代理（取不到片源地址：offline）")

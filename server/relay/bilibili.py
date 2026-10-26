@@ -165,6 +165,19 @@ def _fetch_json(url: str, cookie: str, timeout: float = TIMEOUT_S) -> dict:
         return json.loads(answer.read(MAX_ANSWER_BYTES))
 
 
+# 连接被对方直接掐断（TLS 握手时断开、被重置）：B 站的地址本身没问题，是路上的网络把它拦了——
+# 路由器的家长控制或上网时间规则、代理软件（TUN 模式）把 B 站分给了不能用的节点。
+_BLOCKED = ("UNEXPECTED_EOF", "EOF occurred in violation", "Connection reset", "ECONNRESET",
+            "Errno 54", "Errno 104", "WRONG_VERSION_NUMBER", "SSLZeroReturnError")
+BLOCKED_HINT = "B 站连不上：网络把 B 站拦了（路由器的家长控制或上网时间、代理软件），在这台电脑的浏览器里打开 bilibili.com 试试"
+
+
+def blocked(text) -> bool:
+    """出错的说法像不像「路上被拦」（而不是 B 站拒绝、超时、没网）。"""
+    text = str(text or "")
+    return any(word in text for word in _BLOCKED)
+
+
 def timed_out(error: BaseException) -> bool:
     """超时（套接字超时，或 urllib 包着的超时）。"""
     reason = getattr(error, "reason", None)
