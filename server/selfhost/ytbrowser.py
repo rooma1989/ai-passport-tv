@@ -314,8 +314,9 @@ def _run(args: list[str], timeout: float) -> tuple[int, str]:
         kwargs["creationflags"] = 0x08000000
     else:
         kwargs["umask"] = 0o077
-    done = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=timeout,
-                          stdin=subprocess.DEVNULL, **kwargs)
+    # yt-dlp's Python version writes UTF-8 (rootv-core __ytdlp, python -X utf8).
+    done = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)
     return done.returncode, done.stderr or ""
 
 

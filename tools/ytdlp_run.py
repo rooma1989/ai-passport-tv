@@ -156,11 +156,36 @@ def compile_folder(folder: str) -> int:
     return 0 if compileall.compile_dir(folder, quiet=2, workers=1) else 1
 
 
+def _no_console_windows() -> None:
+    """Windows: what yt-dlp starts (deno, ffmpeg) gets CREATE_NO_WINDOW unless it asks otherwise.
+
+    The node starts this process without a console, and a console program started by a process
+    that has none opens a window of its own. yt-dlp hides its children's windows itself; this is
+    the same net tools/packaged_entry.py puts under the core's other children.
+    """
+    if os.name != "nt":
+        return
+    import subprocess
+
+    original = subprocess.Popen.__init__
+    if getattr(original, "_no_window", False):
+        return
+
+    def init(self, *args, **kwargs):
+        if not kwargs.get("creationflags"):
+            kwargs["creationflags"] = 0x08000000
+        original(self, *args, **kwargs)
+
+    init._no_window = True      # type: ignore[attr-defined]
+    subprocess.Popen.__init__ = init    # type: ignore[method-assign]
+
+
 def main(argv: list[str]) -> int:
     # Both entry points have already done this; repeated so that this module's own Chinese
     # messages can never meet a console that cannot print them (tools/console.py).
     from tools.console import use_utf8
     use_utf8()
+    _no_console_windows()
     if len(argv) >= 2 and argv[0] == "--check":
         return check(argv[1])
     if len(argv) >= 2 and argv[0] == "--compile":
