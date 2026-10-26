@@ -23,7 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .. import channel_groups, m3u
+from .. import channel_groups, m3u, routes
 from . import channeltable, presets
 
 # 上传的 M3U 内容、或取回来的播放列表，最多这么大。
@@ -89,12 +89,40 @@ def _clean(entry: dict) -> dict | None:
         return None
     # 节目单对台、台标用的属性（不进 channels.txt，存在旁边的 channels.txt.meta.json，见 channeltable.meta_of）。
     row.update(channeltable.clean_meta(entry))
+    # TXT 一行里 # 隔开的其余地址：备用线路（server/routes.py），UA 和主线路一样。
+    row["routes"] = routes.clean_routes([{"url": u, "ua": agent} for u in entry.get("routes") or []
+                                         if isinstance(u, str)], url)
     return row
+
+
+def merge(entries: list[dict]) -> tuple[list[dict], int]:
+    """同一个台的几行合成一个台：名字一样（name_key）或 tvg-id 一样的，后面的地址变成前面那个的备用线路
+    （routes，至多 routes.BACKUPS_MAX 条，多的丢掉）。返回 (合并后的台, 合并掉了几行)。"""
+    merged: list[dict] = []
+    by_key: dict[str, dict] = {}
+    folded = 0
+    for entry in entries:
+        keys = ["n:" + name_key(entry["name"])]
+        if entry.get("tvg_id"):
+            keys.append("t:" + entry["tvg_id"].casefold())
+        target = next((by_key[k] for k in keys if k in by_key), None)
+        if target is None:
+            merged.append(entry)
+            for key in keys:
+                by_key[key] = entry
+            continue
+        folded += 1
+        extra = [{"url": entry["url"], "ua": entry["agent"]}] + entry.get("routes", [])
+        target["routes"] = routes.clean_routes(target.get("routes", []) + extra, target["url"])
+        for key in keys:
+            by_key.setdefault(key, target)
+    return merged, folded
 
 
 def read(body: dict, opener=urllib.request.urlopen) -> dict:
     """body：{url}、{text} 或 {preset, mirror?}（presets.py 里的一个列表，mirror 是第几个地址）。
-    回答 {ok, entries: [{name, url, agent}], skipped, total} 或 {ok: False, error}。"""
+    回答 {ok, entries: [{name, url, agent, routes, tvg_id?, …}], skipped, total, merged} 或 {ok: False, error}。
+    同名（或同 tvg-id）的几行合成一个台，后面的地址成了它的备用线路（merge）。"""
     url, text = body.get("url"), body.get("text")
     if "preset" in body:
         if url is not None or text is not None:
@@ -112,11 +140,12 @@ def read(body: dict, opener=urllib.request.urlopen) -> dict:
     else:
         return {"ok": False, "error": "请粘贴播放列表的地址，或选一个 M3U 文件"}
     found = m3u.parse_playlist(text)
-    entries = [row for row in map(_clean, found) if row is not None]
-    if not entries:
+    cleaned = [row for row in map(_clean, found) if row is not None]
+    if not cleaned:
         return {"ok": False, "error": "这里面没有找到频道：请确认是 M3U 播放列表（#EXTINF 加地址的格式）"}
-    return {"ok": True, "entries": entries[:ENTRIES_MAX], "skipped": len(found) - len(entries),
-            "total": len(entries)}
+    entries, folded = merge(cleaned)
+    return {"ok": True, "entries": entries[:ENTRIES_MAX], "skipped": len(found) - len(cleaned),
+            "total": len(entries), "merged": folded}
 
 
 def name_key(name: str) -> str:
@@ -127,14 +156,19 @@ def name_key(name: str) -> str:
 def mark(entries: list[dict], rows: list[dict]) -> list[dict]:
     """给读出来的台加上 kind（自动分组）和 dup：
     "url"  地址已经在频道表里；"name" 频道表里有同名的台；"list" 列表里前面已经有同名的台；"" 不重复。
+    match 是对上的频道表里的台 id（不重复时为空）。
     rows 是现在的频道表（channeltable.read 的 rows）。原地改，也返回 entries。"""
-    urls = {row["url"] for row in rows}
-    names = {name_key(row["name"]) for row in rows}
+    urls = {row["url"]: row["id"] for row in rows}
+    names = {name_key(row["name"]): row["id"] for row in rows}
     seen: set[str] = set()
     for entry in entries:
         key = name_key(entry["name"])
         entry["kind"] = channel_groups.classify("", entry["name"])
-        entry["dup"] = "url" if entry["url"] in urls else "name" if key in names else "list" if key in seen else ""
+        # 地址（主线路或备用线路之一）已经在表里的也算「地址重复」。
+        known = next((urls[u] for u in [entry["url"]] + [r["url"] for r in entry.get("routes") or []] if u in urls), "")
+        entry["dup"] = "url" if known else "name" if key in names else "list" if key in seen else ""
+        # 重复的是频道表里的哪个台：页面上「合并为备用线路」把这一项的地址加给它。
+        entry["match"] = known or names.get(key) or ""
         seen.add(key)
     return entries
 

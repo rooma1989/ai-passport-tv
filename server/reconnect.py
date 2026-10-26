@@ -211,7 +211,11 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
     没画面而换成等待画面），直到 server.pause_verdict() 说继续；然后按重连的流程重启视频源，
     重连的超时从继续的那一刻算起。
     """
-    deadline = since + RECONNECT_TIMEOUT_S
+    # 有备用线路（server/routes.py）时期限长一点，每条线路都有机会试；仍有上限，不会无限地等。
+    deadline = since + RECONNECT_TIMEOUT_S + getattr(server, "route_extra_s", lambda: 0.0)()
+    # 换线路（AVServer.route_failed / route_ok）：起不来的线路换下一条，放过一阵才断的先在同一条上重试。
+    route_failed = getattr(server, "route_failed", lambda reason: None)
+    route_ok = getattr(server, "route_ok", lambda: None)
     restart: Restart | None = None
     # 片源重开时问中转新片源是哪一集（server.info_fetch，只对会画的固件、中转的台）。
     fetch = None
@@ -280,8 +284,10 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 if channel is not None and not pending:
                     if channel.failure() is not None:
                         pending = "decoder_stopped"
+                        route_failed(pending)
                     elif now - since > STALL_RESTART_S:
                         pending = "stalled"
+                        route_failed(pending)
                     elif channel.video_pending() and len(channel.audio) >= 4:
                         return _resumed(server, connection, session, wire, channel, fresh=False)
                 elif channel is None and not pending:
@@ -308,11 +314,13 @@ def hold(server, connection, session: int, channel: LiveChannel, wire: WireState
                 if failed:
                     server.logger(f"session={session} RECONNECT attempt={attempts} "
                                   f"failed={failed}")
+                    route_failed(failed)
                     restart.abandon()
                     restart = None
                     retry_at = now + RETRY_DELAY_S
                 elif restart.done and restart.channel.prebuffered():
                     winner, restart = restart.channel, None
+                    route_ok()
                     return _resumed(server, connection, session, wire, winner)
 
             getattr(server, "keep_now_playing", lambda: None)()

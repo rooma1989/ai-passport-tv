@@ -322,7 +322,10 @@ class ServiceTests(unittest.TestCase):
         stream = self.service.open(ALICE_DEVICE, self.source)
         self.assertFalse(stream.wait_ready(5))
         stream._thread.join(5)
-        self.assertEqual(stream.error, "HTTP error 403 Forbidden for <地址>")
+        # A live channel's failure is said in plain Chinese (server/routes.py), never ffmpeg's own words.
+        self.assertTrue(stream.error.startswith("线路被源站拒绝（403），可能已失效"), stream.error)
+        self.assertNotIn("HTTP error", stream.error)
+        self.assertNotIn("https://", stream.error)
         self.assertFalse(stream.alive)
 
     def test_per_user_limit_and_close(self):

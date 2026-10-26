@@ -1267,10 +1267,12 @@ function liveNeighbours(ids, id) {
 // ---- 直播起播的纯函数到此 ----
 
 // 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
-// opts：say（画面上的提示）、ended（放完了）、live（直播：落后太多时追到最新附近）、gap（视频落到中转的窗口外了）。
+// opts：say（画面上的提示）、ended（放完了）、live（直播：落后太多时追到最新附近）、gap（视频落到中转的窗口外了）、
+// notice（换线路时中转说的话）、reopen（直播放了一阵断了、中转说还有别的线路：页面重开一次，返回 true 表示接手了）。
 class WatchPlayer {
   constructor(video, base, opts) {
     this.video = video; this.base = base; this.say = opts.say; this.live = !!opts.live; this.gap = opts.gap || (() => {});
+    this.notice = opts.notice || this.say; this.reopen = opts.reopen || (() => false);
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
     this.t0 = performance.now(); this.playedAt = 0;
     this.onWaiting = () => this.kick();
@@ -1312,17 +1314,27 @@ class WatchPlayer {
       await this.append(await this.fetch("init.mp4", "arrayBuffer"));
       await this.loop();
     } catch (error) {
+      if (this.alive && error.reopen && this.reopen(error.message)) return;
       if (this.alive) this.say(error.message || "放不了", true, true);
     }
   }
   // 取一个文件：503（还在连片源）过一会儿再来；410 是这一路停了，正文是原因（B 站连不上之类）；404 是地址失效了。
+  // 直播台有备用线路时（server/routes.py）：503 带 X-RTV-Notice 是在换线路（正文「CCTV2 线路 1 失效…正在换线路 2…」），
+  // 显示出来接着等，不算进 8 次（线路有几条就可能等几轮，至多约两分钟）；410 带 X-RTV-Reopen 是放了一阵断了、
+  // 还有别的线路，交给 reopen。
   async fetch(name, kind) {
     for (let round = 0; ; round++) {
       if (!this.alive) throw new Error("");
       const response = await fetch(this.base + name, { credentials: "same-origin", cache: "no-store" });
       if (response.ok) return response[kind]();
+      const notice = response.status === 503 && response.headers.get("X-RTV-Notice");
+      if (notice && round < 120) { const text = await response.text(); if (this.alive) this.notice(text); await sleep(1000); continue; }
       if (response.status === 503 && round < 8) { await sleep(1000); continue; }
-      if (response.status === 410) throw new Error((await response.text()) || "片源断了");
+      if (response.status === 410) {
+        const error = new Error((await response.text()) || "片源断了");
+        error.reopen = !!response.headers.get("X-RTV-Reopen");
+        throw error;
+      }
       if (response.status === 404 && name.endsWith(".m4s")) return null;      // 落在窗口外了，跳过
       throw new Error(response.status === 404 ? "这一路已经停了" : "片源还没准备好");
     }
@@ -1376,6 +1388,8 @@ class WatchPlayer {
         this.kick();
       }
       if (ended && this.next >= first + count) {
+        // 直播放了一阵断了、中转还有别的线路（#EXT-X-RTV-REOPEN）：马上重开，不等缓冲放完。
+        if (this.live && text.includes("#EXT-X-RTV-REOPEN") && this.reopen("线路断了，正在换线路…")) return;
         this.ended = true;
         if (this.ms.readyState === "open") this.ms.endOfStream();
         return;
@@ -1504,6 +1518,8 @@ function playerFor(answer) {
   }
   const player = new WatchPlayer($("watchVideo"), answer.url, {
     say: watchSay, ended: watchEnded, live,
+    notice: (text) => { if (watching && watching.player !== player) return; routeNotice(answer.name || answer.title || answer.channel, text); },
+    reopen: (text) => (!watching || watching.player === player) && routeReopen(answer, text),
     playing: (ms) => {
       if (!watching || watching.player !== player) return;
       switched();
@@ -1525,6 +1541,7 @@ function switching(name, text) {
   const v = $("watchVideo"), canvas = $("pcFreeze");
   $("pcSwitchName").textContent = name || "";
   $("pcSwitchText").textContent = text || (watching ? "正在切换…" : "正在连接…");
+  $("pcSwitch").classList.toggle("wrap", !!text);
   $("pcSwitch").hidden = false;
   watchSay("");
   // 画面停在上一台最后一帧（还在放、有画面时；MediaSource 的画面同源，能画到 canvas 上）。
@@ -1539,6 +1556,33 @@ function switching(name, text) {
 function switched() {
   $("pcSwitch").hidden = true;
   $("pcFreeze").hidden = true;
+}
+
+// ---- 直播台的备用线路（server/routes.py）：中转在一路里按顺序换线路，这里只把它说的话显示出来 ----
+// 换台的遮罩还在时写在遮罩上（台名下面），否则写在画面上的提示里。
+function routeNotice(name, text) {
+  if (!$("pcSwitch").hidden) {
+    // 遮罩上已经有台名：话里开头的台名不再重复。
+    const shown = $("pcSwitchName").textContent;
+    $("pcSwitchText").textContent = shown && text.startsWith(shown + " ") ? text.slice(shown.length + 1) : text;
+    $("pcSwitch").classList.add("wrap");
+    return;
+  }
+  watchSay(text);
+}
+// 放了一阵断了、中转说还有别的线路：自动重开（中转把断了的线路排到最后，从下一条起）。同一个台两分钟内至多
+// 重开「线路条数」次，再断就照常显示原因和「重试」。
+const reopened = {};
+const REOPEN_WINDOW_MS = 120000;
+function routeReopen(answer, text) {
+  if (!watching || watching.kind !== "live") return false;
+  const id = answer.channel || "", now = Date.now(), seen = reopened[id];
+  const count = seen && now - seen.at < REOPEN_WINDOW_MS ? seen.n + 1 : 1;
+  if (count > Math.max(1, answer.routes || 1)) return false;
+  reopened[id] = { n: count, at: now };
+  switching(answer.name || answer.title || id, text || "线路断了，正在换线路…");
+  setTimeout(() => { if (watching && watching.channel === answer.channel) retryWatch(); }, 300);
+  return true;
 }
 
 // ---- 预热：电脑上看直播时，让中转先把上一台、下一台（和鼠标停着的台）转起来，换过去马上有画面 ----

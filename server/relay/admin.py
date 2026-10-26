@@ -23,12 +23,12 @@ import threading
 import time
 from pathlib import Path
 
-from .. import channel_groups, now_playing
+from .. import channel_groups, now_playing, routes
 from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, console, epg, events, playlist, presets, qr, table
+from . import channeltable, console, epg, events, playlist, presets, qr, routecheck, table
 from .ytnode import MAX_STREAMS
 
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
@@ -323,14 +323,16 @@ def channels(relay) -> dict:
         return {"ok": True, "configured": False}
     current = channeltable.read(path)
     groups = global_groups(relay)
-    rows = [dict(row, group=groups.get(row["id"], ""), auto=channel_groups.classify(row["id"], row["name"]))
+    lines = channeltable.routes_view(path, current["rows"])
+    rows = [dict(row, group=groups.get(row["id"], ""), auto=channel_groups.classify(row["id"], row["name"]),
+                 **lines[row["id"]])
             for row in current["rows"]]
     backups = sorted(p.name for p in path.parent.glob(path.name + ".bak-*"))
     return {"ok": True, "configured": True, "version": current["version"], "rows": rows, "bad": current["bad"],
             "groups": list(channel_groups.GROUPS[2:]), "limits": {"channels": channel_groups.CHANNEL_MAX,
                                                                   "bytes": channel_groups.CONFIG_MAX},
             "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:],
-            "import": relay.selfhost is not None,
+            "import": relay.selfhost is not None, "routes_max": routes.ROUTES_MAX,
             # 网上公开的第三方播放列表（只有列表地址）：和导入一样只在自建 / 电脑客户端里有。
             "presets": presets.public() if relay.selfhost is not None else []}
 
@@ -360,6 +362,8 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
             if group and group != channel_groups.classify(row["id"], row["name"]):
                 groups[row["id"]] = group
         problems = channeltable.problems(rows)
+        route_problems, routes_changed = _route_problems(body["rows"], rows)
+        problems += route_problems
         fit = _fit(relay, [(r["id"], r["name"]) for r in rows])
         for item in fit:
             if not item["fits"]:
@@ -382,7 +386,8 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
                                                                   if r["id"] in {x["id"] for x in rows}]
         kept = {r["id"] for r in rows}
         summary = {"added": len(added), "removed": len(removed), "changed": len(changed), "moved": moved,
-                   "groups": groups != {k: v for k, v in old_groups.items() if k in kept}, "total": len(rows)}
+                   "groups": groups != {k: v for k, v in old_groups.items() if k in kept}, "total": len(rows),
+                   "routes": routes_changed}
         if body.get("dry") is True:
             return {"ok": True, "dry": True, "summary": summary, "warnings": checked.get("warnings") or [], "fit": fit}
         backup = channeltable.save(path, text, relay.clock)
@@ -400,19 +405,28 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
 
 
 def _save_meta(path: Path, items: list, rows: list[dict]) -> None:
-    """频道表旁边的 tvg-id / 台标（channeltable.meta_of）：新台用页面带来的（从播放列表导入的才有），
-    留下的台照旧，删掉的台跟着删。写不了不要紧（节目单退回按台名对），不挡保存。"""
-    old = channeltable.meta_of(path)
-    meta = {}
-    for item, row in zip(items, rows):
-        given = channeltable.clean_meta(item) or old.get(row["id"])
-        if given:
-            meta[row["id"]] = given
-    if meta != old:
-        try:
-            channeltable.save_meta(path, meta)
-        except OSError:
-            pass
+    """频道表旁边的 meta（tvg-id、台标、备用线路，channeltable.merge_meta）。写不了不要紧（节目单退回按台名对、
+    只有主线路），不挡保存。"""
+    routes.update_meta(path, lambda data: channeltable.merge_meta(data, items, rows))
+
+
+def _route_problems(items: list, rows: list[dict]) -> tuple[list[str], int]:
+    """页面发来的备用线路的问题（中文），和改了备用线路的台数。"""
+    found, changed = [], 0
+    for n, (item, row) in enumerate(zip(items, rows), start=1):
+        if not isinstance(item, dict) or "routes" not in item:
+            continue
+        given = item["routes"]
+        label = f"第 {n} 行（{row['name'] or row['id']}）"
+        if not isinstance(given, list):
+            found.append(f"{label}：备用线路的格式不对")
+            continue
+        if len(given) > routes.BACKUPS_MAX:
+            found.append(f"{label}：备用线路最多 {routes.BACKUPS_MAX} 条（连主线路一共 {routes.ROUTES_MAX} 条）")
+        for k in routes.bad_routes(given):
+            found.append(f"{label}：备用线路 {k} 的地址不对（要以 http:// 或 https:// 开头，不能有空格和竖线）")
+        changed += 1
+    return found, changed
 
 
 # ---- POST ----
@@ -437,6 +451,15 @@ def post(handler, relay, path: str) -> bool:
     ip = handler._ip()
     if path == "/api/admin/channels":
         handler._json(save_channels(relay, body, caller, ip))
+        return True
+    if path == "/api/admin/channels/check":
+        # 检测一个台的线路（routecheck.py：取列表和一个片段的头几 KB，不开 ffmpeg）：云端和自建都有，
+        # 只测频道表里已经保存的线路。
+        cid = body.get("id")
+        if relay.main_channels is None or not isinstance(cid, str) or not cid or len(cid) > 32:
+            handler._json({"ok": False, "error": "请求格式不对"}, 400)
+            return True
+        handler._json(routecheck.check_channel(relay.main_channels, cid, log=relay.log))
         return True
     if path == "/api/admin/epg":
         # 节目单的来源（epg.py）：云端和自建都有，默认关着。

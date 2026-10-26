@@ -1,0 +1,311 @@
+"""一个直播台的几条线路（备用地址）：存在哪、按什么顺序试、坏了怎么说给人听。
+
+网上的直播源列表里一个台常常有好几条线路（同名的几行，TXT 列表里一行用 # 隔开的几个地址），单条线路
+随时会失效（403、超时、播一会儿就断）。频道表 channels.txt 的格式不变（id | 名字 | 地址 [| UA]，那个
+地址是主线路，设备协议、live.parse_channels 都不认识别的），备用线路存在旁边的 <频道表>.meta.json 里，
+和台标、tvg-id 放在一起（server/relay/channeltable.py）。每个台一项：
+
+    "ch003": {"tvg_id": "CCTV2", "logo": "…",
+              "routes": [{"url": "https://…", "ua": "…"}, …],     # 备用线路，不含主线路，至多 BACKUPS_MAX 条
+              "good": "<指纹>",                                   # 上次放得起来的那条（电脑上看和电视服务都写）
+              "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000}}}   # 总后台「检测线路」的结果
+
+指纹是地址的 SHA-256 前 12 位：meta 里不重复存地址，地址里常有会话参数，也不进日志。这个文件坏了、没有
+都不要紧：只有主线路，和以前一样。
+
+只用标准库：电视服务（server/live.py、server/tv_server.py）、中转（server/relay/watch.py、admin.py）都用它。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import threading
+import time
+from pathlib import Path
+
+# 一个台至多几条线路（主线路 + 备用）。
+ROUTES_MAX = 5
+BACKUPS_MAX = ROUTES_MAX - 1
+# 和 server/relay/channeltable.py 的 URL_MAX、AGENT_MAX 一样。
+URL_MAX = 400
+AGENT_MAX = 120
+WHY_MAX = 60
+META_SUFFIX = ".meta.json"
+# 一条线路起播以后至少放了这么久，再断才算「放过一阵的线路断了」（先在它上面重试）；不到这么久就断
+# 和起不来一样，换下一条。
+EARLY_S = 45.0
+# 同一个进程里改 meta 文件的人排队（总后台保存、检测线路、记住好线路）；跨进程（电视服务和中转）靠整份
+# 原子替换，偶尔丢一次「上次好的线路」不要紧。
+META_LOCK = threading.Lock()
+
+
+def fingerprint(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+
+
+def _bad_text(value: str) -> bool:
+    return any(ord(c) < 32 for c in value) or "|" in value
+
+
+def clean_route(item) -> dict | None:
+    """{"url", "ua"?} 或 None（不合格）。"""
+    if not isinstance(item, dict):
+        return None
+    url, agent = item.get("url"), item.get("ua", item.get("agent", ""))
+    if not isinstance(url, str) or not isinstance(agent, str):
+        return None
+    url, agent = url.strip(), " ".join(agent.split())
+    if not url.startswith(("http://", "https://")) or len(url) > URL_MAX or " " in url or _bad_text(url):
+        return None
+    if len(agent) > AGENT_MAX or _bad_text(agent):
+        agent = ""
+    return {"url": url, "ua": agent} if agent else {"url": url}
+
+
+def clean_routes(items, primary: str = "") -> list[dict]:
+    """备用线路：去掉不合格的、和主线路一样的、重复的，至多 BACKUPS_MAX 条。"""
+    found, seen = [], {primary}
+    for item in items if isinstance(items, list) else []:
+        route = clean_route(item)
+        if route is None or route["url"] in seen:
+            continue
+        seen.add(route["url"])
+        found.append(route)
+        if len(found) >= BACKUPS_MAX:
+            break
+    return found
+
+
+def bad_routes(items) -> list[int]:
+    """页面发来的备用线路里不合格的是第几条（从 1 数）。"""
+    return [n for n, item in enumerate(items if isinstance(items, list) else [], 1) if clean_route(item) is None]
+
+
+# ---------------------------------------------------------------- meta 文件
+
+def meta_path(path) -> Path:
+    path = Path(path)
+    return path.with_name(path.name + META_SUFFIX)
+
+
+def read_meta(path) -> dict:
+    """整份 meta（{台 id: {…}}，只留是字典的项）；没有、坏了是 {}。"""
+    if path is None:
+        return {}
+    try:
+        data = json.loads(meta_path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def write_meta(path, data: dict) -> None:
+    """整份原子替换；没有一项时删掉文件。"""
+    target = meta_path(path)
+    data = {k: v for k, v in data.items() if v}
+    if not data:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=0, sort_keys=True), encoding="utf-8")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, target)
+
+
+def update_meta(path, change) -> bool:
+    """读、改（change(data) 原地改）、有变化才写。写不了（只读目录）返回 False，不抛。"""
+    if path is None:
+        return False
+    with META_LOCK:
+        data = read_meta(path)
+        before = json.dumps(data, sort_keys=True)
+        change(data)
+        if json.dumps(data, sort_keys=True) == before:
+            return True
+        try:
+            write_meta(path, data)
+        except OSError:
+            return False
+    return True
+
+
+def backups_of(entry) -> list[dict]:
+    return clean_routes(entry.get("routes")) if isinstance(entry, dict) else []
+
+
+def table_routes(path, cid: str, url: str, agent: str = "", default_agent: str = "") -> list[tuple[str, str]]:
+    """这个台的所有线路 [(地址, UA)]，频道表的顺序：主线路（channels.txt 里的）在前，再是 meta 里的备用线路。
+    没写 UA 的用 default_agent。"""
+    entry = read_meta(path).get(cid, {}) if path is not None else {}
+    routes = [(url, agent or default_agent)]
+    for route in clean_routes(entry.get("routes"), url):
+        routes.append((route["url"], route.get("ua") or default_agent))
+    return routes
+
+
+def good_of(path, cid: str) -> str:
+    """上次放得起来的那条线路的指纹（没有时空串）。"""
+    good = read_meta(path).get(cid, {}).get("good") if path is not None else ""
+    return good if isinstance(good, str) and re.fullmatch(r"[0-9a-f]{12}", good) else ""
+
+
+def preferred(routes: list[tuple[str, str]], good: str = "", bad: set[str] | frozenset = frozenset()) -> list[int]:
+    """试线路的顺序（下标）：上次好的那条先试，最近坏过的（bad，指纹）放最后，别的按频道表的顺序。"""
+    marks = [fingerprint(url) for url, _ in routes]
+    order = list(range(len(routes)))
+    return sorted(order, key=lambda i: (marks[i] in bad, marks[i] != good, i))
+
+
+def remember_good(path, cid: str, url: str) -> bool:
+    """记住这个台放得起来的线路（和上次一样就不写文件）。只记频道表里有的线路。"""
+    mark = fingerprint(url)
+
+    def change(data: dict) -> None:
+        data.setdefault(cid, {})["good"] = mark
+
+    if path is None or not url or good_of(path, cid) == mark:
+        return False
+    return update_meta(path, change)
+
+
+# ---------------------------------------------------------------- 按顺序换线路
+
+class RouteCycle:
+    """一个会话里试线路的顺序和次数（电视服务用；电脑上看在 watch.py 里按 preferred 顺序走一遍）。
+
+    - current：现在用哪条（地址, UA）；index 是它在频道表里是第几条（从 0 数）。
+    - started()：这条线路出画面了。
+    - failed()：这条线路起不来，或者断了。起播后放了 early_s 秒以上才断的：先在同一条上重试（返回 False，
+      没换）；否则换下一条（返回 True）。一轮都试过了（rounds 轮）exhausted 为真，之后照样轮着给，
+      由调用方的期限（reconnect.hold 的 deadline）收尾，不会无限地快速重试。"""
+
+    def __init__(self, routes: list[tuple[str, str]], good: str = "", clock=time.monotonic,
+                 early_s: float = EARLY_S):
+        self.routes = list(routes) or [("", "")]
+        self.order = preferred(self.routes, good)
+        self.clock = clock
+        self.early_s = early_s
+        self.pos = 0
+        self.failures = 0
+        self._since: float | None = None
+
+    @property
+    def index(self) -> int:
+        return self.order[self.pos % len(self.order)]
+
+    @property
+    def current(self) -> tuple[str, str]:
+        return self.routes[self.index]
+
+    @property
+    def count(self) -> int:
+        return len(self.routes)
+
+    @property
+    def exhausted(self) -> bool:
+        return self.failures >= len(self.routes)
+
+    def started(self) -> None:
+        self._since = self.clock()
+        self.failures = 0
+
+    def failed(self) -> bool:
+        since, self._since = self._since, None
+        if since is not None and self.clock() - since >= self.early_s:
+            return False
+        self.failures += 1
+        if len(self.routes) > 1:
+            self.pos += 1
+            return True
+        return False
+
+    def extra_s(self, per_route_s: float, cap_s: float = 120.0) -> float:
+        """多条线路时，重连的期限多给这么久（每多一条线路 per_route_s 秒，至多 cap_s）。"""
+        return min(cap_s, per_route_s * (len(self.routes) - 1))
+
+
+# ---------------------------------------------------------------- 出错了怎么说
+
+REASONS = {
+    "403": "线路被源站拒绝（403），可能已失效",
+    "401": "线路要登录（401），可能已失效",
+    "404": "源站找不到这个台（404）",
+    "5xx": "源站出错（5xx），可能暂时不行",
+    "timeout": "源站超时",
+    "eof": "源站中途断开",
+    "dns": "找不到源站（域名解析不了）",
+    "refused": "源站拒绝连接",
+    "tls": "和源站的加密连接失败",
+    "invalid": "源站给的不是能放的直播流",
+    "empty": "源站的列表里没有能放的片段",
+    "other": "直播源打不开",
+}
+# 先认 HTTP 状态码，再认网络上的说法。ffmpeg 的原话例如「Server returned 403 Forbidden (access denied)」、
+# 「Error reading HTTP response: Operation timed out」、「Error reading HTTP response: End of file」。
+_PATTERNS = (
+    ("403", re.compile(r"\b403\b|forbidden|access denied", re.I)),
+    ("401", re.compile(r"\b401\b|unauthorized", re.I)),
+    ("404", re.compile(r"\b40[47]\b|\b410\b|not found", re.I)),
+    ("5xx", re.compile(r"\b5\d\d\b|\b5xx\b|server error", re.I)),
+    ("dns", re.compile(r"resolve|name or service not known|nodename nor servname|getaddrinfo|"
+                       r"name resolution|no address associated", re.I)),
+    ("tls", re.compile(r"\bssl\b|\btls\b|certificate|handshake", re.I)),
+    ("refused", re.compile(r"connection refused|refused", re.I)),
+    ("timeout", re.compile(r"timed out|timeout|没有出片段", re.I)),
+    ("eof", re.compile(r"end of file|ends prematurely|connection reset|reset by peer|incompleteread|incomplete read|"
+                       r"broken pipe|中途断开|\beof\b", re.I)),
+    ("invalid", re.compile(r"invalid data|could not find codec|no streams|没有画面也没有声音|not a playlist", re.I)),
+    ("empty", re.compile(r"no segments|没有片段", re.I)),
+)
+_URL = re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.I)
+
+
+def redact(text: str) -> str:
+    """日志里的原话：地址换成 <地址>（地址里常有会话参数、令牌）。"""
+    return _URL.sub("<地址>", str(text or "")).strip()[:300]
+
+
+def classify(text: str) -> str:
+    text = redact(text)
+    for code, pattern in _PATTERNS:
+        if pattern.search(text):
+            return code
+    return "other"
+
+
+def telling(lines) -> str:
+    """几行原话里最说明问题的一行（按上面的先后：状态码先于网络的说法）；都认不出时空串。"""
+    lines = [redact(line) for line in lines if line]
+    for _code, pattern in _PATTERNS:
+        for line in lines:
+            if pattern.search(line):
+                return line
+    return ""
+
+
+def friendly(text: str) -> str:
+    """ffmpeg / HTTP 的原话 → 给人看的一句中文（不带原话）。"""
+    return REASONS[classify(text)]
+
+
+ALL_FAILED = "这个台的线路都打不开了：去「总后台 → 频道表」检测线路或重新导入"
+
+
+def all_failed(last: str, count: int) -> str:
+    """所有线路都不行时说的话：几条线路时带上最后一条的原因。"""
+    if count <= 1:
+        return f"{friendly(last)}。去「总后台 → 频道表」检测线路或重新导入"
+    return f"{ALL_FAILED}（{count} 条线路，最后一条：{friendly(last)}）"
+
+
+def switching(name: str, failed: int, reason: str, following: int) -> str:
+    """「CCTV2 线路 1 失效（源站超时），正在换线路 2…」：线路按频道表里的顺序从 1 数。"""
+    return f"{name} 线路 {failed} 失效（{friendly(reason)}），正在换线路 {following}…"

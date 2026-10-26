@@ -420,6 +420,20 @@ background.
 
 ## Common problems
 
+- **A live channel will not play ("the line was refused (403)", "the source timed out", "the source cut off")**:
+  community live lists go stale -- a line that worked last week can be refused
+  (403) or stall today. A channel can have several lines: importing a list keeps
+  rows with the same name or tvg-id, and a TXT line's `#`-separated addresses,
+  as backup lines (up to 5 per channel), and "Merge as backup lines" adds a
+  duplicate's addresses to the channel already in the table. When a line fails
+  to start or dies soon after, the PC player and the TV move on to the next
+  one by themselves ("CCTV2 line 1 failed, switching to line 2…") and try the
+  line that worked last time first next time. When the player says every line
+  failed, open Admin → Channel table: "Check lines" (one channel) or
+  "Check all lines" connects to each line's playlist and a few KB of one segment
+  -- no decoding, light enough for the cloud relay -- and marks it ✓/✗ with the
+  reason; reorder or remove lines, set another one as the primary, or import a
+  fresh list. A ✓ means the line answers, not that it is sure to play.
 - **Bilibili videos, creators or series never start (stuck on loading)**: open
   bilibili.com in a browser on the same computer. If that fails too, this computer cannot reach Bilibili:
   the router or parental controls block it (allow it there), or a proxy app

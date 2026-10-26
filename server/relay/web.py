@@ -199,6 +199,9 @@ class Relay:
         # 在电脑上看（watch.py）：只在自建 / 电脑客户端开；云端的小主机上行带宽不够，没有这个功能。
         self.watch = (watch_pc.WatchService(ffmpeg, watch_pc.derive_secret(key), log=lambda m: self.log(m))
                       if selfhost is not None and accounts is not None else None)
+        if self.watch is not None:
+            # 直播台的备用线路和上次好用的线路记在全局频道表旁边的 meta 里（server/routes.py）。
+            self.watch.routes_path = lambda: self.main_channels
         # 点播（vod.py）：B 站的视频在电脑上直接放原文件（浏览器的 <video>，中转按 Range 转发），名额和 watch 一起算。
         self.vod = (vod.VodService(vod.derive_secret(key), watch=self.watch, log=lambda m: self.log(m))
                     if self.watch is not None else None)
@@ -1280,6 +1283,8 @@ class Relay:
                     "duration": int(duration or source.duration or 0), "seekable": True, **quality, **extra}
         if getattr(source, "quality", ""):
             quality = {"quality": {"current": source.quality, "choices": list(QUALITY_CHOICES)}}
+        if source.key[0] == "live":
+            extra.setdefault("routes", max(1, len(getattr(source, "routes", ()) or ())))
         return {"ok": True, "sid": stream.sid, "title": source.label, "kind": source.key[0], "mode": "hls",
                 "url": f"watch/{stream.sid}/{self.watch.token(stream)}/",
                 "start": round(float(source.start), 1) if video else 0.0,
@@ -1375,14 +1380,16 @@ class Relay:
 
     def _live_source(self, cid: str):
         """全局频道表（main_channels）里的直播台：地址和 User-Agent；不在表里的是原因（字符串）。"""
-        found = watch_pc.live_source(self.main_channels, cid)
-        if found is None:
+        lines = watch_pc.live_lines(self.main_channels, cid)
+        if not lines:
             return "找不到这个台的地址"
-        url, agent = found
+        url, agent = lines[0]
         name = next((n for c, n in channel_groups.read_table(self.main_channels) if c == cid), cid)
         # 直播源自己就按实时的速度给，不加 -re：加了以后源每停一下（咪咕这类几秒一段的 HLS 常有）ffmpeg 只按
         # 1.05 倍追，产出越来越落后，电脑上几秒卡一下。
-        return watch_pc.Source(("live", cid, url, agent), url=url, user_agent=agent, label=name, paced=False)
+        # 有备用线路（server/routes.py）时一路里按顺序换线路（watch.WatchStream），上次好用的先试。
+        return watch_pc.Source(watch_pc.live_key(cid, lines), url=url, user_agent=agent, label=name, paced=False,
+                               routes=tuple(lines))
 
     # ---- 在电脑上看：直接看一个台（不经小电视） ----
 

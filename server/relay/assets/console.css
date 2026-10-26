@@ -558,6 +558,9 @@ button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px
                    font: 15px/1.4 var(--sans); color: #f5f5f7; pointer-events: none; white-space: nowrap; }
 #pcwin .pcswitch b { overflow: hidden; text-overflow: ellipsis; }
 #pcwin .pcswitch span { color: rgba(235,235,245,.7); }
+/* 换线路的话长（「线路 1 失效（…），正在换线路 2…」）：可以折行。 */
+#pcwin .pcswitch.wrap { white-space: normal; width: max-content; max-width: calc(100% - 48px); }
+#pcwin .pcswitch.wrap b { flex: none; }
 #pcwin .pcspin { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); border-top-color: #f5f5f7; animation: pcspin .8s linear infinite; }
 @keyframes pcspin { to { transform: rotate(360deg); } }
 #pcwin .watchmsg button { pointer-events: auto; margin-top: 10px; }
