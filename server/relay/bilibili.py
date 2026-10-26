@@ -473,6 +473,25 @@ def _single_url(play: dict) -> str:
     return str(durl[0]["url"])
 
 
+def play_info(play: dict) -> dict:
+    """playurl 的回答（data / result）→ 电脑上点播（vod.py 的 playable）要看的几项：第一段的地址和备用地址、
+    一共几段、格式（mp4720、flv……）、画面编码（video_codecid）、大小、时长（秒）、清晰度、是不是试看。"""
+    play = play if isinstance(play, dict) else {}
+    durl = [d for d in (play.get("durl") or []) if isinstance(d, dict)]
+    first = durl[0] if durl else {}
+
+    def number(value) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+    backups = first.get("backup_url") if isinstance(first.get("backup_url"), list) else []
+    return {"url": str(first.get("url") or ""),
+            "backups": tuple(str(u) for u in backups if isinstance(u, str) and u)[:3],
+            "segments": len(durl), "format": str(play.get("format") or ""),
+            "codec": number(play.get("video_codecid")), "size": number(first.get("size")),
+            "duration": (number(first.get("length")) or number(play.get("timelength"))) / 1000,
+            "quality": number(play.get("quality")), "preview": bool(play.get("is_preview"))}
+
+
 def _count(data, *keys) -> int:
     """回答里的一个非负整数（投稿总数之类）；没有或看不懂时为 0。"""
     if not isinstance(data, dict):
@@ -720,6 +739,44 @@ class Bilibili:
         if not durl or not durl[0].get("url"):
             raise BilibiliError(f"{part}/{cid}: 没有可播放的地址", permanent=True)
         return durl[0]["url"]
+
+    def vod_media(self, bvid: str, login=None) -> dict:
+        """电脑上点播（vod.py）用的原文件：html5 平台的 MP4（最高 720p，H.264 + AAC），play_info 的结果。
+        login：带着他的 cookies 取（会员剧集要大会员）；带 cookies 的请求出错时退回不登录的，和 media_url 一样。
+        能不能直接放由 vod.playable 判断（分段的、FLV、HEVC 照旧走 ffmpeg）。"""
+        episode = _EPISODE.match(bvid)
+        if episode and episode.group(1).startswith("ep"):
+            part, cid = episode.group(1), episode.group(2)
+            play = None
+            if login is not None:
+                try:
+                    play = self._call("/pgc/player/web/playurl", _login=login, ep_id=part[2:], cid=cid,
+                                      qn=HTML5_MAX_QUALITY, fnval=1)
+                except BilibiliError as error:
+                    if not isinstance(error, LoginRejected) and error.permanent:
+                        raise
+            if play is None:
+                play = self._call("/pgc/player/web/playurl", ep_id=part[2:], cid=cid, qn=HTML5_MAX_QUALITY, fnval=1)
+            if play.get("is_preview"):
+                raise MemberOnly(f"{part}: 只能试看（需要大会员）")
+            return play_info(play)
+        if episode:
+            bvid, cid = episode.group(1), episode.group(2)
+        else:
+            # 刚取过这个视频的信息（投到电脑时 video()、parts()）就不再问一次 cid：起播少等一个来回。
+            kept = self._views.get(bvid)
+            view = kept[1] if kept is not None and self._clock() - kept[0] < VIEW_KEEP_S else \
+                self._call("/x/web-interface/view", bvid=bvid)
+            cid = view.get("cid")
+            if not cid:
+                raise BilibiliError(f"{bvid}: 没有 cid", permanent=True)
+        params = dict(bvid=bvid, cid=cid, qn=HTML5_MAX_QUALITY, fnval=1, platform="html5")
+        if login is not None:
+            try:
+                return play_info(self._call("/x/player/playurl", _login=login, **params))
+            except BilibiliError:
+                pass
+        return play_info(self._call("/x/player/playurl", **params))
 
     # ---- 剧集 ----
 
