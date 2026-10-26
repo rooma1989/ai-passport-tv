@@ -5,6 +5,9 @@
 - GET /api/bili/thumb?u=<封面地址>&s=v|f|p：封面缩略图。电脑版的 CSP 只许本站的图片（img-src 'self'），
   B 站图床也拦外站的 Referer，所以由中转去取：只认 *.hdslb.com 的 /bfs/ 图片（bilibili.cover_url），
   不跟随跳转，限大小，结果在内存里缓存一会儿，浏览器也缓存一天。
+  YouTube 的缩略图（首页、搜索的封面）也走这里：只认 https://i.ytimg.com/vi/<11 位 id>/<几种固定文件名>.jpg
+  （youtube_thumb_url），经 YouTube 用的那个代理去取（本机模式在「设置 → YouTube」里填的；没填就直连），
+  连不上时和 B 站图床分开记，互不拖累。
 
 谁能用：和订阅接口一样，要账号（单用户时是登录过的手机或电脑；多用户时是用户，访客 404）。
 别打扰 B 站：同样的搜索 10 分钟内直接用缓存；每个人每秒最多真去搜一次，全站每分钟最多 30 次；
@@ -13,9 +16,13 @@
 
 from __future__ import annotations
 
+import http.client
+import re
+import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import OrderedDict, deque
 
@@ -41,6 +48,10 @@ THUMB_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif", "
 # 让图床缩好再给（B 站图床的「@宽w_高h_1c.webp」后缀）：视频封面、头像、番剧竖版海报。
 THUMB_SIZES = {"v": "@320w_200h_1c.webp", "f": "@96w_96h_1c.webp", "p": "@180w_240h_1c.webp"}
 
+# YouTube 缩略图：只认这一个主机、这几种文件名（不带查询串）。
+YOUTUBE_THUMB_HOST = "i.ytimg.com"
+_YOUTUBE_THUMB = re.compile(r"^/vi/[A-Za-z0-9_-]{11}/(?:default|mqdefault|hqdefault|sddefault|maxresdefault)\.jpg$")
+
 UNREACHABLE = "B 站连不上：检查路由器或代理"
 REFUSED = "B 站拒绝了这次搜索（可能是搜得太频繁），请过几分钟再试"
 
@@ -60,6 +71,45 @@ def fetch_image(url: str, timeout: float) -> tuple[str, bytes]:
         return answer.headers.get_content_type(), answer.read(THUMB_MAX_BYTES + 1)
 
 
+def youtube_thumb_url(raw) -> str:
+    """i.ytimg.com 的缩略图地址 → https 地址；不是就给空串。"""
+    text = str(raw or "").strip()
+    if text.startswith("//"):
+        text = "https:" + text
+    try:
+        url = urllib.parse.urlsplit(text)
+        port = url.port
+    except ValueError:
+        return ""
+    if url.scheme not in ("http", "https") or port is not None or url.username or url.password \
+            or url.query or url.fragment or (url.hostname or "").lower() != YOUTUBE_THUMB_HOST:
+        return ""
+    if not _YOUTUBE_THUMB.match(url.path):
+        return ""
+    return f"https://{YOUTUBE_THUMB_HOST}{url.path}"
+
+
+def fetch_youtube_image(url: str, timeout: float, proxy: str = "") -> tuple[str, bytes]:
+    """经 YouTube 的代理（http:// 或 socks5://，见 ytnode.open_tunnel）取 i.ytimg.com 的图；没有代理就直连。"""
+    headers = {"User-Agent": bilibili.UA}
+    if not proxy:
+        with _OPENER.open(urllib.request.Request(url, headers=headers), timeout=timeout) as answer:
+            return answer.headers.get_content_type(), answer.read(THUMB_MAX_BYTES + 1)
+    from .ytnode import open_tunnel, parse_proxy
+    tunnel = open_tunnel(parse_proxy(proxy), YOUTUBE_THUMB_HOST, 443, timeout)
+    tunnel.settimeout(timeout)
+    connection = http.client.HTTPSConnection(YOUTUBE_THUMB_HOST, timeout=timeout)
+    connection.sock = ssl.create_default_context().wrap_socket(tunnel, server_hostname=YOUTUBE_THUMB_HOST)
+    try:
+        connection.request("GET", urllib.parse.urlsplit(url).path, headers=headers)
+        answer = connection.getresponse()
+        if answer.status != 200:
+            raise OSError(f"HTTP {answer.status}")
+        return answer.headers.get_content_type(), answer.read(THUMB_MAX_BYTES + 1)
+    finally:
+        connection.close()
+
+
 class _Window:
     """最近 60 秒里做了几次（全站的次数上限）。"""
 
@@ -77,9 +127,13 @@ class _Window:
 
 
 class BiliSearch:
-    def __init__(self, clock=time.monotonic, fetch=fetch_image, log=lambda _m: None):
+    def __init__(self, clock=time.monotonic, fetch=fetch_image, log=lambda _m: None,
+                 fetch_youtube=fetch_youtube_image):
         self.clock = clock
         self.fetch = fetch
+        self.fetch_youtube = fetch_youtube
+        # YouTube 缩略图用的代理（web.Relay 设成读「设置 → YouTube」的那个函数）；返回空串就是直连。
+        self.youtube_proxy = lambda: ""
         self.log = log
         self.lock = threading.Lock()
         self._results: OrderedDict[tuple, tuple[float, dict]] = OrderedDict()
@@ -90,6 +144,7 @@ class BiliSearch:
         self._thumb_window = _Window(THUMB_PER_MINUTE)
         self._gate = threading.BoundedSemaphore(THUMB_PARALLEL)
         self._down_until = 0.0
+        self._yt_down_until = 0.0
 
     # ---- 搜索 ----
 
@@ -136,8 +191,9 @@ class BiliSearch:
 
     def thumb(self, raw, size) -> tuple[int, str, bytes]:
         """(HTTP 码, 类型, 内容)。不在白名单里的地址 404；取不到 502；太多了 503。"""
-        url = bilibili.cover_url(raw)
-        suffix = THUMB_SIZES.get(size or "v")
+        youtube = youtube_thumb_url(raw)
+        url = youtube or bilibili.cover_url(raw)
+        suffix = "" if youtube else THUMB_SIZES.get(size or "v")
         if not url or suffix is None:
             return 404, "", b""
         target = url + suffix
@@ -146,19 +202,26 @@ class BiliSearch:
             if hit is not None:
                 self._thumbs.move_to_end(target)
                 return 200, hit[0], hit[1]
-            if self.clock() < self._down_until:
+            if self.clock() < (self._yt_down_until if youtube else self._down_until):
                 return 502, "", b""
             if not self._thumb_window.take(self.clock()):
                 return 503, "", b""
         if not self._gate.acquire(timeout=THUMB_TIMEOUT_S):
             return 503, "", b""
         try:
-            kind, body = self.fetch(target, THUMB_TIMEOUT_S)
+            if youtube:
+                kind, body = self.fetch_youtube(target, THUMB_TIMEOUT_S, self.youtube_proxy() or "")
+            else:
+                kind, body = self.fetch(target, THUMB_TIMEOUT_S)
         except (OSError, ValueError) as error:
             if not isinstance(error, urllib.error.HTTPError):
                 with self.lock:
-                    self._down_until = self.clock() + THUMB_DOWN_S
-                self.log(f"B 站图床连不上（{type(error).__name__}），{THUMB_DOWN_S} 秒内不再取缩略图")
+                    if youtube:
+                        self._yt_down_until = self.clock() + THUMB_DOWN_S
+                    else:
+                        self._down_until = self.clock() + THUMB_DOWN_S
+                self.log(f"{'YouTube 缩略图' if youtube else 'B 站图床'}连不上（{type(error).__name__}），"
+                         f"{THUMB_DOWN_S} 秒内不再取")
             return 502, "", b""
         finally:
             self._gate.release()

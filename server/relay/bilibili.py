@@ -471,6 +471,10 @@ def _count(data, *keys) -> int:
     return 0
 
 
+# 内存里最多记多少个封面、头像地址（一个地址约 80 字节）。
+COVERS_MAX = 4000
+
+
 class Bilibili:
     def __init__(self, fetch_json=None, resolve=None, quality: int = DEFAULT_QUALITY, clock=time.time):
         self.quality = quality if quality in QUALITIES else DEFAULT_QUALITY
@@ -482,6 +486,27 @@ class Bilibili:
         self._totals: dict[str, int] = {}
         # wbi 签名的两个 key 和取到的时刻（monotonic）。
         self._wbi: tuple[float, str, str] | None = None
+        # 电脑版首页的封面和头像（只在内存里，取列表时 B 站顺带给的图床地址，经 /api/bili/thumb 给页面）：
+        # 视频（BV 号、剧集的「ep…/cid」）和番剧（ss…）→ 封面；UP 主（mid）→ 头像。最多各留 COVERS_MAX 个。
+        self._covers: dict[str, str] = {}
+        self._faces: dict[str, str] = {}
+
+    def _keep(self, table: dict, key: str, raw) -> None:
+        url = cover_url(raw)
+        if not url:
+            return
+        table.pop(key, None)
+        table[key] = url
+        while len(table) > COVERS_MAX:
+            table.pop(next(iter(table)))
+
+    def cover(self, key: str) -> str:
+        """视频、剧集的封面地址（hdslb 图床）；没记下来时为空串。"""
+        return self._covers.get(str(key), "")
+
+    def face(self, mid: str) -> str:
+        """UP 主的头像地址；没记下来时为空串。"""
+        return self._faces.get(str(mid), "")
 
     def _call(self, path: str, _timeout: float | None = None, _login=None, _signed: bool = False,
               **params) -> dict:
@@ -559,6 +584,9 @@ class Bilibili:
         total = _count(data.get("page"), "count", "total")
         if total:
             self._totals[str(mid)] = max(total, len(videos))
+        for a in data.get("archives") or []:
+            if isinstance(a, dict) and a.get("bvid"):
+                self._keep(self._covers, str(a["bvid"]), a.get("pic"))
         return videos
 
     def creator(self, mid: str) -> tuple[str, list[Video]]:
@@ -567,6 +595,7 @@ class Bilibili:
             name = str(card["card"]["name"])
         except (KeyError, TypeError):
             raise BilibiliError("拿不到 UP 主名字") from None
+        self._keep(self._faces, str(mid), (card.get("card") or {}).get("face"))
         videos = self.uploads(mid)
         # 列表接口没给总数时，名片里的投稿数（archive_count）也行。
         if str(mid) not in self._totals:
@@ -678,6 +707,7 @@ class Bilibili:
     def _season(self, season_id: str, vip: bool = False) -> tuple[str, list[Video]]:
         season = self._call("/pgc/view/web/season", season_id=season_id)
         name = str(season.get("season_title") or season.get("title") or "")
+        self._keep(self._covers, f"ss{season_id}", season.get("cover"))
         episodes = []
         for e in season.get("episodes") or []:
             # status 2 是免费；13 是会员专享（大会员登录了才留）；别的（付费、下架）都不要。
@@ -689,12 +719,14 @@ class Bilibili:
             title = str(e.get("show_title") or "") or f"第{e.get('title')}集 {e.get('long_title') or ''}"
             episodes.append(Video(bvid=f"ep{int(e['id'])}/{int(e['cid'])}", title=title.strip(),
                                   duration=int(e.get("duration") or 0) // 1000, pubdate=0))
+            self._keep(self._covers, episodes[-1].bvid, e.get("cover"))
         if not episodes:
             raise BilibiliError(f"ss{season_id}: 没有免费的集（都要会员）", permanent=True)
         return name, episodes
 
     def _multipart(self, bvid: str) -> tuple[str, list[Video]]:
         view = self._call("/x/web-interface/view", bvid=bvid)
+        self._keep(self._covers, bvid, view.get("pic"))
         pages = view.get("pages") or []
         if len(pages) > 1:
             return series_name(str(view.get("title", ""))), [
@@ -751,6 +783,7 @@ class Bilibili:
 
     def video(self, bvid: str) -> Video:
         view = self._call("/x/web-interface/view", bvid=bvid)
+        self._keep(self._covers, bvid, view.get("pic"))
         try:
             return Video(bvid=bvid, title=str(view.get("title", "")),
                          duration=int(view.get("duration", 0)), pubdate=int(view.get("pubdate", 0)))
