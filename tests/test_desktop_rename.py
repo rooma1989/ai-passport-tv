@@ -473,7 +473,10 @@ class LoginItemMigrationTest(unittest.TestCase):
             current = autostart.XdgAutostart(Path("/opt/rootv/rootv"), config_home=Path(home))
             self.assertEqual(current.path.name, "rootv.desktop")
             self.assertIn("Name=小鼠电视", current.entry())
-        from tests.test_desktop_tray import FakeWinreg
+        # The sibling test module, by its own name: "tests." breaks where another package called
+        # tests is installed (the ESP-IDF CI container has one).
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from test_desktop_tray import FakeWinreg
         reg = FakeWinreg()
         old = autostart.legacy_for_this_os(Path(r"C:\Program Files\RooTV\RooTV.exe"), "win32", winreg=reg)
         self.assertFalse(old.exists())
