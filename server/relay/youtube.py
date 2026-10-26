@@ -40,6 +40,9 @@ BROWSE_MAX = 20
 BROWSE_TIMEOUT_S = 25.0
 # 订阅的频道：节点要跑一到两次 yt-dlp（几百个订阅要翻好几页）。
 SUBSCRIPTIONS_TIMEOUT_S = 260
+# 账号的推荐、观看记录、订阅的新视频（accountfeeds.py）：节点跑一次 yt-dlp，经代理要十几到几十秒。
+FEED_TIMEOUT_S = 150
+FEED_KINDS = ("rec", "history", "subs")
 
 
 # 频道 id（UC 加 22 位）：语音搜到的频道按它订阅，地址是 /channel/<id>。
@@ -287,6 +290,36 @@ class YouTube:
                           "handle": handle if re.match(r"^@[^/?#\s]{1,100}$", handle) else "",
                           "fans": _count(c.get("fans"))})
         return found
+
+    def feed(self, kind: str, limit: int = 30, timeout: float = FEED_TIMEOUT_S) -> list[dict]:
+        """cookies 那个账号的推荐（rec）、观看记录（history）、订阅的新视频（subs），经节点的 /yt/feed：
+        [{"id", "title", "duration", "channel", "channel_id", "thumb", "date", "views"}]。
+        没登录时 SourceError(reason="login")；节点太旧、没有这个路径时 SourceError(reason="unsupported")。"""
+        if kind not in FEED_KINDS:
+            raise ValueError(kind)
+        try:
+            answer = self._call("/yt/feed", _timeout=timeout, kind=kind, n=limit)
+        except SourceError as error:
+            status = getattr(error, "status", 0)
+            if status == 401:
+                raise SourceError(str(error), reason="login") from None
+            if status == 404:
+                raise SourceError(str(error), permanent=True, reason="unsupported") from None
+            raise
+        found, seen = [], set()
+        for v in answer.get("videos") or []:
+            if not isinstance(v, dict) or not _ID.match(str(v.get("id", ""))) or v["id"] in seen:
+                continue
+            title = " ".join(str(v.get("title") or "").split())[:200]
+            if not title:
+                continue
+            seen.add(v["id"])
+            cid = str(v.get("channel_id") or "")
+            found.append({"id": v["id"], "title": title, "duration": _count(v.get("duration")),
+                          "channel": " ".join(str(v.get("channel") or "").split())[:60],
+                          "channel_id": cid if _UCID.match(cid) else "", "date": _count(v.get("date")),
+                          "views": _count(v.get("views"))})
+        return found[:limit]
 
     def series_id(self, text: str) -> str | None:
         return parse_playlist_link(text)

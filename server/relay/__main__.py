@@ -195,6 +195,12 @@ def _serve_tenants(args, key: str, youtube) -> int:
                 relay.sync_devices()
             except Exception as error:  # 后台线程不能死：记下来，下一轮再试。
                 print(f"同步设备文件失败：{type(error).__name__}: {error}", flush=True)
+            if relay.account_feeds is not None:
+                try:
+                    # 「我的关注」：每个人到点（6 小时）了就在后台同步一次（follows.py；tick 自己限次数）。
+                    relay.account_feeds.tick()
+                except Exception as error:  # noqa: BLE001
+                    print(f"检查关注同步失败：{type(error).__name__}", flush=True)
 
     threading.Thread(target=keep_in_sync, daemon=True).start()
     # 总后台的主机负载曲线：每 5 秒读一次 /proc，留 24 小时（没有 /proc 时不采样）。

@@ -269,6 +269,9 @@ def _forget_subscriptions(relay) -> None:
     subs = getattr(relay, "_yt_subs", None)
     if subs is not None:
         subs.forget()
+    feeds = getattr(relay, "account_feeds", None)
+    if feeds is not None:
+        feeds.youtube_changed()      # 首页 YouTube 的几排（accountfeeds.py）也作废
 
 
 def _delete_cookies(relay) -> dict:

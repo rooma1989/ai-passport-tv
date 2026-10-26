@@ -409,6 +409,10 @@ class RelayHarness(unittest.TestCase):
             self.relay.bili_accounts.fetch = self.fake
             self.relay.bili_accounts.monotonic = self.mono
             self.relay.bili_accounts.sleep = lambda _s: None
+        if self.relay.account_feeds is not None:
+            # The login answer starts a sync of the followings (follows.py): run it inline, no thread races.
+            self.relay.account_feeds.background = False
+            self.relay.account_feeds.follows.background = False
         self.admin = self.accounts.create_user("管理员", "admin")
         self.kid = self.accounts.create_user("小孩")
         self.tokens = {u: self.accounts.new_session(u, "pc") for u in (self.admin, self.kid)}
@@ -572,8 +576,8 @@ class SelfhostRelayTests(RelayHarness):
         self.assertIn("设置 → B 站账号", answer["error"])
 
     def test_import_followings_with_caps(self):
-        self.sign_in(self.kid)
         self.fake.follow_total = 6
+        self.sign_in(self.kid)
         state = self.relay.user_state(self.kid)
         for n in range(9):
             state.add("bilibili", str(5000 + n), f"老 UP{n}", [Video(bvid="BVx", title="x", duration=1, pubdate=0)], 0)

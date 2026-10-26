@@ -31,6 +31,10 @@ YouTube 会拦机房 IP（要求登录证明不是机器人），所以 yt-dlp �
     GET /yt/check 不走缓存解析一次测试视频，回答用了几秒和出错的最后一行（设置页的「测试」）
     GET /yt/subscriptions  cookies 那个账号订阅的频道（「订阅」页的「从 YouTube 导入」）：先读
                   feed/channels（订阅的频道列表），读不出频道时再从 feed/subscriptions（订阅的新视频）里收集频道
+    GET /yt/feed?kind=rec|history|subs&n=<个数>
+                  cookies 那个账号的推荐（yt-dlp 的 :ytrec）、观看记录（:ythis）、订阅的新视频（:ytsubs），
+                  电脑版首页的几排（server/relay/accountfeeds.py）。观看记录、订阅要 cookies，没有时 401 login。
+                  不缓存（中转按用户缓存）。旧节点没有这个路径（404），中转据此说「节点要更新」
 """
 
 from __future__ import annotations
@@ -86,6 +90,10 @@ _UCID = re.compile(r"^UC[0-9A-Za-z_-]{22}$")
 SUBSCRIPTIONS_MAX = 2000
 SUBSCRIPTION_VIDEOS = 300
 SUBSCRIPTION_FEEDS = ("https://www.youtube.com/feed/channels", "https://www.youtube.com/feed/subscriptions")
+# 账号的几排（/yt/feed）：yt-dlp 2026.10.21 认这几个关键词（--extractor-descriptions 里的 youtube:recommended、
+# youtube:history、youtube:subscriptions）；最多要这么多个。
+FEEDS = {"rec": ":ytrec", "history": ":ythis", "subs": ":ytsubs"}
+FEED_MAX = 40
 # 没登录（cookies 过期、没有 cookies）时 YouTube 把这两页跳到首页，yt-dlp 说 redirected to youtube.com home page。
 LOGIN_HINTS = ("not a bot", "Sign in to confirm", "redirected to youtube.com home page", "requires authentication",
                "This page requires", "login required", "Login required", "use --cookies")
@@ -424,6 +432,42 @@ def _thumb(entry: dict) -> str:
 def subscriptions_args(tools: Tools, feed: str) -> list[str]:
     end = SUBSCRIPTIONS_MAX if feed.endswith("/channels") else SUBSCRIPTION_VIDEOS
     return _base(tools) + ["--flat-playlist", "-J", "--playlist-end", str(end), "--", feed]
+
+
+def feed_args(tools: Tools, kind: str, n: int) -> list[str]:
+    """推荐、观看记录、订阅的新视频（平铺，只要前 n 个）。订阅的新视频多要「大约的上传时刻」（只解析「3 天前」
+    这种文字，不多访问 YouTube），中转按它和 B 站的动态排在一起。"""
+    args = _base(tools) + ["--flat-playlist", "-J", "--playlist-end", str(n)]
+    if kind == "subs":
+        args += ["--extractor-args", "youtubetab:approximate_date"]
+    return args + ["--", FEEDS[kind]]
+
+
+def feed_summary(listing: dict, n: int) -> dict:
+    """:ytrec / :ythis / :ytsubs 的平铺结果 → {"videos": [{"id", "title", "duration", "channel", "channel_id",
+    "thumb", "date", "views"}]}：去掉直播中、预告、Shorts、删掉和私享的；时长、日期、播放数不知道时为 0。"""
+    videos, seen = [], set()
+    for e in listing.get("entries") or []:
+        if not isinstance(e, dict) or not _ID.match(str(e.get("id", ""))) or e["id"] in seen:
+            continue
+        if e.get("live_status") in ("is_live", "is_upcoming", "post_live") or "/shorts/" in str(e.get("url") or ""):
+            continue
+        title = " ".join(str(e.get("title") or "").split())
+        if not title or title in ("[Deleted video]", "[Private video]"):
+            continue
+        seen.add(e["id"])
+        cid = str(e.get("channel_id") or "")
+        try:
+            duration = max(0, int(e.get("duration") or 0))
+        except (TypeError, ValueError):
+            duration = 0
+        videos.append({"id": e["id"], "title": title[:200], "duration": duration,
+                       "channel": " ".join(str(e.get("channel") or e.get("uploader") or "").split())[:100],
+                       "channel_id": cid if _UCID.match(cid) else "", "thumb": _thumb(e),
+                       "date": _int(e.get("timestamp")), "views": _int(e.get("view_count"))})
+        if len(videos) >= n:
+            break
+    return {"videos": videos}
 
 
 def _handle(entry: dict) -> str:
@@ -798,6 +842,22 @@ class Node:
                 return 200, dict(summary, source=feed.rsplit("/", 1)[-1])
         return 200, {"channels": [], "source": ""}
 
+    def feed(self, kind: str, n: int) -> tuple[int, dict | str]:
+        """推荐、观看记录、订阅的新视频（feed_args）。观看记录和订阅没有 cookies 时 401 login；YouTube 说没登录时
+        也是 401 login。不缓存（中转按用户缓存）。"""
+        tools = self.current_tools()
+        if tools is None:
+            return 503, "tools missing"
+        if kind != "rec" and not tools.cookies:
+            return 401, "login: no cookies"
+        code, data = self.ytdlp_json(feed_args(tools, kind, n))
+        if code != 200:
+            if any(hint in str(data) for hint in LOGIN_HINTS):
+                self._record("login")
+                return 401, "login"
+            return code, data
+        return 200, feed_summary(data if isinstance(data, dict) else {}, n)
+
     def key_ok(self, given: str | None) -> bool:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
 
@@ -867,6 +927,14 @@ def _handler(node: Node):
                 return
             if parts.path == "/yt/subscriptions":
                 code, data = node.subscriptions()
+                self._json(code, data)
+                return
+            if parts.path == "/yt/feed":
+                kind, n = query.get("kind", ""), query.get("n", "20")
+                if kind not in FEEDS or not n.isdigit() or not 1 <= int(n) <= FEED_MAX:
+                    self._json(400, "bad feed")
+                    return
+                code, data = node.feed(kind, int(n))
                 self._json(code, data)
                 return
             tools = node.current_tools()

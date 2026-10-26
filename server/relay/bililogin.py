@@ -53,9 +53,9 @@ NAV_CACHE_S = 600
 NAV_FRESH_GAP_S = 10
 # 播放时发现会员集只给试看：最多这么久核对一次登录还在不在。
 RECHECK_GAP_S = 600
-# 关注列表：一页 50 个，最多取这么多页（1000 个），页与页之间歇一下；缓存多久。
+# 关注列表：一页 50 个，最多取这么多页（2500 个，B 站一个人最多关注 2000 多个），页与页之间歇一下；缓存多久。
 FOLLOW_PAGE_SIZE = 50
-FOLLOW_PAGES = 20
+FOLLOW_PAGES = 50
 FOLLOW_GAP_S = 0.3
 FOLLOW_CACHE_S = 600
 # 导入：每个 UP 主要取一次投稿列表，之间歇一下。
@@ -455,8 +455,9 @@ class BiliAccounts:
 
     # ---- 关注的 UP 主 ----
 
-    def followings(self, user: int) -> dict:
-        """自己关注的 UP 主：[{"mid", "name", "face", "sign"}]。缓存 FOLLOW_CACHE_S 秒。"""
+    def followings(self, user: int, fresh: bool = False) -> dict:
+        """自己关注的 UP 主：[{"mid", "name", "face", "sign"}]。缓存 FOLLOW_CACHE_S 秒；fresh 不用缓存
+        （「我的关注」的同步，follows.py，它自己限次数）。"""
         record = self.record(user)
         if record is None or record.get("invalid"):
             return {"ok": False, "login": False, "error": INVALID if record else "先扫码登录 B 站"}
@@ -465,7 +466,7 @@ class BiliAccounts:
             return {"ok": False, "error": INVALID}
         with self.lock:
             cached = self._follows.get(user)
-            if cached is not None and self.monotonic() - cached[0] < FOLLOW_CACHE_S:
+            if cached is not None and not fresh and self.monotonic() - cached[0] < FOLLOW_CACHE_S:
                 return {"ok": True, "items": cached[1], "total": cached[2]}
             if user in self._busy:
                 return {"ok": False, "error": "正在取关注列表，稍等"}
@@ -662,11 +663,18 @@ def post(handler, relay, path: str) -> bool:
         answer = accounts.poll(caller.user)
         if answer.get("state") == "done":
             relay.accounts.audit("bili.login", caller.user, handler._ip(), "user", str(caller.user))
+            feeds = getattr(relay, "account_feeds", None)
+            if feeds is not None:
+                # 首页的推荐、观看记录换成这个账号的；「我的关注」马上同步一次（accountfeeds.py、follows.py）。
+                feeds.logged_in(caller.user)
         handler._json(answer)
     elif name == "logout":
         if accounts.record(caller.user) is not None:
             relay.accounts.audit("bili.logout", caller.user, handler._ip(), "user", str(caller.user))
         handler._json(accounts.logout(caller.user))
+        feeds = getattr(relay, "account_feeds", None)
+        if feeds is not None:
+            feeds.logged_out(caller.user)
     else:
         handler._json(accounts.import_followings(relay, caller, body.get("mids")))
     return True

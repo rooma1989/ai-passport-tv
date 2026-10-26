@@ -632,6 +632,8 @@ def _delete_user(relay, user: dict, body: dict, caller, ip: str) -> dict:
         relay._users.pop(user["id"], None)
     if getattr(relay, "bili_accounts", None) is not None:
         relay.bili_accounts.forget(user["id"])      # 他的 B 站登录（bililogin.py）也删掉
+    if getattr(relay, "account_feeds", None) is not None:
+        relay.account_feeds.forget(user["id"])     # 他的「我的关注」和首页几排的设置（accountfeeds.py）
     for device_id in unbound:
         _kick(relay, device_id)
     relay.sync_devices()

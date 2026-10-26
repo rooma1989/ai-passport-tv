@@ -29,7 +29,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import bililogin, ytsearch, ytsettings
+from . import accountfeeds, bililogin, follows, ytsearch, ytsettings
 from .bilibili import PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, \
     MemberOnly, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -259,6 +259,9 @@ class Relay:
         self.wifi_private: bytes | None = None
         # 节目单（epg.py）：多用户时 __main__ 用 epg.attach 建；没打开时它不上网、不占内存。
         self.guide: "epg.Guide | None" = None
+        # 首页上自己账号的几排、「我的关注」的同步、B 站历史的回写（accountfeeds.py、follows.py）：
+        # 只在自建 / 电脑客户端有（和 B 站登录一样），云端为 None。
+        self.account_feeds = accountfeeds.attach(self)
 
     @property
     def tenant(self) -> bool:
@@ -541,6 +544,7 @@ class Relay:
     def finish(self, cid: str, video, offset: float, outcome: str, elapsed: float, slot: str = "") -> None:
         dev = self._stream_device(slot) or NO_DEVICE
         state = self._state_of(dev)
+        self._report_history(dev, video, offset, outcome, elapsed)
         key = (slot, cid, video.bvid)
         if outcome == "ended":
             self._quick_failures.pop(key, None)
@@ -556,6 +560,29 @@ class Relay:
             self._quick_failures.pop(key, None)
             state.save_position(cid, video.bvid, _resume_at(offset, outcome, elapsed))
         state.save()
+
+    def _report_history(self, dev: dict, video, offset: float, outcome: str, elapsed: float) -> None:
+        """小电视上一路停了（看完、换台、断了）：设备主人打开了「同步到 B 站历史」时报给他的 B 站账号（accountfeeds.py）。"""
+        if self.account_feeds is None or video is None or not dev.get("owner"):
+            return
+        position = (video.duration or offset + elapsed) if outcome == "ended" else offset + elapsed
+        try:
+            self.account_feeds.report(dev["owner"], video.site, video.bvid, position, final=True)
+        except Exception as error:  # noqa: BLE001 —— 回写失败不能影响播放
+            self.log(f"回写 B 站历史出错：{type(error).__name__}")
+
+    def _pc_history(self, caller: Caller, body: dict, final: bool) -> None:
+        """电脑上看到的位置：看的人打开了「同步到 B 站历史」时报给他的 B 站账号（accountfeeds.py）。"""
+        if self.account_feeds is None or caller.user is None:
+            return
+        _, cursor = self._pc_page(caller, body)
+        if cursor is None or not cursor.get("bvid"):
+            return
+        try:
+            self.account_feeds.report(caller.user, cursor.get("site") or "bilibili", cursor["bvid"],
+                                      self._pc_position(cursor), final=final)
+        except Exception as error:  # noqa: BLE001
+            self.log(f"回写 B 站历史出错：{type(error).__name__}")
 
     def _event(self, dev: dict | None, action: str, channel: str = "", value: int | None = None,
                text: str = "", total: int = 0) -> None:
@@ -644,6 +671,7 @@ class Relay:
     def finish_cast(self, video, offset: float, outcome: str, elapsed: float, slot: str = "") -> None:
         dev = self._stream_device(slot)
         cast = self._cast_of(dev or NO_DEVICE)
+        self._report_history(dev or NO_DEVICE, video, offset, outcome, elapsed)
         if outcome == "ended":
             cast.cast_ended(video.bvid)
             cast.save()
@@ -1486,6 +1514,7 @@ class Relay:
             return {"ok": False, "error": "请求格式不对"}
         if not self._pc_report(caller, body):
             return {"ok": False, "error": "这个页面现在没有在电脑上看视频"}
+        self._pc_history(caller, body, final=body.get("ended") is True)
         session = self.vod.get(self._pc_slot(caller, body["viewer"])) if self.vod is not None else None
         if session is not None:
             session.touch()        # 点播暂停着时浏览器不取数据：页面报进度就是还在看
@@ -1502,7 +1531,8 @@ class Relay:
         if caller.guest or caller.user is None or not isinstance(viewer, str) or not _VIEWER.match(viewer):
             return {"ok": False, "error": "请求格式不对"}
         if body and body.get("position") is not None:
-            self._pc_report(caller, body)
+            if self._pc_report(caller, body):
+                self._pc_history(caller, body, final=True)
         self.pc_sync(caller.user)
         self._pc_pages.pop((caller.user, viewer), None)
         self.forget_home(caller)
@@ -2014,6 +2044,9 @@ class Relay:
             if self.bili_accounts is not None and not caller.guest and caller.user is not None:
                 # 自建：每个人自己的 B 站登录（bililogin.py），电脑版据此显示「设置 → B 站账号」和导入关注。
                 summary["bili"] = self.bili_accounts.status(caller.user)
+            if self.account_feeds is not None and not caller.guest and caller.user is not None:
+                # 首页「B 站推荐」等几排和「UP 主 → 我的关注」（accountfeeds.py）：电脑版据此显示，云端没有。
+                summary["feeds"] = True
             if self.selfhost is not None:
                 # 自建：绑定码是 6 位数字，遥控页和电脑版的输入框据此换成数字键盘（云端没有这一项，还是 20 位）。
                 summary["claim_digits"] = tenancy_db.CLAIM_DIGITS
@@ -2582,7 +2615,8 @@ def _manage_handler(relay: Relay):
                 return
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
             if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)
-                                 or ytsettings.get(self, relay, path) or bililogin.get(self, relay, path)):
+                                 or ytsettings.get(self, relay, path) or bililogin.get(self, relay, path)
+                                 or accountfeeds.get(self, relay, path) or follows.get(self, relay, path)):
                 return
             # 在电脑上看的列表和段（watch.py）：只认地址里的令牌，不看登录；没开这个功能时 404。
             if watch_pc.get(self, relay, path) or vod.get(self, relay, path):
@@ -2745,7 +2779,8 @@ def _manage_handler(relay: Relay):
             if setup.post(self, relay, path):
                 return
             if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)
-                                 or ytsettings.post(self, relay, path) or bililogin.post(self, relay, path)):
+                                 or ytsettings.post(self, relay, path) or bililogin.post(self, relay, path)
+                                 or accountfeeds.post(self, relay, path) or follows.post(self, relay, path)):
                 return
             if relay.tenant and path in ("/api/scan", "/api/invite/accept", "/api/bind/register"):
                 body = self._body()

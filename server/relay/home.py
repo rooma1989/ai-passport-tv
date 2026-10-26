@@ -242,6 +242,16 @@ def _pc_body(item: dict) -> dict | None:
         return {"url": item["url"]}
     if kind == "history" and isinstance(item.get("site"), str) and isinstance(item.get("id"), str):
         return {"video": {"site": item["site"], "id": item["id"]}}
+    if kind == "feed":
+        # 首页自己账号的几排、「我的关注」里的视频（accountfeeds.py）：按链接在电脑上看；观看记录从看到的地方起。
+        from .accountfeeds import play_url, start_of
+        url = play_url(item)
+        if url is None:
+            return None
+        body = {"url": url}
+        if start_of(item) is not None:
+            body["start"] = start_of(item)
+        return body
     return None
 
 
@@ -300,6 +310,10 @@ def play(relay, caller: Caller, body: dict) -> dict:
         cid = table.CAST_ID
     elif kind == "history" and isinstance(item.get("site"), str) and isinstance(item.get("id"), str):
         answer = relay.replay(item["site"], item["id"], caller, dev["id"])
+        cid = table.CAST_ID
+    elif kind == "feed":
+        from .accountfeeds import play_tv
+        answer = play_tv(relay, caller, dev, item)
         cid = table.CAST_ID
     else:
         return _bad()

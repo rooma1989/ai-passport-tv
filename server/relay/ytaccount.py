@@ -154,6 +154,9 @@ class BrowserReader:
         subs = getattr(self.relay, "_yt_subs", None)
         if subs is not None:
             subs.forget()
+        feeds = getattr(self.relay, "account_feeds", None)
+        if feeds is not None:
+            feeds.youtube_changed()
         accounts = getattr(self.relay, "accounts", None)
         if accounts is not None and caller is not None:
             try:
