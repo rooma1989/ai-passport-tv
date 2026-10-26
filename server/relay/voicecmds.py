@@ -19,6 +19,8 @@
 - POST /api/voice/subscribe {device, wait}     订阅正在放的投屏视频的 UP 主（YouTube 是频道）
 - POST /api/voice/unsubscribe {device, id}     删掉设备主人的一个 UP 主或剧集台（设备上先确认过）
 - POST /api/voice/recast {device, step, resume} 从这台设备的投屏历史再投一次
+电脑版遥控面板的「定时关」用同一个定时：POST /api/sleep {device, minutes}（home.sleep → set_timer），
+/api/state 的 sleep 是 timer_of() 给的还剩多少。
 """
 
 from __future__ import annotations
@@ -199,6 +201,11 @@ def _timer_view(relay, timer: dict | None) -> dict | None:
     if timer.get("kind") == "end":
         return {"kind": "end", "what": timer.get("what") or "video"}
     return {"kind": "time", "left": max(0, int(math.ceil(float(timer.get("at") or 0) - _now(relay))))}
+
+
+def timer_of(relay, dev: dict) -> dict | None:
+    """这台设备现在的定时（给 /api/state 的 sleep：电脑版遥控面板的「定时关」显示还剩几分钟）。"""
+    return _timer_view(relay, _view(relay, dev)["timer"])
 
 
 # ---- 定时 ----

@@ -27,8 +27,8 @@ from ..tenancy.claimguard import ClaimGuard
 from ..tenancy.phonelinks import PhoneLinks
 from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
-from . import admin, bilisearch, console, epg, events, setup, stream, table, voice, voicecmds, watch as watch_pc, \
-    wifi as wifi_api, youtube as youtube_links
+from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
+    watch as watch_pc, wifi as wifi_api, youtube as youtube_links
 from . import bililogin, ytsettings
 from .bilibili import PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, \
     MemberOnly, SourceError
@@ -60,13 +60,16 @@ _BIND_INFO = re.compile(r"^/api/bind/([A-Za-z2-7]{20})$")
 _JOIN_SHORT = re.compile(r"^/b/([0-9]{6})$")
 _BIND_INFO_SHORT = re.compile(r"^/api/bind/([0-9]{6})$")
 _DEVICE_API = re.compile(r"^/api/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})(?:/(unbind|repair))?$")
+# 电脑版（媒体中心界面）的台标：只报台 id，地址只来自频道表的 meta（logos.py）。
+_LOGO = re.compile(r"^/api/art/logo/([A-Za-z0-9_-]{1,15})$")
 # 只作用在一台设备上的遥控接口。多用户时，带密钥（X-Key）并点名设备的这些请求——电视服务替
 # 说话的那台设备发的语音命令——按那台设备的访客处理：只能动那一台，按设备主人的剧和进度来，
 # 碰不到账号数据（例外：语音搜到的、或正在投屏的 UP 主可以订阅到主人名下，用户决定的；设备上确认过的
 # 语音删台，见 voice.py、voicecmds.py）。
 _DEVICE_SCOPED = frozenset({"/api/switch", "/api/seek", "/api/next", "/api/previous", "/api/device",
                             "/api/audio", "/api/pet", "/api/pause", "/api/resume", "/api/voice/catalog",
-                            "/api/voice/search", "/api/voice/cast", "/api/voice/creator"} | set(voicecmds.PATHS))
+                            "/api/voice/search", "/api/voice/cast", "/api/voice/creator", "/api/sleep"}
+                           | set(voicecmds.PATHS))
 COOKIE = "tvs"
 # 中转推出的内容要经电视服务缓冲约这么久才在小智屏幕上出现（实测音频领先约 2.7 秒，加上解码起步）。
 PLAYBACK_LAG_S = 4.0
@@ -165,9 +168,18 @@ class Relay:
         # 在电脑上看（watch.py）：只在自建 / 电脑客户端开；云端的小主机上行带宽不够，没有这个功能。
         self.watch = (watch_pc.WatchService(ffmpeg, watch_pc.derive_secret(key), log=lambda m: self.log(m))
                       if selfhost is not None and accounts is not None else None)
-        # 电脑上直接看 UP 主、剧集时各自的进度（和小电视的分开，只在内存里）：键是 (用户, 台)，
-        # 值是 {"bvid", "offset"（这一路从第几秒起）, "stream"（那一路，估计看到了哪里）}。
+        # 电脑上直接看 UP 主、剧集、投屏视频时各自的进度（和小电视的分开）：键是 (用户, 台) 或
+        # (用户, "v:<网站>:<id>")，值是 {"bvid", "offset"（这一路从第几秒起）, "stream"（那一路，估计看到了哪里）,
+        # 和存进度用的 title、name、duration、index、total、site}。存进数据目录的 pc-progress.json（home.PcProgress），
+        # 「继续观看」显示它，重启后电脑上接着看也从那里起；从不改小电视的进度。
         self._pc_cursor: dict[tuple, dict] = {}
+        self.pc_progress = (home.PcProgress(Path(accounts.path).parent / "pc-progress.json", clock=clock)
+                            if self.watch is not None else None)
+        # 首页（home.py）按调用者缓存几秒；「播放到」以后马上作废。
+        self._home_cache: dict[tuple, tuple] = {}
+        self._home_lock = threading.Lock()
+        # 直播台的台标缓存（logos.py）：__main__ 建，存在数据目录的 logos/；没建时台标接口一律 404。
+        self.logos = None
         self.starter = starter
         self.pumper = pumper
         self._quick_failures: dict[tuple, int] = {}
@@ -193,6 +205,7 @@ class Relay:
         self._cache_lock = threading.RLock()
         # 电脑版「订阅」页的 B 站搜索和封面缩略图（bilisearch.py）：缓存和次数限制。
         self.bili_search = bilisearch.BiliSearch(clock=monotonic, log=lambda message: self.log(message))
+        self.bili_search.youtube_proxy = self.youtube_proxy
         # 每个用户自己的 B 站登录（bililogin.py）：只在自建 / 电脑客户端有，存在数据目录的 secrets/bilibili/。
         self.bili_accounts = (bililogin.BiliAccounts(Path(accounts.path).parent / "secrets" / "bilibili",
                                                      log=lambda message: self.log(message))
@@ -1248,12 +1261,49 @@ class Relay:
         produced = stream.window.total_s if stream is not None else 0.0
         return max(0.0, cursor["offset"] + produced - PC_BEHIND_S)
 
+    def youtube_proxy(self) -> str:
+        """本机模式的 YouTube 代理（「设置 → YouTube」，config.toml）：YouTube 缩略图经它取；别的情况为空串。"""
+        if getattr(self, "youtube_kind", "") != "local" or getattr(self, "selfhost_data", None) is None:
+            return ""
+        try:
+            config, _ = ytsettings._config(self)
+        except Exception:  # noqa: BLE001 —— 读不了设置就直连，缩略图取不到也只是用占位图
+            return ""
+        return config.youtube_proxy or ""
+
+    def forget_home(self, caller: Caller) -> None:
+        with self._home_lock:
+            self._home_cache.pop(caller.key, None)
+
+    def pc_sync(self, user: int | None) -> None:
+        """把这个用户电脑上每一路看到的位置记进 pc-progress.json（变化不大时不写）。"""
+        if self.pc_progress is None or user is None:
+            return
+        for (who, key), cursor in list(self._pc_cursor.items()):
+            if who != user:
+                continue
+            record = {k: cursor.get(k) for k in ("title", "name", "duration", "index", "total", "series", "site")}
+            record.update(channel=key if key[:2] in ("up", "sr") else "cast", bvid=cursor["bvid"],
+                          position=round(self._pc_position(cursor), 1))
+            self.pc_progress.put(user, key, record)
+
+    def _pc_saved(self, user: int | None, key: str, bvid: str | None = None) -> dict | None:
+        """pc-progress.json 里这个台（或视频）上次在电脑上看到的地方；bvid 给了就要对得上。"""
+        if self.pc_progress is None or user is None:
+            return None
+        found = self.pc_progress.get(user, key)
+        if found is None or (bvid is not None and found.get("bvid") != bvid):
+            return None
+        return found
+
     def watch_stop(self, caller: Caller, viewer) -> dict:
         """页面上点了「关闭」：马上停掉这个页面直接看的那一路（跟随小电视的那一路是全家共用的，等它自己空闲停）。"""
         if self.watch is None:
             raise NotFound("watch")
         if caller.guest or caller.user is None or not isinstance(viewer, str) or not _VIEWER.match(viewer):
             return {"ok": False, "error": "请求格式不对"}
+        self.pc_sync(caller.user)
+        self.forget_home(caller)
         return {"ok": True, "stopped": self.watch.close(self._pc_slot(caller, viewer))}
 
     def watch_direct(self, caller: Caller, device: str | None, body: dict) -> dict:
@@ -1277,12 +1327,21 @@ class Relay:
             viewer = "0"
         dev = self.find_device(device, caller) if device else None
         account = self._account(caller)
+        self.pc_sync(caller.user)
         cid, name, extra = "cast", table.CAST_LABEL, {}
+        meta = {}
         if body.get("url") is not None or body.get("video") is not None:
             found = self._pc_cast(account, body.get("url"), body.get("video"))
             if isinstance(found, str):
                 return {"ok": False, "error": found}
-            source = self._video_source(("video", "pc", found.site, found.bvid), found, 0.0,
+            # 电脑上看过一半的投屏视频：接着上次在电脑上看到的地方（pc-progress.json）。
+            saved = self._pc_saved(caller.user, f"v:{found.site}:{found.bvid}", found.bvid)
+            start = float(saved.get("position") or 0) if saved else 0.0
+            duration = found.duration or (saved.get("duration") if saved else 0) or 0
+            if duration and start >= duration - 5:
+                start = 0.0
+            meta = {"title": found.title, "name": table.CAST_LABEL, "duration": duration, "site": found.site}
+            source = self._video_source(("video", "pc", found.site, found.bvid), found, start,
                                         viewer=caller.user, owner=dev.get("owner") if dev else None)
         else:
             cid = body.get("channel")
@@ -1294,6 +1353,7 @@ class Relay:
                 if dev is not None and dev.get("owner") != caller.user:
                     return {"ok": False, "error": f"这是{dev['name']}主人订阅的台，在电脑上只能看自己订阅的"}
                 source, name, extra = self._pc_subscription(caller, account, cid, body)
+                meta = extra.pop("_meta", {})
             elif self.main_channels is not None and \
                     cid in {c for c, _ in channel_groups.read_table(self.main_channels)}:
                 source = self._live_source(cid)
@@ -1306,10 +1366,14 @@ class Relay:
             stream = self.watch.open(self._pc_slot(caller, viewer), source, user=caller.user)
         except watch_pc.Busy as busy:
             return {"ok": False, "error": self._watch_busy(busy)}
-        cursor = self._pc_cursor.get((caller.user, cid))
-        if _relay_channel(cid) and cid != table.CAST_ID and source.key[0] == "video" and \
-                (cursor is None or cursor.get("stream") is not stream):
-            self._pc_cursor[(caller.user, cid)] = {"bvid": source.key[3], "offset": source.start, "stream": stream}
+        key = cid if cid != table.CAST_ID else f"v:{source.key[2]}:{source.key[3]}" if source.key[0] == "video" else ""
+        cursor = self._pc_cursor.get((caller.user, key))
+        if key and source.key[0] == "video" and (cursor is None or cursor.get("stream") is not stream):
+            if cid == table.CAST_ID and not meta:
+                meta = {"title": source.label, "name": table.CAST_LABEL, "site": source.key[2]}
+            self._pc_cursor[(caller.user, key)] = {"bvid": source.key[3], "offset": source.start, "stream": stream,
+                                                   **meta}
+            self.pc_sync(caller.user)
         if source.key[0] == "video":
             extra["video"] = {"site": source.key[2], "id": source.key[3]}
         return {"ok": True, "sid": stream.sid, "channel": cid, "name": name, "title": source.label,
@@ -1387,26 +1451,37 @@ class Relay:
 
         cursor = self._pc_cursor.get((caller.user, cid))
         here = cursor["bvid"] if cursor is not None and cursor["bvid"] in ids else None
+        # 这次开着以前（中转重启过）在电脑上看到的地方：pc-progress.json。
+        stored = self._pc_saved(caller.user, cid) if here is None else None
+        if stored is not None and stored.get("bvid") in ids:
+            here = stored["bvid"]
+
+        def pc_here() -> float:
+            return self._pc_position(cursor) if cursor is not None and cursor["bvid"] == here \
+                else float(stored.get("position") or 0) if stored else 0.0
+
         episode, step = body.get("episode"), body.get("step")
         if isinstance(episode, int) and not isinstance(episode, bool):
             if not 1 <= episode <= len(videos):
                 return f"没有第 {episode} 集", creator.name, {}
             video = videos[episode - 1]
-            offset = self._pc_position(cursor) if here == video.bvid else saved(video)
+            offset = pc_here() if here == video.bvid else saved(video)
         elif isinstance(step, int) and not isinstance(step, bool) and step in (-1, 1):
             base = here or (account.peek_video(cid) or videos[0]).bvid
             video = videos[(ids.index(base) + step) % len(videos)]
             offset = 0.0
         elif here is not None:
             video = videos[ids.index(here)]
-            offset = self._pc_position(cursor)
+            offset = pc_here()
         else:
             video = account.peek_video(cid) or videos[0]
             offset = saved(video)
         if video.duration and offset >= video.duration - 5:
             offset = 0.0
         n = ids.index(video.bvid) + 1
-        extra = {"index": n, "total": len(videos), "series": creator.kind == "series"}
+        extra = {"index": n, "total": len(videos), "series": creator.kind == "series",
+                 "_meta": {"title": video.title, "name": creator.name, "duration": video.duration, "index": n,
+                           "total": len(videos), "series": creator.kind == "series", "site": video.site}}
         if creator.kind == "series":
             extra["episode"] = n
         return self._video_source(("video", cid, video.site, video.bvid), video, offset,
@@ -1533,6 +1608,9 @@ class Relay:
         if self.guide is not None and self.guide.enabled:
             # 节目单打开了：遥控页和电脑版据此去问 /api/epg，在台名下面写「正在播：…」。
             summary["epg"] = True
+        if dev["id"]:
+            # 遥控面板的「定时关」（POST /api/sleep，和语音的定时是同一个）：还剩几秒，或「看完这集」。
+            summary["sleep"] = voicecmds.timer_of(self, dev)
         if self.clients.get("youtube") is not None:
             summary["youtube"] = {"state": self.youtube_state()}
             if getattr(self, "youtube_kind", "") == "local":
@@ -2155,6 +2233,20 @@ def _manage_handler(relay: Relay):
             elif path == "/api/epg":
                 # 节目单（epg.py）：直播台现在和下一个节目；和频道列表一样，登录了的（访客也算）都能看。
                 self._json(epg.api(relay, self._query().get("channels")))
+            elif path == "/api/home":
+                # 电脑版首页的几排（home.py）：按调用者，访客只有直播。
+                self._json(home.home(relay, caller))
+            elif path == "/api/targets":
+                # 「播放到」：能遥控的小电视，和（家庭服务器、电脑客户端上）这台电脑。
+                self._json(home.targets(relay, caller))
+            elif _LOGO.match(path):
+                # 直播台的台标（logos.py）：登录了的（访客也算）都能看，和节目单一样。
+                found = relay.logos.get(_LOGO.match(path).group(1)) if relay.logos is not None else None
+                if found is None:
+                    # 没有台标也缓存一会儿：直播页每个台都会来问一次。
+                    self._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "private, max-age=3600"})
+                else:
+                    self._send(200, found[1], found[0], {"Cache-Control": "private, max-age=86400"})
             elif relay.tenant and path == "/api/devices":
                 self._json({"ok": True, "devices": relay.my_devices(caller)})
             elif relay.tenant and path == "/api/wifi":
@@ -2333,6 +2425,14 @@ def _manage_handler(relay: Relay):
             if path == "/api/pause":
                 self._json(relay.pause(caller, device))
                 return
+            if path == "/api/play":
+                # 电脑版「播放到」：一个入口，按目标和节目分到换台、订阅、选集、投屏、在电脑上看（home.py）。
+                self._json(home.play(relay, caller, body))
+                return
+            if path == "/api/sleep":
+                # 遥控面板的「定时关」（home.sleep → voicecmds.set_timer）。
+                self._json(home.sleep(relay, caller, device, body.get("minutes")))
+                return
             if path == "/api/resume":
                 self._json(relay.resume(caller, device))
                 return
@@ -2459,6 +2559,8 @@ ASSETS["/TV/W"] = ASSETS["/wifi"]  # 二维码用的短地址；nginx 也把它�
 # jsqr.js 是 jsQR 1.4.0（Apache-2.0，见 LICENSE.jsqr.txt），只在浏览器没有 BarcodeDetector 时加载。
 ASSETS.update({f"/{name}": ("text/javascript; charset=utf-8", (_ASSET_DIR / name).read_bytes())
                for name in ("scan.js", "jsqr.js")})
+# 电脑版（媒体中心界面）的样式和脚本（console.py：页面里的地址带内容散列）。
+ASSETS.update(console.CONSOLE_ASSETS)
 # 宠物图（设计稿导出的 3 倍图），手机遥控页的「我的宠物」用。
 ASSETS.update({f"/pets/{p.name}": ("image/png", p.read_bytes())
                for p in sorted((_ASSET_DIR / "pets").glob("*.png"))})

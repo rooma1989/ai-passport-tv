@@ -176,6 +176,9 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 节目单（epg.py）：默认关着；总后台打开后在数据库旁边的 epg/ 里存下好的文件。
     from . import epg
     epg.attach(relay, args.db.parent / "epg")
+    # 电脑版首页的台标（logos.py）：用到时取一次，存在数据库旁边的 logos/ 里。
+    from .logos import LogoCache
+    relay.logos = LogoCache(args.db.parent / "logos", relay.main_channels, log=lambda message: print(message, flush=True))
     # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。
     from . import wifi as wifi_api
     wifi_api.setup_key(relay, args.wifi_key)

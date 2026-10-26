@@ -1,4 +1,4 @@
-"""电脑版（多用户阶段 2）：/tv/console 页面、扫码登录、登录列表、设备详情、邀请列表、二维码。
+"""电脑版（多用户阶段 2）：/tv/console 页面（媒体中心界面，旧版在 /tv/console-classic）、扫码登录、登录列表、设备详情、邀请列表、二维码。
 
 只在多用户（--db）时有；单用户的中转对这些路径一律 404（电脑上想用，先上 --db）。
 遥控、订阅、投屏用的是手机同一套接口（web.py）：「一套接口，两种排版」。这里只放电脑版
@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import urllib.parse
 from pathlib import Path
@@ -30,7 +31,17 @@ _LOGIN_LINK = re.compile(r"^/(?:l|TV/L)/([A-Za-z2-7]{26})$")
 _PHONE_LINK = re.compile(r"^/(?:p|TV/P)(?:/|/[A-Za-z2-7]{26})?$")
 QR_TEXT_MAX = 300
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
-CONSOLE_PAGE = (_ASSET_DIR / "console.html").read_bytes()
+# 电脑版（媒体中心界面）：页面 + 样式 + 脚本三个文件。样式和脚本当静态文件给（web.ASSETS，浏览器缓存一天），
+# 页面里写的地址带着内容的散列（?v=…），改了文件浏览器就会取新的。
+CONSOLE_CSS = (_ASSET_DIR / "console.css").read_bytes()
+CONSOLE_JS = (_ASSET_DIR / "console.js").read_bytes()
+CONSOLE_PAGE = (_ASSET_DIR / "console.html").read_bytes() \
+    .replace(b"__CONSOLE_CSS__", hashlib.sha256(CONSOLE_CSS).hexdigest()[:12].encode()) \
+    .replace(b"__CONSOLE_JS__", hashlib.sha256(CONSOLE_JS).hexdigest()[:12].encode())
+CONSOLE_ASSETS = {"/console.css": ("text/css; charset=utf-8", CONSOLE_CSS),
+                  "/console.js": ("text/javascript; charset=utf-8", CONSOLE_JS)}
+# 旧版电脑版：测试版里留在 /tv/console-classic（和 /tv/console 同一层，页面里的相对地址不用改）。
+CLASSIC_PAGE = (_ASSET_DIR / "console-classic.html").read_bytes()
 LOGIN_PAGE = (_ASSET_DIR / "login.html").read_bytes()
 PHONE_PAGE = (_ASSET_DIR / "phone.html").read_bytes()
 # 登录确认页和电脑版都不许被别的网站嵌进框里（防止骗点「确认」）。
@@ -42,6 +53,10 @@ PAGE_HEADERS = {
                                "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     "X-Frame-Options": "DENY",
 }
+# 新电脑版多了本站的样式表（console.css）；别的和上面一样。
+CONSOLE_HEADERS = dict(PAGE_HEADERS, **{
+    "Content-Security-Policy": PAGE_HEADERS["Content-Security-Policy"].replace(
+        "style-src 'unsafe-inline'", "style-src 'self' 'unsafe-inline'")})
 
 
 def same_origin(headers) -> bool:
@@ -102,7 +117,10 @@ def _member_session(relay, handler) -> dict | None:
 
 def get(handler, relay, path: str) -> bool:
     if path == "/console":
-        handler._send(200, CONSOLE_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
+        handler._send(200, CONSOLE_PAGE, "text/html; charset=utf-8", CONSOLE_HEADERS)
+        return True
+    if path == "/console-classic":
+        handler._send(200, CLASSIC_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
         return True
     if path == "/console/":
         handler._send(302, b"", "text/plain", {"Location": "/tv/console"})

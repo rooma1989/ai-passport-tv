@@ -4,7 +4,8 @@
 
 # Home media center UI — design
 
-Status: **design only, proposed 2026-10-24**, nothing built. First version on
+Status: **design accepted 2026-10-24; phases M0, M1 and M2 implemented on branch `rootv-ui` for
+v0.3.0-beta (2026-10-25)**, see section 16 for what was built and where it differs. First version on
 branch `media-center-design` (based on `v0.2.4-beta`); the owner accepted every
 recommendation in section 13. **Revised the same day** on branch
 `media-center-appletv` (based on main `136571d`): a visual language closer to a
@@ -406,9 +407,9 @@ time. Each phase ships on its own; the console keeps working between phases.
 
 | Phase | Scope | Effort |
 | --- | --- | --- |
-| M0 Shell | Shared tokens (dark, light prepared) and components (cards with focus lift and tilt, shelves, materials, sheets, chips, floating now-playing bar, spatial focus engine with row scrolling and focus restore) as one CSS/JS asset; top tab bar and routes in `console.html`; today's pages mounted under the new entries unchanged | 3 |
-| M1 Play to and remote | `/api/targets`, `POST /api/play` dispatcher, the picker, the remote panel (moving today's dials, pets and pad), `POST /api/sleep`, remembered target | 3.5 |
-| M2 Home | `/api/home` aggregator, Home rows, YouTube thumbnails in the proxy, cached M3U logos | 3 |
+| M0 Shell (**done**, `rootv-ui`) | Shared tokens (dark, light prepared) and components (cards with focus lift and tilt, shelves, materials, sheets, chips, floating now-playing bar, spatial focus engine with row scrolling and focus restore) as one CSS/JS asset; top tab bar and routes in `console.html`; today's pages mounted under the new entries unchanged | 3 |
+| M1 Play to and remote (**done**, `rootv-ui`) | `/api/targets`, `POST /api/play` dispatcher, the picker, the remote panel (moving today's dials, pets and pad), `POST /api/sleep`, remembered target | 3.5 |
+| M2 Home (**done**, `rootv-ui`) | `/api/home` aggregator, Home rows, YouTube thumbnails in the proxy, cached M3U logos | 3 |
 | M3 Live and lineup | Guide grid (needs `desktop-epg`), selected-programme header, Lineup as the second segment of Live (moves "adjust groups", presets, size budget) | 3 |
 | M4 Series, creators, detail, progress | Poster grid, creator page, detail pages, `/api/progress`, continue-watching rules (Q4) | 4 |
 | M5 Search | Aggregated search, paste-a-link result, add/subscribe from results | 2 |
@@ -578,3 +579,64 @@ sizes are produced from icon B by `python3 tools/make_icons.py` (phase R).
 | Pages and documents | console and phone page titles and icons, README, user documents, screenshots | new name and icon; the CHANGELOG records the rename |
 | Website | `packaging/site/` with the download page | name, icon, download file names |
 | Tiny TV boot text | product name on the firmware's boot screen and settings page | firmware change, assessed separately; not in phase R's estimate |
+
+## 16. Implementation status (M0 to M2)
+
+Built on branch `rootv-ui` (2026-10-25) for v0.3.0-beta. The console at `/tv/console` is now three
+static files in `server/relay/assets/`: `console.html` (markup), `console.css` (tokens, materials,
+components, the phone layout) and `console.js` (shell, focus engine, Play to, remote, Home, and the
+ported pages). `console.py` stamps a content hash into the stylesheet and script URLs; the page's CSP
+adds `style-src 'self'`. The previous console stays at `/tv/console-classic` for this beta, linked
+from Settings (the "classic console" row), and links back.
+
+- **M0 shell**: top tab bar (Home, Live, Series, Creators, Library, Search; Devices and Settings as
+  icons), hash routes, now-playing bar, sheets, toasts, the spatial focus engine (arrow keys within a
+  region and row first, Enter, Esc closes a sheet, leaves a field, goes to the tab bar, then Home; `/`
+  opens Search), focus restore after the 5-second refresh, card tilt and sheen. Dark by default; the
+  light variant is a switch in Settings, stored in `localStorage` (`rootv.theme`), ahead of M9
+  because the owner asked for it. Windows narrower than 700 px get the phone layout (bottom tabs Home,
+  Live, Search, Remote, Me) in the same page; `remote.html` is unchanged (M6).
+- **Pages not redesigned yet are ported, not rewritten**: Live shows the group chips and channel
+  cards (logo or generated badge, EPG now and next, "adjust groups"); the programme guide grid and
+  Lineup are M3. Series shows a poster grid plus the management list (episodes drawer, delete,
+  add); Creators shows the latest unwatched videos, the list (play, play to, delete), add and
+  "import my Bilibili followings". Search is the Bilibili search with a "play this link" first result
+  when a link is pasted (casting moved here, M5 adds the aggregated search). Library is the empty
+  state ("the library is coming soon"). Devices are cards (screen readout, remote, default target, watch on this
+  computer, rename, Wi-Fi, guest code, re-pair, unbind) plus bind and "let a phone sign in".
+  Settings holds Play-to memory, appearance, history ("played before"), sessions, the Bilibili
+  account, YouTube, invites, the admin link, the classic console and About.
+- **M1 Play to**: `GET /api/targets` (each TV with online state, last seen, model, what it plays,
+  capabilities; "this computer" only where watching on the PC exists, so never on the cloud relay)
+  and `POST /api/play {target, item, viewer}` (`server/relay/home.py`), which dispatches to switch,
+  subscription play, episode pick, cast, history replay and `watch_direct`, and answers a `reason`
+  (`offline`, `needs_login`, `youtube_off`, `no_device`, `bad`). The remembered target is per browser
+  and user (`localStorage`, `rootv.target:<name>`), falling back to the server's auto device, then to
+  this computer; an offline target opens the picker with a message. A creator video sent to a TV
+  switches to that creator's channel, which plays its own next unwatched video (the answer says so);
+  choosing an episode for a TV moves that TV's series position, as picking an episode always did.
+- **M1 remote**: the sheet (the Remote tab on the phone) has device pills, the amber readout with a
+  seek bar for videos, channel up and down (the channel table in group order, like the TV's own
+  keys), pause, back and forward 30 s, next, previous episode, episodes, "watch this on the
+  computer", volume, brightness as one button per device step, listen only, the sleep timer (off,
+  15, 30, 60, 90 minutes) and the pets (the firmware's 11, not six). `POST /api/sleep {device,
+  minutes}` reuses the voice command's timer (`voicecmds.set_timer`: dim, then pause; 0 cancels);
+  `/api/state` reports it as `sleep`.
+- **M2 Home**: `GET /api/home`, per caller, cached 4 s and dropped after a play. Hero: up to three
+  automatic picks (a followed series to continue, the live channel the TV shows or one with EPG now,
+  the newest creator video), manual arrows only. Rows: Continue watching, Live now, Creator updates,
+  New episodes, My library (placeholder); guests get only Live now. Covers: the Bilibili client keeps
+  the cover and face URLs it receives with lists in memory (a restart shows placeholders until the
+  next list refresh); YouTube thumbnails go through the same `/api/bili/thumb` proxy, limited to
+  `i.ytimg.com/vi/<id>/<fixed names>.jpg` and fetched through the local-mode YouTube proxy.
+- **PC progress (Q4)**: positions watched on this computer are kept per user in
+  `<data>/pc-progress.json` (`home.PcProgress`), shown in Continue watching as "this computer", used as
+  the resume point after a restart, and never mark anything watched or move a TV's position. TV
+  positions already saved in the owner's state appear in the same row as "the tiny TV".
+- **Logos (Q11)**: `GET /api/art/logo/<channel>` (`server/relay/logos.py`) takes only a channel id;
+  the URL comes from `channels.txt.meta.json`. Each logo is fetched once on first request (not at
+  table load), only over http(s) to public addresses, at most 256 KB, PNG/JPEG/GIF/WebP by magic
+  bytes (no SVG), stored under `<data>/logos/`; failures are retried after 6 hours, and a channel
+  without a logo answers a cacheable 404 so the page draws the badge.
+- **Not verified**: real playback on the PC in the new player window (the UI check used generated
+  data and no network), Safari and Firefox, Windows, screen readers, a real touch device.
