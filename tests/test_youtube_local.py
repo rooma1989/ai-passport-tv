@@ -164,6 +164,18 @@ def _fake_fetch(files: dict, redirects: dict | None = None):
     return fetch
 
 
+def _zipapp(version: str = "2026.10.21", extra: dict | None = None) -> bytes:
+    """A stand-in for yt-dlp's zipapp: a shebang line, then a zip with __main__.py and yt_dlp/."""
+    buffer = io.BytesIO()
+    buffer.write(b"#!/usr/bin/env python3\n")
+    with zipfile.ZipFile(buffer, "a") as archive:
+        archive.writestr("__main__.py", "import yt_dlp\nyt_dlp.main()\n")
+        archive.writestr("yt_dlp/__init__.py", f"def main(argv=None):\n    print({version!r})\n")
+        for name, body in (extra or {}).items():
+            archive.writestr(name, body)
+    return buffer.getvalue()
+
+
 def _deno_zip(name="deno") -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -172,16 +184,17 @@ def _deno_zip(name="deno") -> bytes:
 
 
 class ComponentTests(unittest.TestCase):
-    YTDLP = b"fake yt-dlp binary"
+    YTDLP = _zipapp()
     DENO = _deno_zip()
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.bin = Path(self.tmp.name) / "bin"
         self.ran = []
+        self.compiled = []
         self.pins = mock.patch.multiple(
             ytcomponents,
-            YTDLP_SHA256={"yt-dlp_macos": hashlib.sha256(self.YTDLP).hexdigest()},
+            YTDLP_SHA256=hashlib.sha256(self.YTDLP).hexdigest(),
             DENO_SHA256={"deno-aarch64-apple-darwin.zip": hashlib.sha256(self.DENO).hexdigest()})
         self.pins.start()
 
@@ -190,7 +203,7 @@ class ComponentTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def urls(self):
-        ytdlp = ytcomponents.release_url(ytcomponents.YTDLP_REPO, ytcomponents.YTDLP_VERSION, "yt-dlp_macos")
+        ytdlp = ytcomponents.release_url(ytcomponents.YTDLP_REPO, ytcomponents.YTDLP_VERSION, "yt-dlp")
         deno = ytcomponents.release_url(ytcomponents.DENO_REPO, f"v{ytcomponents.DENO_VERSION}",
                                         "deno-aarch64-apple-darwin.zip")
         return ytdlp, deno
@@ -202,9 +215,13 @@ class ComponentTests(unittest.TestCase):
             self.ran.append(Path(path).name)
             return "1.0" if runs else ""
 
+        def compile_run(folder):
+            self.compiled.append(Path(folder).name)
+            return True
+
         parts = ytcomponents.Components(self.bin, log=lambda _m: None, fetch=fetch, check_run=check_run,
                                         status_file=Path(self.tmp.name) / "status.json",
-                                        system="Darwin", machine="arm64")
+                                        system="Darwin", machine="arm64", compile_run=compile_run)
         return parts, fetch
 
     def test_install_verifies_and_records(self):
@@ -216,9 +233,16 @@ class ComponentTests(unittest.TestCase):
         self.assertTrue(snap["ready"])
         self.assertEqual((snap["ytdlp"], snap["deno"]), (ytcomponents.YTDLP_VERSION, ytcomponents.DENO_VERSION))
         found = ytnode.read_components(str(self.bin))
+        self.assertEqual(Path(found[0]).name, f"yt-dlp-{ytcomponents.YTDLP_VERSION}.pyz")
         self.assertEqual(Path(found[0]).read_bytes(), self.YTDLP)
         self.assertEqual(Path(found[1]).read_bytes(), b"#!/bin/sh\necho deno\n")
-        self.assertTrue(os.stat(found[0]).st_mode & stat.S_IXUSR)
+        self.assertTrue(os.stat(found[1]).st_mode & stat.S_IXUSR)
+        # Unpacked beside the zipapp and compiled once; the node then runs the folder.
+        folder = self.bin / f"yt-dlp-{ytcomponents.YTDLP_VERSION}"
+        self.assertTrue((folder / "yt_dlp" / "__init__.py").is_file())
+        self.assertEqual(self.compiled, [folder.name])
+        self.assertEqual(ytnode.zipapp_folder(found[0]), str(folder))
+        self.assertFalse(snap["legacy"])
         self.assertEqual({proxy for _, proxy, _ in fetch.calls}, {"http://127.0.0.1:7897"})
         self.assertEqual(list(self.bin.glob("*.part")), [], "no partial files left")
         self.assertTrue(json.loads((Path(self.tmp.name) / "status.json").read_text())["ready"])
@@ -245,7 +269,7 @@ class ComponentTests(unittest.TestCase):
         self.assertFalse(ytcomponents.valid_mirror("http://mirror.example"))
         self.assertTrue(ytcomponents.valid_mirror(mirror))
         self.assertIsNone(ytcomponents.platform_assets("Windows", "x86"))
-        self.assertEqual(ytcomponents.platform_assets("Linux", "aarch64")[0], "yt-dlp_linux_aarch64")
+        self.assertEqual(ytcomponents.platform_assets("Linux", "aarch64")[0], "yt-dlp", "the zipapp everywhere")
         odd = ytcomponents.Components(self.bin, log=lambda _m: None, system="Linux", machine="armv7l")
         odd.start("install", wait=True)
         self.assertEqual(odd.snapshot()["state"], "failed")
@@ -253,12 +277,12 @@ class ComponentTests(unittest.TestCase):
 
     def test_update_is_checked_against_the_release_sums(self):
         ytdlp, deno = self.urls()
-        new = b"newer yt-dlp"
+        new = _zipapp("2099.01.02")
         latest = f"https://github.com/{ytcomponents.YTDLP_REPO}/releases/latest"
         tag = "2099.01.02"
         sums_url = ytcomponents.release_url(ytcomponents.YTDLP_REPO, tag, "SHA2-256SUMS")
-        new_url = ytcomponents.release_url(ytcomponents.YTDLP_REPO, tag, "yt-dlp_macos")
-        sums = f"{hashlib.sha256(new).hexdigest()}  yt-dlp_macos\n{'0' * 64}  yt-dlp.exe\n".encode()
+        new_url = ytcomponents.release_url(ytcomponents.YTDLP_REPO, tag, "yt-dlp")
+        sums = f"{'0' * 64}  yt-dlp_macos\n{hashlib.sha256(new).hexdigest()}  yt-dlp\n{'0' * 64}  yt-dlp.exe\n".encode()
         files = {ytdlp: self.YTDLP, deno: self.DENO, sums_url: sums, new_url: new}
         redirects = {latest: f"https://github.com/{ytcomponents.YTDLP_REPO}/releases/tag/{tag}"}
         parts, _ = self.make(files, redirects)
@@ -269,6 +293,7 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual(parts.snapshot()["state"], "done", parts.snapshot()["error"])
         self.assertEqual(parts.installed()["yt-dlp"]["version"], tag)
         self.assertFalse((self.bin / old_file).exists(), "the old version is removed after the switch")
+        self.assertFalse((self.bin / old_file[:-4]).exists(), "and its unpacked folder")
         self.assertEqual(Path(ytnode.read_components(str(self.bin))[0]).read_bytes(), new)
         # A release whose file does not match its own SHA2-256SUMS is refused; the current one stays.
         files[new_url.replace(tag, "2099.02.03")] = b"evil"
@@ -287,8 +312,9 @@ class ComponentTests(unittest.TestCase):
 
 class PinTests(unittest.TestCase):
     def test_pinned_hashes_cover_every_platform(self):
+        self.assertRegex(ytcomponents.YTDLP_SHA256, r"^[0-9a-f]{64}$")
         for ytdlp, deno in ytcomponents.PLATFORMS.values():
-            self.assertRegex(ytcomponents.YTDLP_SHA256[ytdlp], r"^[0-9a-f]{64}$")
+            self.assertEqual(ytdlp, ytcomponents.YTDLP_ASSET)
             self.assertRegex(ytcomponents.DENO_SHA256[deno], r"^[0-9a-f]{64}$")
 
 

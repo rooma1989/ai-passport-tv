@@ -14,7 +14,7 @@
 - 节点正在给电视解析视频时它自己回答 503 busy（ytnode.SEARCH_WAIT_S），这里照说「节点正忙」。
 
 失败时 reason 让页面分开说：off（没开 YouTube）、login（要导入或更新 cookies）、tools（组件没装好）、
-busy（节点正忙或别的搜索在跑）、slow（超时）、down（连不上）、unsupported（旧节点不会搜播放列表）、
+busy（节点正忙或别的搜索在跑）、slow（超时；本机模式另有 slow：ytdlp = yt-dlp 自己启动就慢、proxy = 慢在代理）、down（连不上）、unsupported（旧节点不会搜播放列表）、
 rate（搜得太快）、bad（请求格式不对）。
 
 封面：视频的缩略图是 i.ytimg.com 的固定地址，经 /api/bili/thumb 代理（只认 i.ytimg.com）。
@@ -54,6 +54,14 @@ TOOLS = "YouTube 组件还没装好：去「设置 → YouTube」安装"
 BUSY = "YouTube 节点正忙，稍后再试"
 RUNNING = "上一个 YouTube 搜索还没完，稍等几秒"
 SLOW = f"YouTube 搜索超时了（等了 {int(TIMEOUT_S)} 秒）：代理慢或连不上，过一会儿再试"
+# 本机模式超时时分开说：节点量过 yt-dlp --version 要几秒（ytnode 的 /yt/health 的 startup），
+# 超过 SLOW_START_S 秒就是 yt-dlp 自己慢（以前的单文件版在 Mac 上要 37 秒），否则慢在代理或 YouTube。
+SLOW_START_S = 5.0
+HEALTH_TIMEOUT_S = 3.0
+SLOW_YTDLP = ("YouTube 搜索超时了（等了 {wait} 秒）：是本机的 yt-dlp 自己慢（光启动就要 {s} 秒），不是代理的问题。"
+              "电脑很忙或安全软件在检查它时会这样；在「设置 → YouTube」点「检查更新」可以重新装 yt-dlp")
+SLOW_PROXY = ("YouTube 搜索超时了（等了 {wait} 秒）：yt-dlp 启动正常（{s} 秒），慢在代理或 YouTube："
+              "检查「设置 → YouTube」里的代理，或点那里的「测试」")
 DOWN_LOCAL = "YouTube 连不上：检查「设置 → YouTube」里的代理，或点那里的「测试」"
 DOWN_LOCAL_NODE = "本机的 YouTube 组件没有响应：稍后再试，或在「设置 → YouTube」点「测试」"
 DOWN_CLOUD = "YouTube 暂时搜不了（连不上海外节点），稍后再试"
@@ -116,15 +124,26 @@ def shape(kind: str, answer: dict, covers: bool = True) -> list[dict]:
     return items[:COUNT]
 
 
-def explain(error: SourceError, kind: str, place: str) -> dict:
+def slow_message(startup, wait: float = TIMEOUT_S) -> str:
+    """超时的说法。startup：本机节点量的 yt-dlp 启动秒数（不知道时 None）。"""
+    if isinstance(startup, bool) or not isinstance(startup, (int, float)) or startup < 0:
+        return SLOW if wait == TIMEOUT_S else f"YouTube 搜索超时了（等了 {int(wait)} 秒）：代理慢或连不上，过一会儿再试"
+    template = SLOW_YTDLP if startup >= SLOW_START_S else SLOW_PROXY
+    return template.format(wait=int(wait), s=f"{startup:g}")
+
+
+def explain(error: SourceError, kind: str, place: str, startup=None) -> dict:
     """节点的失败 → {"ok": False, "reason", "error"[, "retry"]}。place：local（本机模式）、selfhost（家庭服务器
-    用自己的节点）、cloud。"""
+    用自己的节点）、cloud。startup：本机节点量的 yt-dlp 启动秒数（超时时用来分开说）。"""
     status = getattr(error, "status", None)
     text = str(error)
     cloud = place == "cloud"
     if error.reason == "busy":
         return {"ok": False, "reason": "busy", "error": BUSY, "retry": BUSY_RETRY_S}
     if error.reason == "slow":
+        if place == "local" and startup is not None:
+            slow_reason = "ytdlp" if startup >= SLOW_START_S else "proxy"
+            return {"ok": False, "reason": "slow", "slow": slow_reason, "error": slow_message(startup)}
         return {"ok": False, "reason": "slow", "error": SLOW}
     if status == 503 and "tools missing" in text:
         return {"ok": False, "reason": "tools", "error": TOOLS}
@@ -201,7 +220,10 @@ class YtSearch:
             found = client.browse(query, kind, COUNT, TIMEOUT_S)
         except SourceError as error:
             self.log(f"YouTube 搜索失败：{error}")
-            return explain(error, kind, place)
+            startup = startup_seconds(client) if error.reason == "slow" and place == "local" else None
+            if startup is not None:
+                self.log(f"YouTube 搜索超时；yt-dlp 启动要 {startup} 秒")
+            return explain(error, kind, place, startup)
         except Exception as error:  # noqa: BLE001 —— 节点回答了看不懂的东西：说搜不了，不让请求 500
             self.log(f"YouTube 搜索失败：{type(error).__name__}: {error}")
             return explain(SourceError(str(error)), kind, place)
@@ -212,6 +234,15 @@ class YtSearch:
             while len(self._results) > CACHE_SIZE:
                 self._results.popitem(last=False)
         return answer
+
+
+def startup_seconds(client) -> float | None:
+    """本机节点量过的 yt-dlp 启动秒数（/yt/health 的 startup）；问不到、没量过时 None。"""
+    try:
+        value = client.health(timeout=HEALTH_TIMEOUT_S).get("startup")
+    except Exception:   # noqa: BLE001 —— 只是为了把超时说清楚，问不到就照旧说
+        return None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
 
 
 def place_of(relay) -> str:

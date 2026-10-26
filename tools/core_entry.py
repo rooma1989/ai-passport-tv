@@ -10,6 +10,7 @@ the dispatch itself is tools/packaged_entry.py, shared with the single-user buil
                                           2026-10-19-pc-client-architecture-design.md, 5.13)
     rootv-core __relay …             a child, started by the supervisor
     rootv-core __certs               the build check's certificate question
+    rootv-core __ytdlp <yt-dlp> …    yt-dlp's zipapp run by the core's Python (tools/ytdlp_run.py)
 
 Anything else is refused rather than run as the single-user server: the core bundle is
 not that program, and a mistyped word should not start one.
@@ -29,6 +30,17 @@ from tools.console import use_utf8  # noqa: E402
 # Before anything is printed: on Windows the console's code page cannot hold Chinese (tools/console.py).
 use_utf8()
 
+from tools import ytdlp_run  # noqa: E402
+
+# yt-dlp is started for every YouTube search and every video the node resolves: answered before
+# the rest of the core is imported, which it does not need. HTTPS still needs the system's
+# certificate authorities in a downloaded build (tools/certs.py).
+if __name__ == "__main__" and sys.argv[1:2] == [ytdlp_run.COMMAND]:
+    from tools.certs import use_system_ca
+
+    use_system_ca()
+    raise SystemExit(ytdlp_run.main(sys.argv[2:]))
+
 from tools import packaged_entry  # noqa: E402
 from tools.subcommands import CERTS_COMMAND, CORE_COMMANDS  # noqa: E402
 
@@ -37,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments[0].startswith("-"):
         arguments = ["selfhost", "--desktop"] + arguments
-    if arguments[0] not in CORE_COMMANDS and arguments[0] != CERTS_COMMAND:
+    if arguments[0] not in CORE_COMMANDS and arguments[0] not in (CERTS_COMMAND, ytdlp_run.COMMAND):
         print(f"rootv-core：不认识「{arguments[0]}」。用法：rootv-core selfhost --desktop [--data <文件夹>]",
               file=sys.stderr)
         return 2

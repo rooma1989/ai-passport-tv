@@ -323,9 +323,10 @@ class YouTube:
             return str(channel) if channel else None
         return None
 
-    def health(self) -> dict:
-        """节点最近一次解析 YouTube 的结果：{"state": ok|login|error|unknown, "at", "version"}。"""
-        return self._call("/yt/health")
+    def health(self, timeout: float | None = None) -> dict:
+        """节点最近一次解析 YouTube 的结果：{"state": ok|login|error|unknown, "at", "version"}；本机节点还有
+        "tools"（组件装好没有）和 "startup"（yt-dlp --version 要几秒，没量过时 null）。"""
+        return self._call("/yt/health", _timeout=timeout)
 
     def check(self, timeout: float) -> dict:
         """不走缓存解析一次测试视频（设置页的「测试」，本机节点才有）：

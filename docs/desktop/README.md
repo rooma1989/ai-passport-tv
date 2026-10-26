@@ -335,11 +335,15 @@ getting one.**
    when the proxy program routes everything by itself (TUN / enhanced mode) or
    YouTube is reachable directly.
 3. Press **Save**. The first time, the client downloads its two YouTube
-   components, yt-dlp and deno (about 80 MB, through that proxy; you can also
+   components, yt-dlp and deno (about 45 MB, through that proxy; you can also
    enter a download mirror prefix: what replaces `https://github.com` in the
    download address, so a GitHub accelerator that takes a whole address is
    written `https://<accelerator>/https://github.com`), and checks each file
    against the SHA-256 written in the program. Progress shows in the same section.
+   yt-dlp is its pure-Python release, run by the client's own Python (a search
+   through a proxy takes about 4 s); a client that still has the older
+   single-file yt-dlp, which took over 30 s just to start on a Mac, replaces it
+   by itself the next time it starts.
 4. Press **Test**: it resolves a public test video and answers in plain words
    ("success in 12 s", "can't reach YouTube: check the proxy", "needs sign-in:
    import cookies").
