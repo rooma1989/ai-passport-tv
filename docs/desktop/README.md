@@ -303,13 +303,36 @@ What a login changes:
 - **Premium bangumi**: with a premium login, series keep the member episodes and
   the TV plays them. Without one, adding such a series says it needs a premium
   membership and where to log in.
-- **Importing followed creators**: the subscriptions page gets a button that lists
-  the creators you follow, with a search box, select all and select none; ones
-  you already subscribe to are marked. At most 12 creators fit, because each one
-  is a channel whose name has to fit in the device's settings packet.
+- **Your own rows on Home**: "Bilibili recommendations" (the recommendations
+  Bilibili's home page gives you), "Bilibili watch history" (with a progress bar;
+  playing one resumes where Bilibili says you stopped) and "Followed updates"
+  (new videos from the creators you follow, newest first, together with your
+  YouTube subscriptions when the admin has YouTube cookies). Each family member
+  sees their own. Click a card to play it on the TV or on this computer (Play to).
+  A bangumi season from the history plays on the PC; on the TV it has to be added
+  as a series. Rows load on their own and never hold up the page; the server
+  keeps them for 2 minutes (watch history) to 10 minutes (recommendations,
+  updates).
+- **My followings** on the Creators page: every creator you follow on Bilibili
+  (and, for the admin, every YouTube channel the cookies' account subscribes to),
+  with no limit, synced automatically when you log in, then every 6 hours, and
+  with **Sync now**. New follows appear and unfollowed ones disappear. Click one
+  to browse their latest videos and play them on the TV or the PC. The **Put on
+  the TV** switch makes a creator one of the TV's channels: at most 12 creator
+  channels fit, because each name has to fit in the device's settings packet
+  (the page says so). Creators you added by hand stay. A creator you unfollowed
+  while they are a TV channel is kept on the TV and marked "unfollowed"; take it
+  off yourself if you want. "Put new follows on the TV automatically (until it is
+  full)" is off by default. The old one-by-one import is no longer shown.
+- **Sync to Bilibili history** (Settings → Bilibili account, off by default): what
+  you watch on the TV and on this computer is reported to your Bilibili watch
+  history (bangumi episodes not yet). YouTube watch history is not written back:
+  there is no reliable way to do it.
 
 The login stays on this computer: `secrets/bilibili/<user id>.json` in the data
-folder, readable only by your user. It is never written to logs, the
+folder, readable only by your user. Your followings list and these two settings are
+kept in `feeds/<user id>.json` (also readable only by your user, not in the
+diagnostics bundle). It is never written to logs, the
 diagnostics bundle or database backups, and logging out deletes it at once.
 These are Bilibili's web APIs and normal use is fine; if you worry about
 Bilibili's anti-abuse checks, use a secondary account. When Bilibili rejects the
@@ -516,6 +539,12 @@ Developer notes (code map, building, CI, the interface with the core):
 - Bilibili login against the real Bilibili: QR login, 1080p playback, member
   bangumi and the followings import were developed against recorded answer
   shapes only (the developer's router blocks Bilibili).
+- Account feeds against the real services: Bilibili recommendations, watch history,
+  the followed-updates feed and the history write-back, and YouTube's
+  recommendations, history and subscription feed (yt-dlp `:ytrec`, `:ythis`,
+  `:ytsubs`, which yt-dlp 2026.10.21 lists) were built and tested against canned
+  answers only; the page was checked in a browser against a fake Bilibili and a
+  fake YouTube node.
 
 ## Disclaimer
 

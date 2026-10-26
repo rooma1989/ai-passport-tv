@@ -467,11 +467,13 @@ function showRoute() {
   if (name === "home") { renderHome(); loadHome(); }
   if (name === "live" && was !== name) loadEpg();
   if (name === "devices") loadDevices();
-  if (name === "settings") { if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); }
+  if (name === "settings") { if (!isGuest()) loadFeeds(true);
+    if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); }
   if (typeof adminRoute === "function") adminRoute(name === "admin" ? routeParts()[1] || "" : null);
   if (name !== "settings") biliCancel();
   if (name === "me") renderMe();
-  if (name === "up") renderUpLatest();
+  if (name === "up") { renderUpLatest(); renderFollows(); loadFollows(); }
+  if (name === "home") loadFeeds();
   if (name === "up" || name === "series") loadHome();
   if (data) render();
 }
@@ -560,6 +562,7 @@ function schedule(delay) {
       ticks++;
       if (ticks % 3 === 0) loadTargets();
       if (route === "home" && (ticks % 6 === 0 || homeDue())) loadHome(true);
+      if (route === "home" && ticks % 12 === 0) loadFeeds();
     }
     schedule(pending || listenPending ? 1000 : 5000);
   }, delay);
@@ -725,6 +728,9 @@ function render() {
   followEpisodes();
   renderBiliGate();
   if (route === "settings") renderAbout();
+  if (feedsOn() && !feedsInfo && !feedsAt) loadFeeds();
+  if (route === "up" && feedsOn() && !fw && $("followsBox").hidden) { renderFollows(); loadFollows(); }
+  if (feedsInfo) applyFeedSettings();
 }
 
 function renderNotice() {
@@ -922,7 +928,7 @@ $("rememberSw").onclick = () => setRemember(!remember);
 // ======================================================================= 抽屉、弹窗
 
 let lastFocus = null;
-const SHEETS = ["sheet", "rsheet", "drawer"];
+const SHEETS = ["sheet", "rsheet", "drawer", "csheet"];
 function anyOverlay() { return SHEETS.some((id) => !$(id).hidden) || !$("modal").hidden; }
 function openSheet(node) {
   if (!anyOverlay()) lastFocus = document.activeElement;
@@ -943,6 +949,7 @@ function closeSheets(quiet) {
   if (typeof closeWifi === "function" && wifiDev) closeWifi();
   if (follow) follow = null;
   if (ysub) { ysub = null; clearTimeout(ysubPoll); }
+  cs = null;
   if (!quiet && lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
   lastFocus = null;
 }
@@ -3774,7 +3781,8 @@ function biliOn() { return !!(data && data.bili && me && me.role !== "guest"); }
 function renderBiliGate() {
   renderYtImportGate();
   $("biliBlock").hidden = !biliOn();
-  $("biliImportRow").hidden = !biliOn();
+  // 有「我的关注」（自动同步）时不用一个个导入了。
+  $("biliImportRow").hidden = !biliOn() || feedsOn();
   if (biliOn() && route === "settings" && !bili && !biliQr) loadBili();
 }
 async function loadBili(fresh) {
@@ -3878,6 +3886,7 @@ async function biliPoll(run) {
       renderBili();
       toast("B 站登录成功" + (answer.name ? "：" + answer.name : ""));
       refresh();
+      resetFeeds();
       return;
     }
     biliQr.state = answer.state;
@@ -3895,6 +3904,7 @@ async function biliLogout() {
   toast("已退出 B 站登录");
   renderBili();
   refresh();
+  resetFeeds();
 }
 
 // ---------- UP 主 → 从 B 站导入关注的 UP 主（GET api/bili/followings，POST api/bili/followings/import） ----------
@@ -4243,7 +4253,7 @@ $("ytBrowserRead").onclick = () => busy($("ytBrowserRead"), async () => {
 let ysub = null, ysubPoll = 0;   // { items, picked: Set, q, max, count, total, note, importing }
 function ytImportOn() { return !!(data && data.youtube && data.youtube.kind === "local" && me && me.role === "admin"); }
 function renderYtImportGate() {
-  const on = ytImportOn();
+  const on = ytImportOn() && !feedsOn();
   $("ytImportRow").hidden = !on;
   if (!on) return;
   if (!yt && route === "up" && !ytImportAsked) { ytImportAsked = true; loadYouTube(); }
@@ -4425,6 +4435,290 @@ async function phoneLink() {
 $("phoneLink1").onclick = phoneLink;
 $("phoneLink2").onclick = phoneLink;
 
+// ======================================================================= 自己账号的几排、我的关注
+// 接口见 server/relay/accountfeeds.py、follows.py：家庭服务器和电脑客户端才有（/api/state 的 feeds），云端没有，
+// 这里也就什么都不显示。每一排单独去问（GET api/feeds/row），不挡首页；YouTube 要十几秒，先显示「正在加载」。
+
+let feedsInfo = null, feedsAt = 0;   // GET api/feeds：有哪几排、能不能用、设置
+const feedRows = {};                 // 排 id → GET api/feeds/row 的回答
+let feedRowsAt = 0, feedTimer = 0, feedTries = 0;
+const FEED_SUB = { updates: "关注的 UP 主新发的，新的在前", bili_history: "接着上次看到的地方", bili_rec: "B 站首页给你的推荐",
+                   yt_history: "YouTube 上看过的", yt_rec: "YouTube 首页给你的推荐" };
+// 登录、退出 B 站以后：几排和关注列表都重新问（服务器那边已经开始同步关注）。
+function resetFeeds() {
+  for (const id of Object.keys(feedRows)) delete feedRows[id];
+  feedsInfo = null; feedsAt = 0; feedRowsAt = 0; fw = null;
+  setTimeout(() => { loadFeeds(true); if (route === "up") loadFollows(); }, 600);
+}
+function feedsOn() { return !!(data && data.feeds && me && !isGuest()); }
+async function loadFeeds(force) {
+  if (!feedsOn()) return;
+  if (!force && feedsInfo && Date.now() - feedsAt < 60000) { loadFeedRows(false); return; }
+  feedsAt = Date.now();
+  let answer;
+  try { answer = await call("GET", "api/feeds"); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (!answer || !answer.ok) return;
+  const changed = JSON.stringify(feedsInfo) !== JSON.stringify(answer);
+  feedsInfo = answer;
+  applyFeedSettings();
+  if (changed && route === "home") renderHome();
+  loadFeedRows(force);
+}
+async function loadFeedRows(force) {
+  if (!feedsInfo || (!force && Date.now() - feedRowsAt < 60000)) return;
+  feedRowsAt = Date.now();
+  await Promise.all(feedsInfo.rows.filter((r) => r.state === "ready").map((r) => loadFeedRow(r.id)));
+  feedTries = 0;
+  scheduleFeeds();
+}
+async function loadFeedRow(id, fresh) {
+  let answer;
+  try { answer = await call("GET", "api/feeds/row?id=" + encodeURIComponent(id) + (fresh ? "&fresh=1" : "")); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (!answer || !answer.ok) return;
+  const before = JSON.stringify(feedRows[id] || null);
+  feedRows[id] = answer;
+  if (before !== JSON.stringify(answer) && route === "home") renderHome();
+}
+const feedWaiting = (id) => feedRows[id] && (feedRows[id].loading || feedRows[id].state === "loading");
+// 还在加载的（YouTube）：每 3 秒再问一次，最多两分钟。离开首页就停。
+function scheduleFeeds() {
+  clearTimeout(feedTimer);
+  const ids = Object.keys(feedRows).filter(feedWaiting);
+  if (!ids.length || ++feedTries > 40) return;
+  feedTimer = setTimeout(async () => {
+    if (route !== "home" || document.hidden) return;
+    await Promise.all(ids.map((id) => loadFeedRow(id)));
+    scheduleFeeds();
+  }, 3000);
+}
+function applyFeedSettings() {
+  const s = (feedsInfo && feedsInfo.settings) || (fw && fw.settings) || {};
+  $("writebackSw").setAttribute("aria-checked", String(!!s.writeback));
+  $("autoTvSw").setAttribute("aria-checked", String(!!s.autotv));
+  $("writebackRow").hidden = !feedsOn() || !(data.bili && data.bili.login && !data.bili.invalid);
+}
+async function setFeedSetting(key, sw) {
+  const on = sw.getAttribute("aria-checked") !== "true";
+  let answer;
+  try { answer = await call("POST", "api/feeds/settings", { [key]: on }); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return; }
+  if (!answer.ok) { toast(answer.error, true); return; }
+  if (feedsInfo) feedsInfo.settings = answer.settings;
+  if (fw) fw.settings = answer.settings;
+  applyFeedSettings();
+  toast(key === "writeback" ? (on ? "已打开：在这里看的 B 站视频会记进你的 B 站历史" : "已关掉同步到 B 站历史")
+        : (on ? "已打开：以后同步到新关注，会自动放到小电视（放满为止）" : "已关掉自动放到小电视"));
+}
+$("writebackSw").onclick = (event) => setFeedSetting("writeback", event.currentTarget);
+$("autoTvSw").onclick = (event) => setFeedSetting("autotv", event.currentTarget);
+
+function cardFeed(x) {
+  const id = reg(x);
+  const cr = x.creator || {};
+  const face = cr.face ? `<img src="${esc(cr.face)}" alt="" loading="lazy">` : avatarSVG(cr.name || x.subtitle || "?", 20);
+  const p = x.progress;
+  const pct = p && p.duration ? (p.done ? 1 : p.position / p.duration) : 0;
+  let badges = x.duration ? `<span class="badge r b num">${clock(x.duration)}</span>` : "";
+  if (p && p.done) badges += '<span class="badge">看完了</span>';
+  else if (x.reason) badges += `<span class="badge">${esc(x.reason)}</span>`;
+  if (x.pc_only) badges += '<span class="badge r">电脑上看</span>';
+  const meta = [cr.name || x.subtitle || ""];
+  if (x.id.startsWith("updates:")) meta.push(siteTag(x.source));
+  if (p) meta.push(p.done ? "" : p.position ? "看到 " + clock(p.position) : "", x.watched_at ? ago(x.watched_at) : "");
+  else if (x.pubdate) meta.push(ago(x.pubdate));
+  const resume = x.play && x.play.start ? "，从 " + clock(x.play.start) + " 接着看" : "";
+  return `<button class="card" data-play="${esc(id)}" data-k="f-${esc(id)}" aria-label="播放 ${esc(x.title)}${resume}"><span class="art">${itemArt(x, "w")}${badges}${pbar(pct)}</span>
+    <span class="t">${esc(x.title)}</span><span class="who">${face}<span class="s">${esc(meta.filter(Boolean).join(" · "))}</span></span></button>`;
+}
+const skelCards = (n) => Array.from({ length: n || 4 }, () => '<span class="card skel" aria-hidden="true"><span class="art"></span><span class="t"></span><span class="s"></span></span>').join("");
+function noteCard(icon, title, text, href) {
+  const tag = href ? `a class="card soon note" href="${href}"` : 'div class="card soon note"';
+  return `<${tag}><span class="art"><span>${ic(icon, 30)}${esc(title)}</span></span><span class="t">${esc(title)}</span><span class="s2 wrap">${esc(text)}</span></${href ? "a" : "div"}>`;
+}
+// 首页上自己账号的几排（在「直播 · 正在播」后面）。没登录：每个网站一张小卡片，点了去设置。
+function feedShelves() {
+  if (!feedsOn() || !feedsInfo) return "";
+  let o = "";
+  const asked = {};
+  const login = (need, message) => {
+    if (asked[need]) return "";
+    asked[need] = true;
+    return need === "bili"
+      ? shelf("你的 B 站", "", noteCard("up", "登录 B 站", message || "登录 B 站后，这里会显示你的推荐和观看记录", "#/settings"))
+      : shelf("你的 YouTube", "", noteCard("search", "导入 YouTube cookies", message || "导入 YouTube cookies 后，这里会显示你的推荐", "#/settings"));
+  };
+  for (const r of feedsInfo.rows) {
+    if (r.state === "hidden") continue;
+    if (r.state === "login") { o += login(r.need, r.message); continue; }
+    const a = feedRows[r.id];
+    if (!a || (!a.items.length && a.state === "loading")) { o += shelf(r.title, "正在加载…", skelCards(4)); continue; }
+    if (a.state === "hidden") continue;
+    if (a.state === "login") { o += login(a.need || (r.id.startsWith("yt") ? "youtube" : "bili"), a.message); continue; }
+    if (!a.items.length) {
+      o += shelf(r.title, "", a.state === "blocked" || a.state === "error" ? noteCard("warn", "暂时取不到", a.message)
+                 : noteCard("info", r.id.endsWith("history") ? "还没有观看记录" : "暂时没有内容",
+                            r.id === "updates" ? "关注的 UP 主发了新视频会出现在这里" : "过一会儿再来看看"));
+      continue;
+    }
+    const sub = a.loading ? "正在更新…" : a.message ? a.message : FEED_SUB[r.id] || "";
+    o += shelf(r.title, sub, a.items.map(cardFeed).join(""), r.id === "updates" ? "#/up" : "", r.id === "updates" ? "我的关注" : "");
+  }
+  return o;
+}
+
+// ---------- UP 主 → 我的关注（GET api/follows；POST api/follows/sync、api/follows/tv） ----------
+
+let fw = null, fwTimer = 0, fwShow = 60, fwQuery = "";
+let fwFilter = lsGet("rootv.fwFilter", "all");
+async function loadFollows(fresh) {
+  if (!feedsOn()) { $("followsBox").hidden = true; return; }
+  let answer;
+  try { answer = await call("GET", "api/follows" + (fresh ? "?fresh=1" : "")); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (!answer || !answer.ok) return;
+  fw = answer;
+  renderFollows();
+  pollFollows();
+}
+function pollFollows() {
+  clearTimeout(fwTimer);
+  if (fw && fw.syncing) fwTimer = setTimeout(() => { if (route === "up" && !document.hidden) loadFollows(); }, 2500);
+}
+const fwKinds = [["all", "全部"], ["bilibili", "B 站"], ["youtube", "YouTube"], ["tv", "在小电视上"], ["gone", "已取关"]];
+function fwMatch(f, kind) {
+  return kind === "all" || (kind === "tv" ? !!f.tv : kind === "gone" ? f.unfollowed : f.site === kind && !f.unfollowed);
+}
+function fwSorted() {
+  // 最近有新视频的在前；没记下新视频的按关注的先后。
+  return fw.items.map((f, i) => [f, i]).sort((a, b) => ((b[0].latest && b[0].latest.at) || 0) - ((a[0].latest && a[0].latest.at) || 0) || a[1] - b[1]).map((x) => x[0]);
+}
+function renderFollows() {
+  const on = feedsOn();
+  $("followsBox").hidden = !on;
+  if (!on) return;
+  if (!fw) { $("fwList").innerHTML = '<p class="hint">正在读取你关注的 UP 主…</p>'; return; }
+  const fk = focusKey();
+  const s = fw.sites || {}, count = (site) => fw.items.filter((f) => f.site === site && !f.unfollowed).length;
+  const parts = [];
+  if (s.bilibili && s.bilibili.state !== "off") parts.push("B 站 " + count("bilibili"));
+  if (s.youtube && !["hidden", "off"].includes(s.youtube.state)) parts.push("YouTube " + count("youtube"));
+  parts.push(fw.syncing ? "正在同步…" : fw.synced_at ? "上次同步 " + ago(fw.synced_at) : "还没同步过");
+  $("fwSum").textContent = parts.join(" · ");
+  $("fwSync").disabled = !!fw.syncing;
+  const notes = [];
+  if (fw.message) notes.push(fw.message + "（「设置 → B 站账号」或「设置 → YouTube」）");
+  if (s.bilibili && s.bilibili.state === "login") notes.push("B 站：" + (s.bilibili.error || "登录已失效，请重新扫码"));
+  else if (s.bilibili && s.bilibili.state === "error") notes.push("B 站这次没同步上：" + s.bilibili.error + "（先用上次的列表）");
+  if (s.youtube && s.youtube.state === "login") notes.push("YouTube：" + s.youtube.error);
+  else if (s.youtube && s.youtube.state === "error") notes.push("YouTube 这次没同步上：" + s.youtube.error);
+  else if (s.youtube && s.youtube.state === "off" && s.youtube.error && s.bilibili && s.bilibili.state !== "off") notes.push("YouTube 订阅：" + s.youtube.error);
+  if (!fw.message) notes.push("自动同步：登录时一次，之后每 6 小时一次；新关注的会出现，取关的会消失。小电视上取关了的 UP 主台不会悄悄删掉，会标「已取关」。");
+  $("fwNote").textContent = notes.join(" ");
+  const tv = fw.tv || {};
+  $("fwCap").textContent = "小电视内存小，最多 " + (tv.max || 12) + " 个 UP 主台（现在 " + (tv.count || 0) + " / " + (tv.max || 12) + "）" +
+    (tv.room && tv.room.fits === false ? "；频道列表已经满了" : "") + "；放满了要先关掉一个，关掉的随时可以再放";
+  $("autoTvSw").setAttribute("aria-checked", String(!!(fw.settings && fw.settings.autotv)));
+  const kinds = fwKinds.filter(([k]) => k === "all" || fw.items.some((f) => fwMatch(f, k)));
+  if (!kinds.some(([k]) => k === fwFilter)) fwFilter = "all";
+  $("fwChips").innerHTML = kinds.map(([k, t]) => `<button data-fwk="${k}" aria-pressed="${k === fwFilter}">${t} <em>${fw.items.filter((f) => fwMatch(f, k)).length}</em></button>`).join("");
+  const q = fwQuery.toLowerCase();
+  const list = fwSorted().filter((f) => fwMatch(f, fwFilter) && (!q || f.name.toLowerCase().includes(q) || (f.sign || "").toLowerCase().includes(q)));
+  if (!fw.items.length) {
+    $("fwList").innerHTML = `<div class="empty" style="grid-column:1/-1;padding:40px 24px"><div class="eic">${ic("up", 36)}</div><b>${fw.syncing ? "正在同步你关注的 UP 主…" : "还没有关注的 UP 主"}</b><p>${esc(fw.message || "在 B 站关注的 UP 主（和 YouTube 订阅的频道）会自动列在这里，不用一个个添加。")}</p>${fw.message ? '<a class="btn pri sm" href="#/settings">去登录</a>' : ""}</div>`;
+  } else if (!list.length) {
+    $("fwList").innerHTML = '<p class="hint" style="grid-column:1/-1">没有找到</p>';
+  } else {
+    $("fwList").innerHTML = list.slice(0, fwShow).map(fwTile).join("");
+  }
+  $("fwMore").hidden = list.length <= fwShow;
+  $("fwMore").textContent = "显示更多（还有 " + Math.max(0, list.length - fwShow) + " 个）";
+  restoreFocus(fk);
+}
+function fwTile(f) {
+  const face = `<span class="fwface">${avatarSVG(f.name || "?", 48)}${f.face ? `<img src="${esc(f.face)}" alt="" loading="lazy">` : ""}</span>`;
+  const latest = f.latest && f.latest.title ? "最新：" + f.latest.title + (f.latest.at ? " · " + ago(f.latest.at) : "") : f.sign || (f.handle || "");
+  const tag = f.unfollowed ? '<span class="fwtag gone">已取关</span>' : `<span class="fwtag ${f.site === "youtube" ? "yt" : ""}">${siteTag(f.site)}</span>`;
+  return `<div class="fw${f.tv ? " on" : ""}${f.unfollowed ? " gone" : ""}"><button class="fwmain" data-fw="${esc(f.key)}" data-k="fw-${esc(f.key)}" aria-label="看「${esc(f.name)}」的投稿">${face}<span class="fwtx"><b>${esc(f.name)}</b><small>${tag}${esc(latest)}</small></span></button>
+    <span class="fwtv"><small>${f.tv ? "在小电视上" : "放到小电视"}</small><button class="sw" role="switch" aria-checked="${!!f.tv}" data-fwtv="${esc(f.key)}" data-k="fwtv-${esc(f.key)}" aria-label="放到小电视：${esc(f.name)}"></button></span></div>`;
+}
+async function setFollowTv(key, on) {
+  const f = fw && fw.items.find((x) => x.key === key);
+  if (!f) return;
+  if (!on && !confirm("把「" + f.name + "」从小电视上拿下来？这个台看到哪里会忘掉；以后可以再放。")) return;
+  let answer;
+  try { answer = await call("POST", "api/follows/tv", { key, on }); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return; }
+  if (!answer.ok) { toast(answer.error, true); return; }
+  toast(on ? "「" + f.name + "」放到小电视上了" : "「" + f.name + "」从小电视上拿下来了");
+  await loadFollows();
+  refresh();
+  loadHome(true);
+  if (cs && cs.key === key) renderCreatorActs();
+}
+$("fwList").addEventListener("click", (event) => {
+  const t = event.target.closest("button");
+  if (!t) return;
+  if (t.dataset.fwtv) { setFollowTv(t.dataset.fwtv, t.getAttribute("aria-checked") !== "true"); return; }
+  if (t.dataset.fw) openCreator(t.dataset.fw);
+});
+$("fwChips").addEventListener("click", (event) => {
+  const t = event.target.closest("[data-fwk]");
+  if (!t) return;
+  fwFilter = t.dataset.fwk;
+  lsSet("rootv.fwFilter", fwFilter);
+  fwShow = 60;
+  renderFollows();
+});
+$("fwQ").addEventListener("input", () => { fwQuery = $("fwQ").value.trim(); fwShow = 60; renderFollows(); });
+$("fwMore").onclick = () => { fwShow += 120; renderFollows(); };
+$("fwSync").onclick = () => busy($("fwSync"), async () => {
+  const answer = await call("POST", "api/follows/sync", {});
+  if (!answer.ok) { toast(answer.error, true); return; }
+  fw = answer;
+  toast(answer.note || "正在同步你关注的 UP 主…");
+  renderFollows();
+  pollFollows();
+});
+
+// 一个关注的 UP 主：最新的投稿，点一个播放（播放到记住的地方），上面是「放到小电视」。
+let cs = null;
+function renderCreatorActs() {
+  const f = fw && cs && fw.items.find((x) => x.key === cs.key);
+  if (!f) return;
+  const b = button(f.tv ? "从小电视上拿下来" : "放到小电视", f.tv ? "ghost" : "go", () => setFollowTv(f.key, !f.tv));
+  $("csActs").replaceChildren(b);
+  $("csSite").textContent = siteTag(f.site) + (f.unfollowed ? " · 已取关" : "") + (f.tv ? " · 小电视上的台" : "");
+}
+function openCreator(key) {
+  const f = fw && fw.items.find((x) => x.key === key);
+  if (!f) return;
+  cs = { key, run: (cs ? cs.run : 0) + 1 };
+  $("csName").textContent = f.name;
+  $("csSum").textContent = "正在取最新的投稿…";
+  $("csList").innerHTML = '<div class="wgrid">' + skelCards(4) + "</div>";
+  renderCreatorActs();
+  openSheet($("csheet"));
+  pollCreator(cs.run, 0);
+}
+async function pollCreator(run, n) {
+  let answer;
+  try { answer = await call("GET", "api/follows/videos?key=" + encodeURIComponent(cs.key)); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else if (cs && cs.run === run) $("csSum").textContent = "网络不通"; return; }
+  if (!cs || cs.run !== run) return;
+  if (!answer.ok) { $("csSum").textContent = answer.error; $("csList").replaceChildren(); return; }
+  if (answer.items.length) {
+    const to = currentTarget();
+    $("csSum").textContent = "最新 " + answer.items.length + " 个投稿 · 点一下播放" + (to ? (to === PC ? "（在这台电脑上）" : "到「" + targetName(to) + "」") : "");
+    $("csList").innerHTML = '<div class="wgrid">' + answer.items.map(cardFeed).join("") + "</div>";
+  } else if (!answer.loading) {
+    $("csSum").textContent = answer.error || "还没有投稿";
+    $("csList").replaceChildren();
+  }
+  if (answer.loading && n < 60) setTimeout(() => pollCreator(run, n + 1), 2000);
+}
+
 // ======================================================================= 首页（/api/home）
 
 // 页面上的节目：data-play / data-pick 指到这里（id → {title, subtitle, play}）。
@@ -4525,6 +4819,7 @@ function renderHome() {
   if (!isGuest()) o += `<div class="chips qchips" aria-label="分类"><a href="#/series">${ic("series", 16)}剧集与番剧</a><a href="#/up">${ic("up", 16)}UP 主</a><a href="#/lib">${ic("lib", 16)}片库</a><a href="#/live">${ic("live", 16)}直播</a></div>`;
   if (homeData.continue.length) o += shelf("继续观看", "在哪台上看的都算；电脑上的进度另记", homeData.continue.map(cardContinue).join(""));
   if (homeData.live_now.length) o += shelf("直播 · 正在播", homeData.epg ? "节目信息来自节目单（EPG）" : "", homeData.live_now.map(cardLive).join(""), "#/live", "全部直播");
+  o += feedShelves();
   if (!homeData.guest) {
     const none = !homeData.creator_updates.length && !homeData.series_updates.length && data && !data.creators.length && !(data.series || []).length;
     if (none) {
@@ -4553,6 +4848,7 @@ document.addEventListener("click", (event) => {
   if (ds.play) {
     event.preventDefault();
     const x = ITEMS[ds.play];
+    if (t.closest("#csheet")) closeSheets(true);
     if (x) play(x.play, null, x.title);
     return;
   }

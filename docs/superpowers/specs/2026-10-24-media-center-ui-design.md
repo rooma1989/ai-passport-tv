@@ -6,7 +6,7 @@
 
 Status: **design accepted 2026-10-24; phases M0, M1 and M2 implemented on branch `rootv-ui` for
 v0.3.0-beta (2026-10-25); the M3 programme guide on branch `rootv-live` (2026-10-26, Lineup still
-open)**, see section 16 for what was built and where it differs. First version on
+open); account feeds and synced followings on branch `desktop-accountfeeds` (section 18)**, see section 16 for what was built and where it differs. First version on
 branch `media-center-design` (based on `v0.2.4-beta`); the owner accepted every
 recommendation in section 13. **Revised the same day** on branch
 `media-center-appletv` (based on main `136571d`): a visual language closer to a
@@ -774,3 +774,82 @@ database and generated data (`admintest.localhost`): every section at 1440x900 a
 (375x812), dark theme, the login-link, rename and confirm dialogs, section switching by URL. **Not
 verified**: the light theme on every section, Safari and Firefox, a real cloud relay, a real tunnel
 (the 404 path was reasoned from `front.py`, not exercised), keyboard-only use of the channel table.
+
+## 18. Account feeds and synced followings (2026-10-26)
+
+Built on branch `desktop-accountfeeds` (based on main `4202cbc`). The owner asked: after logging in to
+Bilibili, show my watch history and my recommendations, the same for YouTube, and sync the creators I
+follow on both instead of adding them one by one. Household server and PC client only: the cloud relay
+holds nobody's cookies, so every endpoint below answers 404 there and the console shows none of it.
+
+**Whose data.** Bilibili rows and followings use the caller's own Bilibili login (`bililogin.py`); a family
+member sees only their own. YouTube has one cookies file per server (`ytsettings.py`, the admin's secondary
+account), so the YouTube rows and YouTube subscriptions are shown to the admin only.
+
+**Home rows** (`server/relay/accountfeeds.py`), after Live now, each a shelf of the section 8 media item
+with `play: {kind: "feed", site, id, start?, part?}`:
+
+| Row | Source | Cache |
+| --- | --- | --- |
+| Followed updates | Bilibili `/x/polymer/web-dynamic/v1/feed/all?type=video` (cookies, wbi-signed) merged with YouTube `:ytsubs`, newest first | 10 min |
+| Bilibili watch history | `/x/web-interface/history/cursor` (`progress` seconds, -1 finished); videos and bangumi (as the season, PC only); live and articles dropped | 2 min |
+| Bilibili recommendations | `/x/web-interface/wbi/index/top/feed/rcmd` (cookies, wbi-signed); `goto: av` only | 10 min |
+| YouTube watch history | node `/yt/feed?kind=history` (yt-dlp `:ythis`) | 5 min |
+| YouTube recommendations | node `/yt/feed?kind=rec` (yt-dlp `:ytrec`) | 10 min |
+
+yt-dlp 2026.10.21 lists the three keywords (`youtube:recommended`, `youtube:history`,
+`youtube:subscriptions` in `--extractor-descriptions`); history and subscriptions require cookies. The
+node runs them as flat playlists with `--playlist-end 30` (subscriptions with
+`youtubetab:approximate_date` so they can be merged by time); an older remote node answers 404 and the row
+says the node needs updating. `GET /api/feeds` lists the rows with their state (`ready`, `login` with what
+is needed, `hidden`) and the per-user settings; `GET /api/feeds/row?id=` answers one row with `state`
+(`ready`, `loading`, `login`, `blocked`, `error`, `hidden`), `items`, `loading` and `message`. Each
+(user, source) is fetched in a background thread, at most once at a time; the page gets `loading` at
+once and polls every 3 s for up to two minutes, so YouTube's slow node never blocks Home. "Refresh"
+reaches the site at most every 30 s; errors back off 60 s, a blocked network (`bilibili.blocked`) 5
+minutes; a rejected login (`-101`) marks it invalid like playback does. Not logged in, the console
+draws one card per site ("log in to Bilibili" / "import YouTube cookies") linking to Settings.
+
+**Playing a feed item** (`home.play`): to this computer it becomes `watch_direct` with the URL built from
+the id (never a URL from the page) and `start` for history items watched more than 30 s and not
+finished; to a TV it goes into the TV's cast slot (`_cast_video` with the position), the same as
+casting. A bangumi season from the history plays on the PC only; the TV answer explains to add it as a
+series.
+
+**My followings** (`server/relay/follows.py`) on the Creators page: Bilibili followings
+(`/x/relation/followings`, all pages, up to 2500) and, for the admin in local mode with cookies, YouTube
+subscriptions (`/yt/subscriptions`), unlimited, stored per user in `<data>/feeds/<user>.json` (0600).
+Synced on Bilibili login and logout, every 6 hours (the relay's 10-second loop calls `tick`, which checks
+at most every 5 minutes), and on "Sync now" (at most once a minute). New follows appear, unfollows
+disappear; a site whose fetch fails keeps its last list (it is not an unfollow), and logging out of
+Bilibili drops the Bilibili entries without marking anything. Each entry: avatar (Bilibili; YouTube gets
+the generated one), name, site, the latest upload when "Followed updates" has seen one (no extra
+requests), and the **Put on the TV** switch. On: the existing creator channel (`state.add`) within the
+12-creator cap and the CONFIG budget (`room_of`); the page explains "the TV has little memory, at most 12
+creator channels". Off: removes that channel (after a confirmation). Manually added creators stay.
+Creators unfollowed while they are a TV channel stay on the TV and are listed as "unfollowed" until the
+user takes them off or follows again. "Put new follows on the TV automatically (until it is full)" is per
+user and off by default; the first sync never counts as new follows. Clicking an entry opens a sheet with
+their latest uploads (`/api/follows/videos`, shared cache 10 minutes), playable through Play to. The old
+one-by-one import buttons are hidden when this is available.
+
+**History write-back** (per user, Settings → Bilibili account, off by default): when on, the position of
+Bilibili videos watched on the TV (reported for the device owner when a stream stops, changes or ends)
+and on this computer (the viewer's player reports, at most once a minute plus on stop and end) is
+sent to `/x/v2/history/report` with `aid`, `cid` (looked up once with `/x/web-interface/view`, or the
+part's cid), `progress`, `platform=web` and `csrf`. Bangumi episodes (`ep…`) are not reported. YouTube is
+not written back: yt-dlp offers no supported way and the web endpoints are not stable.
+
+**Endpoints**: `GET /api/feeds`, `GET /api/feeds/row?id=&fresh=`, `POST /api/feeds/settings {writeback,
+autotv}`, `GET /api/follows?fresh=`, `POST /api/follows/sync`, `POST /api/follows/tv {key, on}`,
+`GET /api/follows/videos?key=`; `/api/state` carries `feeds: true` where they exist.
+
+**Verified**: host tests with canned Bilibili answers and yt-dlp flat-playlist JSON (shaping, caching and
+refresh gaps, backoff on a blocked network, per-user isolation, followings sync with adds, removals and
+unfollowed-on-TV marks, the TV switch at the cap and the budget, auto-TV, write-back off by default and
+its payload when on, cloud 404); the console in the built-in browser pane against a local relay with a
+temporary database, a fake Bilibili and a fake YouTube node (`feedstest.localhost`), desktop and phone
+width, dark theme. **Not verified**: the real Bilibili endpoints (the developer's router blocks Bilibili;
+especially whether the dynamic feed and rcmd accept these parameters, and whether history/report accepts
+the write-back), the real YouTube feeds through yt-dlp, the light theme, keyboard-only use of the
+followings grid.

@@ -4,7 +4,7 @@
 
 # 家庭媒体中心界面 —— 设计
 
-状态：**设计已接受（2026-10-24）；M0、M1、M2 三个阶段已在分支 `rootv-ui` 上实现，用于 v0.3.0-beta（2026-10-25）；M3 的节目表在分支 `rootv-live` 上（2026-10-26，频道表还没做）**，实现了什么、和设计哪里不同见第 16 节。第一版在分支 `media-center-design`（基于 `v0.2.4-beta`）；
+状态：**设计已接受（2026-10-24）；M0、M1、M2 三个阶段已在分支 `rootv-ui` 上实现，用于 v0.3.0-beta（2026-10-25）；M3 的节目表在分支 `rootv-live` 上（2026-10-26，频道表还没做）；自己账号的几排和自动同步的关注在分支 `desktop-accountfeeds` 上（第 18 节）**，实现了什么、和设计哪里不同见第 16 节。第一版在分支 `media-center-design`（基于 `v0.2.4-beta`）；
 主人接受了第 13 节的全部建议。**同一天修订**，分支 `media-center-appletv`（基于 main `136571d`）：视觉语言改成更像
 电视盒子系统界面的样子（第 10 节），桌面导航从左侧栏改成顶部标签栏（第 2 节），产品定名 RooTV / 小鼠电视，给出三个
 应用图标候选（第 15 节）。可点击的原型是 [`docs/design/media-center/index.html`](../../design/media-center/index.html)：一个自带一切的文件，
@@ -540,3 +540,62 @@ audio-only 模式。
 **验证过的**：在桌面应用的内置浏览器里，对着本机中转、临时数据库和生成的数据（`admintest.localhost`）：每个分区在
 1440x900 和手机宽度（375x812）、深色主题，登录链接、改名和确认弹窗，用地址切换分区。**没验证的**：每个分区的浅色主题、
 Safari 和 Firefox、真的云端中转、真的隧道（404 的那条路是照 `front.py` 推的，没有实际走过）、只用键盘操作频道表。
+
+## 18. 自己账号的几排和自动同步的关注（2026-10-26）
+
+在分支 `desktop-accountfeeds` 上做的（基于 main `4202cbc`）。主人的要求：登录 B 站后能看到自己的观看记录和给自己的推荐，
+YouTube 也一样，两边关注的 UP 主都自动同步，不用一个个再添加。只有家庭服务器和电脑客户端有：云端不保存任何人的 cookies，
+下面的接口在云端一律 404，电脑版也不显示。
+
+**谁的数据。** B 站的几排和关注按调用者自己的 B 站登录（`bililogin.py`），家人只看得到自己的。YouTube 一台服务器只有一份
+cookies（`ytsettings.py`，管理员的小号），所以 YouTube 的几排和 YouTube 订阅只给管理员看。
+
+**首页的几排**（`server/relay/accountfeeds.py`），在「直播 · 正在播」后面，每一排都是第 8 节的「节目」，
+`play` 是 `{kind: "feed", site, id, start?, part?}`：
+
+| 排 | 来源 | 缓存 |
+| --- | --- | --- |
+| 关注的更新 | B 站 `/x/polymer/web-dynamic/v1/feed/all?type=video`（cookies、wbi 签名），和 YouTube `:ytsubs` 按时间排在一起 | 10 分钟 |
+| B 站观看记录 | `/x/web-interface/history/cursor`（`progress` 是秒数，-1 看完了）；视频和番剧（整季，只在电脑上看）；直播、专栏不要 | 2 分钟 |
+| B 站推荐 | `/x/web-interface/wbi/index/top/feed/rcmd`（cookies、wbi 签名）；只要 `goto: av` | 10 分钟 |
+| YouTube 观看记录 | 节点 `/yt/feed?kind=history`（yt-dlp `:ythis`） | 5 分钟 |
+| YouTube 推荐 | 节点 `/yt/feed?kind=rec`（yt-dlp `:ytrec`） | 10 分钟 |
+
+yt-dlp 2026.10.21 的 `--extractor-descriptions` 里列着这三个关键词（`youtube:recommended`、`youtube:history`、
+`youtube:subscriptions`）；观看记录和订阅要 cookies。节点按平铺列表、`--playlist-end 30` 跑（订阅加
+`youtubetab:approximate_date`，好按时间和 B 站排在一起）；旧的远程节点回答 404，这一排说节点要更新。
+`GET /api/feeds` 列出几排和各自的状态（`ready`、`login` 和需要什么、`hidden`）以及这个人的设置；`GET /api/feeds/row?id=`
+回答一排：`state`（`ready`、`loading`、`login`、`blocked`、`error`、`hidden`）、`items`、`loading`、`message`。每个
+（用户, 来源）在后台线程里取，同一时间只取一次；页面马上拿到 `loading`，之后每 3 秒问一次、最多两分钟，所以 YouTube 节点
+再慢也不挡首页。「刷新」最多每 30 秒真去问一次；出错后 60 秒、被网络拦了（`bilibili.blocked`）5 分钟内不再问；登录被拒（`-101`）
+和播放时一样记成失效。没登录时电脑版每个网站画一张小卡片（「登录 B 站」「导入 YouTube cookies」），点了去设置。
+
+**播放**（`home.play`）：到这台电脑时变成 `watch_direct`，链接按 id 拼（不用页面给的地址），观看记录里看了 30 秒以上、没看完的
+带 `start`；到小电视时放进它的投屏位（`_cast_video` 带位置），和投屏一样。观看记录里的番剧整季只在电脑上看，小电视的回答
+说要加成剧集。
+
+**我的关注**（`server/relay/follows.py`，「UP 主」页）：B 站关注（`/x/relation/followings`，分页取完，最多 2500 个），管理员
+在本机模式、有 cookies 时再加 YouTube 订阅（`/yt/subscriptions`），不限个数，按用户存在 `<数据>/feeds/<用户>.json`（0600）。
+登录、退出 B 站时同步一次，之后每 6 小时（中转 10 秒一轮的循环调用 `tick`，它最多 5 分钟看一次），点「立即同步」时也同步
+（最多一分钟一次）。新关注的出现，取关的消失；哪个网站这次取不到就留着它上次的列表（不算取关）；退出 B 站登录时 B 站的
+那些不列了，也不标什么。每一项：头像（B 站；YouTube 用生成的）、名字、网站、「关注的更新」见过的最新投稿（不另外访问网站），
+和 **放到小电视** 开关。打开：用原来的 UP 主台（`state.add`），受 12 个 UP 主台和设置包大小（`room_of`）限制，页面上说明
+「小电视内存小，最多 12 个 UP 主台」。关掉：删掉那个台（先问一句）。手动加的 UP 主台照旧。在小电视上、却已经取关的，
+留在小电视上，列表里标「已取关」，直到人自己拿下来或者又关注了。「同步时自动把新关注放到小电视（直到放满）」按用户、
+默认关；第一次同步不算新关注。点一项打开一个面板，列出他最新的投稿（`/api/follows/videos`，大家共用缓存 10 分钟），用
+「播放到」播放。有这个功能时，原来一个个导入的按钮不再显示。
+
+**回写 B 站历史**（按用户，设置 → B 站账号，默认关）：打开后，小电视上看的（一路停下、换台、看完时，按设备主人）和这台
+电脑上看的（播放器报位置，最多一分钟一次，停下和看完时各一次）B 站视频，看到的位置报给 `/x/v2/history/report`：`aid`、
+`cid`（用 `/x/web-interface/view` 查一次，或者分 P 自己的 cid）、`progress`、`platform=web`、`csrf`。番剧（`ep…`）不报。
+YouTube 不回写：yt-dlp 没有支持的办法，网页接口也不稳定。
+
+**接口**：`GET /api/feeds`、`GET /api/feeds/row?id=&fresh=`、`POST /api/feeds/settings {writeback, autotv}`、
+`GET /api/follows?fresh=`、`POST /api/follows/sync`、`POST /api/follows/tv {key, on}`、`GET /api/follows/videos?key=`；
+有这些接口时 `/api/state` 里有 `feeds: true`。
+
+**验证过的**：主机测试，用准备好的 B 站回答和 yt-dlp 平铺列表 JSON（整理、缓存和刷新间隔、被网络拦时的退避、按用户隔离、
+关注同步的新增和消失以及「已取关」标记、放到小电视的个数和设置包限制、自动放到小电视、回写默认关和打开后的请求内容、云端 404）；
+电脑版在桌面 App 的内置浏览器里对着本机的中转看过（临时数据库、假的 B 站和假的 YouTube 节点，`feedstest.localhost`），
+桌面宽度和手机宽度，深色。**没有验证的**：真的 B 站接口（开发者的路由器拦着 B 站；尤其是动态和推荐接口认不认这些参数、
+history/report 收不收这样的回写）、经 yt-dlp 的真的 YouTube 列表、浅色主题、只用键盘操作关注列表。

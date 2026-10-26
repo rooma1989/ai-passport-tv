@@ -87,7 +87,21 @@
       <section class="page" data-route="up" aria-label="UP 主">
         <header class="ph"><h1 class="lt">UP 主</h1><p class="hint" id="upCount"></p></header>
         <div id="upLatest"></div>
-        <div class="list"><h3>我订阅的 UP 主 <small id="upCount2"></small></h3><div class="rows" id="creatorRows"></div></div>
+        <!-- 我的关注：B 站关注 + YouTube 订阅，自动同步（server/relay/follows.py）；云端没有 -->
+        <div class="fsec" id="followsBox" hidden>
+          <div class="h2"><h2>我的关注</h2><small id="fwSum"></small><span class="sp"></span><button class="btn sm" id="fwSync" data-k="fwsync">立即同步</button></div>
+          <p class="hint fwnote" id="fwNote"></p>
+          <div class="fwbar">
+            <div class="chips" id="fwChips" role="group" aria-label="看哪些"></div>
+            <label class="fwq"><span data-ic="search" data-ics="16"></span><input type="search" id="fwQ" placeholder="在关注里找" maxlength="40" autocomplete="off" spellcheck="false" aria-label="在关注里找"></label>
+          </div>
+          <div class="fwgrid" id="fwList"></div>
+          <div class="bsmore"><button class="ghost" id="fwMore" hidden>显示更多</button></div>
+          <div class="list fwset">
+            <div class="li"><span class="ico" data-ic="tv" data-ics="18"></span><span class="tx">同步时自动把新关注放到小电视（直到放满）<small id="fwCap">小电视内存小，最多 12 个 UP 主台；关掉的随时可以再放</small></span><button class="sw" role="switch" aria-checked="false" id="autoTvSw" aria-label="同步时自动把新关注放到小电视"></button></div>
+          </div>
+        </div>
+        <div class="list"><h3>小电视上的 UP 主台 <small id="upCount2"></small></h3><div class="rows" id="creatorRows"></div></div>
         <div class="panel">
           <h3>订阅 UP 主 <small>B 站 UP 主 / YouTube 频道</small></h3>
           <div class="inline">
@@ -172,8 +186,12 @@
         <div class="panel" id="biliBlock" hidden>
           <h3>B 站账号 <small id="biliSum"></small></h3>
           <div id="biliBox"></div>
+          <!-- 回写（server/relay/accountfeeds.py）：默认关 -->
+          <div class="list fwset" id="writebackRow" hidden>
+            <div class="li"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">把在小鼠电视上看的同步到 B 站历史<small>小电视和这台电脑上看的 B 站视频，看到哪里会记进你的 B 站观看记录（番剧暂不支持）。YouTube 没有可靠的接口，不会同步回去。</small></span><button class="sw" role="switch" aria-checked="false" id="writebackSw" aria-label="把在小鼠电视上看的同步到 B 站历史"></button></div>
+          </div>
           <p class="hint">登录信息只保存在这台电脑上；这类接口是 B 站网页版接口，正常使用没问题，介意风控可以用小号。</p>
-          <p class="hint">每个家人登录自己的账号，互相看不到、用不到。登录后：电脑上看最高 1080P（大会员 1080P+），小电视还是 720P（屏幕小，再高看不出来）；大会员能放会员剧集；「UP 主」页可以导入你关注的 UP 主。</p>
+          <p class="hint">每个家人登录自己的账号，互相看不到、用不到。登录后：电脑上看最高 1080P（大会员 1080P+），小电视还是 720P（屏幕小，再高看不出来）；大会员能放会员剧集；首页多出「B 站推荐」「B 站观看记录」「关注的更新」，「UP 主 → 我的关注」自动列出你关注的 UP 主。</p>
         </div>
         <div class="panel" id="ytBlock" hidden><h3>YouTube 节点</h3><p id="ytState"></p></div>
         <div class="panel" id="ytLocal" hidden>
@@ -373,6 +391,13 @@
     <div class="grab" aria-hidden="true"></div>
     <div class="shh"><div style="flex:1;min-width:0"><span class="crumb" id="epId"></span><h2 id="epName"></h2><p class="hint" id="epSum"></p></div><button class="iconbtn" data-close id="epClose" aria-label="关闭" data-ic="x" data-ics="18"></button></div>
     <div class="shb"><div class="actions" id="epActs" style="margin:0 0 14px"></div><div class="eplist" id="epList"></div></div>
+  </div>
+
+  <!-- 一个关注的 UP 主的最新投稿（我的关注 → 点一个） -->
+  <div id="csheet" class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="csName" hidden>
+    <div class="grab" aria-hidden="true"></div>
+    <div class="shh"><div style="flex:1;min-width:0"><span class="crumb" id="csSite"></span><h2 id="csName"></h2><p class="hint" id="csSum"></p></div><button class="iconbtn" data-close aria-label="关闭" data-ic="x" data-ics="18"></button></div>
+    <div class="shb"><div class="actions" id="csActs" style="margin:0 0 14px"></div><div class="cslist" id="csList"></div></div>
   </div>
 
   <div id="modal" role="dialog" aria-modal="true" hidden></div>
