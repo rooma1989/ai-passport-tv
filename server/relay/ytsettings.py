@@ -70,10 +70,16 @@ def autostart(relay) -> None:
     if getattr(relay, "youtube_kind", "") != "local" or getattr(relay, "selfhost_data", None) is None:
         return
     parts = components(relay)
-    if parts.ready() or not parts.assets:
+    if not parts.assets:
+        return
+    if parts.ready() and not parts.legacy():
         return
     config, _ = _config(relay)
-    relay.log("YouTube 本机模式：组件还没装好，开始下载 yt-dlp 和 deno")
+    if parts.ready():
+        # 以前装的单文件 yt-dlp：换成纯 Python 版（ytcomponents 的说明）。换好之前旧的照样能用。
+        relay.log("YouTube 本机模式：把单文件版 yt-dlp 换成纯 Python 版（启动快得多）")
+    else:
+        relay.log("YouTube 本机模式：组件还没装好，开始下载 yt-dlp 和 deno")
     parts.start("install", config.youtube_proxy)
 
 
@@ -112,6 +118,8 @@ def _save(relay, body: dict) -> dict:
     if mode == "local" and not parts.assets:
         return {"ok": False, "error": "这台电脑的系统没有官方的 deno，本机模式用不了；可以用「自己的节点」"}
     if (mode, proxy) == (config.youtube_mode, config.youtube_proxy):
+        if mode == "local" and getattr(relay, "youtube_kind", "") == "local" and parts.legacy():
+            parts.start("install", proxy)
         return {"ok": True, "changed": False, "restart": False}
     try:
         ytlocal.set_youtube(layout.config, mode, proxy)
@@ -122,7 +130,7 @@ def _save(relay, body: dict) -> dict:
     # 中转自己的参数只跟模式有关（代理只给 ytnode）：模式变了中转会被重启，组件交给重启后的中转去装。
     restart = running != mode
     relay.log(f"YouTube 设置改了：模式 {mode}，{'有' if proxy else '没有'}代理")
-    if mode == "local" and not restart and not parts.ready():
+    if mode == "local" and not restart and (not parts.ready() or parts.legacy()):
         parts.start("install", proxy)
     ytlocal.request_refresh(layout.run)
     return {"ok": True, "changed": True, "restart": restart}
@@ -151,6 +159,12 @@ def describe_check(result: dict, cookies_present: bool) -> dict:
     if state == "login":
         return {"ok": False, "message": "需要登录：YouTube 要求证明不是机器人，cookies 可能过期了，用小号重新导出"
                 if cookies_present else "需要登录：YouTube 要求证明不是机器人，导入 cookies（建议用小号）"}
+    startup = result.get("startup")
+    if state in ("network", "slow") and isinstance(startup, (int, float)) and not isinstance(startup, bool):
+        from .ytsearch import SLOW_START_S
+        if startup >= SLOW_START_S:
+            return {"ok": False, "message": f"是本机的 yt-dlp 自己慢：光启动就要 {startup:g} 秒，不是代理的问题。"
+                                            "电脑很忙或安全软件在检查它时会这样；点下面的「检查更新」可以重新装 yt-dlp"}
     if state in ("network", "slow"):
         return {"ok": False, "message": "连不上 YouTube：检查代理（地址、端口对不对，代理软件开着没有）"}
     error = str(result.get("error") or "")[:160]
@@ -177,6 +191,11 @@ def _test(relay) -> dict:
         result = client.check(timeout=TEST_TIMEOUT_S)
     except SourceError as error:
         if error.reason == "slow" or time.monotonic() - started >= TEST_TIMEOUT_S - 1:
+            from .ytsearch import SLOW_START_S, startup_seconds
+            startup = startup_seconds(client)
+            if startup is not None and startup >= SLOW_START_S:
+                return {"ok": False, "message": f"超过 {TEST_TIMEOUT_S} 秒没有结果：是本机的 yt-dlp 自己慢（光启动就要 "
+                                                f"{startup:g} 秒），不是代理的问题。点下面的「检查更新」可以重新装 yt-dlp"}
             return {"ok": False, "message": f"超过 {TEST_TIMEOUT_S} 秒没有结果：代理太慢或连不上 YouTube，检查代理"}
         return {"ok": False, "message": "本机的 YouTube 节点没有响应（刚保存过的话等几秒再试）"}
     present = ytlocal.cookies_summary(ytlocal.cookies_path(_paths(relay).root, config.youtube_cookies))["present"]

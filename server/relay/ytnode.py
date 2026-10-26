@@ -19,7 +19,11 @@ YouTube 会拦机房 IP（要求登录证明不是机器人），所以 yt-dlp �
 （--plain：只听 127.0.0.1、明文 HTTP、不要证书），另外多几样：
 
     --tools-dir   yt-dlp、deno 不是固定路径，每次调用都读 <目录>/components.json（下载、更新它们的是
-                  server/selfhost/ytcomponents.py）；还没装好时回答 503 tools missing，装好就能用，不用重启
+                  server/selfhost/ytcomponents.py）；还没装好时回答 503 tools missing，装好就能用，不用重启。
+                  这里的 yt-dlp 是官方的纯 Python 版（zipapp，yt-dlp-<版本>.pyz，旁边是解开、编译好的同名文件夹），
+                  用本机的 Python 跑（ytdlp_command）：打包的电脑客户端是 rootv-core __ytdlp，从源代码跑是
+                  python <zipapp>。以前用的单文件版（yt-dlp_macos 等）每次启动都要解压一整个 Python，在 Mac 上
+                  一次 --version 就要 37 秒
     --proxy       用户自己的代理（也可以放在环境变量 TV_YT_PROXY 里）：yt-dlp 用 --proxy，ffmpeg 取媒体用
                   http_proxy；socks5 代理 ffmpeg 不认，就在本机开一个只听 127.0.0.1 的 CONNECT 转接口（ConnectShim）
     --remux       选中的格式是 H.264 + AAC 时只换封装（-c copy），不转码
@@ -303,9 +307,36 @@ def ffmpeg_proxy_env(environ, proxy_url: str) -> dict:
     return env
 
 
-# ---- 本机模式：yt-dlp、deno 在哪 ----
+# ---- 本机模式：yt-dlp、deno 在哪，yt-dlp 怎么跑 ----
 
 COMPONENTS_FILE = "components.json"
+ZIPAPP_SUFFIX = ".pyz"
+# 打包的电脑客户端里跑 yt-dlp 的子命令（tools/ytdlp_run.py 的 COMMAND）。
+YTDLP_SUBCOMMAND = "__ytdlp"
+# yt-dlp --version 超过这么多秒算「yt-dlp 自己慢」（不是代理慢），搜索超时时据此分开说。
+STARTUP_TIMEOUT_S = 90
+
+
+def zipapp_folder(path: str) -> str | None:
+    """yt-dlp-<版本>.pyz 旁边解开、编译好的 yt-dlp-<版本>/ 文件夹（有 .pyc，每次少编译一两秒）；没有时 None。"""
+    if not path.endswith(ZIPAPP_SUFFIX):
+        return None
+    folder = path[:-len(ZIPAPP_SUFFIX)]
+    return folder if os.path.isfile(os.path.join(folder, "yt_dlp", "__init__.py")) else None
+
+
+def ytdlp_command(path: str, frozen: bool | None = None, executable: str | None = None) -> list[str]:
+    """跑 yt-dlp 的命令开头。.pyz（本机模式装的纯 Python 版）用这台机器自己的 Python 跑：打包版是
+    `rootv-core __ytdlp <yt-dlp>`，从源代码跑是 `python -I -X utf8 <yt-dlp>`；<yt-dlp> 优先用解开的文件夹。
+    别的（云端的 /opt/yt-relay/yt-dlp、旧版装的单文件程序）照原样直接运行。"""
+    if not path.endswith(ZIPAPP_SUFFIX):
+        return [path]
+    target = zipapp_folder(path) or path
+    frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    executable = executable or sys.executable
+    if frozen:
+        return [executable, YTDLP_SUBCOMMAND, target]
+    return [executable, "-I", "-X", "utf8", target]
 
 
 def read_components(tools_dir: str) -> tuple[str, str] | None:
@@ -341,7 +372,7 @@ def clean_query(query: str) -> str | None:
 
 
 def _base(tools: Tools) -> list[str]:
-    args = [tools.ytdlp, "--js-runtimes", f"deno:{tools.deno}", "--no-warnings",
+    args = ytdlp_command(tools.ytdlp) + ["--js-runtimes", f"deno:{tools.deno}", "--no-warnings",
             "--no-progress", "--socket-timeout", "15", "--ignore-config"]
     if tools.cookies:
         args += ["--cookies", tools.cookies]
@@ -575,8 +606,9 @@ def error_status(stderr: str) -> int:
 
 
 def _run(args: list[str]) -> tuple[int, str, str]:
-    done = subprocess.run(args, capture_output=True, text=True, timeout=RUN_TIMEOUT_S,
-                          stdin=subprocess.DEVNULL)
+    # yt-dlp 的 -J 只输出 ASCII；错误信息按 UTF-8 读（本机的 Python 版就是 UTF-8），读不了的字换掉。
+    done = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          timeout=RUN_TIMEOUT_S, stdin=subprocess.DEVNULL)
     return done.returncode, done.stdout, done.stderr
 
 
@@ -593,9 +625,12 @@ NETWORK_HINTS = ("Unable to download", "Failed to resolve", "Connection refused"
 
 class Node:
     def __init__(self, tools: Tools, key: str, run=_run, popen=_popen, log=print,
-                 tools_dir: str | None = None, remux: bool = False, ffmpeg_env: dict | None = None):
+                 tools_dir: str | None = None, remux: bool = False, ffmpeg_env: dict | None = None,
+                 measure: bool = False):
         """tools_dir：本机模式，yt-dlp、deno 每次从这里的 components.json 找（tools 里的那两项不用）。
-        remux：H.264 + AAC 时只换封装。ffmpeg_env：给 ffmpeg 的环境变量（代理），None 时照监督进程的。"""
+        remux：H.264 + AAC 时只换封装。ffmpeg_env：给 ffmpeg 的环境变量（代理），None 时照监督进程的。
+        measure：本机模式下每换一个 yt-dlp 就在后台量一次 --version 要几秒（/yt/health 的 startup），
+        搜索超时时中转据此说是 yt-dlp 自己慢还是代理慢。"""
         self.tools = tools
         self.key = key
         self.run = run
@@ -617,6 +652,10 @@ class Node:
         # 最近一次 YouTube 解析的结果，给中转判断 cookies 是否过期：
         # unknown（还没解析过）、ok、login（要求登录）、error（其他失败）。
         self.health = {"state": "unknown", "at": 0.0, "version": ""}
+        self.measure = measure
+        # 量过的 yt-dlp：(路径, 秒数)；秒数 None = 正在量或量失败。
+        self.startup: tuple[str, float | None] | None = None
+        self._startup_lock = threading.Lock()
 
     def _record(self, state: str, version: str = "") -> None:
         self.health = {"state": state, "at": time.time(),
@@ -629,8 +668,38 @@ class Node:
         found = read_components(self.tools_dir)
         if found is None:
             return None
+        if self.measure:
+            self._measure_later(found[0])
         cookies = self.tools.cookies if self.tools.cookies and os.path.isfile(self.tools.cookies) else ""
         return dataclasses.replace(self.tools, ytdlp=found[0], deno=found[1], cookies=cookies)
+
+    def _measure_later(self, path: str) -> None:
+        with self._startup_lock:
+            if self.startup is not None and self.startup[0] == path:
+                return
+            self.startup = (path, None)
+        threading.Thread(target=self.measure_startup, args=(path,), daemon=True, name="ytdlp-startup").start()
+
+    def measure_startup(self, path: str) -> float | None:
+        """yt-dlp --version 要几秒（不连网，只是启动）。跑不了时 None。"""
+        started = time.monotonic()
+        try:
+            code, _out, _err = self.run(ytdlp_command(path) + ["--version"])
+        except subprocess.TimeoutExpired:
+            code = 0    # 超时也是「慢」：记下等了多久
+        except (OSError, subprocess.SubprocessError):
+            code = -1
+        seconds = round(time.monotonic() - started, 1) if code == 0 else None
+        with self._startup_lock:
+            if self.startup is None or self.startup[0] == path:
+                self.startup = (path, seconds)
+        if seconds is not None:
+            self.log(f"yt-dlp 启动要 {seconds} 秒")
+        return seconds
+
+    def startup_seconds(self) -> float | None:
+        found = self.startup
+        return found[1] if found else None
 
     def check(self) -> None:
         """不走缓存解析一次测试视频，只为更新健康状态。"""
@@ -639,7 +708,8 @@ class Node:
             self.ytdlp_json(info_args(tools, CHECK_VIDEO))
 
     def check_now(self) -> dict:
-        """设置页的「测试」：不走缓存解析测试视频，{"state", "seconds", "error", "version", "tools"}。"""
+        """设置页的「测试」：不走缓存解析测试视频，{"state", "seconds", "error", "version", "tools", "startup"}
+        （startup：yt-dlp --version 要几秒，没量过时 None）。"""
         tools = self.current_tools()
         if tools is None:
             return {"state": "missing", "seconds": 0, "error": "", "version": "", "tools": False}
@@ -650,7 +720,7 @@ class Node:
             state = "network"
         return {"state": state, "seconds": round(time.monotonic() - started, 1),
                 "error": "" if code == 200 else hide_password(str(data))[:200],
-                "version": self.health.get("version", ""), "tools": True}
+                "version": self.health.get("version", ""), "tools": True, "startup": self.startup_seconds()}
 
     def _cached(self, video_id: str):
         with self._info_lock:
@@ -788,6 +858,8 @@ def _handler(node: Node):
                 health = dict(node.health)
                 if node.tools_dir is not None:
                     health["tools"] = read_components(node.tools_dir) is not None
+                    # yt-dlp --version 要几秒（还没量过时 null）。
+                    health["startup"] = node.startup_seconds()
                 self._json(200, health)
                 return
             if parts.path == "/yt/check":
@@ -954,8 +1026,11 @@ def main(argv: list[str] | None = None) -> int:
             media_proxy = ConnectShim(proxy, log=log).start().url
         ffmpeg_env = ffmpeg_proxy_env(os.environ, media_proxy)
     node = Node(Tools(args.ytdlp, args.deno, args.ffmpeg, cookies, proxy_url), key, log=log,
-                tools_dir=args.tools_dir, remux=args.remux, ffmpeg_env=ffmpeg_env)
+                tools_dir=args.tools_dir, remux=args.remux, ffmpeg_env=ffmpeg_env,
+                measure=bool(args.tools_dir))
     server = make_server(node, args.bind, args.port, context)
+    if args.tools_dir:
+        node.current_tools()    # 组件已装好时，在后台先量一次 yt-dlp 的启动时间
 
     def checks():
         while True:

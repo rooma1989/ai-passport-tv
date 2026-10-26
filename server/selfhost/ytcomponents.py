@@ -1,8 +1,14 @@
 """YouTube 本机模式要的两个程序：yt-dlp 和 deno。不随安装包发，第一次用（或点「安装 YouTube 组件」）时下载到
 <数据目录>/youtube/bin/，以后「检查更新」只更新 yt-dlp（YouTube 改得勤，旧的 yt-dlp 几周就不灵了）。
 
-从哪来：两个项目自己在 GitHub 上发布的文件（yt-dlp：yt-dlp_macos、yt-dlp.exe、yt-dlp_linux……，Unlicense；
-deno：每个平台一个官方 zip，MIT）。可以经用户的代理下载（就是 [youtube] proxy），也可以给一个镜像前缀
+从哪来：两个项目自己在 GitHub 上发布的文件（yt-dlp：纯 Python 的 zipapp，发布页上就叫「yt-dlp」，各个系统
+同一个文件，Unlicense；deno：每个平台一个官方 zip，MIT）。yt-dlp 用这台机器自己的 Python 跑（打包的电脑客户端
+是核心自带的那个，见 tools/ytdlp_run.py 和 ytnode.ytdlp_command）。以前下的是单文件版（yt-dlp_macos、
+yt-dlp.exe、yt-dlp_linux），那种每次启动都先解压一整个 Python：在 Mac 上一次 --version 要 37 秒，搜索总超时。
+装着旧版的，下次启动（或保存设置、点安装、检查更新）时换成 zipapp（版本不变低），换好后删掉旧文件。
+
+zipapp 下好、核对过后存成 yt-dlp-<版本>.pyz，再在旁边解开成 yt-dlp-<版本>/ 并用同一个 Python 编译一遍：
+从 zip 里导入每次都要重新编译，一次搜索多花一两秒；解开的文件夹有 .pyc。文件夹坏了、没有时照样直接跑 .pyz。可以经用户的代理下载（就是 [youtube] proxy），也可以给一个镜像前缀
 （下载地址 = 前缀 + /yt-dlp/yt-dlp/releases/download/…，GitHub 加速站一般写成 https://加速站/https://github.com）。
 
 怎么保证下到的是对的：
@@ -12,7 +18,8 @@ deno：每个平台一个官方 zip，MIT）。可以经用户的代理下载（
   （经镜像时是镜像），没有核对 SHA2-256SUMS.sig 的 GPG 签名。
 
 装好的记在 bin/components.json（ytnode.read_components 读它）：{"yt-dlp": {"version", "file", "sha256"}, "deno": …}。
-文件名带版本，换版本时先写好新文件、再改 components.json、最后删旧文件，节点任何时候都只会看到完整的一套。
+文件名带版本，换版本时先写好新文件（和解开的文件夹）、再改 components.json、最后删旧文件，节点任何时候都只会
+看到完整的一套。
 """
 
 from __future__ import annotations
@@ -23,9 +30,11 @@ import json
 import os
 import platform
 import re
+import shutil
 import ssl
 import stat
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -35,14 +44,9 @@ from pathlib import Path
 from ..relay import ytnode
 
 YTDLP_VERSION = "2026.10.21"
-# 文件名 → SHA-256（https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/SHA2-256SUMS）。
-YTDLP_SHA256 = {
-    "yt-dlp_macos": "7a6fe71d7d680f1fb0ac18d4949873d77db2859e90017c0f44bd94b23be4ee40",
-    "yt-dlp.exe": "33121d192d706e62f684a06f80918e3f3a8ba52ac3a65213b6951c39c7d9f555",
-    "yt-dlp_arm64.exe": "1380a9f105302764e6a5d383c2f07238ae242f0f4fbf3414aea00e56619a79b3",
-    "yt-dlp_linux": "d8bd33fca9d5b23bd5b9952b3fca36db5c46331933fda9f598a3da14ce2c243f",
-    "yt-dlp_linux_aarch64": "e137c2171b0b8ef648e6136e86aa70c65923e93e434f01c93901d64744b190aa",
-}
+# 纯 Python 的 zipapp（https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/SHA2-256SUMS 里的「yt-dlp」）。
+YTDLP_ASSET = "yt-dlp"
+YTDLP_SHA256 = "b7af77f686e95f7845ce8d09d21957718febb8b48b30555adb9dd2292ad7bf14"
 DENO_VERSION = "2.9.8"
 # 文件名 → SHA-256（v2.9.8 发布页每个 zip 旁边的 .zip.sha256sum）。
 DENO_SHA256 = {
@@ -53,15 +57,15 @@ DENO_SHA256 = {
     "deno-x86_64-unknown-linux-gnu.zip": "e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609",
     "deno-aarch64-unknown-linux-gnu.zip": "d49596c20b9788cf8f5d8ddf644103d4bde56ed239753f0bdb92ba9361d51905",
 }
-# (platform.system(), platform.machine()) → (yt-dlp 的文件, deno 的 zip)。yt-dlp_macos 是通用版（Intel 和 Apple 芯片）。
+# (platform.system(), platform.machine()) → (yt-dlp 的文件, deno 的 zip)。yt-dlp 各个系统同一个 zipapp。
 # 没有的（32 位 Windows、armv7 的 Linux）deno 不发布，本机模式用不了，只能用「自己的节点」。
 PLATFORMS = {
-    ("Darwin", "arm64"): ("yt-dlp_macos", "deno-aarch64-apple-darwin.zip"),
-    ("Darwin", "x86_64"): ("yt-dlp_macos", "deno-x86_64-apple-darwin.zip"),
-    ("Windows", "AMD64"): ("yt-dlp.exe", "deno-x86_64-pc-windows-msvc.zip"),
-    ("Windows", "ARM64"): ("yt-dlp_arm64.exe", "deno-aarch64-pc-windows-msvc.zip"),
-    ("Linux", "x86_64"): ("yt-dlp_linux", "deno-x86_64-unknown-linux-gnu.zip"),
-    ("Linux", "aarch64"): ("yt-dlp_linux_aarch64", "deno-aarch64-unknown-linux-gnu.zip"),
+    ("Darwin", "arm64"): (YTDLP_ASSET, "deno-aarch64-apple-darwin.zip"),
+    ("Darwin", "x86_64"): (YTDLP_ASSET, "deno-x86_64-apple-darwin.zip"),
+    ("Windows", "AMD64"): (YTDLP_ASSET, "deno-x86_64-pc-windows-msvc.zip"),
+    ("Windows", "ARM64"): (YTDLP_ASSET, "deno-aarch64-pc-windows-msvc.zip"),
+    ("Linux", "x86_64"): (YTDLP_ASSET, "deno-x86_64-unknown-linux-gnu.zip"),
+    ("Linux", "aarch64"): (YTDLP_ASSET, "deno-aarch64-unknown-linux-gnu.zip"),
 }
 GITHUB = "https://github.com"
 YTDLP_REPO = "yt-dlp/yt-dlp"
@@ -71,6 +75,10 @@ _TAG = re.compile(r"^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 DOWNLOAD_MAX = 150 * 1024 * 1024
 BINARY_MAX = 400 * 1024 * 1024
+# 解开 zipapp 时的上限（2026.10.21：1053 个文件、10 MB）。
+UNPACK_FILES_MAX = 20000
+UNPACK_MAX = 200 * 1024 * 1024
+COMPILE_TIMEOUT_S = 300
 SUMS_MAX = 64 * 1024
 TIMEOUT_S = 60
 REDIRECTS = 6
@@ -234,8 +242,12 @@ def download(url: str, target: Path, sha256: str, proxy: str = "", on_progress=N
 
 
 def _remove(path: Path) -> None:
+    """删掉文件或文件夹（解开的 yt-dlp）；删不掉（Windows 上正在运行）就留着，下次再删。"""
     try:
-        path.unlink()
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
     except OSError:
         pass
 
@@ -245,13 +257,65 @@ def _make_executable(path: Path) -> None:
 
 
 def _run_version(path: Path) -> str:
+    """装好后跑一次 --version（yt-dlp 的 .pyz 经 ytnode.ytdlp_command 用本机的 Python 跑）。"""
     kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
     try:
-        done = subprocess.run([str(path), "--version"], capture_output=True, text=True, errors="replace",
-                              timeout=VERSION_TIMEOUT_S, stdin=subprocess.DEVNULL, **kwargs)
+        done = subprocess.run(ytnode.ytdlp_command(str(path)) + ["--version"], capture_output=True, text=True,
+                              errors="replace", timeout=VERSION_TIMEOUT_S, stdin=subprocess.DEVNULL, **kwargs)
     except (OSError, subprocess.SubprocessError):
         return ""
     return (done.stdout or "").strip().splitlines()[0][:80] if done.returncode == 0 and done.stdout else ""
+
+
+def _safe_member(name: str) -> bool:
+    parts = name.replace("\\", "/").split("/")
+    return bool(name) and not name.startswith(("/", "\\")) and ":" not in name \
+        and not any(part in ("..", ".") for part in parts)
+
+
+def unpack_zipapp(pyz: Path, folder: Path) -> None:
+    """把核对过的 zipapp 解到 folder（先解到 folder.part 再改名）。内容不对时 ComponentError，什么都不留。"""
+    part = folder.with_name(folder.name + ".part")
+    _remove(part)
+    try:
+        with zipfile.ZipFile(pyz) as zipped:
+            members = zipped.infolist()
+            if len(members) > UNPACK_FILES_MAX or sum(m.file_size for m in members) > UNPACK_MAX:
+                raise ComponentError("yt-dlp 的压缩包大得不正常，已停止")
+            if not any(m.filename == "yt_dlp/__init__.py" for m in members):
+                raise ComponentError("yt-dlp 的压缩包里没有 yt_dlp")
+            for member in members:
+                if not _safe_member(member.filename):
+                    raise ComponentError("yt-dlp 的压缩包里有不安全的文件名，已停止")
+            zipped.extractall(part)
+    except zipfile.BadZipFile:
+        _remove(part)
+        raise ComponentError("yt-dlp 的压缩包坏了，请重试") from None
+    except BaseException:
+        _remove(part)
+        raise
+    _remove(folder)
+    os.replace(part, folder)
+
+
+def compile_command(folder: Path, frozen: bool | None = None, executable: str | None = None) -> list[str]:
+    """用跑 yt-dlp 的同一个 Python 编译解开的文件夹（打包版：rootv-core __ytdlp --compile）。"""
+    frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+    executable = executable or sys.executable
+    if frozen:
+        return [executable, ytnode.YTDLP_SUBCOMMAND, "--compile", str(folder)]
+    return [executable, "-I", "-m", "compileall", "-q", str(folder)]
+
+
+def _compile(folder: Path) -> bool:
+    """另起一个进程编译（几秒的 CPU，不占中转的 GIL）。编译不了不要紧：照样能跑，只是慢一些。"""
+    kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
+    try:
+        done = subprocess.run(compile_command(folder), capture_output=True, timeout=COMPILE_TIMEOUT_S,
+                              stdin=subprocess.DEVNULL, **kwargs)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
 
 
 class Components:
@@ -260,9 +324,10 @@ class Components:
     写给监督进程（本机控制接口的状态）。"""
 
     def __init__(self, bin_dir: Path, log=print, fetch=http_get, check_run=_run_version,
-                 status_file: Path | None = None, system: str | None = None, machine: str | None = None):
+                 status_file: Path | None = None, system: str | None = None, machine: str | None = None,
+                 compile_run=_compile):
         self.bin_dir = Path(bin_dir)
-        self.log, self.fetch, self.check_run = log, fetch, check_run
+        self.log, self.fetch, self.check_run, self.compile_run = log, fetch, check_run, compile_run
         self.status_file = status_file
         self.system = system or platform.system()
         self.assets = platform_assets(self.system, machine)
@@ -294,13 +359,18 @@ class Components:
     def ready(self) -> bool:
         return ytnode.read_components(str(self.bin_dir)) is not None
 
+    def legacy(self) -> bool:
+        """装着的 yt-dlp 是以前的单文件版（每次启动很慢）：要换成 zipapp。"""
+        entry = self.installed().get("yt-dlp")
+        return entry is not None and not entry["file"].endswith(ytnode.ZIPAPP_SUFFIX)
+
     def snapshot(self) -> dict:
         installed = self.installed()
         with self._lock:
             current = installed.get("yt-dlp", {}).get("version", "")
             return {"state": self.state, "task": self.task, "what": self.what, "done": self.done,
                     "total": self.total, "error": self.error, "supported": self.assets is not None,
-                    "ready": self.ready(),
+                    "ready": self.ready(), "legacy": self.legacy(),
                     "ytdlp": current, "deno": installed.get("deno", {}).get("version", ""),
                     "pinned": {"ytdlp": YTDLP_VERSION, "deno": DENO_VERSION},
                     "latest": self.latest, "checked_at": self.checked_at,
@@ -374,14 +444,25 @@ class Components:
     def _clean_partial(self) -> None:
         for path in self.bin_dir.glob("*.part"):
             _remove(path)
+        # 上次没删掉的旧版本（Windows 上删正在运行的程序会失败）。
+        for component, entry in self.installed().items():
+            self._prune(component, entry["file"])
 
     # ---- 安装 ----
 
     def _install(self, proxy: str, mirror: str) -> None:
         installed = self.installed()
-        ytdlp_asset, deno_asset = self.assets
-        if "yt-dlp" not in installed:
-            self._get_ytdlp(YTDLP_VERSION, ytdlp_asset, YTDLP_SHA256[ytdlp_asset], proxy, mirror)
+        deno_asset = self.assets[1]
+        entry = installed.get("yt-dlp")
+        if entry is None or not entry["file"].endswith(ytnode.ZIPAPP_SUFFIX):
+            version, sha256 = YTDLP_VERSION, YTDLP_SHA256
+            if entry is not None:
+                # 以前的单文件版换成 zipapp：版本不降（「检查更新」装过更新的就用那个版本的 zipapp）。
+                if version_key(entry["version"]) > version_key(YTDLP_VERSION):
+                    version = entry["version"]
+                    sha256 = self._release_sha(version, proxy, mirror)
+                self.log(f"yt-dlp 换成纯 Python 版（{entry['version'] or '?'} → {version}）：单文件版每次启动太慢")
+            self._get_ytdlp(version, sha256, proxy, mirror)
         if "deno" not in installed:
             self._get_deno(deno_asset, proxy, mirror)
         if not self.ready():
@@ -389,17 +470,29 @@ class Components:
         self.log(f"YouTube 组件已就绪：yt-dlp {self.installed()['yt-dlp']['version']}，"
                  f"deno {self.installed()['deno']['version']}")
 
-    def _get_ytdlp(self, version: str, asset: str, sha256: str, proxy: str, mirror: str) -> None:
+    def _get_ytdlp(self, version: str, sha256: str, proxy: str, mirror: str) -> None:
         self._set(what=f"yt-dlp {version}", done=0, total=0)
-        self.log(f"正在下载 yt-dlp {version}（{asset}）…")
-        name = _exe(f"yt-dlp-{version}", self.system)
+        self.log(f"正在下载 yt-dlp {version}（{YTDLP_ASSET}，纯 Python 版）…")
+        name = f"yt-dlp-{version}{ytnode.ZIPAPP_SUFFIX}"
         part = self.bin_dir / (name + ".part")
-        download(release_url(YTDLP_REPO, version, asset, mirror), part, sha256, proxy, self._progress, self.fetch)
-        _make_executable(part)
-        os.replace(part, self.bin_dir / name)
-        if not self.check_run(self.bin_dir / name):
-            _remove(self.bin_dir / name)
-            raise ComponentError("下载的 yt-dlp 运行不了（系统拦住了，或这台电脑太旧）")
+        download(release_url(YTDLP_REPO, version, YTDLP_ASSET, mirror), part, sha256, proxy, self._progress,
+                 self.fetch)
+        target = self.bin_dir / name
+        os.replace(part, target)
+        folder = self.bin_dir / name[:-len(ytnode.ZIPAPP_SUFFIX)]
+        self._set(what=f"准备 yt-dlp {version}")
+        try:
+            unpack_zipapp(target, folder)
+            if not self.compile_run(folder):
+                self.log("yt-dlp 编译没有完成（不影响使用，第一次会慢一点）")
+        except ComponentError as error:
+            # 解不开就直接跑 .pyz：慢一两秒，但能用。
+            self.log(f"yt-dlp 没能解开（{error}），直接用压缩包")
+            _remove(folder)
+        if not self.check_run(target):
+            _remove(target)
+            _remove(folder)
+            raise ComponentError("下载的 yt-dlp 运行不了（这台电脑的 Python 太旧，或被安全软件拦住了）")
         self._record("yt-dlp", version, name, sha256)
 
     def _get_deno(self, asset: str, proxy: str, mirror: str) -> None:
@@ -447,9 +540,16 @@ class Components:
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
         os.replace(tmp, path)
+        self._prune(component, file)
+
+    def _prune(self, component: str, file: str) -> None:
+        """删掉这个组件别的版本（文件和解开的文件夹），留下 file 和它解开的文件夹。"""
+        keep = {file}
+        if file.endswith(ytnode.ZIPAPP_SUFFIX):
+            keep.add(file[:-len(ytnode.ZIPAPP_SUFFIX)])
         prefix = "yt-dlp-" if component == "yt-dlp" else "deno-"
         for stale in self.bin_dir.glob(prefix + "*"):
-            if stale.name != file and not stale.name.endswith((".part", ".json", ".tmp")):
+            if stale.name not in keep and not stale.name.endswith((".part", ".json", ".tmp")):
                 _remove(stale)
 
     # ---- 更新 yt-dlp ----
@@ -481,24 +581,14 @@ class Components:
         return {"current": current, "latest": latest,
                 "update": bool(current) and version_key(latest) > version_key(current)}
 
-    def _update(self, proxy: str, mirror: str) -> None:
-        if not self.ready():
-            self._install(proxy, mirror)
-        self._set(what="查最新版本")
-        latest = self.latest_tag(proxy, mirror)
-        with self._lock:
-            self.latest, self.checked_at = latest, time.time()
-        current = self.installed().get("yt-dlp", {}).get("version", "")
-        if current and version_key(latest) <= version_key(current):
-            self.log(f"yt-dlp {current} 已经是最新的")
-            return
-        asset = self.assets[0]
-        self._set(what=f"{SUMS}（{latest}）")
+    def _release_sha(self, tag: str, proxy: str, mirror: str) -> str:
+        """那个版本发布的 SHA2-256SUMS 里 zipapp 的哈希（信任 GitHub，经镜像时是镜像）。"""
+        self._set(what=f"{SUMS}（{tag}）")
         answer = None
         try:
-            answer = self.fetch(release_url(YTDLP_REPO, latest, SUMS, mirror), proxy)
+            answer = self.fetch(release_url(YTDLP_REPO, tag, SUMS, mirror), proxy)
             if answer.status != 200:
-                raise ComponentError(f"取不到 {latest} 的 {SUMS}（服务器回答 {answer.status}）")
+                raise ComponentError(f"取不到 {tag} 的 {SUMS}（服务器回答 {answer.status}）")
             text = answer.read(SUMS_MAX + 1)
         except ComponentError:
             raise
@@ -509,8 +599,22 @@ class Components:
                 answer.close()
         if len(text) > SUMS_MAX:
             raise ComponentError(f"{SUMS} 大得不正常，已停止")
-        sha256 = parse_sums(text.decode("utf-8", "replace")).get(asset)
+        sha256 = parse_sums(text.decode("utf-8", "replace")).get(YTDLP_ASSET)
         if sha256 is None:
-            raise ComponentError(f"{latest} 的 {SUMS} 里没有 {asset}")
-        self._get_ytdlp(latest, asset, sha256, proxy, mirror)
+            raise ComponentError(f"{tag} 的 {SUMS} 里没有 {YTDLP_ASSET}")
+        return sha256
+
+    def _update(self, proxy: str, mirror: str) -> None:
+        if not self.ready() or self.legacy():
+            self._install(proxy, mirror)
+        self._set(what="查最新版本")
+        latest = self.latest_tag(proxy, mirror)
+        with self._lock:
+            self.latest, self.checked_at = latest, time.time()
+        current = self.installed().get("yt-dlp", {}).get("version", "")
+        if current and version_key(latest) <= version_key(current):
+            self.log(f"yt-dlp {current} 已经是最新的")
+            return
+        sha256 = self._release_sha(latest, proxy, mirror)
+        self._get_ytdlp(latest, sha256, proxy, mirror)
         self.log(f"yt-dlp 已更新：{current or '无'} → {latest}")
