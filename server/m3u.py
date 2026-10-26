@@ -41,6 +41,8 @@ def _title(extinf: str) -> str:
 def parse_playlist(text: str) -> list[dict]:
     """[{name, url, agent, tvg_id, tvg_name, logo}]（后三个没有时是空串）。
 
+    也读 TXT 直播源（「台名,地址」一行一个、「分组,#genre#」分组行），见下面的说明。
+
     名字取 #EXTINF 上第一个不在引号里的逗号之后的部分（属性值里可以有逗号，例如
     User-Agent 的 "(KHTML, like Gecko)"）；地址是其后第一行像网址的行。同名的台都保留
     （播放列表里一个台列两次是常见的），由调用方分配 id。
@@ -67,6 +69,15 @@ def parse_playlist(text: str) -> list[dict]:
                 pending_agent = match.group(1).strip()
             continue
         if line.startswith("#"):
+            continue
+        if not line.startswith(("http://", "https://")) and pending is None:
+            # TXT 直播源（国内常见，DIYP 格式）：「台名,地址」一行一个，「分组,#genre#」是分组行；
+            # 一个台写几条线路时用 # 隔开，地址后面的 $说明 是线路名——都只取第一条地址。
+            label, comma, rest = line.partition(",")
+            first = rest.split("#", 1)[0].split("$", 1)[0].strip()
+            if comma and label.strip() and first.startswith(("http://", "https://")):
+                channels.append({"name": label.strip(), "url": first, "agent": "",
+                                 "tvg_id": "", "tvg_name": "", "logo": ""})
             continue
         if line.startswith(("http://", "https://")):
             name = pending if pending else line.rsplit("/", 1)[-1]

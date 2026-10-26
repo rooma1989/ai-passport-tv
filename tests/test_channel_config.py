@@ -175,3 +175,27 @@ class PlaylistParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TxtPlaylistTests(unittest.TestCase):
+    """国内常见的 TXT 直播源（DIYP）：「台名,地址」、「分组,#genre#」、# 隔开的多条线路、$线路名。"""
+
+    def test_txt_lines_become_channels(self):
+        from server.m3u import parse_playlist
+        text = ("央视频道,#genre#\n"
+                "CCTV1,http://a.example/cctv1.m3u8#http://b.example/cctv1.m3u8\n"
+                "CCTV2,http://a.example/cctv2.m3u8$线路1\n"
+                "卫视频道,#genre#\n"
+                "湖南卫视,https://c.example/hunan.m3u8\n"
+                "坏行\n"
+                "没地址,rtp://239.0.0.1:5000\n")
+        got = [(c["name"], c["url"]) for c in parse_playlist(text)]
+        self.assertEqual(got, [("CCTV1", "http://a.example/cctv1.m3u8"),
+                               ("CCTV2", "http://a.example/cctv2.m3u8"),
+                               ("湖南卫视", "https://c.example/hunan.m3u8")])
+
+    def test_m3u_unchanged(self):
+        from server.m3u import parse_playlist
+        text = '#EXTM3U\n#EXTINF:-1 tvg-id="CCTV1",CCTV-1\nhttp://x.example/1.m3u8\n'
+        self.assertEqual([(c["name"], c["url"], c["tvg_id"]) for c in parse_playlist(text)],
+                         [("CCTV-1", "http://x.example/1.m3u8", "CCTV1")])

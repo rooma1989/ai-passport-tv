@@ -315,7 +315,7 @@
           </table></div>
         </div>
         <div class="block" id="importBlock" hidden>
-          <div class="h3">导入播放列表 <small>从网址导入、选 M3U 文件，或点一个公开列表；勾选要的台，加到表里，再点下面的「保存」</small></div>
+          <div class="h3">导入播放列表 <small>从网址导入、选 M3U 或 TXT 文件，或点一个公开列表；勾选要的台，加到表里，再点下面的「保存」</small></div>
           <div id="impPresetBox" hidden>
             <div class="implabel">一键导入：网上公开的播放列表（有央视、卫视）</div>
             <p class="disclaimer">以下是网上公开的第三方播放列表，内容由其维护者负责，本项目不提供也不保证任何直播源；请只添加你有权观看的内容。</p>
@@ -323,7 +323,7 @@
           </div>
           <div class="implabel">从网址导入</div>
           <div class="improw">
-            <input type="text" id="impUrl" placeholder="播放列表地址 http(s)://…（.m3u）">
+            <input type="text" id="impUrl" placeholder="播放列表地址 http(s)://…（.m3u 或 .txt）">
             <button class="ghost" id="impFetch">读取</button>
             <label class="ghost" for="impFile">选文件</label>
             <input type="file" id="impFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl" hidden>
