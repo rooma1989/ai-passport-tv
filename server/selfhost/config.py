@@ -43,6 +43,9 @@ cookies = "youtube/cookies.txt" # 本机模式的 cookies（电脑版「设置 �
 [voice]
 asr_socket = ""                 # 语音识别容器的套接字，例如 "/data/run/asr.sock"，或本机 TCP http://127.0.0.1:<端口>；空 = 不开语音
 
+[pc]
+warm_channels = "auto"          # 电脑上看直播换台快一点（预热相邻的台、刚换走的台再转 30 秒，多用一两个 ffmpeg）："auto" 内存 4 GB 以上开，"on"、"off"
+
 [maintenance]
 backup_keep_days = 14           # 每晚备份数据库，留几天
 update_check = true             # 以后的「有新版本」提示用，现在不起作用
@@ -50,6 +53,7 @@ update_check = true             # 以后的「有新版本」提示用，现在�
 
 SIGNUP = ("lan", "anywhere", "off")
 YOUTUBE = ("off", "node", "local")
+PC_WARM = ("auto", "on", "off")
 _HOST = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 _URL = re.compile(r"^https?://[A-Za-z0-9.:\[\]-]+(?::\d+)?/?$")
 
@@ -76,6 +80,7 @@ class Config:
     youtube_proxy: str = ""
     youtube_cookies: str = "youtube/cookies.txt"
     asr_socket: str = ""
+    pc_warm: str = "auto"
     backup_keep_days: int = 14
     update_check: bool = True
 
@@ -92,6 +97,7 @@ _FIELDS = (
     ("youtube", "mode", "youtube_mode", str), ("youtube", "proxy", "youtube_proxy", str),
     ("youtube", "cookies", "youtube_cookies", str),
     ("voice", "asr_socket", "asr_socket", str),
+    ("pc", "warm_channels", "pc_warm", str),
     ("maintenance", "backup_keep_days", "backup_keep_days", int),
     ("maintenance", "update_check", "update_check", bool),
 )
@@ -155,6 +161,8 @@ def _check(config: Config) -> None:
         raise ConfigError("config.toml：public_url 要写成 http(s)://主机名[:端口]，后面不带路径")
     if config.signup_via_device not in SIGNUP:
         raise ConfigError(f"config.toml：signup_via_device 只能是 {' / '.join(SIGNUP)}")
+    if config.pc_warm not in PC_WARM:
+        raise ConfigError(f"config.toml：[pc] warm_channels 只能是 {' / '.join(PC_WARM)}")
     if config.youtube_mode not in YOUTUBE:
         raise ConfigError(f"config.toml：[youtube] mode 只能是 {' / '.join(YOUTUBE)}")
     if config.youtube_proxy:

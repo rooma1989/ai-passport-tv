@@ -239,6 +239,9 @@
     </div>
     <div class="pcbox" id="pcBox" tabindex="0" aria-label="画面：空格暂停，左右键快退快进 10 秒，F 全屏，M 静音">
       <video id="watchVideo" playsinline></video>
+      <!-- 换台时：上一台最后的画面停在这里，盖着「正在切换…」，新的台出画面时收起（console.js 的 switching） -->
+      <canvas class="pcfreeze" id="pcFreeze" hidden></canvas>
+      <div class="pcswitch" id="pcSwitch" hidden role="status"><i class="pcspin" aria-hidden="true"></i><b id="pcSwitchName"></b><span id="pcSwitchText">正在切换…</span></div>
       <div class="watchmsg" id="watchMsg"></div>
       <div class="pcbanner" id="pcResume" hidden><span id="pcResumeText"></span><button class="pctxt" id="pcFromStart">从头播放</button><button class="pcb sm" id="pcResumeX" aria-label="知道了" data-ic="x" data-ics="14"></button></div>
       <div class="pcupnext" id="pcUpNext" hidden role="status">

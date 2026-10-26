@@ -15,11 +15,15 @@ UA，或者 YouTube 节点的流），起一个 ffmpeg 把它封装成分片 MP4
 WatchPlayer，几十行，不用第三方播放器）；没有 MediaSource 的浏览器（老 iPhone Safari）直接放 HLS。
 
 - 编码：画面是 H.264 就只换封装（-c:v copy）；别的（HEVC、MPEG-2……）才转码（libx264 veryfast，最高 720p）。
-  ffmpeg 先按「复制画面」起，stderr 打出输入流的编码后，不合适就按需要重起一次（只在要转码的源上多花一两秒）。
+  ffmpeg 先按「复制画面」起，stderr 打出输入流的编码后，不合适就按需要重起一次（要转码的源多连一次片源）；
+  直播台的转法记在内存里（LiveMemory），下次直接按它起。
   声音一律转成 AAC 128k（很便宜）：直播源（MPEG-TS、HLS）里的 AAC 带 ADTS 头，只换封装的话分片 MP4 的
   初始化段里没有 AudioSpecificConfig（ffmpeg 写头时还没见到第一个包），浏览器解不了。只有声音的源（电台）
   按 2 秒切段。
 - 不和小电视同步：视频从设备此刻的位置起播，直播从现在起播，之后各走各的（页面上写明）。
+- 换台快（电脑上直接看直播）：慢的是连片源（跳转、列表、第一段，每一步约 1 秒）。所以：直播源少探测一点
+  （LIVE_PROBE）；记住跳转以后真正的列表地址（LiveMemory，RESOLVED_S）；刚换走的台再转一会儿、相邻的台先转起来
+  （WatchService 的预热，WARM_S、WARM_MAX，只在开了 --pc-warm 时）。
 - 跳转（电脑版播放器的进度条）：重起一路（WatchService.open 的 restart），ffmpeg 带 -ss 从新的位置起，
   新的编号和令牌；播放器换一个新的 MediaSource，按列表里的 #EXT-X-RTV-ORIGIN 和回答里的 start 把媒体时间
   换算成视频里的位置（Window.origin）。
@@ -81,6 +85,20 @@ BOX_MAX = 64 * 1024 * 1024
 NETWORK_PROTOCOLS = "http,https,tls,tcp,crypto,httpproxy"
 PIPE_PROTOCOLS = "pipe"
 DEFAULT_CODECS = "avc1.640028,mp4a.40.2"
+# 直播源（MPEG-TS、HLS）读多少就开始转：默认 5 秒 / 5 MB，直播源的头里就有编码，1 秒、1 MB 够了。
+# 量过（CCTV1，咪咕 6 秒一段）：慢的是连片源（跳转、列表、第一段，每一步约 1 秒），探测只占零点几秒。
+LIVE_PROBE = ("-probesize", "1000000", "-analyzeduration", "1000000")
+# 电脑上看直播换台时：刚换走的台再转这么久（换回来马上有画面），预热的台（相邻的台）没人看最多转这么久。
+WARM_S = 30.0
+# 预热（含刚换走的）最多几路，不算正在看的；只在自建 / 电脑客户端、内存够时开（中转的 --pc-warm）。
+WARM_MAX = 2
+# 记住多少个直播台的转法（只换封装还是转码），下次直接按它起，不用先试一次再重起。
+MODE_CACHE_MAX = 256
+# 直播台跳转以后真正的列表地址记多久（LiveMemory）：咪咕这类源先经两三次跳转、再取主列表，才到真正的列表，
+# 每一步约 1 秒；记住了下次直接从它起，出第一段从六七秒变成三四秒。地址里带会话参数，量过 9 分钟以后还能用；
+# 记的时间短一点，失效了（打不开、一段也没出）就忘掉、从频道表里的地址重来。只在内存里，从不写日志。
+RESOLVED_S = 600.0
+_OPENING = re.compile(r"Opening '(https?://[^']+)' for reading")
 _SID = re.compile(r"^[0-9a-f]{16}$")
 _PATH = re.compile(r"^/watch/([0-9a-f]{16})/([0-9]{1,12}\.[A-Za-z0-9_-]{16,32})/"
                    r"(master\.m3u8|index\.m3u8|init\.mp4|(\d{1,9})\.m4s)$")
@@ -153,6 +171,19 @@ def mode_for(video: str | None, audio: str | None) -> Mode | None:
                 None if audio is None else "encode")
 
 
+def is_live(source: Source) -> bool:
+    """直播台（全局频道表里的）：键是 ("live", 台, 地址, UA)。"""
+    return bool(source.key) and source.key[0] == "live"
+
+
+def fits(mode: Mode, video: str | None, audio: str | None) -> bool:
+    """这种转法能不能转这个片源：有没有画面、声音要对得上，只换封装的画面要是 H.264。
+    转码的画面什么都能转（H.264 也行，只是费 CPU）：只换封装失败后改成转码的、记住要转码的台，不再改回去。"""
+    if (mode.video is None) != (video is None) or (mode.audio is None) != (audio is None):
+        return False
+    return mode.video != "copy" or video == "h264"
+
+
 def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode) -> list[str]:
     """ffmpeg 的参数（列表，不经 shell）。url 是取到的地址；opener 的片源从标准输入读。"""
     piped = source.opener is not None
@@ -171,6 +202,8 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode) -> list[str]:
             args += ["-headers", f"Referer: {source.referer}\r\n"]
     if source.offset >= 1:
         args += ["-ss", str(int(source.offset))]
+    if not piped and is_live(source):
+        args += LIVE_PROBE
     args += ["-i", "pipe:0" if piped else url]
     # 大写 V：不要封面图。没有这一路时不报错（?）。
     args += ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"]
@@ -441,6 +474,62 @@ class Window:
                 f'#EXT-X-STREAM-INF:BANDWIDTH={max(bandwidth, 64_000)},CODECS="{self.codecs}"\nindex.m3u8\n')
 
 
+# ---------------------------------------------------------------- 记住的直播台
+
+class LiveMemory:
+    """每个直播台（Source.key）记住的两样，让下次起得快：
+    - 转法（Mode）：要转码的台直接按转码起，不用先按只换封装起、看到编码再重起（又一次连片源）。
+    - 跳转以后真正的列表地址（RESOLVED_S 秒内有效）：ffmpeg 不用再走一遍跳转和主列表。"""
+
+    def __init__(self, clock=time.monotonic, resolved_s: float = RESOLVED_S):
+        self.clock = clock
+        self.resolved_s = resolved_s
+        self._modes: collections.OrderedDict[tuple, Mode] = collections.OrderedDict()
+        self._urls: dict[tuple, tuple[str, float]] = {}
+        self._lock = threading.Lock()
+
+    def mode(self, key: tuple) -> Mode | None:
+        with self._lock:
+            return self._modes.get(key)
+
+    def remember_mode(self, key: tuple, mode: Mode) -> None:
+        with self._lock:
+            self._modes[key] = mode
+            self._modes.move_to_end(key)
+            while len(self._modes) > MODE_CACHE_MAX:
+                self._modes.popitem(last=False)
+
+    def url(self, key: tuple) -> str | None:
+        with self._lock:
+            found = self._urls.get(key)
+            if found is None:
+                return None
+            if self.clock() - found[1] > self.resolved_s:
+                del self._urls[key]
+                return None
+            return found[0]
+
+    def remember_url(self, key: tuple, url: str) -> None:
+        with self._lock:
+            self._urls[key] = (url, self.clock())
+            while len(self._urls) > MODE_CACHE_MAX:
+                del self._urls[min(self._urls, key=lambda k: self._urls[k][1])]
+
+    def forget_url(self, key: tuple) -> None:
+        with self._lock:
+            self._urls.pop(key, None)
+
+
+def resolved_playlist(line: str, given: str) -> str | None:
+    """ffmpeg 的一行输出里打开的列表地址（跳转和主列表之后真正的那个 .m3u8）；不是、或者就是频道表里的地址时 None。"""
+    match = _OPENING.search(line)
+    if match is None:
+        return None
+    url = match.group(1)
+    path = url.split("?", 1)[0].split("#", 1)[0]
+    return url if path.endswith(".m3u8") and url != given else None
+
+
 # ---------------------------------------------------------------- 一路
 
 class WatchStream:
@@ -450,7 +539,8 @@ class WatchStream:
     令牌绑的是它和 sid。user 是开这一路的用户（每个用户的上限按它数）。"""
 
     def __init__(self, sid: str, device: str, source: Source, ffmpeg: str, log=print,
-                 clock=time.monotonic, popen=subprocess.Popen, user: int | None = None):
+                 clock=time.monotonic, popen=subprocess.Popen, user: int | None = None,
+                 mode: Mode = FIRST_MODE, memory: LiveMemory | None = None, cheap: bool = False):
         self.sid = sid
         self.device = device
         self.user = user
@@ -464,6 +554,17 @@ class WatchStream:
         self.error = ""
         self.stopped = False
         self.mode: Mode | None = None
+        # 先按哪种转法起：记住了这个台的转法（WatchService 的缓存）就按它，否则先试只换封装。
+        self.first_mode = mode
+        # 直播台记住的转法和地址（WatchService 的 LiveMemory）；只给直播台。
+        self.memory = memory if is_live(source) else None
+        # 这一次是不是从记住的地址起的（失效了就忘掉、从频道表里的地址重来一次）。
+        self._via_memory = False
+        self._given = ""
+        # 预热的（没人在看）：要转码（一路吃一个核）就不转了，只记下转法。
+        self.cheap = cheap
+        # 预热、刚换走的台：转到这个时刻（WatchService 的单调时钟）为止，没人接上就停。
+        self.warm_until = 0.0
         self._proc = None
         self._upstream = None
         self._cond = threading.Condition()
@@ -519,7 +620,7 @@ class WatchStream:
                 pass
 
     def _run(self) -> None:
-        mode, retried = FIRST_MODE, False
+        mode, retried = self.first_mode, False
         try:
             while not self.stopped:
                 outcome, detail = self._attempt(mode)
@@ -527,6 +628,18 @@ class WatchStream:
                     self.log(f"在电脑上看 {self.device}：片源是 {detail[1]}，"
                              f"{'画面转码' if detail[0].video == 'encode' else '没有画面' if detail[0].video is None else '画面只换封装'}")
                     mode = detail[0]
+                    if self.cheap and mode.video == "encode":
+                        # 预热的台要转码：记下转法（真要看时直接按它起），这一路不转了。
+                        self._decided(mode)
+                        self.stopped = True
+                        self.log(f"在电脑上看 {self.device}：要转码，不预热")
+                        return
+                    continue
+                if outcome in ("failed", "copy_failed") and self._via_memory and not self.window.segments \
+                        and not self.stopped:
+                    # 记住的地址失效了（会话过期之类）：忘掉，从频道表里的地址重来。
+                    self.memory.forget_url(self.source.key)
+                    self.log(f"在电脑上看 {self.device}：记住的地址打不开了，重新连")
                     continue
                 if outcome == "copy_failed" and not retried:
                     # 复制画面失败、一段也没出（少见的 H.264 变体）：转码再试一次。
@@ -562,7 +675,11 @@ class WatchStream:
                 return "failed", f"取不到片源地址：{error}"
             if not str(url).startswith(("http://", "https://")):
                 return "failed", "片源地址不是 http(s)"
-        args = ffmpeg_args(self.ffmpeg, source, url, mode)
+        remembered = self.memory.url(source.key) if self.memory is not None and source.opener is None else None
+        self._via_memory = remembered is not None
+        # 从频道表里的地址起的直播台：ffmpeg 打开的真正的列表地址记下来（_read_stderr）。
+        self._given = url if self.memory is not None and not self._via_memory else ""
+        args = ffmpeg_args(self.ffmpeg, source, remembered or url, mode)
         proc = self.popen(args, stdin=subprocess.PIPE if source.opener else subprocess.DEVNULL,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=loopback_bypass(os.environ))
         self._proc = proc
@@ -583,14 +700,14 @@ class WatchStream:
             return "failed", ""
         lines: list[str] = []
         probed = threading.Event()
-        threading.Thread(target=self._read_stderr, args=(proc, lines, probed), daemon=True).start()
+        threading.Thread(target=self._read_stderr, args=(proc, lines, probed, self._given), daemon=True).start()
         if source.opener is not None:
             threading.Thread(target=self._feed, args=(proc,), daemon=True).start()
         probed.wait(PROBE_WAIT_S)
         done, video, audio = input_codecs(lines)
         wanted = mode_for(video, audio)
         # 输入信息打出来了、但这种转法 ffmpeg 起不来（例如只有声音的源用了按关键帧切段）：照编码换一种转法。
-        if not done and (wanted is None or wanted == mode):
+        if not done and (wanted is None or fits(mode, video, audio)):
             self._kill()
             proc.wait()
             return "failed", self._reason(lines) or "片源连不上"
@@ -598,11 +715,12 @@ class WatchStream:
             self._kill()
             proc.wait()
             return "failed", "片源里没有画面也没有声音"
-        if wanted != mode:
+        if not fits(mode, video, audio):
             self._kill()
             proc.wait()
             return "restart", (wanted, f"{video or '无画面'} + {audio or '无声音'}")
         self.mode = mode
+        self._decided(mode)
         produced = self._segment(proc.stdout)
         code = proc.wait()
         if self.stopped:
@@ -613,6 +731,10 @@ class WatchStream:
         if not produced and mode.video == "copy":
             return "copy_failed", reason
         return "failed", reason
+
+    def _decided(self, mode: Mode) -> None:
+        if self.memory is not None:
+            self.memory.remember_mode(self.source.key, mode)
 
     def _segment(self, stdout) -> int:
         """读 ffmpeg 的分片 MP4：ftyp+moov 是初始化段，每个 moof+mdat 是一段。返回出了几段。"""
@@ -645,14 +767,23 @@ class WatchStream:
                 self._notify()
         return produced
 
-    def _read_stderr(self, proc, lines: list[str], probed: threading.Event) -> None:
+    def _read_stderr(self, proc, lines: list[str], probed: threading.Event, given: str = "") -> None:
+        """given：这次给 ffmpeg 的频道表里的地址（直播台、不是从记住的地址起时）。读完输入信息之前 ffmpeg 只打开了
+        一个列表（跳转、主列表以后真正的那个）就记下它；打开了几个（多路清晰度、单独的声音列表）不记：只给其中一个
+        会少了别的。"""
+        opened: list[str] = []
         try:
             for raw in proc.stderr:
                 line = raw.decode("utf-8", "replace").rstrip()
                 if not probed.is_set():
+                    found = resolved_playlist(line, given) if given else None
+                    if found is not None and found not in opened:
+                        opened.append(found)
                     lines.append(line)
                     if input_codecs(lines)[0]:
                         probed.set()
+                        if len(opened) == 1:
+                            self.memory.remember_url(self.source.key, opened[0])
                 self.stderr.append(line)
         except (OSError, ValueError):
             pass
@@ -736,11 +867,22 @@ class Busy(Exception):
 
 
 class WatchService:
-    """所有设备的「在电脑上看」：每台设备至多一路，没人看就停（reap，后台每秒一次）。"""
+    """所有设备的「在电脑上看」：每台设备至多一路，没人看就停（reap，后台每秒一次）。
+
+    换台快一点（warm_max > 0，只在自建 / 电脑客户端、内存够时开，中转的 --pc-warm）：
+    - 刚换走的直播台再转 warm_s 秒（open 的 keep_old）：换回来时接上它，列表里已经有十几秒，马上有画面。
+      只换封装的才留（转码的一路吃三四个核）。
+    - 预热（warm）：电脑上看直播时，页面让中转先把相邻的台转起来（停在上一台 / 下一台的按钮上、看了几秒以后），
+      换过去时同样接上。预热的台要转码时不预热（一路吃一个核），只记下转法。
+    预热的和刚换走的合起来至多 warm_max 路，和正在看的一起算在 max_streams 里：真要看的路数不够时先停预热的，
+    预热从不挡人看。转了 warm_s 秒没人接上就停。
+    每个直播台的转法和跳转以后真正的列表地址记在内存里（LiveMemory）：下次直接按它起，要转码的台不用先起一次
+    再重起，经跳转的源少走两三步。"""
 
     def __init__(self, ffmpeg: str, secret: bytes, log=print, clock=time.monotonic, wall=time.time,
                  popen=subprocess.Popen, idle_s: float = IDLE_S, max_streams: int = MAX_STREAMS,
-                 background: bool = True, max_per_user: int = MAX_PER_USER):
+                 background: bool = True, max_per_user: int = MAX_PER_USER, warm_max: int = 0,
+                 warm_s: float = WARM_S):
         self.ffmpeg = ffmpeg
         self.secret = secret
         self.log = log
@@ -750,16 +892,25 @@ class WatchService:
         self.idle_s = idle_s
         self.max_streams = max_streams
         self.max_per_user = max_per_user
+        self.warm_max = max(0, int(warm_max))
+        self.warm_s = warm_s
         self.background = background
         self._by_device: dict[str, WatchStream] = {}
+        # 预热的和刚换走的：片源的键 → 那一路（stream.user 是谁的）。
+        self._warm: dict[tuple, WatchStream] = {}
+        self.memory = LiveMemory(clock=clock)
         self._lock = threading.Lock()
         self._reaper: threading.Thread | None = None
 
-    def open(self, device: str, source: Source, user: int | None = None, restart: bool = False) -> WatchStream:
+    def open(self, device: str, source: Source, user: int | None = None, restart: bool = False,
+             keep_old: bool = False) -> WatchStream:
         """device 这个位置（设备 id，或直接看时的「pc<用户>-<页面>」）要看 source：同一个片源还在转就
         接着用，否则停掉旧的、起新的。满了（全中转 max_streams 路，或这个用户 max_per_user 路）时 Busy。
         restart：跳转（播放器上拖进度条）——同一个片源也重起一个 ffmpeg，从 source.offset / start 起；
-        新的一路有新的编号，地址（令牌）跟着换，旧地址马上失效。"""
+        新的一路有新的编号，地址（令牌）跟着换，旧地址马上失效。
+        keep_old：电脑上直接看时换台——旧的是直播台就不马上停，再转 warm_s 秒（开了预热时）；
+        新的这个台已经在预热（或刚换走）就接上那一路。"""
+        evicted: list[WatchStream] = []
         with self._lock:
             current = self._by_device.get(device)
             if current is not None and current.alive and current.source.key == source.key and not restart:
@@ -770,17 +921,125 @@ class WatchService:
                 raise Busy()
             if user is not None and sum(1 for s in others if s.user == user) >= self.max_per_user:
                 raise Busy(per_user=True)
+            adopted = None
+            if not restart and source.key in self._warm:
+                warm = self._warm[source.key]
+                if warm.user == user and warm.alive:
+                    del self._warm[source.key]
+                    adopted = warm
             if current is not None:
-                current.stop()
-                current.window.release()
                 del self._by_device[device]
-            stream = WatchStream(secrets.token_hex(8), device, source, self.ffmpeg, log=self.log,
-                                 clock=self.clock, popen=self.popen, user=user)
+                if keep_old and self._lingers(current):
+                    evicted += self._park(current)
+                else:
+                    evicted.append(current)
+            if adopted is not None:
+                adopted.device = device
+                adopted.cheap = False
+                adopted.warm_until = 0.0
+                adopted.touch()
+                stream = adopted
+            else:
+                stream = self._new(device, source, user)
             self._by_device[device] = stream
+            evicted += self._fit()
             self._ensure_reaper()
+        self._stop(evicted)
+        if adopted is not None:
+            self.log(f"在电脑上看 {device}：接上预热的 {source.label or source.key[1]}")
+            return stream
         self.log(f"在电脑上看 {device}：开始 {source.label or source.key[1]}")
         stream.start()
         return stream
+
+    def warm(self, user: int | None, source: Source) -> str:
+        """先把这个直播台转起来（没人看），换过去时 open 接上。返回发生了什么（给页面和测试看）：
+        "off" 没开预热、"live" 不是直播台、"playing" 这个用户正在看它、"warm" 已经在转（续上 warm_s 秒）、
+        "encode" 要转码不预热、"full" 中转的路数满了、"started" 起了一路。"""
+        if not self.warm_max:
+            return "off"
+        if not is_live(source):
+            return "live"
+        evicted: list[WatchStream] = []
+        with self._lock:
+            if any(s.alive and s.user == user and s.source.key == source.key for s in self._by_device.values()):
+                return "playing"
+            found = self._warm.get(source.key)
+            if found is not None and found.alive and found.user == user:
+                found.warm_until = self.clock() + self.warm_s
+                return "warm"
+            if found is not None:
+                del self._warm[source.key]
+                evicted.append(found)
+            if self.mode_of(source).video == "encode":
+                result = "encode"
+            else:
+                while len(self._warm) >= self.warm_max:
+                    evicted.append(self._pop_oldest_warm())
+                slots = sum(1 for s in self._by_device.values() if s.alive)
+                if slots + len(self._warm) >= self.max_streams:
+                    result = "full"
+                else:
+                    stream = self._new(f"warm{user}-{source.key[1]}", source, user, cheap=True)
+                    stream.warm_until = self.clock() + self.warm_s
+                    self._warm[source.key] = stream
+                    self._ensure_reaper()
+                    result = "started"
+        self._stop(evicted)
+        if result == "started":
+            self.log(f"在电脑上看：预热 {source.label or source.key[1]}")
+            stream.start()
+        return result
+
+    def _new(self, device: str, source: Source, user: int | None, cheap: bool = False) -> WatchStream:
+        return WatchStream(secrets.token_hex(8), device, source, self.ffmpeg, log=self.log, clock=self.clock,
+                           popen=self.popen, user=user, mode=self.mode_of(source), memory=self.memory,
+                           cheap=cheap)
+
+    def mode_of(self, source: Source) -> Mode:
+        """这个片源先按哪种转法起：记住了的直播台按记住的，别的先试只换封装。"""
+        known = self.memory.mode(source.key) if is_live(source) else None
+        return known or FIRST_MODE
+
+    def _lingers(self, stream: WatchStream) -> bool:
+        """换走的这一路要不要再转一会儿：开了预热、是直播台、还在转、只换封装。转码的（HEVC 之类）不留：
+        量过一路 1080p HEVC 转 720p 要三四个核、几百 MB 内存；换回来时按记住的转法直接起，不用再重起一次。"""
+        return bool(self.warm_max) and stream.alive and is_live(stream.source) and \
+            stream.mode is not None and stream.mode.video != "encode"
+
+    def _park(self, stream: WatchStream) -> list[WatchStream]:
+        """（持锁）换走的直播台放进预热里转 warm_s 秒；返回要停的（同一个台旧的预热、超出 warm_max 的）。"""
+        evicted = []
+        old = self._warm.pop(stream.source.key, None)
+        if old is not None:
+            evicted.append(old)
+        while len(self._warm) >= self.warm_max:
+            evicted.append(self._pop_oldest_warm())
+        stream.warm_until = self.clock() + self.warm_s
+        self._warm[stream.source.key] = stream
+        return evicted
+
+    def _pop_oldest_warm(self) -> WatchStream:
+        key = min(self._warm, key=lambda k: self._warm[k].warm_until)
+        return self._warm.pop(key)
+
+    def _fit(self) -> list[WatchStream]:
+        """（持锁）正在看的加预热的超过 max_streams 时，先停最早到期的预热的。"""
+        evicted = []
+        slots = sum(1 for s in self._by_device.values() if s.alive)
+        while self._warm and slots + len(self._warm) > self.max_streams:
+            evicted.append(self._pop_oldest_warm())
+        return evicted
+
+    @staticmethod
+    def _stop(streams: list[WatchStream]) -> None:
+        for stream in streams:
+            stream.stop()
+            stream.window.release()
+
+    def warm_streams(self) -> list[WatchStream]:
+        with self._lock:
+            return list(self._warm.values())
 
     def token(self, stream: WatchStream) -> str:
         return listen_audio.issue_token(self.secret, f"{stream.device}/{stream.sid}", now=self.wall(),
@@ -813,22 +1072,30 @@ class WatchService:
             return list(self._by_device.values())
 
     def reap(self) -> None:
-        """停掉 idle_s 秒没人取的。"""
+        """停掉 idle_s 秒没人取的；预热的到了 warm_until 还没人接上的、自己停了的。"""
         now = self.clock()
         with self._lock:
             idle = [(d, s) for d, s in self._by_device.items() if now - s.seen > self.idle_s]
             for device, _ in idle:
                 del self._by_device[device]
+            cold = [(k, s) for k, s in self._warm.items() if now > s.warm_until or not s.alive]
+            for key, _ in cold:
+                del self._warm[key]
         for device, stream in idle:
             if stream.alive:
                 self.log(f"在电脑上看 {device}：{int(self.idle_s)} 秒没人看，停了")
             stream.stop()
             stream.window.release()
+        for _, stream in cold:
+            if stream.alive:
+                self.log(f"在电脑上看：预热的 {stream.source.label or stream.source.key[1]} 没人接上，停了")
+        self._stop([s for _, s in cold])
 
     def stop_all(self) -> None:
         with self._lock:
-            streams = list(self._by_device.values())
+            streams = list(self._by_device.values()) + list(self._warm.values())
             self._by_device.clear()
+            self._warm.clear()
         for stream in streams:
             stream.stop()
 
@@ -844,7 +1111,7 @@ class WatchService:
                 except Exception as error:  # noqa: BLE001 —— 后台线程不能死
                     self.log(f"在电脑上看：清理出错 {type(error).__name__}: {error}")
                 with self._lock:
-                    if not self._by_device:
+                    if not self._by_device and not self._warm:
                         self._reaper = None
                         return
 
