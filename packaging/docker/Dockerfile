@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Xiaozhi TV self-hosted server ("小智电视自建服务器"), phase S1 of
+# RooTV self-hosted server ("小鼠电视自建服务器", formerly Xiaozhi TV), phase S1 of
 # docs/superpowers/specs/2026-10-15-self-hosting-design.md.
 #
 # Build from the repository root (the build context is the whole checkout, cut

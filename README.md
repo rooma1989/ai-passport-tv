@@ -1,8 +1,11 @@
 English | [简体中文](README.zh_CN.md)
 
-# Xiaozhi TV
+# RooTV
 
-Xiaozhi TV turns a small ESP32 gadget into a tiny television for the family.
+*RooTV (its Chinese name means "little mouse TV") was called Xiaozhi TV until
+0.2.5-beta. The repository keeps its name.*
+
+RooTV turns a small ESP32 gadget into a tiny television for the family.
 A computer at home does the heavy work, the gadget shows the picture, and a
 phone is the remote control.
 
@@ -47,10 +50,15 @@ for now that is a beta.
 
 | Your computer | File |
 | --- | --- |
-| Windows 10/11 | `XiaozhiTV-0.2.0-beta-windows-x64-setup.exe` (installer, recommended), or `XiaozhiTV-0.2.0-beta-windows-x64.zip` (no install) |
-| Mac with Apple silicon (M1, M2, M3, M4...) | `XiaozhiTV-0.2.0-beta-macos-arm64.dmg` |
-| Mac with an Intel processor | `XiaozhiTV-0.2.0-beta-macos-x86_64.dmg` |
-| Linux x86_64 (less tested) | `xiaozhi-tv-0.2.0-beta-linux-x86_64.tar.gz` (read `README-linux.txt` inside) |
+| Windows 10/11 | `RooTV-<version>-windows-x64-setup.exe` (installer, recommended), or `RooTV-<version>-windows-x64.zip` (no install) |
+| Mac with Apple silicon (M1, M2, M3, M4...) | `RooTV-<version>-macos-arm64.dmg` |
+| Mac with an Intel processor | `RooTV-<version>-macos-x86_64.dmg` |
+| Linux x86_64 (less tested) | `rootv-<version>-linux-x86_64.tar.gz` (read `README-linux.txt` inside) |
+
+Releases up to 0.2.5-beta named these files `XiaozhiTV-...` and
+`xiaozhi-tv-...`. Installing RooTV over Xiaozhi TV replaces it: the old
+program quits and is removed (Windows installer) or can be deleted (Mac), and
+the first start moves the data folder, so devices, accounts and channels stay.
 
 Not sure which Mac you have? Apple menu > About This Mac. "Chip Apple M..." is
 Apple silicon, "Processor Intel..." is Intel.
@@ -67,19 +75,19 @@ The step-by-step tutorial with every screen is in
 1. **Install it.**
    - **Windows**: double-click the `setup.exe`. Answer "Yes" when Windows asks
      to allow changes.
-   - **Mac**: open the `.dmg` and **drag "Xiaozhi TV" into Applications**. Then
+   - **Mac**: open the `.dmg` and **drag "RooTV" into Applications**. Then
      open it from Applications.
 2. **Get past the warning.** This beta is not signed yet, so the system warns
    you the first time. The file is not damaged.
    - **Windows** ("Windows protected your PC"): click **More info**, then
      **Run anyway**.
-   - **Mac** ("Xiaozhi TV" Not Opened): click **Done**.
+   - **Mac** ("RooTV" Not Opened): click **Done**.
      **Do not click Move to Trash**, that deletes the program.
      Then open **System Settings > Privacy & Security**, scroll down,
-     find the line about "Xiaozhi TV", click **Open Anyway** and enter your
+     find the line about "RooTV", click **Open Anyway** and enter your
      password. (On macOS 12 to 14 you can also Control-click the app in
      Applications and pick Open.)
-   - When the Mac asks whether Xiaozhi TV may find devices on your local
+   - When the Mac asks whether RooTV may find devices on your local
      network, click **Allow**.
 3. **First run.** A small TV icon appears in the notification area (Windows)
    or the menu bar (Mac). The first time, it downloads a video component
@@ -94,7 +102,7 @@ The menus are in Chinese; the tutorial gives the English meaning of each item.
 
 ## Step 1: Flash the firmware
 
-The device needs the Xiaozhi TV firmware once.
+The device needs the RooTV firmware once.
 
 1. Plug the device into **the computer running the PC client** with the USB
    data cable.
@@ -308,7 +316,7 @@ fetches it on first run from its publisher (GPL builds).
 
 ## Disclaimer
 
-Xiaozhi TV is open-source software for private, non-commercial use in your own
+RooTV is open-source software for private, non-commercial use in your own
 home. It does not include, host, sell or recommend any channel, stream, video,
 account or proxy. Everything it plays is fetched by your own computer from
 sources you add yourself. You are responsible for having the right to watch

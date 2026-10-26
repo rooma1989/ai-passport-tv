@@ -2446,6 +2446,11 @@ ASSETS = {
                               (_ASSET_DIR / "manifest.webmanifest").read_bytes()),
     "/icon-180.png": ("image/png", (_ASSET_DIR / "icon-180.png").read_bytes()),
     "/icon-512.png": ("image/png", (_ASSET_DIR / "icon-512.png").read_bytes()),
+    # RooTV 的图标（tools/make_icons.py 从 docs/design/media-center/brand/ 生成）。
+    **{f"/{name}": (kind, (_ASSET_DIR / name).read_bytes()) for name, kind in (
+        ("favicon.ico", "image/x-icon"), ("favicon.svg", "image/svg+xml"), ("apple-touch-icon.png", "image/png"),
+        ("icon-192.png", "image/png"), ("icon-maskable-192.png", "image/png"),
+        ("icon-maskable-512.png", "image/png"))},
     # 声波配网：手机把 Wi-Fi 名称和密码播成声音给配网中的电视听。不用登录，页面不连网。
     "/wifi": ("text/html; charset=utf-8", (_ASSET_DIR / "wifi.html").read_bytes()),
 }

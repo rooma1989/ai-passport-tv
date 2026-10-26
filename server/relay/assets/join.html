@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#1c1915">
-<title>小智电视</title>
+<title>小鼠电视</title>
 <style>
   :root { --ink: #1c1915; --ink-deep: #0f0d0b; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
           --dim: #8c8170; --faint: #6e6455; --red: #d2553f; --amber: #ffb547;
@@ -35,7 +35,7 @@
 </head>
 <body>
 <main>
-  <div class="tag" id="tag">小智电视</div>
+  <div class="tag" id="tag">小鼠电视</div>
   <h1 id="title">正在打开…</h1>
   <div id="body"></div>
 </main>
@@ -110,7 +110,7 @@ function register(info) {
   };
   const other = el("details");
   other.append(el("summary", "", "已经有账号了？"),
-    el("p", "dim", "从手机桌面上的「小智电视」图标打开遥控，在「订阅 → 我的设备」里输入这串绑定码（小电视屏幕上也写着）："),
+    el("p", "dim", "从手机桌面上的「小鼠电视」（以前叫「小智电视」）图标打开遥控，在「订阅 → 我的设备」里输入这串绑定码（小电视屏幕上也写着）："),
     el("div", "code", grouped(code)));
   const nodes = [el("p", "", modelName(info.model) + " · 尾号 " + info.tail), label, name, button, note, other];
   // 微信里登录了也只在微信里有效，加不到桌面：先换到浏览器。
@@ -125,7 +125,7 @@ async function bind() {
   if (info && info.ok && info.register) { register(info); return; }
   if (!info) {
     show("绑定小电视",
-      el("p", "", "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「我的 → 绑定新设备」里输入下面的绑定码："),
+      el("p", "", "这个浏览器还没有登录小鼠电视。请从手机桌面上的「小鼠电视」（以前叫「小智电视」）图标打开遥控，在「我的 → 绑定新设备」里输入下面的绑定码："),
       el("div", "code", grouped(code)),
       el("p", "dim", "小电视屏幕上也写着这串码。还没有账号的话，请先向管理员要一个邀请链接。"));
     return;
@@ -159,7 +159,7 @@ async function invite() {
     if (!answer || !answer.ok) { button.disabled = false; note.className = "bad"; note.textContent = answer ? answer.error : "没成功"; return; }
     location.replace(answer.redirect);
   };
-  show("你被邀请使用小智电视", el("p", "", "小智电视把网上的直播、UP 主和剧集放到桌上的小电视里。"), name, button, note);
+  show("你被邀请使用小鼠电视", el("p", "", "小鼠电视把网上的直播、UP 主和剧集放到桌上的小电视里。"), name, button, note);
 }
 
 (mode === "r" ? scan : mode === "b" ? bind : mode === "i" ? invite : async () => show("打不开"))()

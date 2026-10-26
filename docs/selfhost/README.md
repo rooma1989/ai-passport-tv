@@ -2,14 +2,17 @@
   <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# Running the Xiaozhi TV server at home (0.x beta)
+# Running the RooTV server at home (0.x beta)
+
+*RooTV was called Xiaozhi TV up to 0.2.5-beta. The Docker
+image and the folder names in the examples below keep the old `xiaozhi-tv`.*
 
 > **Advanced.** For a Windows PC or a Mac, use the **PC client** instead: an
 > installer, a tray icon, the setup page opens by itself
 > ([`docs/desktop/`](../desktop/README.md), from 0.2.0-beta). This page is for a
 > NAS, a mini PC without a desktop, Docker, or running from source.
 
-The Xiaozhi TV server can run on a computer, NAS or mini PC at home that stays
+The RooTV server can run on a computer, NAS or mini PC at home that stays
 on; the TVs on the same home network connect to it. No cloud server, no
 bandwidth bill, and the best picture. This page is the quick start; the design
 and its trade-offs are in
@@ -34,8 +37,8 @@ Please read the [disclaimer](#disclaimer) at the end first.
 
 ## What you need
 
-- A Xiaozhi TV: a Xingzhi Cube 1.54 (Xiaozhi AI case) or a FoloToy AI Passport,
-  with the Xiaozhi TV public firmware.
+- A tiny TV: a Xingzhi Cube 1.54 (Xiaozhi AI case) or a FoloToy AI Passport,
+  with the public TV firmware.
 - A machine that stays on (table below), on the home network, ideally with a
   fixed IP from the router ("DHCP reservation").
 - A USB cable that carries data, and a computer with Chrome or Edge (once, for
@@ -143,7 +146,7 @@ above. The first published port brings up a Windows firewall prompt: choose
 On start the server prints this to its log (or terminal), in Chinese:
 
 ```
-Xiaozhi TV server is running.
+RooTV server is running.
   Open on a phone or computer on your home network:  http://192.168.1.20:8080/tv/setup
   Setup code: K7P4Q-X2M9A   (one use; makes the administrator)
   Or scan this with a phone (the code is filled in): …

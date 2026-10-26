@@ -251,7 +251,7 @@ def _local_login(handler, relay) -> None:
         return
     session = relay.accounts.new_session(user, "pc", user_agent=handler._agent(), ip=handler._ip(), via="local")
     relay.accounts.audit("login.pc.local", user, handler._ip(), "user", str(user))
-    relay.log(f"用户 {user} 用这台电脑上的小智电视程序登录了电脑版")
+    relay.log(f"用户 {user} 用这台电脑上的小鼠电视程序登录了电脑版")
     handler._send(302, b"", "text/plain",
                   {"Location": "/tv/console", "Set-Cookie": console.cookie_header(session, "pc", handler._https())})
 

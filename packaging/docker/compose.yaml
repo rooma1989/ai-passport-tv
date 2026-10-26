@@ -1,4 +1,4 @@
-# 小智电视自建服务器（0.x 测试版）。教程：docs/selfhost/README.zh_CN.md
+# 小鼠电视（RooTV，原名小智电视）自建服务器（0.x 测试版）。镜像名仍是 xiaozhi-tv。教程：docs/selfhost/README.zh_CN.md
 #
 #   mkdir data                 # 和这个文件放在同一个文件夹
 #   docker compose up -d       # 启动

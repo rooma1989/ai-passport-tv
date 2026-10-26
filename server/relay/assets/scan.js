@@ -43,7 +43,7 @@
     const wechat = /MicroMessenger/i.test(env.agent || "");
     const type = env.any ? "请在「我的」里输入屏幕上的码。" : "请输入电脑屏幕上的登录码。";
     const also = env.any ? "也可以在「我的」里输入屏幕上的码。" : "也可以输入登录码。";
-    if (wechat) return "微信里打不开相机。请从手机桌面上的「小智电视」图标打开遥控再扫，" + (env.any ? "或者在「我的」里输入屏幕上的码。" : "或者输入登录码。");
+    if (wechat) return "微信里打不开相机。请从手机桌面上的「小鼠电视」（以前叫「小智电视」）图标打开遥控再扫，" + (env.any ? "或者在「我的」里输入屏幕上的码。" : "或者输入登录码。");
     if (!env.secure) return "这个网址不是 https，浏览器不让网页用相机。" + type;
     if (!env.media) return "这个浏览器不能在网页里用相机。" + type;
     const name = error && error.name;
@@ -233,7 +233,7 @@
           if (any) done(found.kind, found.value, text); else done(found.value);
           return;
         }
-        if (Date.now() > hintUntil) note(ui.any ? "认不出这个二维码：这里只认小智电视的码" : "这不是电脑登录码", "warn");
+        if (Date.now() > hintUntil) note(ui.any ? "认不出这个二维码：这里只认小鼠电视的码" : "这不是电脑登录码", "warn");
         hintUntil = Date.now() + 2000;
       } else if (hintUntil && Date.now() > hintUntil) {
         hintUntil = 0;

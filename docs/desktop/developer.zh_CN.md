@@ -11,7 +11,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `desktop/tray.py` | 入口（`XiaozhiTV`、`python3 -m desktop`）；`App`：启动并看着核心、每 2 秒读状态、第一次运行、各个菜单动作；`PystrayUI`（真托盘）、`HeadlessUI`（`--no-tray`）；`--smoke-test`、`--tray-check` |
+| `desktop/tray.py` | 入口（`RooTV`、`python3 -m desktop`）；`App`：启动并看着核心、每 2 秒读状态、第一次运行、各个菜单动作；`PystrayUI`（真托盘）、`HeadlessUI`（`--no-tray`）；`--smoke-test`、`--tray-check` |
 | `desktop/menu.py` | 菜单的纯数据模型：标题行、问题、图标状态、菜单项。测试不需要图形界面 |
 | `desktop/control.py` | 本机控制接口的客户端（P1c 约定）和 `Status.from_json`：约定变了只改这里 |
 | `desktop/core.py` | 启动/重启/停止核心进程：不写的标准输入管道 + `TV_WATCH_PARENT=1`；Windows 上作业对象（`tools/parentwatch.attach`）和 `CREATE_NO_WINDOW`；退出码 3（另一个核心占着数据目录）不当作崩溃 |
@@ -19,9 +19,9 @@
 | `desktop/power.py` | 阻止闲置睡眠：Windows `SetThreadExecutionState`（一个专用线程）、macOS `IOPMAssertion`（ctypes，后备 `caffeinate -i -w`）、Linux `systemd-inhibit`；`KeepAwake` 策略（有设备在看时拿住，最后一台离开 2 分钟后放开） |
 | `desktop/autostart.py` | 登录时启动：LaunchAgent、HKCU Run（尊重任务管理器里的关闭）、XDG autostart |
 | `tools/netcheck.py` | Windows 网络被标成公用；路由器身份（网关 MAC 的哈希）和受信任网络的判断；和核心共用（由 `server/selfhost/network.py` 执行） |
-| `desktop/icons.py`、`logs.py`、`diagnostics.py`、`paths.py` | 托盘图标（Pillow 现画）、`tray.log`、核心不在时托盘自己导出的诊断包、各系统的路径 |
+| `desktop/icons.py`、`logs.py`、`diagnostics.py`、`paths.py` | 托盘图标（`desktop/assets/` 里的 PNG，由 `tools/make_icons.py` 生成；缺文件时用 Pillow 现画）、`tray.log`、核心不在时托盘自己导出的诊断包、各系统的路径（名字和从改名前的 XiaozhiTV 文件夹一次性搬家：`tools/desktop_folders.py`；退出旧版小智电视托盘：`desktop/legacy.py`） |
 | `desktop/devcore.py` | 替身核心：只有控制接口和假状态，按 P1c 约定说话。给测试和 `--stub-core` 构建用，**不能发给用户** |
-| `packaging/desktop/` | `tray.spec`、`stub-core.spec`、`build.py`、`smoke.py`、`release.py`（版本检查、发布文件集）、`fetch_firmware.py`、`xiaozhi-tv.iss`（Inno Setup）和附带的 `ChineseSimplified.isl`、`NOTICE.txt`、Linux 的 `.desktop`/systemd 单元/说明 |
+| `packaging/desktop/` | `tray.spec`、`stub-core.spec`、`build.py`、`smoke.py`、`release.py`（版本检查、发布文件集）、`fetch_firmware.py`、`rootv.iss`（Inno Setup）和附带的 `ChineseSimplified.isl`、`NOTICE.txt`、Linux 的 `.desktop`/systemd 单元/说明 |
 | `packaging/release/release-body.txt` | 发布页的说明，固件、服务器、电脑客户端三个流程都发它 |
 | `.github/workflows/build-desktop.yml` | 四个平台的构建和冒烟测试，汇总发布文件集；推标签时发布 |
 | `tests/test_desktop_release.py` | 发布文件集、标签和版本的检查、等同一次发布的固件、发布说明、中文安装向导 |
@@ -47,13 +47,19 @@ python3 -m unittest tests.test_desktop_tray
 
 ```bash
 python3 packaging/desktop/build.py --stub-core               # CI：替身核心
-python3 packaging/desktop/build.py --core-dir <xiaozhi-tv-core 的 onedir>   # 真核心
+python3 packaging/desktop/build.py --core-dir <rootv-core 的 onedir>   # 真核心
 python3 packaging/desktop/smoke.py [--tray-check]
 ```
 
-产物在 `build-desktop/`：macOS 的 `Xiaozhi TV.app` 和 `XiaozhiTV-<版本>-macos-<arm64|x86_64>.dmg`，Windows 的免安装
-zip 和给 Inno Setup 的 `stage/Xiaozhi TV/`，Linux 的 `xiaozhi-tv-<版本>-linux-x86_64.tar.gz`，以及 `SHA256SUMS`。
+产物在 `build-desktop/`：macOS 的 `RooTV.app` 和 `RooTV-<版本>-macos-<arm64|x86_64>.dmg`，Windows 的免安装
+zip 和给 Inno Setup 的 `stage/RooTV/`，Linux 的 `rootv-<版本>-linux-x86_64.tar.gz`，以及 `SHA256SUMS`。
 `--release` 拒绝替身核心。
+
+图标：应用图标（`packaging/desktop/icons/rootv.icns`、`.ico`、`.png`）、托盘图（`desktop/assets/`）和网页图标
+（`server/relay/assets/`、`packaging/site/assets/`）都是进 git 的文件，由 `python3 tools/make_icons.py` 从
+`docs/design/media-center/brand/` 里的品牌 SVG（图标 B）生成；它需要 Pillow 和一个 SVG 栅格化工具（cairosvg、
+rsvg-convert，或无界面的 Chrome/Chromium/Edge）。改了 SVG 再运行它；构建只是复制这些文件。macOS 应用的中文名
+（小鼠电视）来自 `build.py` 写的 `zh-Hans.lproj/InfoPlist.strings`。
 
 包的布局：托盘和核心是两个 PyInstaller onedir。macOS 上核心在 `Contents/Resources/core/`（`Contents/MacOS` 里只能放
 代码，onedir 里还有数据文件），先逐个给核心里的 Mach-O 临时签名，再签整个应用；Windows 和 Linux 上核心在托盘旁边的
@@ -96,7 +102,7 @@ zip 和给 Inno Setup 的 `stage/Xiaozhi TV/`，Linux 的 `xiaozhi-tv-<版本>-l
 同一个发布。
 
 在本机做一份试用（macOS）：`python3 tools/build_core.py`，再 `python3 packaging/desktop/build.py --core-dir
-build-core/dist/xiaozhi-tv-core`；想留着就把 DMG 复制到 `dist-desktop/`（不进 git）。
+build-core/dist/rootv-core`；想留着就把 DMG 复制到 `dist-desktop/`（不进 git）。
 
 ## 还要做的
 

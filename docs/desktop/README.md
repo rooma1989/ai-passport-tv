@@ -2,9 +2,12 @@
   <a href="README.zh_CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
-# Xiaozhi TV PC client (0.2.5 beta)
+# RooTV PC client (beta)
 
-Turns a Windows PC or a Mac at home into the "TV station" for Xiaozhi TV: the
+*RooTV was called Xiaozhi TV up to 0.2.5-beta; see
+[Upgrading from Xiaozhi TV](#upgrading-from-xiaozhi-tv).*
+
+Turns a Windows PC or a Mac at home into the "TV station" for your tiny TVs: the
 computer fetches and transcodes the sources in the background and streams them
 over the home Wi-Fi to the devices; phones at home control it in the browser.
 Once installed, the only thing on screen is a small TV icon in the notification
@@ -41,7 +44,7 @@ channel table can read a few public third-party playlists by their links).
   watches, but closing a laptop lid still sleeps it.
 - The computer, the devices and the phones on the **same home network** (a wired
   computer is fine if it is behind the same router).
-- A Xiaozhi TV device: Xingzhi Cube 1.54 (Xiaozhi AI case) or FoloToy AI Passport.
+- A tiny TV device: Xingzhi Cube 1.54 (Xiaozhi AI case) or FoloToy AI Passport.
 - For flashing: a USB data cable and Chrome or Edge on the computer.
 - Internet on the first run: the client downloads the ffmpeg video component
   (a few tens of MB; progress shows in the tray menu).
@@ -53,32 +56,32 @@ website's download page picks it for you):
 
 | Your computer | Download |
 | --- | --- |
-| Windows 10/11 | `XiaozhiTV-<version>-windows-x64-setup.exe` (installer, recommended); `XiaozhiTV-<version>-windows-x64.zip` (portable) |
-| Mac with Apple silicon (M1, M2, M3, M4...) | `XiaozhiTV-<version>-macos-arm64.dmg` |
-| Mac with an Intel processor | `XiaozhiTV-<version>-macos-x86_64.dmg` |
-| Linux (bonus) | `xiaozhi-tv-<version>-linux-x86_64.tar.gz`, see `README-linux.txt` inside |
+| Windows 10/11 | `RooTV-<version>-windows-x64-setup.exe` (installer, recommended); `RooTV-<version>-windows-x64.zip` (portable) |
+| Mac with Apple silicon (M1, M2, M3, M4...) | `RooTV-<version>-macos-arm64.dmg` |
+| Mac with an Intel processor | `RooTV-<version>-macos-x86_64.dmg` |
+| Linux (bonus) | `rootv-<version>-linux-x86_64.tar.gz`, see `README-linux.txt` inside |
 
 **Which Mac?** Apple menu > About This Mac: "Chip Apple M..." is Apple silicon,
 "Processor Intel..." is Intel.
 
 **Checking the download (optional)**: the release has `SHA256SUMS-desktop`. On Windows,
-`Get-FileHash .\XiaozhiTV-...-setup.exe` in PowerShell; on a Mac,
-`shasum -a 256 ~/Downloads/XiaozhiTV-....dmg` in Terminal. The result must equal
+`Get-FileHash .\RooTV-...-setup.exe` in PowerShell; on a Mac,
+`shasum -a 256 ~/Downloads/RooTV-....dmg` in Terminal. The result must equal
 the line in `SHA256SUMS-desktop`.
 
 ## Step 2: install
 
 ### Windows
 
-1. Double-click `XiaozhiTV-...-setup.exe`.
+1. Double-click `RooTV-...-setup.exe`.
 2. If the blue "**Windows protected your PC**" (SmartScreen) appears: click
    "**More info**", then "**Run anyway**". The beta has no code-signing
    certificate; the file is not damaged. (screenshot TODO: SmartScreen)
 3. User Account Control asks to allow changes: "**Yes**". Administrator rights
    are needed once, to install into Program Files and add the firewall rule.
-4. Click through the wizard and finish with "Launch Xiaozhi TV" ticked.
+4. Click through the wizard and finish with "Launch RooTV" ticked.
 
-The installer adds a firewall rule for Xiaozhi TV that applies **only to
+The installer adds a firewall rule for RooTV that applies **only to
 Private networks**, so devices and phones can connect. If Windows has your home
 Wi-Fi marked Public, the tray menu says so; to change it: Settings > Network &
 Internet > your Wi-Fi (or Ethernet) > Network profile type > Private.
@@ -90,21 +93,21 @@ history, and please report it on GitHub.
 
 ### Mac
 
-1. Double-click the `.dmg` and **drag "Xiaozhi TV" onto "Applications"** in the
+1. Double-click the `.dmg` and **drag "RooTV" onto "Applications"** in the
    window that opens. Drag it first: run straight from the DMG window, macOS
    puts it in a temporary read-only place and its data and login item break (the
    tray menu warns about this too).
-2. Open the Applications folder and double-click "Xiaozhi TV".
-3. macOS says "**"Xiaozhi TV" Not Opened**" or that the developer cannot be
+2. Open the Applications folder and double-click "RooTV".
+3. macOS says "**"RooTV" Not Opened**" or that the developer cannot be
    verified: click "**Done**" (**not "Move to Trash"**).
 4. Open **System Settings > Privacy & Security**, scroll to Security, find
-   ""Xiaozhi TV" was blocked to protect your Mac", click "**Open Anyway**",
+   ""RooTV" was blocked to protect your Mac", click "**Open Anyway**",
    confirm "Open Anyway" and enter your password. (screenshot TODO: Open Anyway)
-   - On macOS 12-14 this also works: in Applications, **Control-click "Xiaozhi
-     TV" > Open > Open**. From macOS 15 only the steps above work.
+   - On macOS 12-14 this also works: in Applications, **Control-click "RooTV" >
+     Open > Open**. From macOS 15 only the steps above work.
 5. Later opens do not ask again (each update to a new version asks once more;
    do the same).
-6. If macOS asks to allow "Xiaozhi TV" to find devices on your local network,
+6. If macOS asks to allow "RooTV" to find devices on your local network,
    click "**Allow**", or it cannot reach the sources and devices at home. If the
    Mac's firewall is on, it also asks to accept incoming connections: "Allow".
 
@@ -113,7 +116,7 @@ screen, with no Dock icon. That is intended.
 
 ### Linux (bonus, unverified)
 
-Unpack into your home folder as `~/xiaozhi-tv` and run `~/xiaozhi-tv/xiaozhi-tv`;
+Unpack into your home folder as `~/rootv` and run `~/rootv/rootv`;
 on a machine without a tray add `--no-tray` and the setup link is printed. See
 `README-linux.txt` in the archive.
 
@@ -153,7 +156,7 @@ remote, Me > "let another phone sign in".
    - a Xingzhi Cube is **fully erased** the first time (removes the Xiaozhi AI
      firmware; you tick to agree), later only updated;
    - an AI Passport is **never erased** (it holds its factory identity);
-   - a device already running Xiaozhi TV: choose "**Update**". Only the
+   - a device already running the TV firmware: choose "**Update**". Only the
      bootloader, the partition table and the firmware itself are written; the
      settings area holding Wi-Fi, server address and the device's secret is
      not, so settings and binding stay. If a new version changes the
@@ -198,14 +201,14 @@ The menu is in Chinese in the product; in order:
 | Connect a phone | Phone sign-in by QR code |
 | Set up a TV | Opens the web flasher (the `localhost` flasher page) |
 | Devices | What each device plays, online or offline |
-| Keep this computer awake | Ticked: no idle sleep while Xiaozhi TV runs (a device can be switched on any time). Unticked (default): no idle sleep while a device watches or a phone listens, until 2 minutes after the last one stops. Neither keeps the screen on |
+| Keep this computer awake | Ticked: no idle sleep while RooTV runs (a device can be switched on any time). Unticked (default): no idle sleep while a device watches or a phone listens, until 2 minutes after the last one stops. Neither keeps the screen on |
 | Start at login | Start after logging in (on by default) |
 | This is my home network | Shown until you answer it once. On a laptop the client then opens its ports (web page, devices) only on that network; elsewhere, in a café for example, only this computer can reach them and the menu says "not on the home network". A new router counts as a new network: click it again at home |
 | Open the logs folder / Export diagnostics | For problems: diagnostics are a zip on the Desktop without passwords or keys, for you to send to whoever helps you; nothing is uploaded |
 | Restart the TV service | Try this first when a device cannot connect or the picture freezes |
-| Quit Xiaozhi TV | Stops everything; devices show "server did not answer" |
+| Quit RooTV | Stops everything; devices show "server did not answer" |
 
-Opening "Xiaozhi TV" again does not start a second copy; it opens the console.
+Opening "RooTV" again does not start a second copy; it opens the console.
 
 ## Watch on the PC, even without a TV
 
@@ -246,19 +249,41 @@ memory (about 0.5 MB, a fraction of a second of CPU per read); details in
 
 | OS | Data (database, keys, channel table) | Logs |
 | --- | --- | --- |
-| Windows | `%LOCALAPPDATA%\XiaozhiTV\` | `logs\` in the same folder |
-| Mac | `~/Library/Application Support/XiaozhiTV/` | `~/Library/Logs/XiaozhiTV/` |
-| Linux | `~/.local/share/xiaozhi-tv/` | `~/.local/state/xiaozhi-tv/logs/` |
+| Windows | `%LOCALAPPDATA%\RooTV\` | `logs\` in the same folder |
+| Mac | `~/Library/Application Support/RooTV/` | `~/Library/Logs/RooTV/` |
+| Linux | `~/.local/share/rootv/` | `~/.local/state/rootv/logs/` |
 
 - `secrets/` in the data folder holds keys; keep backups like passwords.
 - **Updating**: download the new version; on Windows run the new installer (it
   closes the running client first), on a Mac drag the new app into
   Applications to replace it. Data is kept. The beta does not update itself.
 - **Uninstalling**: Windows, Settings > Apps (the firewall rule and the login
-  item go too); Mac, quit from the menu, drag "Xiaozhi TV" from Applications to
+  item go too); Mac, quit from the menu, drag "RooTV" from Applications to
   the Trash and delete
-  `~/Library/LaunchAgents/io.github.ai-passport-tv.XiaozhiTV.plist`. Both **keep
+  `~/Library/LaunchAgents/io.github.ai-passport-tv.RooTV.plist`. Both **keep
   the data folder**; delete it by hand when you are sure.
+
+### Upgrading from Xiaozhi TV
+
+RooTV is the same program as Xiaozhi TV under a new name and icon. Install it like an update;
+nothing has to be set up again.
+
+- **Windows**: run the RooTV installer. It runs the Xiaozhi TV uninstaller first
+  (old program folder, Start-menu entries, firewall rule "Xiaozhi TV", login
+  item), then installs into `Program Files\RooTV` with a firewall rule "RooTV".
+- **Mac**: drag RooTV into Applications and open it. A Xiaozhi TV still running
+  in the menu bar is asked to quit; afterwards you can delete "Xiaozhi TV" from
+  Applications.
+- **First start** (all systems): when `RooTV` does not exist yet and no old
+  program still uses the old folder, `XiaozhiTV` (`xiaozhi-tv` on Linux) is
+  renamed to `RooTV` (`rootv`) in one step, the logs folder likewise, and the
+  old path keeps only a note, `MOVED-TO-RooTV.txt`. The old login item is
+  replaced by the new one, on or off as it was. If the old folder is still in
+  use, this run uses it and the move happens on a later start; if both folders
+  hold data, the new one is used and the old one is left alone.
+- `XIAOZHI_TV_DATA` and `XIAOZHI_TV_CORE` still work; the new names are
+  `ROOTV_DATA` and `ROOTV_CORE`. A folder chosen with them or with `--data` is
+  never moved.
 
 ## Bilibili login (optional)
 

@@ -5,9 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1c1915">
 <meta name="color-scheme" content="dark">
-<title>下载电脑客户端 · 小智电视</title>
-<meta name="description" content="小智电视电脑客户端：装在家里的 Windows 电脑或 Mac 上，把视频送到家里的小电视。测试版，免费，开源。">
-<link rel="icon" type="image/png" href="../assets/icon-180.png">
+<title>下载电脑客户端 · 小鼠电视</title>
+<meta name="description" content="小鼠电视电脑客户端：装在家里的 Windows 电脑或 Mac 上，把视频送到家里的小电视。测试版，免费，开源。">
+<link rel="icon" href="../assets/favicon.ico" sizes="32x32">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
 <style>
   /* 和首页（../index.html）同一套颜色和字体。 */
   :root {
@@ -62,7 +63,7 @@
 <body>
 <header class="bar">
   <div class="wrap">
-    <a class="brand" href="../"><b>小智电视</b><span>XIAOZHI TV</span></a>
+    <a class="brand" href="../"><b>小鼠电视</b><span>ROOTV</span></a>
     <nav aria-label="主导航"><a href="../">首页</a><a href="#tutorial">教程</a></nav>
   </div>
 </header>
@@ -111,8 +112,8 @@
         <p class="todo">截图 TODO</p>
       </div>
       <div>
-        <h3>Mac 提示「未打开"Xiaozhi TV"」</h3>
-        <ol><li>先把「Xiaozhi TV」从 DMG 窗口<b>拖进「应用程序」</b>，再从「应用程序」里打开。</li>
+        <h3>Mac 提示「未打开"RooTV"」</h3>
+        <ol><li>先把「RooTV」（小鼠电视）从 DMG 窗口<b>拖进「应用程序」</b>，再从「应用程序」里打开。从小智电视升级的，旧版会自动退出，之后可以把「Xiaozhi TV」删掉。</li>
           <li>被拦下时点「完成」（不要点「移到废纸篓」）。</li>
           <li>系统设置 → 隐私与安全性 → 往下滑，点「仍要打开」，再确认并输入密码。</li>
           <li>问能不能查找本地网络上的设备时，点「允许」。</li></ol>
@@ -137,7 +138,7 @@
 <footer>
   <div class="wrap">
     本项目开源（MIT 许可），仅供在您自己家中私人、非商业使用；不包含、不托管、不推荐任何频道、直播流、视频、账号或代理。
-    · <a href="../">小智电视首页</a>
+    · <a href="../">小鼠电视首页</a>
   </div>
 </footer>
 
@@ -145,9 +146,15 @@
   // 发布的版本：发布流程（或手动）改这一行。文件名规则见 docs/desktop/README.zh_CN.md。
   const VERSION = "0.2.0-beta";
   const BASE = "https://github.com/rooma1989/ai-passport-tv/releases/download/v" + VERSION + "/";
+  // 0.2.5-beta 及以前叫小智电视，文件名是 XiaozhiTV-… / xiaozhi-tv-…；之后是 RooTV-… / rootv-…。
+  function filePrefix(version, linux) {
+    const [a, b, c] = version.split("-")[0].split(".").map(Number);
+    const old = a === 0 && (b < 2 || (b === 2 && c <= 5));
+    return old ? (linux ? "xiaozhi-tv-" : "XiaozhiTV-") : (linux ? "rootv-" : "RooTV-");
+  }
   document.querySelectorAll("a[data-file]").forEach((a) => {
     const suffix = a.dataset.file;
-    a.href = BASE + (suffix.startsWith("linux") ? "xiaozhi-tv-" : "XiaozhiTV-") + VERSION + "-" + suffix;
+    a.href = BASE + filePrefix(VERSION, suffix.startsWith("linux")) + VERSION + "-" + suffix;
   });
   document.getElementById("release").href = "https://github.com/rooma1989/ai-passport-tv/releases/tag/v" + VERSION;
 

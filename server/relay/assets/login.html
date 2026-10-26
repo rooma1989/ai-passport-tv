@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#1c1915">
-<title>电脑登录 · 小智电视</title>
+<title>电脑登录 · 小鼠电视</title>
 <style>
   :root { --ink: #1c1915; --ink-deep: #0f0d0b; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
           --dim: #8c8170; --faint: #6e6455; --red: #d2553f; --amber: #ffb547;
@@ -47,7 +47,7 @@
 </head>
 <body>
 <main>
-  <div class="tag">小智电视 · 电脑登录</div>
+  <div class="tag">小鼠电视 · 电脑登录</div>
   <h1 id="title">正在打开…</h1>
   <div id="body"></div>
   <div id="extra"></div>
@@ -173,8 +173,8 @@ async function byTicket(ticket) {
   if (!info || !info.ok) { show("二维码过期了", el("p", "", "请在电脑上刷新二维码，再扫一次。")); return; }
   if (info.signed_in) { confirmView(info, { ticket }); return; }
   show("用遥控确认登录",
-    el("p", "", (info.guest ? "访客不能登录电脑版。请用你自己的账号：" : "这个浏览器还没有登录小智电视。请")
-      + "从手机桌面上的「小智电视」图标打开遥控，点右上角的扫一扫（或在「我的」里点「扫码登录电脑」）再扫一次；或者在「我的」里点「输入登录码」，输入："),
+    el("p", "", (info.guest ? "访客不能登录电脑版。请用你自己的账号：" : "这个浏览器还没有登录小鼠电视。请")
+      + "从手机桌面上的「小鼠电视」（以前叫「小智电视」）图标打开遥控，点右上角的扫一扫（或在「我的」里点「扫码登录电脑」）再扫一次；或者在「我的」里点「输入登录码」，输入："),
     el("div", "code", info.code),
     el("p", "dim", "电脑屏幕上也显示着这个码，2 分钟内有效。还没有账号的话，请先向管理员要一个邀请链接。"));
 }
@@ -184,7 +184,7 @@ async function byCode() {
   const status = await api("GET", "api/login/status");
   if (!status || !status.signed_in || status.me.role === "guest") {
     show("电脑登录", el("p", "", status && status.signed_in
-      ? "访客不能登录电脑版。" : "这个浏览器还没有登录小智电视。请从手机桌面上的「小智电视」图标打开遥控，在「我的」里点「扫码登录电脑」。"));
+      ? "访客不能登录电脑版。" : "这个浏览器还没有登录小鼠电视。请从手机桌面上的「小鼠电视」（以前叫「小智电视」）图标打开遥控，在「我的」里点「扫码登录电脑」。"));
     return;
   }
   const input = el("input");
@@ -193,7 +193,7 @@ async function byCode() {
   input.autocomplete = "off";
   input.setAttribute("autocapitalize", "characters");
   const next = el("button", "plain", "下一步");
-  const note = el("p", "dim", "在电脑上打开小智电视网站的 /tv/console，屏幕上有二维码和 6 位登录码。");
+  const note = el("p", "dim", "在电脑上打开小鼠电视网站的 /tv/console，屏幕上有二维码和 6 位登录码。");
   const scan = scanButton(note, () => input.focus());
   const go = async () => {
     const code = input.value.replace(/[\s-]/g, "").toUpperCase();

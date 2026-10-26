@@ -7,10 +7,11 @@
 <meta name="theme-color" content="#1c1915">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="小智电视">
+<meta name="apple-mobile-web-app-title" content="小鼠电视">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="icon-180.png">
-<title>小智电视</title>
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<title>小鼠电视</title>
 <style>
   :root {
     --ink: #1c1915; --ink-deep: #0f0d0b; --rule: #3a342b; --paper: #e6dcc8; --paper-hi: #efe5d0;
@@ -319,9 +320,9 @@
       </div>
     </div>
     <div class="homehint" id="homehint" hidden>已经登录。把遥控放到桌面：iPhone 点 Safari 的<b>「分享」→「添加到主屏幕」</b>，
-      安卓在浏览器菜单里选<b>「添加到主屏幕」</b>；以后从「小智电视」图标打开。<button id="homeok">知道了</button></div>
+      安卓在浏览器菜单里选<b>「添加到主屏幕」</b>；以后从「小鼠电视」图标打开。<button id="homeok">知道了</button></div>
     <section class="page on" id="remote">
-      <div class="mast"><h1>小智电视</h1>
+      <div class="mast"><h1>小鼠电视</h1>
         <div class="tools">
           <button id="adjust" class="noguest">调整分组</button>
           <!-- 扫一扫（scan.js 的 mode "any"）：电脑登录、绑定、遥控码……见 handleScan()。访客和单用户没有。 -->
@@ -375,7 +376,7 @@
 
     <section class="page" id="pets">
       <div class="pethead">
-        <div class="crumb"><button id="petback">‹ 小智电视 · 遥控</button><span id="petch"></span></div>
+        <div class="crumb"><button id="petback">‹ 小鼠电视 · 遥控</button><span id="petch"></span></div>
         <h1>我的宠物</h1>
         <p>等待、暂停、出错时，它会出现在电视上。</p>
       </div>
@@ -1194,13 +1195,13 @@ function earMeta() {
   if (!("mediaSession" in navigator) || !ear.on || !data) return;
   const now = data.now;
   // 锁屏上：标题是正在播的（剧集带第几集），下面一行是台名和哪台小电视。
-  const title = (now.online && (nowTitle(now) || now.name)) || ear.name || "小智电视";
+  const title = (now.online && (nowTitle(now) || now.name)) || ear.name || "小鼠电视";
   const artist = [now.online ? now.name : "", ear.name].filter(Boolean).join(" · ");
   const key = title + "|" + artist;
   if (ear.metaKey === key) return;
   ear.metaKey = key;
   try {
-    navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "小智电视",
+    navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: "小鼠电视",
       artwork: [{ src: "icon-512.png", sizes: "512x512", type: "image/png" }] });
   } catch (error) {}
 }

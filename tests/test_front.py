@@ -265,7 +265,7 @@ class FrontServerTests(unittest.TestCase):
             self.skipTest("no help page in this tree")
         response, raw = self.call(self.lan, "GET", "/TV/")
         self.assertEqual(response.status, 200)
-        self.assertIn("小智电视".encode(), raw)
+        self.assertIn("小鼠电视".encode(), raw)
 
 
 if __name__ == "__main__":

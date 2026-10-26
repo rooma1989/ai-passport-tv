@@ -374,7 +374,7 @@ audio-only 模式。
 **字标。** 用圆头几何笔画画的，不依赖字体：「Roo」是文字色，「TV」是珊瑚橘色，所以导出的文件在哪都一样。上下排的
 组合版在下面加「小鼠电视」；导出文件里这一行是活字，正式使用前要在矢量软件里转成轮廓。
 
-**应用图标：三个候选，还没选（Q12）。**
+**应用图标：三个候选，选定 B（Q12，2026-10-25 定）。**
 
 - **A 电视里的小鼠**：奶油色复古小电视（带天线）里探出一只小鼠；珊瑚橘底，和界面强调色一致。
 - **B 鼠耳小电视**：电视就是小鼠的脑袋，顶上两只圆耳朵，屏幕就是脸；夜蓝底。轮廓最简单。
@@ -387,8 +387,8 @@ audio-only 模式。
 
 **文件。** `docs/design/media-center/brand/` 里：`icon-{a,b,c}.svg`、`icon-{a,b,c}-small.svg`、`tray-{a,b,c}.svg`、
 `wordmark-rootv.svg`、`wordmark-rootv-white.svg`、`wordmark-lockup-zh.svg`、`wordmark-lockup-zh-white.svg`。它们由
-`node docs/design/media-center/brand/export.mjs` 从原型里的那段代码生成，所以页面和文件不会对不上。选定图标以后（R 阶段）
-再从它们生成 `.icns`、`.ico` 和各尺寸 PNG。
+`node docs/design/media-center/brand/export.mjs` 从原型里的那段代码生成，所以页面和文件不会对不上。R 阶段由
+`python3 tools/make_icons.py` 从图标 B 生成 `.icns`、`.ico` 和各尺寸 PNG。
 
 **改名范围**（R 阶段；什么时候做见 Q13）。今天带旧名字的地方：
 

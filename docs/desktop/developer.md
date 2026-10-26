@@ -12,7 +12,7 @@ P2c installers). User tutorial: [`README.md`](README.md).
 
 | File | What |
 | --- | --- |
-| `desktop/tray.py` | Entry point (`XiaozhiTV`, `python3 -m desktop`); `App`: starts and watches the core, reads the status every 2 s, first run, every menu action; `PystrayUI` (the real tray), `HeadlessUI` (`--no-tray`); `--smoke-test`, `--tray-check` |
+| `desktop/tray.py` | Entry point (`RooTV`, `python3 -m desktop`); `App`: starts and watches the core, reads the status every 2 s, first run, every menu action; `PystrayUI` (the real tray), `HeadlessUI` (`--no-tray`); `--smoke-test`, `--tray-check` |
 | `desktop/menu.py` | The menu as pure data: headline, problems, icon state, items. Tested without a GUI |
 | `desktop/control.py` | Client for the local control API (the P1c contract) and `Status.from_json`: a contract change is a change here only |
 | `desktop/core.py` | Starts, restarts and stops the core: a never-written stdin pipe plus `TV_WATCH_PARENT=1`; on Windows a job object (`tools/parentwatch.attach`) and `CREATE_NO_WINDOW`; exit code 3 (another core holds the data folder) is not a crash |
@@ -20,9 +20,9 @@ P2c installers). User tutorial: [`README.md`](README.md).
 | `desktop/power.py` | Idle-sleep prevention: Windows `SetThreadExecutionState` (one dedicated thread), macOS `IOPMAssertion` (ctypes, `caffeinate -i -w` fallback), Linux `systemd-inhibit`; the `KeepAwake` policy (held while a device watches, released 2 minutes after the last leaves) |
 | `desktop/autostart.py` | Start at login: LaunchAgent, HKCU Run (respects Task Manager's switch), XDG autostart |
 | `tools/netcheck.py` | Windows network marked Public; router identity (hashed gateway MAC) and the trusted-network decision; shared with the core (`server/selfhost/network.py` enforces it) |
-| `desktop/icons.py`, `logs.py`, `diagnostics.py`, `paths.py` | Tray icons (drawn with Pillow), `tray.log`, the tray's own diagnostics zip when the core is down, per-OS paths |
+| `desktop/icons.py`, `logs.py`, `diagnostics.py`, `paths.py` | Tray icons (PNG files in `desktop/assets/` from `tools/make_icons.py`; a Pillow drawing as fallback), `tray.log`, the tray's own diagnostics zip when the core is down, per-OS paths (names and the one-time move from the pre-rename XiaozhiTV folders: `tools/desktop_folders.py`; stopping an old Xiaozhi TV tray: `desktop/legacy.py`) |
 | `desktop/devcore.py` | Stand-in core: only the control API with made-up state, speaking the P1c contract. For the tests and `--stub-core` builds; **never for users** |
-| `packaging/desktop/` | `tray.spec`, `stub-core.spec`, `build.py`, `smoke.py`, `release.py` (version check, release set), `fetch_firmware.py`, `xiaozhi-tv.iss` (Inno Setup) with the vendored `ChineseSimplified.isl`, `NOTICE.txt`, the Linux `.desktop` file, systemd unit and notes |
+| `packaging/desktop/` | `tray.spec`, `stub-core.spec`, `build.py`, `smoke.py`, `release.py` (version check, release set), `fetch_firmware.py`, `rootv.iss` (Inno Setup) with the vendored `ChineseSimplified.isl`, `NOTICE.txt`, the Linux `.desktop` file, systemd unit and notes |
 | `packaging/release/release-body.txt` | The release page text, published by the firmware, server and desktop workflows |
 | `.github/workflows/build-desktop.yml` | Builds and smoke tests on four platforms, assembles the release set; publishes it on tags |
 | `tests/test_desktop_release.py` | The release set, the tag/version check, waiting for the tag's firmware, the release text, the Chinese installer |
@@ -52,15 +52,24 @@ A checkout never registers a login item (only an installed copy does), and
 
 ```bash
 python3 packaging/desktop/build.py --stub-core                          # CI: stand-in core
-python3 packaging/desktop/build.py --core-dir <xiaozhi-tv-core onedir>  # the real core
+python3 packaging/desktop/build.py --core-dir <rootv-core onedir>  # the real core
 python3 packaging/desktop/smoke.py [--tray-check]
 ```
 
-Output in `build-desktop/`: on macOS `Xiaozhi TV.app` and
-`XiaozhiTV-<version>-macos-<arm64|x86_64>.dmg`; on Windows the portable zip and
-`stage/Xiaozhi TV/` for Inno Setup; on Linux
-`xiaozhi-tv-<version>-linux-x86_64.tar.gz`; and `SHA256SUMS`. `--release`
+Output in `build-desktop/`: on macOS `RooTV.app` and
+`RooTV-<version>-macos-<arm64|x86_64>.dmg`; on Windows the portable zip and
+`stage/RooTV/` for Inno Setup; on Linux
+`rootv-<version>-linux-x86_64.tar.gz`; and `SHA256SUMS`. `--release`
 refuses the stand-in core.
+
+Icons: the app icons (`packaging/desktop/icons/rootv.icns`, `.ico`, `.png`), the
+tray images (`desktop/assets/`) and the web icons (`server/relay/assets/`,
+`packaging/site/assets/`) are tracked files made from the brand SVGs in
+`docs/design/media-center/brand/` (icon B) by `python3 tools/make_icons.py`, which
+needs Pillow and an SVG rasteriser (cairosvg, rsvg-convert, or headless
+Chrome/Chromium/Edge). Run it after changing an SVG; a build only copies the files.
+The macOS app gets its Chinese display name from `zh-Hans.lproj/InfoPlist.strings`,
+written by `build.py`.
 
 Layout: the tray and the core are two PyInstaller onedirs. On macOS the core
 goes in `Contents/Resources/core/` (`Contents/MacOS` must hold only code, and a
@@ -132,7 +141,7 @@ the default branch, and push the tag `v<version>`; the firmware, server and
 desktop workflows each add their files to the one release.
 
 A local build to try (macOS): `python3 tools/build_core.py`, then
-`python3 packaging/desktop/build.py --core-dir build-core/dist/xiaozhi-tv-core`;
+`python3 packaging/desktop/build.py --core-dir build-core/dist/rootv-core`;
 copy the DMG to `dist-desktop/` (git-ignored) to keep it.
 
 ## Still to do

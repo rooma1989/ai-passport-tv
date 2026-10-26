@@ -224,7 +224,7 @@ class WebTests(unittest.TestCase):
         cookie = self.login_cookie(f"/?k={KEY}")
         answer, body = self.raw("GET", "/tv/", {"Cookie": cookie})
         self.assertEqual(answer.status, 200)
-        self.assertIn("小智电视".encode(), body)
+        self.assertIn("小鼠电视".encode(), body)
         answer, body = self.raw("GET", "/api/state", {"Cookie": cookie})
         self.assertEqual(answer.status, 200)
         self.assertEqual(self.raw("GET", "/tv/", {"Cookie": "tvs=forged"})[0].status, 404)
@@ -256,6 +256,34 @@ class WebTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["scope"], "/tv/")
         self.assertNotIn("start_url", json.loads(body))
         self.assertEqual(self.raw("GET", "/icon-180.png")[1][:4], b"\x89PNG")
+        # RooTV: the manifest names the product and lists every icon, and each is served.
+        manifest = json.loads(body)
+        self.assertEqual(manifest["name"], "小鼠电视")
+        def png(data):
+            """(width, height, colour type) from a PNG's IHDR chunk."""
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big"), data[25]
+
+        purposes = set()
+        for icon in manifest["icons"]:
+            answer, data = self.raw("GET", "/" + icon["src"])
+            self.assertEqual(answer.status, 200, icon["src"])
+            self.assertEqual(answer.headers["Content-Type"], icon["type"], icon["src"])
+            purposes.add(icon["purpose"])
+            if icon["type"] == "image/png":
+                width, height = (int(n) for n in icon["sizes"].split("x"))
+                self.assertEqual(png(data)[:2], (width, height), icon["src"])
+                if icon["purpose"] == "maskable":
+                    self.assertEqual(png(data)[2], 2, "a maskable icon is opaque (RGB)")
+        self.assertEqual(purposes, {"any", "maskable"})
+        sizes = {icon["sizes"] for icon in manifest["icons"] if icon["purpose"] == "any"}
+        self.assertTrue({"192x192", "512x512"} <= sizes)
+        for path, kind in (("/favicon.ico", "image/x-icon"), ("/favicon.svg", "image/svg+xml"),
+                           ("/apple-touch-icon.png", "image/png")):
+            answer, data = self.raw("GET", path)
+            self.assertEqual((answer.status, answer.headers["Content-Type"]), (200, kind), path)
+        # Opaque (RGB, colour type 2): iOS turns transparent corners black.
+        self.assertEqual(png(self.raw("GET", "/apple-touch-icon.png")[1]), (180, 180, 2))
         self.assertEqual(self.raw("GET", "/pets/cici_mood1.png")[1][:4], b"\x89PNG")
         # The sound-provisioning page: public, at /tv/wifi (and /TV/W through nginx).
         for path in ("/wifi", "/tv/wifi", "/TV/W"):

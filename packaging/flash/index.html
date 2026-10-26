@@ -11,7 +11,7 @@
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
-<title>小智电视 · 刷机</title>
+<title>小鼠电视 · 刷机</title>
 <style>
   /* 和网站首页（packaging/site/index.html）同一套颜色和字体。 */
   :root {
@@ -101,15 +101,15 @@
 <body>
 <header class="bar">
   <div class="wrap">
-    <a class="brand" href="../"><b>小智电视</b><span>FLASH</span></a>
+    <a class="brand" href="../"><b>小鼠电视</b><span>FLASH</span></a>
     <button class="lang" id="langToggle" type="button" aria-label="Switch language">English</button>
   </div>
 </header>
 
 <main class="wrap">
   <h1><span data-lang="zh">给设备刷固件</span><span data-lang="en">Flash a device</span></h1>
-  <p class="lede" data-lang="zh">把小智电视的固件写进 <b>星智 Cube 1.54</b>（小智 AI 4G 款）或 <b>FoloToy AI Passport</b>。在浏览器里完成，不用装软件，固件不会上传到任何地方。</p>
-  <p class="lede" data-lang="en">Writes the Xiaozhi TV firmware to a <b>Xingzhi Cube 1.54</b> (Xiaozhi AI 4G) or a <b>FoloToy AI Passport</b>, from the browser. Nothing to install; the firmware is not uploaded anywhere.</p>
+  <p class="lede" data-lang="zh">把小鼠电视的固件写进 <b>星智 Cube 1.54</b>（小智 AI 4G 款）或 <b>FoloToy AI Passport</b>。在浏览器里完成，不用装软件，固件不会上传到任何地方。</p>
+  <p class="lede" data-lang="en">Writes the RooTV firmware to a <b>Xingzhi Cube 1.54</b> (Xiaozhi AI 4G) or a <b>FoloToy AI Passport</b>, from the browser. Nothing to install; the firmware is not uploaded anywhere.</p>
   <p class="ver" id="version"></p>
 
   <!-- 浏览器不行时，整页只剩这一块有用 -->
@@ -164,13 +164,13 @@
     <div id="planReplace" class="note stop hidden">
       <h3 data-lang="zh">会先擦除整块芯片</h3>
       <h3 data-lang="en">The whole chip will be erased first</h3>
-      <p data-lang="zh">这台设备里现在不是小智电视的固件（多半是原来的<b>小智 AI</b> 固件）。刷小智电视要先把芯片整个擦掉：小智 AI 固件和它的设置都会删掉，之后这台设备就是一台小电视，不再是 AI 对话玩具。</p>
-      <p data-lang="en">This device is not running the Xiaozhi TV firmware (most likely the original <b>Xiaozhi AI</b> firmware). The chip is erased completely first: the Xiaozhi AI firmware and its settings are deleted, and the device becomes a small TV instead of an AI chat toy.</p>
+      <p data-lang="zh">这台设备里现在不是小鼠电视的固件（多半是原来的<b>小智 AI</b> 固件）。刷小鼠电视要先把芯片整个擦掉：小智 AI 固件和它的设置都会删掉，之后这台设备就是一台小电视，不再是 AI 对话玩具。</p>
+      <p data-lang="en">This device is not running the RooTV firmware (most likely the original <b>Xiaozhi AI</b> firmware). The chip is erased completely first: the Xiaozhi AI firmware and its settings are deleted, and the device becomes a small TV instead of an AI chat toy.</p>
       <p data-lang="zh">想换回去：按小智官方（<a href="https://github.com/78/xiaozhi-esp32" rel="noopener noreferrer">xiaozhi-esp32</a> 项目）的方法重新刷小智 AI 固件，板型是 <code>xingzhi-cube-1.54tft-ml307</code>，这块板是 8 MB flash。</p>
       <p data-lang="en">To go back, re-flash the Xiaozhi AI firmware the way the <a href="https://github.com/78/xiaozhi-esp32" rel="noopener noreferrer">xiaozhi-esp32</a> project describes; the board is <code>xingzhi-cube-1.54tft-ml307</code> with 8 MB of flash.</p>
     </div>
 
-    <!-- 已经是小智电视（两种板子都有）：更新或清空重装 -->
+    <!-- 已经是小鼠电视（两种板子都有）：更新或清空重装 -->
     <div id="planChoose" class="hidden">
       <label class="choice"><input type="radio" name="mode" value="update" checked>
         <span data-lang="zh">更新固件（推荐）</span><span data-lang="en">Update (recommended)</span>
@@ -184,7 +184,7 @@
         <small data-lang="en" id="cleanPassportEn">The chip is not erased, but the whole image is written, blank settings area included: Wi-Fi and server address must be set again; the device gets a new secret, so use "re-pair" on it in the household server's admin. The factory identity is not affected.</small></label>
     </div>
 
-    <!-- 已经是小智电视，但这次的固件改了分区表：只能清空重装 -->
+    <!-- 已经是小鼠电视，但这次的固件改了分区表：只能清空重装 -->
     <div id="planMismatch" class="note stop hidden">
       <h3 data-lang="zh">这次没法保留设置更新</h3>
       <h3 data-lang="en">This update cannot keep the settings</h3>

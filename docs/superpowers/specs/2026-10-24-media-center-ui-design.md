@@ -541,7 +541,7 @@ nowhere else.
 adds the Chinese name beneath; in the exported file that line is live text and
 must be converted to outlines before production use.
 
-**App icon: three candidates, not chosen yet (Q12).**
+**App icon: three candidates; B chosen (Q12, decided 2026-10-25).**
 
 - **A, mouse in the TV**: a mouse peeking up inside a cream retro TV with
   antennas; coral background, matching the UI accent.
@@ -566,7 +566,7 @@ Chinese name; "Try in the top bar" swaps it into the page header.
 `wordmark-lockup-zh-white.svg`. They are written by
 `node docs/design/media-center/brand/export.mjs` from the builder inside the
 prototype, so the page and the files cannot drift. `.icns`, `.ico` and PNG
-sizes are produced from them once an icon is chosen (phase R).
+sizes are produced from icon B by `python3 tools/make_icons.py` (phase R).
 
 **Rename scope** (phase R; timing is Q13). What carries the old name today:
 

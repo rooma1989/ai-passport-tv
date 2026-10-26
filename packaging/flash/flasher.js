@@ -34,7 +34,7 @@ const t = (zh, en) => (lang() === 'en' ? en : zh);
 function setLang(next) {
   document.documentElement.lang = next === 'en' ? 'en' : 'zh-CN';
   $('langToggle').textContent = next === 'en' ? '中文' : 'English';
-  document.title = t('小智电视 · 刷机', 'Xiaozhi TV · Flash');
+  document.title = t('小鼠电视 · 刷机', 'RooTV · Flash');
   try { localStorage.setItem('flash-lang', next); } catch (_) { /* private mode: fine */ }
   renderAll();
 }
@@ -232,7 +232,7 @@ function renderFacts() {
   if (!state.build) return;
   const installed = state.installed;
   const now = {
-    tv: [`小智电视 ${installed.app ? installed.app.version : ''}`, `Xiaozhi TV ${installed.app ? installed.app.version : ''}`],
+    tv: [`小鼠电视 ${installed.app ? installed.app.version : ''}`, `RooTV ${installed.app ? installed.app.version : ''}`],
     blank: ['空的（已擦除）', 'empty (erased)'],
     other: [installed.app && installed.app.project ? `别的固件（${installed.app.project}）` : '别的固件', installed.app && installed.app.project ? `other firmware (${installed.app.project})` : 'other firmware'],
     unknown: ['没读出来', 'could not read'],
@@ -318,7 +318,7 @@ function renderPlan() {
   if (state.files) renderFacts();
   let agree = null;
   if (d.reason === 'replace') {
-    agree = ['我知道会擦除整块芯片，小智 AI 固件会被删掉，要换成小智电视。',
+    agree = ['我知道会擦除整块芯片，小智 AI 固件会被删掉，要换成小鼠电视。',
       'I understand the whole chip is erased and the Xiaozhi AI firmware is deleted.'];
   } else if (d.reason === 'clean' || d.reason === 'mismatch') {
     agree = xingzhi
