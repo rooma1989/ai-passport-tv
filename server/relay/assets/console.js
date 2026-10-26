@@ -602,6 +602,7 @@ function render() {
   if (route === "series") renderSeriesGrid();
   renderSubs();
   renderHistory();
+  if (route === "search") renderSearchSource();
   followEpisodes();
   renderBiliGate();
   if (route === "settings") renderAbout();
@@ -2211,9 +2212,16 @@ $("addSeries").onclick = () => busy($("addSeries"), async () => {
   } else toast(answer.error, true);
 });
 
-// ======================================================================= 搜索：B 站搜索（/api/bili/search，封面经 /api/bili/thumb）+ 粘贴链接即播
+// ======================================================================= 搜索：B 站搜索（/api/bili/search，封面经 /api/bili/thumb）、
+// YouTube 搜索（/api/yt/search，server/relay/ytsearch.py）+ 粘贴链接即播
 
 const bs = { kind: "video", q: "", page: 0, pages: 0, items: [], run: 0, timer: 0, retried: false };
+// 在哪儿搜（bili / yt），每个浏览器记住；YouTube 的结果另放，切回来还在。
+let searchSrc = lsGet("console.search.src", "bili") === "yt" ? "yt" : "bili";
+const YT_KINDS = ["video", "channel", "playlist"];
+const yts = { kind: YT_KINDS.includes(lsGet("console.yt.kind", "")) ? lsGet("console.yt.kind", "") : "video",
+              q: "", items: [], tries: 0, ticker: 0, error: null };
+const YT_WAIT_MS = 30000;   // 服务器最多等节点 25 秒，这里多留几秒
 const LINKY = /(https?:\/\/|bilibili\.com|b23\.tv|youtube\.com|youtu\.be|^BV[0-9A-Za-z]{10}$)/i;
 function bsSay(text, kind) {
   $("bsState").textContent = text;
@@ -2261,6 +2269,7 @@ function renderLinkHit() {
 async function bsSearch(fresh) {
   if (renderLinkHit()) return;
   if (isGuest()) { bsSay("访客只能粘贴视频链接播放。"); return; }
+  if (searchSrc === "yt") return ytSearch(false);
   const q = $("bsQuery").value.trim().replace(/\s+/g, " ");
   if (!q) { bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。粘贴 B 站或 YouTube 视频链接可以直接播放。"); return; }
   if (q.length > 40) { bsSay("关键词太长了（最多 40 个字）", "bad"); return; }
@@ -2298,7 +2307,9 @@ $("bsQuery").addEventListener("input", () => {
   clearTimeout(bs.timer);
   if (renderLinkHit()) return;
   const q = $("bsQuery").value.trim();
-  if (q.length >= 2 && q !== bs.q && !isGuest()) bs.timer = setTimeout(() => bsSearch(true), 900);   // 停手 0.9 秒再搜，不逐字去问 B 站
+  // 停手 0.9 秒再搜，不逐字去问 B 站；YouTube 每次都要跑一次 yt-dlp，停手 1.5 秒。
+  if (searchSrc === "yt") { if (q.length >= 2 && q !== yts.q && !isGuest() && ytReady()) bs.timer = setTimeout(() => bsSearch(true), 1500); }
+  else if (q.length >= 2 && q !== bs.q && !isGuest()) bs.timer = setTimeout(() => bsSearch(true), 900);
 });
 $("bsQuery").addEventListener("keydown", (event) => { if (event.key === "Enter") bsSearch(true); });
 $("bsMore").onclick = () => bsSearch(false);
@@ -2312,6 +2323,218 @@ for (const b of qsa("#bsKinds button")) {
     if ($("bsQuery").value.trim()) bsSearch(true);
     else bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。");
   };
+}
+
+// ---------- YouTube 搜索 ----------
+
+const YT_HELLO = "输入关键词按回车（停手一会儿也会搜）。YouTube 每次搜索要跑一次 yt-dlp，要几秒到十几秒。粘贴 YouTube 视频链接可以直接播放。";
+// YouTube 能不能搜：off（没开）、cloudoff（服务器没配）、login（cookies 过期）、ok。
+function ytAvail() {
+  if (!data) return "ok";
+  if (data.youtube_off) return "off";
+  if (!data.youtube) return "cloudoff";
+  return data.youtube.state === "login" ? "login" : "ok";
+}
+function ytReady() { const a = ytAvail(); return a === "ok" || a === "login"; }
+const YT_GATES = {
+  off: ["YouTube 还没开启", "YouTube 还没开启：去「设置 → YouTube」开启本机模式并填代理。开好以后就能在这里搜 YouTube 视频、频道和播放列表。", true],
+  cloudoff: ["这台服务器没有 YouTube", "这台服务器还没有配置 YouTube，现在只能搜 B 站。", false],
+  login: ["需要导入 cookies", "YouTube 要求登录才肯回答：去「设置 → YouTube」导入 cookies.txt（用小号导出）。", true],
+  tools: ["YouTube 组件还没装好", "去「设置 → YouTube」安装 yt-dlp 等组件，装好就能搜。", true],
+};
+// 顶上的说明：没开、没配、要 cookies、组件没装好时代替结果列表；有按钮去设置（管理员才看得到那一页）。
+function renderYtGate() {
+  const box = $("ytGate");
+  const why = searchSrc !== "yt" || isGuest() ? "" : (yts.error && YT_GATES[yts.error] ? yts.error : ytAvail() === "ok" ? "" : ytAvail());
+  const sig = why + (me ? me.role : "");
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.hidden = !why;
+  if (!why) { box.replaceChildren(); return; }
+  if ((why === "off" || why === "cloudoff") && $("bsState").textContent === YT_HELLO) bsSay("");   // 搜不了：不说「按回车搜」
+  const [title, text, settings] = YT_GATES[why];
+  const admin = me && me.role === "admin";
+  box.innerHTML = `<div class="empty ytgate"><div class="eic">${ic("search", 40)}</div><b>${esc(title)}</b><p>${esc(text)}${settings && !admin ? "（这一页要管理员打开）" : ""}</p>`
+    + (settings && admin ? `<a class="btn pri sm" href="#/settings" id="ytGateGo">去「设置 → YouTube」</a>` : "") + `</div>`;
+  const go = $("ytGateGo");
+  if (go) go.onclick = () => { setTimeout(() => { const yt = $("ytLocal"); if (yt && !yt.hidden) yt.scrollIntoView(); }, 300); };
+}
+// 来源切换、种类按钮、输入框的提示跟着「在哪儿搜」走（render() 每次刷新都会调，不变就不动）。
+function renderSearchSource() {
+  const yt = searchSrc === "yt";
+  for (const x of qsa("#srcSwitch button")) x.setAttribute("aria-pressed", String(x.dataset.src === searchSrc));
+  for (const x of qsa("#ytKinds button")) x.setAttribute("aria-pressed", String(x.dataset.kind === yts.kind));
+  $("bsKinds").hidden = yt;
+  $("ytKinds").hidden = !yt;
+  $("bsQuery").placeholder = yt ? "搜 YouTube 视频、频道、播放列表，或粘贴视频链接" : "搜 B 站视频、UP 主、番剧，或粘贴视频链接";
+  if (yt) $("castYt").hidden = true;    // 没开 YouTube 的说明由 ytGate 写
+  renderYtGate();
+}
+function ytHello() {
+  if ($("linkHit").hidden === false) return;
+  const a = ytAvail();
+  bsSay(a === "ok" || a === "login" ? YT_HELLO : "");
+}
+function setSource(src) {
+  if (src === searchSrc) return;
+  searchSrc = src;
+  lsSet("console.search.src", src);
+  clearTimeout(bs.timer);
+  bs.run++;                              // 切走了：还在路上的那个搜索回来也不画
+  yts.error = null;
+  if (route === "search" && data) $("castYt").hidden = !data.youtube_off;
+  renderSearchSource();
+  renderSearch();
+  const q = $("bsQuery").value.trim();
+  if (renderLinkHit()) return;
+  if (src === "yt") {
+    if (q && q !== yts.q && ytReady()) bsSearch(true);
+    else if (yts.items.length) bsSay("YouTube 上「" + yts.q + "」的 " + yts.items.length + " 个结果");
+    else ytHello();
+  } else if (q && q !== bs.q) bsSearch(true);
+  else bsSay(bs.items.length ? "这里列出 " + bs.items.length + " 个" : "输入关键词，停手一会儿就会搜；按回车马上搜。粘贴 B 站或 YouTube 视频链接可以直接播放。");
+}
+for (const b of qsa("#srcSwitch button")) b.onclick = () => setSource(b.dataset.src);
+for (const b of qsa("#ytKinds button")) {
+  b.onclick = () => {
+    if (yts.kind === b.dataset.kind) return;
+    yts.kind = b.dataset.kind;
+    lsSet("console.yt.kind", yts.kind);
+    yts.items = []; yts.q = ""; yts.error = null;
+    renderSearchSource();
+    renderSearch();
+    if ($("bsQuery").value.trim()) bsSearch(true);
+    else ytHello();
+  };
+}
+renderSearchSource();
+if (searchSrc === "yt") bsSay(YT_HELLO);
+function ytStopTicker() { clearInterval(yts.ticker); yts.ticker = 0; }
+async function ytSearch(retry) {
+  if (!retry) yts.tries = 0;
+  const q = $("bsQuery").value.trim().replace(/\s+/g, " ");
+  const kind = yts.kind;
+  if (!q) { ytHello(); return; }
+  if (q.length > 60) { bsSay("关键词太长了（最多 60 个字）", "bad"); return; }
+  const avail = ytAvail();
+  if (avail === "off" || avail === "cloudoff") { renderYtGate(); bsSay(""); return; }
+  clearTimeout(bs.timer);
+  ytStopTicker();
+  const run = ++bs.run;
+  const what = { video: "视频", channel: "频道", playlist: "播放列表" }[kind];
+  const started = Date.now();
+  const progress = () => {
+    const s = Math.round((Date.now() - started) / 1000);
+    bsSay("正在 YouTube 上搜「" + q + "」的" + what + "…" + (s >= 2 ? " " + s + " 秒" : "")
+          + (s >= 8 ? "（yt-dlp 经代理要一会儿，最多等 25 秒）" : ""), "busy");
+  };
+  progress();
+  yts.ticker = setInterval(() => { if (run === bs.run) progress(); else ytStopTicker(); }, 1000);
+  $("bsMore").hidden = true;
+  let answer;
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), YT_WAIT_MS);
+  try {
+    const response = await fetch("api/yt/search?" + new URLSearchParams({ q, kind }),
+                                 { credentials: "same-origin", signal: abort.signal });
+    if (response.status === 404) throw new SignedOut("登录已失效");
+    answer = await response.json();
+  } catch (error) {
+    if (run !== bs.run) return;
+    ytStopTicker();
+    if (error instanceof SignedOut) { signedOut(); return; }
+    bsSay(error && error.name === "AbortError" ? "YouTube 搜索超时了：代理慢或连不上，过一会儿再试" : "连不上小电视服务器", "bad");
+    return;
+  } finally { clearTimeout(timer); }
+  if (run !== bs.run) return;           // 已经有更新的搜索了，或切回了 B 站
+  ytStopTicker();
+  if (!answer.ok) {
+    if (answer.retry && yts.tries < 3) {   // 节点正忙、别的搜索在跑、搜得太快：等一下再试，最多三次
+      yts.tries++;
+      bsSay(answer.error + "（" + Math.ceil(answer.retry) + " 秒后自动再试）", "busy");
+      bs.timer = setTimeout(() => { if (run === bs.run && !renderLinkHit()) ytSearch(true); }, answer.retry * 1000 + 300);
+      return;
+    }
+    yts.tries = 0;
+    yts.error = YT_GATES[answer.reason] ? answer.reason : null;
+    yts.items = []; yts.q = "";
+    renderSearch();
+    renderYtGate();
+    bsSay(yts.error ? "" : answer.error, "bad");
+    return;
+  }
+  yts.tries = 0;
+  if (yts.error) { yts.error = null; renderYtGate(); }
+  yts.q = q; yts.items = answer.items;
+  if (!yts.items.length) bsSay("YouTube 上没有搜到「" + q + "」的" + what + (kind === "video" ? "（直播、预告和 Shorts 不列出）" : ""));
+  else bsSay("YouTube 上「" + q + "」的 " + yts.items.length + " 个" + what + "：" + (kind === "video" ? "点「播放」放到小电视或这台电脑"
+             : kind === "channel" ? "「订阅频道」后它就是一个台，新视频自动排上" : "「加为剧集」后按列表顺序播，记住看到哪一集"));
+  renderSearch();
+}
+// 大约多久以前（YouTube 搜索结果只说「3 年前」，节点换算成的时刻只是大约）。
+function ytAgo(at) {
+  if (!at) return "";
+  const days = (Date.now() / 1000 - at) / 86400;
+  if (days < 1) return "今天";
+  if (days < 30) return Math.round(days) + " 天前";
+  if (days < 365) return Math.round(days / 30) + " 个月前";
+  return Math.round(days / 365) + " 年前";
+}
+function subscribeChannel(item) {
+  const link = item.kind === "channel" ? item.link : item.channel_link;
+  const name = item.kind === "channel" ? item.name : item.channel;
+  return addButton("订阅频道", "ytchannel", link, async () => {
+    toast("正在订阅" + (name ? "「" + name + "」" : "") + "…（YouTube 要取投稿列表，十几秒）", false, 8000);
+    const answer = await call("POST", "api/creators", { url: link });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    toast("已订阅「" + answer.creator.name + "」，在频道里是一个新台");
+    await refresh();
+    loadHome(true);
+  });
+}
+function addPlaylist(item) {
+  return addButton("加为剧集", "ytseries", item.id, async () => {
+    toast("正在取播放列表…（YouTube 要十几秒）", false, 8000);
+    const answer = await call("POST", "api/series", { url: item.link, name: "" });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    toast("已添加「" + answer.series.name + "」，共 " + answer.series.total + " 集");
+    await refresh();
+    loadHome(true);
+  });
+}
+function renderYtHits(box) {
+  for (const item of yts.items) {
+    const row = el("div", "hit");
+    const body = el("div", "body");
+    const acts = el("div", "acts");
+    if (item.kind === "video") {
+      const cover = thumb(item, "v");
+      cover.appendChild(el("span", "dur", clock(item.duration)));
+      const meta = el("div", "m");
+      meta.append(el("b", "", item.channel || "—"));
+      const more = [item.views ? "播放 " + bigNumber(item.views) : "", ytAgo(item.date)].filter(Boolean);
+      if (more.length) meta.append(" · " + more.join(" · "));
+      body.append(el("div", "t", item.title), meta);
+      const go = el("button", "go", "播放");
+      go.onclick = () => play({ kind: "cast", url: item.link, title: item.title }, null, item.title);
+      acts.appendChild(go);
+      if (item.channel_link) acts.appendChild(subscribeChannel(item));
+      row.append(cover, body, acts);
+    } else if (item.kind === "channel") {
+      const meta = [item.fans ? "订阅 " + bigNumber(item.fans) : "", item.videos ? "视频 " + bigNumber(item.videos) + " 个" : ""].filter(Boolean);
+      body.append(el("div", "t", item.name), el("div", "m", meta.join(" · ") || "YouTube 频道"));
+      acts.appendChild(subscribeChannel(item));
+      row.append(thumb(item, "f", "face"), body, acts);
+    } else {
+      const cover = thumb(item, "v");
+      if (item.count) cover.appendChild(el("span", "dur", item.count + " 个视频"));
+      body.append(el("div", "t", item.title), el("div", "m", item.channel ? "" : "播放列表"));
+      if (item.channel) body.lastChild.append(el("b", "", item.channel), " · 播放列表");
+      acts.appendChild(addPlaylist(item));
+      row.append(cover, body, acts);
+    }
+    box.appendChild(row);
+  }
 }
 
 function thumb(item, size, cls) {
@@ -2331,8 +2554,9 @@ function thumb(item, size, cls) {
 }
 function subscribed(kind, source) {
   if (!data) return false;
-  return kind === "user" ? (data.creators || []).some((c) => c.site === "bilibili" && c.source === source)
-    : kind === "series" ? (data.series || []).some((s) => s.site === "bilibili" && s.source === source) : false;
+  const site = kind === "ytchannel" || kind === "ytseries" ? "youtube" : "bilibili";
+  return kind === "user" || kind === "ytchannel" ? (data.creators || []).some((c) => c.site === site && c.source === source)
+    : kind === "series" || kind === "ytseries" ? (data.series || []).some((s) => s.site === site && s.source === source) : false;
 }
 function addButton(text, kind, source, work) {
   const b = el("button", "ghost", text);
@@ -2371,7 +2595,7 @@ function markSubscribed() {
   for (const b of qsa("#bsHits button[data-kind]")) {
     const done = subscribed(b.dataset.kind, b.dataset.source);
     b.classList.toggle("done", done);
-    b.textContent = done ? (b.dataset.kind === "user" ? "已订阅" : "已添加") : b.dataset.text;
+    b.textContent = done ? (b.dataset.kind === "user" || b.dataset.kind === "ytchannel" ? "已订阅" : "已添加") : b.dataset.text;
     if (done) b.disabled = true;
     else if (b.classList.contains("was")) b.disabled = false;
     b.classList.toggle("was", done);
@@ -2380,6 +2604,12 @@ function markSubscribed() {
 function renderSearch() {
   const box = $("bsHits");
   box.replaceChildren();
+  if (searchSrc === "yt") {
+    renderYtHits(box);
+    $("bsMore").hidden = true;          // YouTube 一次给 20 个，不翻页
+    markSubscribed();
+    return;
+  }
   for (const item of bs.items) {
     const row = el("div", "hit");
     const body = el("div", "body");
