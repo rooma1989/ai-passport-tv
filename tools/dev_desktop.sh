@@ -11,7 +11,7 @@
 #
 # Back to the packaged app: `tools/dev_desktop.sh stop`, then open RooTV.app.
 # Environment: ROOTV_DEV_DATA (data folder), ROOTV_DEV_PYTHON (Python 3.11+),
-# ROOTV_DEV_FFMPEG (ffmpeg path).
+# ROOTV_DEV_FFMPEG (ffmpeg path), ROOTV_DEV_FIRMWARE (web flasher's firmware folder).
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +22,8 @@ pidfile="$data/run/dev-core.pid"
 python="${ROOTV_DEV_PYTHON:-$(command -v python3)}"
 ffmpeg="${ROOTV_DEV_FFMPEG:-$(command -v ffmpeg || echo fetch)}"
 app_id="io.github.ai-passport-tv.RooTV"
+# The web flasher's firmware: a checkout has none, so borrow the installed app's copy.
+firmware="${ROOTV_DEV_FIRMWARE:-/Applications/RooTV.app/Contents/Resources/core/_internal/firmware}"
 
 running() {
     [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null
@@ -75,7 +77,7 @@ start() {
     (
         cd "$root"
         env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
-            -u NO_PROXY -u no_proxy PYTHONPATH="$root" PYTHONUNBUFFERED=1 \
+            -u NO_PROXY -u no_proxy PYTHONPATH="$root" PYTHONUNBUFFERED=1 XIAOZHI_TV_FIRMWARE_DIR="$firmware" \
             nohup "$python" -m server.selfhost --desktop --data "$data" --ffmpeg "$ffmpeg" \
             >>"$log" 2>&1 </dev/null &
         echo $! >"$pidfile"
