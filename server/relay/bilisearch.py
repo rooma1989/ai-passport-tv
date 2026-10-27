@@ -1,7 +1,10 @@
 """电脑版「订阅」页的 B 站搜索，和搜索结果封面的缩略图代理。
 
-- GET /api/bili/search?q=…&kind=video|user|bangumi&page=N：一页结果（封面、标题、简介、UP 主、时长、播放数），
+- GET /api/bili/search?q=…&kind=video|user|bangumi|ft&page=N：一页结果（封面、标题、简介、UP 主、时长、播放数），
   页面据此「订阅 UP 主」（POST /api/creators）、「加为剧集」（POST /api/series），添加还是走原来的接口。
+  ft（影视）、bangumi（番剧）是正版的整季（kind "pgc"）；「视频」第一页另给 pgc：最像的几部影视、番剧
+  （bilibili.Bilibili.pgc_top），页面放在最前面，「在电脑上看」按番剧链接放。搜索照旧不带个人的 cookies（结果大家共用缓存），
+  要不要大会员在放的时候按看的人的登录定。
 - GET /api/bili/thumb?u=<封面地址>&s=v|f|p：封面缩略图。电脑版的 CSP 只许本站的图片（img-src 'self'），
   B 站图床也拦外站的 Referer，所以由中转去取：只认 *.hdslb.com 的 /bfs/ 图片（bilibili.cover_url），
   不跟随跳转，限大小，结果在内存里缓存一会儿，浏览器也缓存一天。

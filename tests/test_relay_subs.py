@@ -140,9 +140,10 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(bilibili.browse_users(SEARCH_USERS["data"]), [
             {"kind": "user", "id": "546195", "name": "老番茄", "desc": "新浪微博：_老番茄_",
              "cover": "https://i1.hdslb.com/bfs/face/f.jpg", "fans": 20840107, "videos": 680}])
-        self.assertEqual(bilibili.browse_bangumi(SEARCH_BANGUMI["data"]), [
-            {"kind": "bangumi", "id": "ss2307", "title": "海尔兄弟", "desc": "经典科普动画",
-             "cover": "https://i0.hdslb.com/bfs/bangumi/p.jpg", "eps": 52, "styles": "科普/冒险", "badge": "番剧",
+        self.assertEqual(bilibili.browse_pgc(SEARCH_BANGUMI["data"]), [
+            {"kind": "pgc", "id": "ss2307", "title": "海尔兄弟", "org_title": "", "desc": "经典科普动画",
+             "cover": "https://i0.hdslb.com/bfs/bangumi/p.jpg", "eps": 52, "show": "", "badge": "番剧", "year": 0,
+             "areas": "", "styles": "科普/冒险", "score": 0, "tags": [],
              "link": "https://www.bilibili.com/bangumi/play/ss2307"}])
 
     def test_browse_calls_the_unsigned_search(self):
@@ -175,9 +176,8 @@ class BrowseClient(FakeClient):
         self.browsed.append((query, kind, page))
         if self.fail is not None:
             raise self.fail
-        shape = {"video": bilibili.browse_videos, "user": bilibili.browse_users, "bangumi": bilibili.browse_bangumi}
         data = {"video": SEARCH_VIDEOS, "user": SEARCH_USERS, "bangumi": SEARCH_BANGUMI}[kind]["data"]
-        return {"items": shape[kind](data), "page": page, "pages": 3, "total": 1000}
+        return {"items": bilibili._BROWSE_SHAPERS[kind](data), "page": page, "pages": 3, "total": 1000}
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 100

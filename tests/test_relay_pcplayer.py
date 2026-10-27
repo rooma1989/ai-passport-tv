@@ -224,6 +224,34 @@ class PlayerTests(unittest.TestCase):
         self.assertFalse(refused["ok"])
         self.assertIn("剧集", refused["error"])
 
+    def test_an_episode_link_opens_that_episode_of_the_season(self):
+        # The home page's Bilibili history: /bangumi/play/ep<epid> (the episode watched) and where it stopped.
+        season_of = lambda text: "ss1" if "/bangumi/play/ep" in text else None  # noqa: E731
+        self.client.series_id = season_of
+        status, _, raw = self.request("POST", "/tv/api/play", "carol", {"target": "pc", "viewer": "c0ffee00", "item": {
+            "kind": "feed", "site": "bilibili", "id": "ss1", "ep": 2, "start": 300}})
+        answer = json.loads(raw)
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual((answer["part"], answer["title"], answer["start"]), (2, "第2集", 300.0))
+        self.assertEqual(answer["parts"]["current"], 2, "the episode list is on that episode")
+        self.assertEqual(answer["video"], {"site": "bilibili", "id": "ss1"})
+        # An episode not in the list (member-only, no member login): said, not swapped for another episode.
+        refused = self.watch(url="https://www.bilibili.com/bangumi/play/ep7", start=300)
+        self.assertFalse(refused["ok"])
+        self.assertEqual(refused["error"], bilibili.EPISODE_MEMBER_HINT)
+        # Replaying the season from the history afterwards is not refused (the "missing" mark is not cached).
+        again = self.watch(video={"site": "bilibili", "id": "ss1"})
+        self.assertTrue(again["ok"], again)
+
+    def test_member_only_season_says_so(self):
+        answer = self.watch(url="https://www.bilibili.com/bangumi/play/ss9")
+        self.assertFalse(answer["ok"])
+        self.assertEqual(answer["error"], bilibili.MEMBER_HINT)
+        # On a TV a season link asks for 加为剧集 instead of "看不懂这个链接".
+        cast = self.relay.cast("https://www.bilibili.com/bangumi/play/ss1", self.as_carol)
+        self.assertFalse(cast["ok"])
+        self.assertIn("加为剧集", cast["error"])
+
     def test_youtube_playlist(self):
         link = "https://www.youtube.com/playlist?list=PLvWg2OZGt8Huee65hzUZ4Md3vMKZMnTYw"
         answer = self.watch(url=link)

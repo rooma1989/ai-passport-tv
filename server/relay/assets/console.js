@@ -3325,7 +3325,9 @@ $("addSeries").onclick = () => busy($("addSeries"), async () => {
 // ======================================================================= 搜索：B 站搜索（/api/bili/search，封面经 /api/bili/thumb）、
 // YouTube 搜索（/api/yt/search，server/relay/ytsearch.py）+ 粘贴链接即播
 
-const bs = { kind: "video", q: "", page: 0, pages: 0, items: [], run: 0, timer: 0, retried: false };
+// pgc：「视频」第一页顺带的正版影视、番剧（bilibili.py 的 pgc_top），放在视频前面。
+const bs = { kind: "video", q: "", page: 0, pages: 0, items: [], pgc: [], run: 0, timer: 0, retried: false };
+const BS_WHAT = { video: "的视频", user: "的 UP 主（有投稿的）", bangumi: "的番剧", ft: "的影视剧" };
 // 在哪儿搜（bili / yt），每个浏览器记住；YouTube 的结果另放，切回来还在。
 let searchSrc = lsGet("console.search.src", "bili") === "yt" ? "yt" : "bili";
 const YT_KINDS = ["video", "channel", "playlist"];
@@ -3409,8 +3411,11 @@ async function bsSearch(fresh) {
   }
   bs.q = q; bs.page = answer.page; bs.pages = answer.pages;
   bs.items = fresh ? answer.items : bs.items.concat(answer.items.filter((x) => !bs.items.some((y) => y.id === x.id)));
-  if (!bs.items.length) bsSay("没有搜到「" + q + "」" + { video: "的视频", user: "的 UP 主（有投稿的）", bangumi: "的番剧" }[kind]);
-  else bsSay((answer.total ? "B 站说有 " + bigNumber(answer.total) + " 个结果，" : "") + "这里列出 " + bs.items.length + " 个");
+  if (fresh) bs.pgc = answer.pgc || [];
+  if (!bs.items.length && !bs.pgc.length) bsSay("没有搜到「" + q + "」" + BS_WHAT[kind]);
+  else bsSay((answer.total ? "B 站说有 " + bigNumber(answer.total) + " 个结果，" : "") + "这里列出 " + bs.items.length + " 个"
+             + (bs.pgc.length ? "，前面是 " + bs.pgc.length + " 部正版影视、番剧" : "")
+             + (kind === "ft" || kind === "bangumi" ? "：" + (canPc() ? "「在电脑上看」能选集，" : "") + "「加为剧集」后小电视按集播" : ""));
   renderSearch();
 }
 $("bsQuery").addEventListener("input", () => {
@@ -3423,17 +3428,16 @@ $("bsQuery").addEventListener("input", () => {
 });
 $("bsQuery").addEventListener("keydown", (event) => { if (event.key === "Enter") bsSearch(true); });
 $("bsMore").onclick = () => bsSearch(false);
-for (const b of qsa("#bsKinds button")) {
-  b.onclick = () => {
-    if (bs.kind === b.dataset.kind) return;
-    bs.kind = b.dataset.kind;
-    for (const x of qsa("#bsKinds button")) x.setAttribute("aria-pressed", String(x === b));
-    bs.items = []; bs.page = 0; bs.q = "";
-    renderSearch();
-    if ($("bsQuery").value.trim()) bsSearch(true);
-    else bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。");
-  };
+function bsKind(kind) {
+  if (bs.kind === kind) return;
+  bs.kind = kind;
+  for (const x of qsa("#bsKinds button")) x.setAttribute("aria-pressed", String(x.dataset.kind === kind));
+  bs.items = []; bs.pgc = []; bs.page = 0; bs.q = "";
+  renderSearch();
+  if ($("bsQuery").value.trim()) bsSearch(true);
+  else bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。");
 }
+for (const b of qsa("#bsKinds button")) b.onclick = () => bsKind(b.dataset.kind);
 
 // ---------- YouTube 搜索 ----------
 
@@ -3476,7 +3480,7 @@ function renderSearchSource() {
   for (const x of qsa("#ytKinds button")) x.setAttribute("aria-pressed", String(x.dataset.kind === yts.kind));
   $("bsKinds").hidden = yt;
   $("ytKinds").hidden = !yt;
-  $("bsQuery").placeholder = yt ? "搜 YouTube 视频、频道、播放列表，或粘贴视频链接" : "搜 B 站视频、UP 主、番剧，或粘贴视频链接";
+  $("bsQuery").placeholder = yt ? "搜 YouTube 视频、频道、播放列表，或粘贴视频链接" : "搜 B 站视频、影视剧、番剧、UP 主，或粘贴视频链接";
   if (yt) $("castYt").hidden = true;    // 没开 YouTube 的说明由 ytGate 写
   renderYtGate();
 }
@@ -3723,6 +3727,14 @@ function renderSearch() {
     ytPrefetchView();
     return;
   }
+  if (bs.kind === "video" && bs.pgc.length) {
+    const head = el("div", "bshead");
+    head.append(el("b", "", "正版影视 · 番剧"));
+    head.append(button("更多影视剧 ›", "linkbtn", () => bsKind("ft")), button("更多番剧 ›", "linkbtn", () => bsKind("bangumi")));
+    box.appendChild(head);
+    for (const item of bs.pgc) box.appendChild(pgcHit(item));
+    if (bs.items.length) { const v = el("div", "bshead"); v.append(el("b", "", "视频")); box.appendChild(v); }
+  }
   for (const item of bs.items) {
     const row = el("div", "hit");
     const body = el("div", "body");
@@ -3748,16 +3760,38 @@ function renderSearch() {
       acts.appendChild(subscribeUp(item.id, item.name));
       row.append(thumb(item, "f", "face"), body, acts);
     } else {
-      body.append(el("div", "t", item.title),
-                  el("div", "m", [item.badge || "番剧", item.eps ? "共 " + item.eps + " 集" : "", item.styles].filter(Boolean).join(" · ")),
-                  el("div", "d", item.desc || ""));
-      acts.appendChild(addAsSeries(item));
-      row.append(thumb(item, "p", "poster"), body, acts);
+      box.appendChild(pgcHit(item));
+      continue;
     }
     box.appendChild(row);
   }
   $("bsMore").hidden = !bs.items.length || bs.page >= bs.pages;
   markSubscribed();
+}
+// 正版的影视、番剧（一整季，ss<季 id>）：「在电脑上看」按番剧链接放（web.py 的 _pc_resolve：一季的各集，
+// 有选集，大会员的会员集也在）；小电视上要「加为剧集」。要不要大会员、地区限制在放的时候由中转说。
+function pgcHit(item) {
+  const row = el("div", "hit pgc");
+  const body = el("div", "body");
+  const acts = el("div", "acts");
+  const t = el("div", "t", item.title);
+  if (item.org_title) t.title = item.org_title;
+  const meta = el("div", "m");
+  meta.append(el("b", "", item.badge || "番剧"));
+  const more = [item.year ? item.year + " 年" : "", item.areas, item.show || (item.eps ? "共 " + item.eps + " 集" : ""),
+                item.score ? "评分 " + item.score.toFixed(1) : ""].filter(Boolean).join(" · ");
+  if (more) meta.append(" · " + more);
+  for (const tag of item.tags || []) meta.append(" ", el("span", "tag" + (/会员|付费/.test(tag) ? " vip" : ""), tag));
+  body.append(t, meta, el("div", "d", item.desc || item.styles || ""));
+  if (canPc()) {
+    const go = el("button", "go", "在电脑上看");
+    go.onclick = () => playOnPc({ kind: "cast", url: item.link, title: item.title }, item.title,
+                                item.cover ? "api/bili/thumb?" + new URLSearchParams({ s: "p", u: item.cover }) : "");
+    acts.appendChild(go);
+  }
+  acts.appendChild(addAsSeries(item));
+  row.append(thumb(item, "p", "poster"), body, acts);
+  return row;
 }
 
 // ======================================================================= 放过的（投屏历史）

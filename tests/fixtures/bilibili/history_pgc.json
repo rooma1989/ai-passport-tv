@@ -1,0 +1,64 @@
+{
+ "code": 0,
+ "message": "0",
+ "ttl": 1,
+ "data": {
+  "cursor": {"max": 0, "view_at": 1761500000, "business": "pgc", "ps": 30},
+  "tab": [{"type": "archive", "name": "视频"}, {"type": "live", "name": "直播"}, {"type": "article", "name": "专栏"}],
+  "list": [
+   {
+    "title": "Doctor X 第七季",
+    "long_title": "",
+    "cover": "http://i0.hdslb.com/bfs/archive/080607ddc68f29b02eb41ece139507d26e0d4fef.jpg",
+    "covers": null,
+    "uri": "https://www.bilibili.com/bangumi/play/ep472183",
+    "history": {"oid": 506000003, "epid": 472183, "bvid": "BV1pgcep0003", "page": 3, "cid": 511009626, "part": "3",
+                "business": "pgc", "dt": 2},
+    "videos": 10,
+    "author_name": "",
+    "author_face": "",
+    "author_mid": 0,
+    "view_at": 1761500000,
+    "progress": 1234,
+    "badge": "电视剧",
+    "show_title": "第3集",
+    "duration": 2702,
+    "current": "",
+    "total": 10,
+    "new_desc": "全10集",
+    "is_finish": 1,
+    "is_fav": 0,
+    "kid": 41282,
+    "tag_name": "",
+    "live_status": 0
+   },
+   {
+    "title": "Doctor X 第六季",
+    "show_title": "第10集",
+    "cover": "http://i0.hdslb.com/bfs/archive/3771425b887878148d3fd6260391c6648bfff936.jpg",
+    "history": {"oid": 506000010, "epid": 333859, "bvid": "BV1pgcep0010", "page": 10, "cid": 511000010, "part": "10",
+                "business": "pgc", "dt": 2},
+    "videos": 10,
+    "author_name": "",
+    "view_at": 1761400000,
+    "progress": -1,
+    "badge": "电视剧",
+    "duration": 2880,
+    "kid": 31126
+   },
+   {
+    "title": "看了一半的视频",
+    "cover": "http://i0.hdslb.com/bfs/archive/h1.jpg",
+    "history": {"oid": 1, "epid": 0, "bvid": "BV1hist00001", "page": 1, "cid": 51, "part": "", "business": "archive",
+                "dt": 2},
+    "videos": 1,
+    "author_name": "丙",
+    "author_mid": 3001,
+    "view_at": 1761300000,
+    "progress": 125,
+    "duration": 600,
+    "kid": 1
+   }
+  ]
+ }
+}

@@ -1,0 +1,117 @@
+{
+ "code": 0,
+ "message": "0",
+ "data": {
+  "page": 1,
+  "pagesize": 20,
+  "numResults": 6,
+  "numPages": 1,
+  "result": [
+   {
+    "type": "media_bangumi",
+    "media_id": 27709925,
+    "title": "<em class=\"keyword\">间谍过家家</em> 第三季",
+    "org_title": "SPY×FAMILY Season 3",
+    "season_id": 112827,
+    "season_type": 1,
+    "season_type_name": "番剧",
+    "ep_size": 3,
+    "url": "https://www.bilibili.com/bangumi/play/ss112827",
+    "cover": "https://i0.hdslb.com/bfs/bangumi/image/92da93b86cca3c48cd91adb5ec87cf1513920feb.png",
+    "areas": "日本",
+    "styles": "漫画改/日常/搞笑",
+    "desc": "每个人都有不可告人的一面。\n\n这是一个世界各国均暗地里进行激烈情报战的时代。奥斯塔尼亚（Ostania）与维斯达利斯（Westalis）的冷战状态已经持续数十年。\n\n<黄昏>是维斯达利斯情报局奥斯塔尼...",
+    "pubtime": 0,
+    "media_score": {
+     "score": 0,
+     "user_count": 0
+    },
+    "badges": [
+     {
+      "text": "大会员"
+     }
+    ],
+    "index_show": "",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 2243599,
+      "title": "正式PV bilibili引进！敬请期待~",
+      "url": "https://www.bilibili.com/bangumi/play/ep2243599",
+      "index_title": "正式PV"
+     }
+    ]
+   },
+   {
+    "type": "media_bangumi",
+    "media_id": 21618488,
+    "title": "<em class=\"keyword\">间谍过家家</em> 第二季 中配版",
+    "org_title": "SPY×FAMILY Season 2",
+    "season_id": 47794,
+    "season_type": 1,
+    "season_type_name": "番剧",
+    "ep_size": 12,
+    "url": "https://www.bilibili.com/bangumi/play/ss47794",
+    "cover": "https://i0.hdslb.com/bfs/bangumi/image/db3f15b8e5a9eb21890447745ce1c8215a985d52.png",
+    "areas": "日本",
+    "styles": "漫画改/日常/搞笑",
+    "desc": "每个人都有不可告人的一面。 这是一个世界各国均暗地里进行激烈情报战的时代。奥斯塔尼亚（Ostania）与维斯达利斯（Westalis）的冷战状态已经持续数十年。 <黄昏>是维斯达利斯情报局奥斯塔尼亚对...",
+    "pubtime": 1714492800,
+    "media_score": {
+     "score": 9.2,
+     "user_count": 256
+    },
+    "badges": [
+     {
+      "text": "大会员"
+     }
+    ],
+    "index_show": "全12话",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 822867,
+      "title": "26",
+      "url": "https://www.bilibili.com/bangumi/play/ep822867",
+      "index_title": "26"
+     }
+    ]
+   },
+   {
+    "type": "media_bangumi",
+    "media_id": 21086686,
+    "title": "<em class=\"keyword\">间谍过家家</em> 第二季",
+    "org_title": "SPY×FAMILY Season 2",
+    "season_id": 46085,
+    "season_type": 1,
+    "season_type_name": "番剧",
+    "ep_size": 12,
+    "url": "https://www.bilibili.com/bangumi/play/ss46085",
+    "cover": "https://i0.hdslb.com/bfs/bangumi/image/a524567f86ec21368731f6dc283f66bd1bd0af92.png",
+    "areas": "日本",
+    "styles": "漫画改/日常/搞笑",
+    "desc": "每个人都有不可告人的一面。\n\n这是一个世界各国均暗地里进行激烈情报战的时代。奥斯塔尼亚（Ostania）与维斯达利斯（Westalis）的冷战状态已经持续数十年。\n\n<黄昏>是维斯达利斯情报局奥斯塔尼...",
+    "pubtime": 1696608000,
+    "media_score": {
+     "score": 9.7,
+     "user_count": 5413
+    },
+    "badges": [
+     {
+      "text": "大会员"
+     }
+    ],
+    "index_show": "全12话",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 781703,
+      "title": "26",
+      "url": "https://www.bilibili.com/bangumi/play/ep781703",
+      "index_title": "26"
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -17,8 +17,10 @@
     关注的更新      B 站 /x/polymer/web-dynamic/v1/feed/all?type=video（关注的人的视频动态）
                     + YouTube /yt/feed?kind=subs（:ytsubs），按时间排在一起
 
-每一项都是首页的「节目」（home.py）：play 是 {"kind": "feed", "site", "id", "start"?, "part"?}，POST /api/play 交给
-play_feed（小电视：投屏位，从 start 起；这台电脑：按链接在电脑上看，从 start 起）。
+每一项都是首页的「节目」（home.py）：play 是 {"kind": "feed", "site", "id", "start"?, "part"?, "ep"?}，POST /api/play 交给
+play_feed（小电视：投屏位，从 start 起；这台电脑：按链接在电脑上看，从 start 起）。观看记录里的番剧、影视剧
+id 是整季（ss<季 id>），ep 是看的那一集（history.epid）：在电脑上看按那一集的链接（/bangumi/play/ep…）打开，
+选集停在那一集，start 是那一集看到的地方。
 
 别打扰网站：按（用户, 来源）缓存 TTL_S 秒，同一时间只取一次，在后台线程里取（页面先拿到 loading，再问）；
 「刷新」至少隔 FRESH_GAP_S 秒；出错后 ERROR_GAP_S 秒内（被网络拦了是 BLOCKED_GAP_S）不再问。
@@ -184,9 +186,9 @@ def _clean(value, limit: int) -> str:
 
 def entry(site: str, vid: str, title: str, **extra) -> dict:
     """一项的内部样子：site、id、title、author、author_id、face、cover、duration、date、reason、position、done、
-    part、tv（能不能投到小电视）。"""
+    part、ep（番剧看的那一集）、tv（能不能投到小电视）。"""
     found = {"site": site, "id": vid, "title": title, "author": "", "author_id": "", "face": "", "cover": "",
-             "duration": 0, "date": 0, "reason": "", "position": 0, "done": False, "part": 0, "tv": True}
+             "duration": 0, "date": 0, "reason": "", "position": 0, "done": False, "part": 0, "ep": 0, "tv": True}
     found.update(extra)
     return found
 
@@ -214,7 +216,8 @@ def bili_rcmd(data: dict) -> list[dict]:
 
 def bili_history(data: dict) -> list[dict]:
     """观看记录（history/cursor 的 data.list）→ 视频和番剧。progress：看到的秒数，-1 是看完了。
-    番剧（business = pgc）用整季（ss<kid>），只能在电脑上看（小电视要加成剧集）。直播、专栏不要。"""
+    番剧（business = pgc）用整季（ss<kid>），只能在电脑上看（小电视要加成剧集）；看的那一集（history.epid）
+    记在 ep 里，progress、duration 都是那一集的。直播、专栏不要。"""
     found, seen = [], set()
     for it in (data or {}).get("list") or []:
         if not isinstance(it, dict):
@@ -249,7 +252,8 @@ def bili_history(data: dict) -> list[dict]:
             if not kid or not title or vid in seen:
                 continue
             seen.add(vid)
-            found.append(entry("bilibili", vid, title, tv=False, **dict(common, author=common["author"] or "番剧")))
+            found.append(entry("bilibili", vid, title, tv=False, ep=_int(hist.get("epid")),
+                               **dict(common, author=common["author"] or "番剧")))
     return found
 
 
@@ -304,6 +308,8 @@ def media(row: str, e: dict) -> dict:
         item["reason"] = e["reason"]
     if e.get("part"):
         item["play"]["part"] = e["part"]
+    if e.get("ep"):
+        item["play"]["ep"] = e["ep"]
     if not e.get("tv", True):
         item["pc_only"] = True
     if row.endswith("history"):
@@ -321,7 +327,8 @@ def media(row: str, e: dict) -> dict:
 # ---------------------------------------------------------------- 播放（home.play 转过来）
 
 def play_url(item: dict) -> str | None:
-    """{"kind": "feed", "site", "id", "part"?} → 在电脑上看用的链接（只按 id 拼，不信页面给的地址）。"""
+    """{"kind": "feed", "site", "id", "part"?, "ep"?} → 在电脑上看用的链接（只按 id 拼，不信页面给的地址）。
+    番剧带着 ep 时是那一集的链接：web.py 按它找到整季、选中那一集。"""
     site, vid = item.get("site"), item.get("id")
     if not isinstance(vid, str):
         return None
@@ -330,6 +337,9 @@ def play_url(item: dict) -> str | None:
         tail = f"?p={part}" if isinstance(part, int) and not isinstance(part, bool) and 1 < part < 10000 else ""
         return f"https://www.bilibili.com/video/{vid}{tail}"
     if site == "bilibili" and _SEASON.match(vid):
+        ep = item.get("ep")
+        if isinstance(ep, int) and not isinstance(ep, bool) and 0 < ep < 10 ** 12:
+            return f"https://www.bilibili.com/bangumi/play/ep{ep}"
         return f"https://www.bilibili.com/bangumi/play/{vid}"
     if site == "youtube" and _YTID.match(vid):
         return f"https://www.youtube.com/watch?v={vid}"

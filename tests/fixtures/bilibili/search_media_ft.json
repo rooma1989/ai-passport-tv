@@ -1,0 +1,257 @@
+{
+ "code": 0,
+ "message": "0",
+ "data": {
+  "page": 1,
+  "pagesize": 20,
+  "numResults": 7,
+  "numPages": 1,
+  "result": [
+   {
+    "type": "media_ft",
+    "media_id": 28236990,
+    "title": "<em class=\"keyword\">Doctor X</em> 第七季",
+    "org_title": "X医生：外科医生大门未知子 第7季 ドクターX～外科医・大門未知子～第7シリーズ",
+    "season_id": 41282,
+    "season_type": 5,
+    "season_type_name": "电视剧",
+    "ep_size": 10,
+    "url": "https://www.bilibili.com/bangumi/play/ss41282",
+    "cover": "http://i0.hdslb.com/bfs/bangumi/image/5193bd1dcd9a8fd279e5b90f9c76aef8710f1803.jpg",
+    "areas": "日本",
+    "styles": "悬疑/剧情",
+    "desc": "第七季以百年一度的大流行病导致世界各地的医疗崩溃为舞台，新局面迎来是日本最高峰的教学医院—东帝大学医院，把感染治疗和内科作为重中之重，并计划推迟不必要的紧急手术。曾经知名的外科被移往分院的大楼，内科医...",
+    "pubtime": 1634140800,
+    "media_score": {
+     "score": 9.8,
+     "user_count": 1087
+    },
+    "badges": [
+     {
+      "text": "独家"
+     }
+    ],
+    "index_show": "全10集",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 472181,
+      "title": "1",
+      "url": "https://www.bilibili.com/bangumi/play/ep472181",
+      "index_title": "1"
+     }
+    ]
+   },
+   {
+    "type": "media_ft",
+    "media_id": 28225965,
+    "title": "<em class=\"keyword\">Doctor X</em> 第六季",
+    "org_title": "ドクターX～外科医・大門未知子〜",
+    "season_id": 31126,
+    "season_type": 5,
+    "season_type_name": "电视剧",
+    "ep_size": 10,
+    "url": "https://www.bilibili.com/bangumi/play/ss31126",
+    "cover": "http://i0.hdslb.com/bfs/bangumi/image/4a79a11e48b7a4c40d5ef4ff3a95c5738cf299e2.png",
+    "areas": "日本",
+    "styles": "剧情/悬疑/搞笑",
+    "desc": "2019年，日本迎来了令和时代，而医疗界陷入大混乱——权威世代与次世代的竞争、与电脑、AI的共存等诸多问题乘着时代的波涛扑天盖地而来。就在这时，东帝大学医院出现了前所未有的赤字。外号“秃鹰”的投资家尼...",
+    "pubtime": 1571241600,
+    "media_score": {
+     "score": 9.7,
+     "user_count": 1251
+    },
+    "badges": [
+     {
+      "text": "独家"
+     }
+    ],
+    "index_show": "全10集",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 333850,
+      "title": "1",
+      "url": "https://www.bilibili.com/bangumi/play/ep333850",
+      "index_title": "1"
+     }
+    ]
+   },
+   {
+    "type": "media_ft",
+    "media_id": 4312562,
+    "title": "<em class=\"keyword\">Doctor X</em> 第五季",
+    "org_title": "ドクターX 外科医・大門未知子 第5季",
+    "season_id": 22417,
+    "season_type": 5,
+    "season_type_name": "电视剧",
+    "ep_size": 10,
+    "url": "https://www.bilibili.com/bangumi/play/ss22417",
+    "cover": "http://i0.hdslb.com/bfs/bangumi/eb3abe4dd93061a2db6ff982ae968b6570d8cffb.png",
+    "areas": "日本",
+    "styles": "剧情/悬疑/搞笑",
+    "desc": "该剧是《Doctor-X~外科医·大门未知子~》第五部，讲述了自由外科医生大门未知子无视黑暗的医疗制度与医院中的权力之争，一心一意挽救患者生命的故事。...",
+    "pubtime": 1507737600,
+    "media_score": {
+     "score": 9.8,
+     "user_count": 1535
+    },
+    "badges": [
+     {
+      "text": "独家"
+     }
+    ],
+    "index_show": "全10集",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 261643,
+      "title": "1",
+      "url": "https://www.bilibili.com/bangumi/play/ep261643",
+      "index_title": "1"
+     }
+    ]
+   },
+   {
+    "type": "media_ft",
+    "media_id": 72172,
+    "title": "<em class=\"keyword\">Doctor X</em> 第四季",
+    "org_title": "ドクターX～外科医・大門未知子～ 第4期",
+    "season_id": 23735,
+    "season_type": 5,
+    "season_type_name": "电视剧",
+    "ep_size": 11,
+    "url": "https://www.bilibili.com/bangumi/play/ss23735",
+    "cover": "http://i0.hdslb.com/bfs/bangumi/bcaf3de5f37b894ade32d247167b4a5a61381684.jpg",
+    "areas": "日本",
+    "styles": "剧情/悬疑/搞笑",
+    "desc": "东帝大学医院本是国内大学医院中的泰山北斗，近年来却落入了不可告人的行为、医疗失误和派系斗争的泥潭中，评价一落千丈。而夺取新院长之位将强大权力据为己有，计划重新建立医院品牌形象的，不是别人，正是多年来对...",
+    "pubtime": 1476288000,
+    "media_score": {
+     "score": 9.6,
+     "user_count": 1445
+    },
+    "badges": [
+     {
+      "text": "独家"
+     }
+    ],
+    "index_show": "全11集",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 196751,
+      "title": "1",
+      "url": "https://www.bilibili.com/bangumi/play/ep196751",
+      "index_title": "1"
+     }
+    ]
+   },
+   {
+    "type": "media_ft",
+    "media_id": 28223803,
+    "title": "<em class=\"keyword\">Doctor X</em> 第三季",
+    "org_title": "ドクターX 外科医・大門未知子 第3期",
+    "season_id": 29071,
+    "season_type": 5,
+    "season_type_name": "电视剧",
+    "ep_size": 11,
+    "url": "https://www.bilibili.com/bangumi/play/ss29071",
+    "cover": "http://i0.hdslb.com/bfs/bangumi/image/ac88e04683b510c16f72c0f2c2ae51d34c7e0025.jpg",
+    "areas": "日本",
+    "styles": "剧情/悬疑/搞笑",
+    "desc": "2014年，白色巨塔的崩溃没有停歇，新的医疗政策反而将医学界推入更加弱肉强食的世界。集合了业内顶尖精英的国立高度医疗化中心建立，只不过这里却成为东西两派争权夺利的死战场。西京大学的谈合坂升（伊武雅刀 ...",
+    "pubtime": 1412784000,
+    "media_score": {
+     "score": 9.8,
+     "user_count": 1506
+    },
+    "badges": [
+     {
+      "text": "独家"
+     }
+    ],
+    "index_show": "全11集",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 301087,
+      "title": "1",
+      "url": "https://www.bilibili.com/bangumi/play/ep301087",
+      "index_title": "1"
+     }
+    ]
+   },
+   {
+    "type": "media_ft",
+    "media_id": 28223697,
+    "title": "<em class=\"keyword\">Doctor X</em> 第二季",
+    "org_title": "ドクターX 外科医・大門未知子 第2期",
+    "season_id": 29037,
+    "season_type": 5,
+    "season_type_name": "电视剧",
+    "ep_size": 9,
+    "url": "https://www.bilibili.com/bangumi/play/ss29037",
+    "cover": "http://i0.hdslb.com/bfs/bangumi/image/65106fe99c6e44a3263db9f854b8d02a6b5f6113.jpg",
+    "areas": "日本",
+    "styles": "剧情/悬疑/搞笑",
+    "desc": "在上一季中，以果敢干练的作风和高超惊人的医术，人称 “Doctor X”外科医生大门未知子（米仓凉子 饰）在早已形同腐臭泥潭一般的帝都医科大学第三医院力挽狂澜，掀起前所未有的风暴。因在北海道马场冒险为...",
+    "pubtime": 1381939200,
+    "media_score": {
+     "score": 9.6,
+     "user_count": 1323
+    },
+    "badges": [
+     {
+      "text": "独家"
+     }
+    ],
+    "index_show": "全9集",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 299683,
+      "title": "1",
+      "url": "https://www.bilibili.com/bangumi/play/ep299683",
+      "index_title": "1"
+     }
+    ]
+   },
+   {
+    "type": "media_ft",
+    "media_id": 28223696,
+    "title": "<em class=\"keyword\">Doctor X</em> 第一季",
+    "org_title": "ドクターX 外科医・大門未知子",
+    "season_id": 29036,
+    "season_type": 5,
+    "season_type_name": "电视剧",
+    "ep_size": 8,
+    "url": "https://www.bilibili.com/bangumi/play/ss29036",
+    "cover": "http://i0.hdslb.com/bfs/bangumi/image/8469f855f7334908ee7035469d56c18b5fd68662.jpg",
+    "areas": "日本",
+    "styles": "剧情/悬疑/搞笑",
+    "desc": "受医疗制度改革的影响，曾经显赫一时的大学医院——帝都医科大学第三医院因医疗状况恶化和工作压力过大导致卓越出众的医师纷纷离职，人才流失造成医院的发展岌岌可危。在此背景之下，不属于大学医院和医局体制的自由...",
+    "pubtime": 1350489600,
+    "media_score": {
+     "score": 9.6,
+     "user_count": 2315
+    },
+    "badges": [
+     {
+      "text": "独家"
+     }
+    ],
+    "index_show": "全8集",
+    "hit_epids": "",
+    "eps": [
+     {
+      "id": 292992,
+      "title": "1",
+      "url": "https://www.bilibili.com/bangumi/play/ep292992",
+      "index_title": "1"
+     }
+    ]
+   }
+  ]
+ }
+}
