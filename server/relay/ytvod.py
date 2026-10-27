@@ -30,6 +30,7 @@ YouTube 自己的网页放的是 DASH：画面、声音各是一个分片 MP4（
 
 from __future__ import annotations
 
+import base64
 import collections
 import http.client
 import io
@@ -42,7 +43,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from . import vod
@@ -65,6 +66,8 @@ FLIGHT_WAIT_S = 90.0
 INDEX_CACHE_MAX = 128
 HEAD_BYTES = 64 * 1024
 HEAD_MAX = 4 * 1024 * 1024
+# 初始化段不超过这么大时，取索引时顺手留下它的字节，清单里直接带给页面（省掉页面再经代理取一次）。
+INIT_INLINE_MAX = 64 * 1024
 UPSTREAM_TIMEOUT_S = vod.UPSTREAM_TIMEOUT_S
 # 预取：同时几个、排队至多几个、每分钟至多几个、一次请求至多几个 id；有起播在取地址时最多等多久再接着预取。
 PREFETCH_PARALLEL = 1
@@ -94,10 +97,12 @@ class BadIndex(ValueError):
 @dataclass(frozen=True)
 class Index:
     """一条轨的索引。init：初始化段（ftyp + moov）的字节范围（含两头）；times、offsets 各 n + 1 项：
-    第 i 段从 times[i] 秒放到 times[i + 1] 秒，字节从 offsets[i] 到 offsets[i + 1] − 1。"""
+    第 i 段从 times[i] 秒放到 times[i + 1] 秒，字节从 offsets[i] 到 offsets[i + 1] − 1。
+    head：初始化段本身（读文件头时已经取到了；太大或没取全时为空）。"""
     init: tuple[int, int]
     times: tuple[float, ...]
     offsets: tuple[int, ...]
+    head: bytes = field(default=b"", repr=False, compare=False)
 
     @property
     def count(self) -> int:
@@ -156,6 +161,11 @@ def parse_sidx(box: bytes, at: int) -> tuple[tuple[float, ...], tuple[int, ...]]
     return tuple(times), tuple(offsets)
 
 
+def _head(data: bytes, size: int) -> bytes:
+    """文件头里的初始化段（前 size 个字节）：取全了、不太大时给出，否则空。"""
+    return bytes(data[:size]) if 0 < size <= min(len(data), INIT_INLINE_MAX) else b""
+
+
 def read_index(fetch: Callable[[int, int], bytes], init_range=None, index_range=None) -> Index:
     """fetch(起, 止) 取文件的一段（含两头，到文件尾会短）。给了 init_range、index_range（yt-dlp 的）就一次取完；
     否则从头读盒子：moov 以前是初始化段，接着找 sidx，先见到 moof / mdat 就是没有。"""
@@ -163,7 +173,7 @@ def read_index(fetch: Callable[[int, int], bytes], init_range=None, index_range=
         data = fetch(0, index_range[1])
         box = data[index_range[0]:index_range[1] + 1]
         times, offsets = parse_sidx(box, index_range[0])
-        return Index((0, int(init_range[1])), times, offsets)
+        return Index((0, int(init_range[1])), times, offsets, _head(data, int(init_range[1]) + 1))
     data, eof = b"", False
 
     def more(upto: int) -> bool:
@@ -196,7 +206,7 @@ def read_index(fetch: Callable[[int, int], bytes], init_range=None, index_range=
             if not more(pos + size):
                 raise BadIndex("sidx 不完整")
             times, offsets = parse_sidx(data[pos:pos + size], pos)
-            return Index((0, moov_end - 1), times, offsets)
+            return Index((0, moov_end - 1), times, offsets, _head(data, moov_end))
         elif kind in (b"moof", b"mdat"):
             raise BadIndex("文件头里没有 sidx")
         pos += size
@@ -869,7 +879,7 @@ class YtVod:
 
     def manifest(self, session: vod.VodSession) -> dict:
         """DASH 的清单：{"duration", "tracks": {"v"|"a": {"mime", "init": [起, 止], "t": [...], "o": [...],
-        "height", "bitrate"}}}。两条轨的索引同时取。"""
+        "height", "bitrate", "ib"（初始化段的字节，base64；没留下时没有）}}}。两条轨的索引同时取。"""
         media = session.media()
         video_id = session.source.key[3]
         opener = session.source.opener or self.fetcher()
@@ -898,5 +908,8 @@ class YtVod:
             tracks[kind] = {"mime": track.mime, "init": list(index.init),
                             "t": [round(t, 3) for t in index.times], "o": list(index.offsets),
                             "height": track.height, "bitrate": track.bitrate}
+            if index.head:
+                # 初始化段的字节（base64）：页面直接喂给 MediaSource，不用再取 init 那一段。
+                tracks[kind]["ib"] = base64.b64encode(index.head).decode("ascii")
         duration = max(found["v"].duration, found["a"].duration)
         return {"duration": round(duration, 3), "tracks": tracks}

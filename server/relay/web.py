@@ -1455,6 +1455,25 @@ class Relay:
             self.log(f"在电脑上点播 YouTube {video.bvid} 取不到地址（{watch_pc.explain('youtube', str(error))}），转 HLS")
             return None
 
+    def _yt_video(self, vid: str):
+        """投到电脑的 YouTube 视频的标题、时长：能在电脑上点播时从 ytvod 取地址的结果里拿（Video），不另问节点的
+        /yt/info——预取过的马上就有（节点自己的缓存只留半小时，过了 /yt/info 就要再跑一次 yt-dlp，这里留到地址
+        快过期）；没取过时这一次取地址起播也要用，信息、地址只跑一次 yt-dlp。不能点播、节点太旧时 None（照旧问
+        /yt/info）；取不到抛 SourceError，和 /yt/info 一样。"""
+        if not self._yt_vod_on():
+            return None
+        try:
+            info = self.ytvod.resolver.resolve(vid)
+        except SourceError as error:
+            if getattr(error, "reason", "") == "unsupported":
+                return None
+            raise
+        try:
+            return Video(bvid=vid, title=str(info.get("title") or ""), duration=int(info.get("duration") or 0),
+                         pubdate=0, site="youtube")
+        except (TypeError, ValueError):
+            return None
+
     def yt_prefetch(self, caller: Caller, body: dict) -> dict:
         """POST /api/yt/prefetch {ids: [视频 id, …], q}：电脑版先替看得见的、鼠标停住的 YouTube 视频取好地址
         （ytvod.Prefetcher；不耽误真正的播放）。没开在电脑上看（云端）404；不是本机模式时 off 为真，页面就不再发。"""
@@ -1876,7 +1895,9 @@ class Relay:
             found.update(item=videos[0], parts=videos, kind="playlist", name=name)
             return found
         try:
-            found["item"] = client.video(vid)
+            found["item"] = self._yt_video(vid) if site == "youtube" else None
+            if found["item"] is None:
+                found["item"] = client.video(vid)
         except SourceError:
             if not fallback:
                 raise

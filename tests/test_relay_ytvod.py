@@ -33,6 +33,7 @@ Everything runs on 127.0.0.1; YouTube is never contacted.
 
 from __future__ import annotations
 
+import base64
 import json
 import select
 import shutil
@@ -112,6 +113,7 @@ class SidxTests(unittest.TestCase):
             self.assertEqual(index.times, (0.067, 5.067, 10.067, 15.067))
             self.assertEqual((index.count, index.duration), (3, 15.067))
             self.assertEqual(calls, [(0, ytvod.HEAD_BYTES - 1)], "one read of the head, the file is shorter")
+            self.assertEqual(index.head, data[:init_end + 1], "the init segment is kept for the manifest")
 
     def test_a_long_index_is_read_in_more_requests(self):
         sizes = [100] * 9000          # 108 KB of sidx: longer than the first read
@@ -130,6 +132,13 @@ class SidxTests(unittest.TestCase):
         index = ytvod.read_index(fetcher_of(data, calls), init_range=(0, init_end), index_range=(at, index_end))
         self.assertEqual(calls, [(0, index_end)])
         self.assertEqual((index.init, index.offsets), ((0, init_end), tuple(offsets)))
+        self.assertEqual(index.head, data[:init_end + 1])
+        saved, ytvod.INIT_INLINE_MAX = ytvod.INIT_INLINE_MAX, init_end
+        try:
+            self.assertEqual(ytvod.read_index(fetcher_of(data, []), init_range=(0, init_end),
+                                              index_range=(at, index_end)).head, b"", "too big to carry")
+        finally:
+            ytvod.INIT_INLINE_MAX = saved
 
     def test_refused_indexes(self):
         head = box(b"ftyp", b"x" * 8) + box(b"moov", b"\0" * 10)
@@ -551,6 +560,53 @@ class NodeTests(unittest.TestCase):
         self.assertTrue(caught.exception.permanent)
 
 
+class LocalLaneTests(unittest.TestCase):
+    """Local mode: resolving a video has its own yt-dlp lane, so a play never queues behind a feed or a search."""
+
+    def setUp(self):
+        self.runs = []
+        self.seconds = 2.0
+        self.started = threading.Event()
+        tools = ytnode.Tools("y", "d", "f", "")
+
+        def run(args):
+            self.runs.append(args[-1][-11:])
+            return 0, json.dumps(dict(INFO, id=args[-1][-11:])), ""
+
+        self.node = ytnode.Node(tools, "k" * 20, run=run, start=lambda args: FakeYtdlp(self, args),
+                                log=lambda _m: None, tools_dir="unused")
+        self.node.current_tools = lambda: tools
+
+    def test_a_play_does_not_wait_for_a_feed(self):
+        with self.node._ytdlp:          # a feed, a follow sync or a search is running
+            started = time.monotonic()
+            code, info = self.node.video_info("aaaaaaaaaaa")
+            self.assertEqual((code, info["id"]), (200, "aaaaaaaaaaa"))
+            self.assertLess(time.monotonic() - started, 1)
+            # A prefetch is not refused either.
+            self.assertEqual(self.node.video_info("bbbbbbbbbbb", prefetch=True)[0], 200)
+        # And a search still waits only for its own lane.
+        with self.node._play:
+            self.node.run = lambda args: (0, json.dumps({"entries": []}), "")
+            self.assertEqual(self.node.search("x", 3)[0], 200)
+
+    def test_a_search_does_not_kill_a_prefetch(self):
+        self.seconds = 0.5
+        outcome = []
+        worker = threading.Thread(target=lambda: outcome.append(self.node.video_info("ccccccccccc", prefetch=True)[0]))
+        worker.start()
+        self.assertTrue(self.started.wait(5))
+        self.node.run = lambda args: (0, json.dumps({"entries": []}), "")
+        self.assertEqual(self.node.search("x", 3)[0], 200)
+        worker.join(5)
+        self.assertEqual(outcome, [200], "the prefetch ran to the end")
+        self.assertIn("ccccccccccc", self.node._info)
+
+    def test_the_cloud_node_keeps_one_lane(self):
+        node = ytnode.Node(ytnode.Tools("y", "d", "f", ""), "k" * 20, log=lambda _m: None)
+        self.assertIs(node._play, node._ytdlp)
+
+
 # ---------------------------------------------------------------- the upstream through a proxy
 
 class ConnectProxy:
@@ -703,6 +759,10 @@ class FetcherTests(unittest.TestCase):
         self.assertEqual(data["tracks"]["a"]["t"], [0.0, 10.0, 20.0])
         self.assertEqual(data["tracks"]["v"]["mime"], 'video/mp4; codecs="avc1.640028"')
         self.assertEqual(data["duration"], 20.0)
+        # The init segments ride along (base64), already read with the index: no extra fetch for them.
+        for kind, body in (("v", VIDEO), ("a", AUDIO)):
+            end = data["tracks"][kind]["init"][1]
+            self.assertEqual(base64.b64decode(data["tracks"][kind]["ib"]), body[:end + 1])
         # Cached by (video, format): no upstream request the second time.
         before = len(self.upstream.requests)
         service.manifest(tv.FakeHandler(), session)
@@ -753,7 +813,7 @@ class FakeYtFormats(FakeYouTube):
                    for f in FORMATS if f["format_id"] in files]
         if self.only is not None:
             formats = [f for f in formats if f["format_id"] in self.only]
-        return {"id": video_id, "title": "yt cast", "duration": 15, "formats": formats}
+        return {"id": video_id, "title": "yt cast", "duration": 60, "formats": formats}
 
 
 class RelayYtVodTests(unittest.TestCase):
@@ -848,7 +908,9 @@ class RelayYtVodTests(unittest.TestCase):
         self.relay.youtube_kind = "node"
         self.assertEqual(self.watch(dash=True)["mode"], "hls", "addresses bound to cstone's IP")
         self.assertEqual(self.youtube.asked[-1][0], "ytcast00001")
-        self.assertEqual(len(self.youtube.asked), 3)
+        # The title and duration come from the same resolution (no /yt/info): the deleted video was asked twice,
+        # once for its information (a replay from the history goes on without it) and once to play.
+        self.assertEqual(len(self.youtube.asked), 4)
 
     def test_prefetch_endpoint(self):
         def post(body, who="carol"):
@@ -878,6 +940,19 @@ class RelayYtVodTests(unittest.TestCase):
                                        "item": {"kind": "cast", "url": "https://youtu.be/ytcast00001", "title": "yt"}})
         answer = json.loads(raw)
         self.assertEqual((answer.get("mode"), answer.get("quality", {}).get("current")), ("dash", "360p"), answer)
+
+    def test_a_prefetched_link_starts_without_asking_the_node_again(self):
+        self.relay.ytvod.resolver.resolve("ytcast00001")        # what a prefetch leaves behind
+        asked, infos = len(self.youtube.asked), []
+        self.youtube.video = lambda vid: infos.append(vid)
+        status, _, raw = self.request("POST", "/tv/api/play", "carol",
+                                      {"target": "pc", "viewer": "c0ffee00", "vod": True, "dash": True,
+                                       "item": {"kind": "cast", "url": "https://youtu.be/ytcast00001", "title": "yt"}})
+        answer = json.loads(raw)
+        self.assertEqual((answer.get("mode"), answer.get("duration")), ("dash", 60), answer)
+        self.assertEqual((infos, len(self.youtube.asked)), ([], asked), "no /yt/info, no second resolution")
+        entry = self.relay.user_state(self.carol).history_entry("youtube", "ytcast00001")
+        self.assertEqual(entry["title"], "yt cast", "the history keeps the title from the resolution")
 
     def test_prefer_keeps_comparing_like_the_old_string(self):
         prefer = web._prefer({"vod": True, "quality": "1080p", "dash": True, "ytq": "480p"})

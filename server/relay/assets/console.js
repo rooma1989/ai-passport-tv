@@ -49,6 +49,7 @@ function toast(text, bad, ms) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.className = ""; }, ms || 2800);
 }
+function untoast() { clearTimeout(toastTimer); $("toast").className = ""; }
 function pad(n) { return String(n).padStart(2, "0"); }
 function clock(seconds) {
   seconds = Math.max(0, Math.floor(seconds));
@@ -821,6 +822,19 @@ function renderChips() {
   }
 }
 
+// 点了「播放」：卡片（封面上）或按钮上马上转圈，直到 play 有了结果——播到小电视时要等中转取好片源才回答，
+// 以前这几秒什么都不动，像是没点上；在电脑上看的窗口是马上开的，这里转到中转回答为止。
+function pressed(node, promise) {
+  if (!node || !promise || typeof promise.then !== "function" || node.classList.contains("opening")) return promise;
+  node.classList.add("opening");
+  node.setAttribute("aria-busy", "true");
+  const art = node.classList.contains("card") ? node.querySelector(".art") : null;
+  const spin = art ? art.appendChild(el("span", "opspin")) : null;
+  const done = () => { node.classList.remove("opening"); node.removeAttribute("aria-busy"); if (spin) spin.remove(); };
+  promise.then(done, done);
+  return promise;
+}
+
 // 播放一个节目（/api/home 的 play，或者页面自己拼的 {kind, channel, …}）：播到 to，不给就是记住的地方。
 async function play(item, to, label, poster) {
   if (!item || !me) return null;
@@ -832,9 +846,12 @@ async function play(item, to, label, poster) {
   }
   if (remember && to !== targetPref) setTarget(to, true);
   if (to === PC) return playOnPc(item, label, poster);
+  // 中转要先取好片源才回答（YouTube 要几秒到十几秒）：先说一声在做，回答到了换成结果。
+  toast("正在发给「" + targetName(to) + "」" + (label ? "：「" + label + "」" : "") + "…", false, 20000);
   let answer;
   try { answer = await call("POST", "api/play", { target: to, item }); }
-  catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return null; }
+  catch (error) { untoast(); if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return null; }
+  untoast();
   if (!answer.ok) {
     if (answer.reason === "offline") { openTarget(item, answer.error, label); return answer; }
     toast(answer.error, true);
@@ -1653,6 +1670,15 @@ function dashEvict(ranges, now) {
   }
   return out.filter((r) => r[1] - r[0] > 0.5);
 }
+// 清单里带着的初始化段（ib，base64）→ 字节；没带、坏了时 null（照旧按 init 的范围去取）。
+function dashBytes(b64) {
+  if (!b64) return null;
+  try {
+    const s = atob(b64), out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  } catch (error) { return null; }
+}
 // ---- DASH 的纯函数到此 ----
 
 // YouTube 的点播（mode "dash"）：两个 SourceBuffer（画面、声音），按清单把要的那几段用 Range 取来接上（取的是中转的
@@ -1719,9 +1745,10 @@ class DashPlayer {
     try {
       this.ms.duration = m.duration;
       this.tracks = kinds.map((k) => ({ k, t: m.tracks[k].t, o: m.tracks[k].o, init: m.tracks[k].init, sb: this.ms.addSourceBuffer(m.tracks[k].mime),
-                                        next: 0, busy: false, gen: 0, ctl: null, q: Promise.resolve() }));
+                                        ib: m.tracks[k].ib, next: 0, busy: false, gen: 0, ctl: null, q: Promise.resolve() }));
       pcStage("缓冲中…");
-      await Promise.all(this.tracks.map(async (t) => this.append(t, await this.get(t, "bytes=" + t.init[0] + "-" + t.init[1]))));
+      // 初始化段：清单里带着就直接用（中转取索引时已经读到了），省掉经代理再取一次。
+      await Promise.all(this.tracks.map(async (t) => this.append(t, dashBytes(t.ib) || await this.get(t, "bytes=" + t.init[0] + "-" + t.init[1]))));
     } catch (error) { if (this.alive) this.fail(error.message || "放不了", error.gone); return; }
     if (!this.alive) return;
     for (const t of this.tracks) t.next = dashIndex(t.t, this.at);
@@ -1949,7 +1976,19 @@ function pcOpening(item, label, poster) {
   $("pcSwitch").classList.remove("wrap");
   const img = poster || ytPoster(yt);
   if (img && !live) { $("pcFreeze").hidden = true; setPoster(img); }
+  openingClock(n);
   return n;
+}
+// 等中转回答久了（YouTube 没预取过时要跑一次 yt-dlp，几秒到十几秒）：遮罩上的字后面数秒，看得出没卡住。
+// 回答到了（opening 清掉或换了一次）就停。
+const OPENING_COUNT_AFTER_S = 3;
+function openingClock(n) {
+  const base = $("pcSwitchText").textContent, t0 = Date.now();
+  const timer = setInterval(() => {
+    if (!openingIs(n)) { clearInterval(timer); return; }
+    const s = Math.floor((Date.now() - t0) / 1000);
+    if (s >= OPENING_COUNT_AFTER_S && !$("pcSwitch").hidden) $("pcSwitchText").textContent = base + " " + s + " 秒";
+  }, 1000);
 }
 // 起播的每一步：遮罩还在时写在遮罩上，否则写在画面上的提示里。
 function pcStage(text) {
@@ -3626,7 +3665,7 @@ function renderYtHits(box) {
       if (more.length) meta.append(" · " + more.join(" · "));
       body.append(el("div", "t", item.title), meta);
       const go = el("button", "go", "播放");
-      go.onclick = () => play({ kind: "cast", url: item.link, title: item.title }, null, item.title);
+      go.onclick = () => pressed(go, play({ kind: "cast", url: item.link, title: item.title }, null, item.title));
       const yid = ytIdOfItem({ url: item.link });
       if (yid) row.dataset.ytid = yid;      // 鼠标停住、焦点到「播放」时先取好地址（ytPrefetch）
       acts.appendChild(go);
@@ -3736,7 +3775,7 @@ function renderSearch() {
       body.append(el("div", "t", item.title), meta, el("div", "d", item.desc || ""));
       if (/\/video\//.test(item.link || "")) {
         const go = el("button", "go", "播放");
-        go.onclick = () => play({ kind: "cast", url: item.link, title: item.title }, null, item.title);
+        go.onclick = () => pressed(go, play({ kind: "cast", url: item.link, title: item.title }, null, item.title));
         acts.appendChild(go);
       }
       if (item.mid) acts.appendChild(subscribeUp(item.mid, item.author));
@@ -3774,7 +3813,7 @@ function renderHistory() {
   for (const h of data.history) {
     const item = { kind: "history", site: h.site, id: h.id, title: h.title || h.id };
     rows.appendChild(listRow("", h.title || h.id, siteTag(h.site) + " · " + when(h.at), [
-      button("播放", "linkbtn play", () => play(item, null, h.title || h.id)),
+      button("播放", "linkbtn play", (event) => pressed(event.currentTarget, play(item, null, h.title || h.id))),
       button("播放到…", "linkbtn", () => openTarget(item, "", h.title || h.id)),
       button("删除", "linkbtn red", async () => {
         try {
@@ -5236,7 +5275,7 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     const x = ITEMS[ds.play];
     if (t.closest("#csheet")) closeSheets(true);
-    if (x) play(x.play, null, x.title, x.art && x.art.url);
+    if (x) pressed(t, play(x.play, null, x.title, x.art && x.art.url));
     return;
   }
   if (ds.pick) { const x = ITEMS[ds.pick]; if (x) openTarget(x.play, "", x.title, x.art && x.art.url); return; }
