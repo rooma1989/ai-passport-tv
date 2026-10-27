@@ -11,6 +11,13 @@
                                       kind=channel 搜频道（名字、订阅数），kind=playlist 搜播放列表；
                                       full=1（电脑版的搜索页）视频多给播放数、频道 id、大约的上传时间
     GET /yt/stream?id=<视频 id>&ss=<秒> 压成小码流的 MPEG-TS，实时速度输出
+    GET /yt/formats?id=<视频 id>[&prefetch=1][&fresh=1]
+                                      电脑上点播（server/relay/ytvod.py）：解析出来的全部格式（编码、分辨率、
+                                      大小、直连地址、http 头；yt-dlp 给了 init_range / index_range 时也带上），
+                                      和 /yt/stream 共用解析缓存。prefetch=1 是中转的预取：yt-dlp 正忙时马上回答
+                                      503 busy，正在跑时来了真正的请求（起播、搜索、列表……）就把它杀掉让路，
+                                      绝不让真正的播放等它；fresh=1 不用缓存（地址过期、换了出口 IP 以后重取）。
+                                      旧节点没有这个路径（404 Not Found），中转据此照旧走 /yt/stream
 
 流用分块编码发送：正常播完发结束块，转码出错则不发直接断开，对端据此分辨。
 YouTube 会拦机房 IP（要求登录证明不是机器人），所以 yt-dlp 带一个小号的 cookies 文件。
@@ -66,6 +73,12 @@ RUN_TIMEOUT_S = 120
 # 解析一个视频在 1 核的 cstone 上要 18 秒左右，而一次起播会连两次（先采样调色板，再正式播放），
 # 投屏还会先查一次信息。视频地址能用几个小时，所以解析结果留 30 分钟。
 INFO_CACHE_S = 30 * 60
+# 解析缓存最多留几个视频（只留用得着的几项，见 slim_info；中转的预取会多解析几个）。
+INFO_CACHE_MAX = 48
+# /yt/formats 带出去的格式字段（地址、http 头另外处理）。
+FORMAT_FIELDS = ("format_id", "ext", "vcodec", "acodec", "width", "height", "fps", "tbr", "vbr", "abr", "asr",
+                 "filesize", "filesize_approx", "protocol", "container", "language", "language_preference",
+                 "format_note", "audio_channels", "dynamic_range", "quality")
 # 后台每 6 小时不走缓存解析一次这个视频，没人在看时也能发现 cookies 过期。
 CHECK_VIDEO = "jNQXAC9IVRw"
 CHECK_EVERY_S = 6 * 3600
@@ -612,6 +625,55 @@ def copyable(info: dict) -> bool:
             and all(a.startswith("mp4a") for a in audio) and len(audio) <= 1)
 
 
+def _byte_range(value) -> list[int] | None:
+    """yt-dlp 的 init_range / index_range（[起, 止]、{"start", "end"} 或 "起-止"）→ [起, 止]；看不懂就 None。"""
+    if isinstance(value, dict):
+        value = [value.get("start"), value.get("end")]
+    elif isinstance(value, str) and "-" in value:
+        value = value.split("-", 1)
+    try:
+        start, end = (int(v) for v in value)
+    except (TypeError, ValueError):
+        return None
+    return [start, end] if 0 <= start <= end else None
+
+
+def slim_format(f: dict) -> dict | None:
+    """一个格式里中转用得着的几项（地址、http 头、编码、尺寸、字节范围）；不是直连的 http(s) 文件（m3u8、带 DRM 的）是 None。"""
+    url = f.get("url")
+    protocol = str(f.get("protocol") or "https")
+    if not isinstance(url, str) or not url.startswith(("https://", "http://")) or protocol not in ("https", "http") \
+            or f.get("has_drm"):
+        return None
+    entry = {k: f[k] for k in FORMAT_FIELDS if f.get(k) not in (None, "")}
+    entry["url"] = url
+    headers = f.get("http_headers")
+    if isinstance(headers, dict):
+        entry["headers"] = {str(k): str(v) for k, v in headers.items() if isinstance(v, (str, int))}
+    for name in ("init_range", "index_range"):
+        found = _byte_range(f.get(name))
+        if found is not None:
+            entry[name] = found
+    return entry
+
+
+def slim_info(info: dict) -> dict:
+    """缓存里留的：/yt/info、/yt/stream（requested_formats 或合体的 url）、/yt/formats 用到的几项。
+    完整的 -J 输出带着字幕、缩略图列表，一个视频就是几百 KB。"""
+    keep = {k: info[k] for k in ("id", "title", "duration", "channel_url", "url", "http_headers", "vcodec", "acodec",
+                                 "requested_formats", "_version") if k in info}
+    keep["formats"] = [f for f in (slim_format(f) for f in info.get("formats") or [] if isinstance(f, dict)) if f]
+    keep["_slim"] = True
+    return keep
+
+
+def formats_summary(info: dict) -> dict:
+    """/yt/formats 的回答：{"id", "title", "duration", "formats": [slim_format…]}。"""
+    formats = (info if info.get("_slim") else slim_info(info))["formats"]
+    return {"id": info.get("id"), "title": info.get("title") or "", "duration": info.get("duration") or 0,
+            "formats": formats}
+
+
 def ffmpeg_args(tools: Tools, inputs: list[tuple[str, dict]], offset: float, copy: bool = False) -> list[str]:
     args = [tools.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
     for url, headers in inputs:
@@ -661,6 +723,29 @@ def _popen(args: list[str], env: dict | None = None):
                             stderr=subprocess.DEVNULL, env=env)
 
 
+def _start(args: list[str]):
+    """预取用的 yt-dlp：能半路杀掉的进程（communicate()、kill()、returncode），真正的请求来了就让路。"""
+    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                            text=True, encoding="utf-8", errors="replace")
+
+
+class _Prefetch:
+    """正在跑的那一次预取：视频 id、进程，被真正的请求杀掉时 preempted 为真。"""
+
+    def __init__(self, video_id: str):
+        self.video_id = video_id
+        self.proc = None
+        self.preempted = False
+
+    def preempt(self) -> None:
+        self.preempted = True
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
+
+
 NETWORK_HINTS = ("Unable to download", "Failed to resolve", "Connection refused", "timed out",
                  "Network is unreachable", "getaddrinfo", "Tunnel connection failed", "ProxyError",
                  "Connection reset", "Remote end closed", "Unable to connect to proxy", "SSL",
@@ -670,14 +755,15 @@ NETWORK_HINTS = ("Unable to download", "Failed to resolve", "Connection refused"
 class Node:
     def __init__(self, tools: Tools, key: str, run=_run, popen=_popen, log=print,
                  tools_dir: str | None = None, remux: bool = False, ffmpeg_env: dict | None = None,
-                 measure: bool = False):
+                 measure: bool = False, start=_start):
         """tools_dir：本机模式，yt-dlp、deno 每次从这里的 components.json 找（tools 里的那两项不用）。
         remux：H.264 + AAC 时只换封装。ffmpeg_env：给 ffmpeg 的环境变量（代理），None 时照监督进程的。
         measure：本机模式下每换一个 yt-dlp 就在后台量一次 --version 要几秒（/yt/health 的 startup），
-        搜索超时时中转据此说是 yt-dlp 自己慢还是代理慢。"""
+        搜索超时时中转据此说是 yt-dlp 自己慢还是代理慢。start：预取用的 yt-dlp 进程（_start，测试换掉它）。"""
         self.tools = tools
         self.key = key
         self.run = run
+        self.start = start
         self.popen = popen
         self.log = log
         self.tools_dir = tools_dir
@@ -692,6 +778,10 @@ class Node:
         # 一次只跑一个 yt-dlp：每个要带一个 deno，两个并发在 400M 的内存上限里会被 OOM 杀掉。
         # 设备每次起播连两次（先采样调色板），同一视频的第二个请求等第一个解析完直接用缓存。
         self._ytdlp = threading.Lock()
+        # 预取（/yt/formats?prefetch=1）让路用：等着 yt-dlp 的真正请求有几个、正在跑的预取（_Prefetch）。
+        self._gate = threading.Lock()
+        self._waiting = 0
+        self._prefetch: _Prefetch | None = None
         self.clock = time.monotonic
         # 最近一次 YouTube 解析的结果，给中转判断 cookies 是否过期：
         # unknown（还没解析过）、ok、login（要求登录）、error（其他失败）。
@@ -773,25 +863,94 @@ class Node:
                 return cached[1]
         return None
 
-    def video_info(self, video_id: str) -> tuple[int, dict | str]:
+    def _take(self, video_id: str | None = None, timeout: float | None = None) -> bool:
+        """真正的请求要 yt-dlp：正在跑的预取（别的视频的）马上杀掉让路；同一个视频的预取等它跑完（结果进缓存）。
+        timeout：最多等几秒（None 一直等）；等到了返回 True，之后要 release()。"""
+        with self._gate:
+            self._waiting += 1
+            running = self._prefetch
+        try:
+            if running is not None and running.video_id != video_id:
+                running.preempt()
+            return self._ytdlp.acquire(timeout=-1 if timeout is None else timeout)
+        finally:
+            with self._gate:
+                self._waiting -= 1
+
+    def _remember(self, video_id: str, info: dict) -> dict:
+        info = slim_info(info)
+        now = self.clock()
+        with self._info_lock:
+            self._info = {k: v for k, v in self._info.items() if now - v[0] < INFO_CACHE_S and k != video_id}
+            self._info[video_id] = (now, info)
+            while len(self._info) > INFO_CACHE_MAX:
+                del self._info[min(self._info, key=lambda k: self._info[k][0])]
+        return info
+
+    def video_info(self, video_id: str, prefetch: bool = False, fresh: bool = False) -> tuple[int, dict | str]:
+        """解析一个视频（缓存 INFO_CACHE_S）。prefetch：中转的预取，yt-dlp 正忙、有真正的请求在等时马上 503 busy，
+        跑的时候来了真正的请求就被杀掉（也是 503 busy）。fresh：先扔掉缓存里的这一个（地址过期了）。"""
+        if fresh:
+            with self._info_lock:
+                self._info.pop(video_id, None)
         info = self._cached(video_id)
         if info is not None:
             return 200, info
         tools = self.current_tools()
         if tools is None:
             return 503, "tools missing"
-        with self._ytdlp:
-            # 等锁期间别的请求可能已经解析好了。
+        if prefetch:
+            return self._prefetch_info(tools, video_id)
+        self._take(video_id)
+        try:
+            # 等锁期间别的请求（或同一个视频的预取）可能已经解析好了。
             info = self._cached(video_id)
             if info is not None:
                 return 200, info
             code, info = self._ytdlp_json(info_args(tools, video_id))
+        finally:
+            self._ytdlp.release()
         if code == 200:
-            now = self.clock()
-            with self._info_lock:
-                self._info = {k: v for k, v in self._info.items() if now - v[0] < INFO_CACHE_S}
-                self._info[video_id] = (now, info)
+            info = self._remember(video_id, info)
         return code, info
+
+    def _prefetch_info(self, tools: Tools, video_id: str) -> tuple[int, dict | str]:
+        job = _Prefetch(video_id)
+        with self._gate:
+            if self._waiting or not self._ytdlp.acquire(blocking=False):
+                return 503, "busy"
+            self._prefetch = job
+        try:
+            info = self._cached(video_id)
+            if info is not None:
+                return 200, info
+            try:
+                proc = self.start(info_args(tools, video_id))
+            except OSError as error:
+                return 502, f"yt-dlp: {error}"
+            with self._gate:
+                job.proc = proc
+                if self._waiting:
+                    job.preempted = True       # 刚起进程就有真正的请求在等：让路
+            if job.preempted:
+                proc.kill()
+            try:
+                out, err = proc.communicate(timeout=RUN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                return 504, "yt-dlp timed out"
+            if job.preempted:
+                return 503, "busy"
+            code, data = self._parse(proc.returncode, out, err)
+        finally:
+            with self._gate:
+                self._prefetch = None
+            self._ytdlp.release()
+        if code == 200:
+            data = self._remember(video_id, data)
+            self.log(f"预取了 {video_id}")
+        return code, data
 
     def search(self, query: str, n: int, kind: str = "video", full: bool = False) -> tuple[int, dict | str]:
         """缓存里存完整的回答（full），不要 full 时去掉多出来的几项。"""
@@ -803,8 +962,8 @@ class Node:
         tools = self.current_tools()
         if tools is None:
             return 503, "tools missing"
-        # 仍然一次只跑一个 yt-dlp；只是不像起播那样一直排队：语音那头只等几秒。
-        if not self._ytdlp.acquire(timeout=SEARCH_WAIT_S):
+        # 仍然一次只跑一个 yt-dlp；只是不像起播那样一直排队：语音那头只等几秒（预取给它让路）。
+        if not self._take(timeout=SEARCH_WAIT_S):
             return 503, "busy"
         try:
             code, data = self._ytdlp_json(search_args(tools, query, n, kind))
@@ -862,14 +1021,20 @@ class Node:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
 
     def ytdlp_json(self, args: list[str]) -> tuple[int, dict | str]:
-        with self._ytdlp:
+        self._take()
+        try:
             return self._ytdlp_json(args)
+        finally:
+            self._ytdlp.release()
 
     def _ytdlp_json(self, args: list[str]) -> tuple[int, dict | str]:
         try:
             code, out, err = self.run(args)
         except subprocess.TimeoutExpired:
             return 504, "yt-dlp timed out"
+        return self._parse(code, out, err)
+
+    def _parse(self, code: int, out: str, err: str) -> tuple[int, dict | str]:
         if code != 0:
             last = (err or "").strip().splitlines()[-1:] or [""]
             last = [hide_password(last[0])]
@@ -955,6 +1120,14 @@ def _handler(node: Node):
                     return
                 code, data = node.ytdlp_json(playlist_args(tools, playlist))
                 self._json(code, playlist_summary(data) if code == 200 else data)
+            elif parts.path == "/yt/formats":
+                video_id = query.get("id", "")
+                if not _ID.match(video_id):
+                    self._json(400, "bad id")
+                    return
+                code, data = node.video_info(video_id, prefetch=query.get("prefetch") == "1",
+                                             fresh=query.get("fresh") == "1")
+                self._json(code, formats_summary(data) if code == 200 else data)
             elif parts.path == "/yt/info":
                 video_id = query.get("id", "")
                 if not _ID.match(video_id):

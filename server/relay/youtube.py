@@ -43,6 +43,8 @@ SUBSCRIPTIONS_TIMEOUT_S = 260
 # 账号的推荐、观看记录、订阅的新视频（accountfeeds.py）：节点跑一次 yt-dlp，经代理要十几到几十秒。
 FEED_TIMEOUT_S = 150
 FEED_KINDS = ("rec", "history", "subs")
+# 电脑上点播取格式（/yt/formats）：没缓存时节点要跑一次 yt-dlp。
+FORMATS_TIMEOUT_S = 90
 
 
 # 频道 id（UC 加 22 位）：语音搜到的频道按它订阅，地址是 /channel/<id>。
@@ -344,6 +346,28 @@ class YouTube:
                          duration=int(answer.get("duration") or 0), pubdate=0, site="youtube")
         except (TypeError, ValueError):
             raise SourceError(f"{video_id}: 视频信息格式不对") from None
+
+    def formats(self, video_id: str, prefetch: bool = False, fresh: bool = False,
+                timeout: float = FORMATS_TIMEOUT_S) -> dict:
+        """电脑上点播（ytvod.py）：节点 /yt/formats 的回答 {"id", "title", "duration", "formats": [...]}，地址带签名，
+        不进日志。prefetch：预取（节点忙时 SourceError(reason="busy")，真正的请求来了它让路）；fresh：节点不用缓存。
+        旧节点没有这个路径：SourceError(reason="unsupported")，中转照旧走 /yt/stream。"""
+        params = {"id": video_id}
+        if prefetch:
+            params["prefetch"] = 1
+        if fresh:
+            params["fresh"] = 1
+        try:
+            answer = self._call("/yt/formats", _timeout=timeout, **params)
+        except SourceError as error:
+            if getattr(error, "status", 0) == 404 and str(error).endswith("404 Not Found"):
+                failure = SourceError(str(error), reason="unsupported")
+                failure.status = 404
+                raise failure from None
+            raise
+        if not isinstance(answer.get("formats"), list):
+            raise SourceError(f"youtube /yt/formats {video_id}: 回答格式不对")
+        return answer
 
     def creator_id(self, text: str) -> str | None:
         """频道链接 → 频道地址；视频链接 → 它所属频道的地址。"""

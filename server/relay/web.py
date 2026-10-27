@@ -29,7 +29,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import accountfeeds, bililogin, follows, ytsearch, ytsettings
+from . import accountfeeds, bililogin, follows, ytsearch, ytsettings, ytvod
 from .bilibili import PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, \
     MemberOnly, SourceError
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -110,11 +110,22 @@ def _resume_at(offset: float, outcome: str, elapsed: float) -> float:
     return position + RESUME_BACK_S if outcome == "failed" else position
 
 
+class Prefer(str):
+    """页面会放点播时它要什么：本身是 B 站的清晰度（"720p" / "1080p"，和以前的字符串一样比较）；
+    dash：页面能用 MediaSource 放 H.264 + AAC 的分片 MP4（YouTube 的 DASH，ytvod.py）；yt：YouTube 要的清晰度。"""
+    dash: bool = False
+    yt: str = ytvod.DEFAULT_QUALITY
+
+
 def _prefer(body: dict) -> str | None:
-    """请求里页面会不会放点播（vod: true，新的电脑版才带；旧版只会放 HLS）、要哪个清晰度：None、"720p" 或 "1080p"。"""
+    """请求里页面会不会放点播（vod: true，新的电脑版才带；旧版只会放 HLS）、要哪个清晰度：None，或者 Prefer
+    （"720p" 或 "1080p"，再带着 dash、yt：新的电脑版带 dash: true 和 ytq）。"""
     if not isinstance(body, dict) or body.get("vod") is not True:
         return None
-    return "1080p" if body.get("quality") == "1080p" else "720p"
+    prefer = Prefer("1080p" if body.get("quality") == "1080p" else "720p")
+    prefer.dash = body.get("dash") is True
+    prefer.yt = body.get("ytq") if body.get("ytq") in ytvod.QUALITIES else ytvod.DEFAULT_QUALITY
+    return prefer
 
 
 def _seconds(value):
@@ -205,6 +216,10 @@ class Relay:
         # 点播（vod.py）：B 站的视频在电脑上直接放原文件（浏览器的 <video>，中转按 Range 转发），名额和 watch 一起算。
         self.vod = (vod.VodService(vod.derive_secret(key), watch=self.watch, log=lambda m: self.log(m))
                     if self.watch is not None else None)
+        # YouTube 的点播（ytvod.py）：取地址的缓存、预取、经 YouTube 代理的上游；只在本机模式用（_yt_vod_on）。
+        self.ytvod = (ytvod.YtVod(lambda: self.clients.get("youtube"), proxy=lambda: self.youtube_proxy(),
+                                  log=lambda m: self.log(m))
+                      if self.vod is not None else None)
         # 电脑上直接看 UP 主、剧集、投屏视频时各自的进度（和小电视的分开）：键是 (用户, 台) 或
         # (用户, "v:<网站>:<id>")，值是 {"bvid", "offset"（这一路从第几秒起）, "stream"（那一路，估计看到了哪里）,
         # 和存进度用的 title、name、duration、index、total、site}。存进数据目录的 pc-progress.json（home.PcProgress），
@@ -1305,9 +1320,14 @@ class Relay:
         if isinstance(stream, vod.VodSession):
             if source.hd:
                 quality = {"quality": {"current": source.quality, "choices": list(QUALITY_CHOICES)}}
+            elif source.site == "youtube" and len(source.choices) > 1:
+                # YouTube 的 DASH：菜单里是这个视频有的 360p…1080p；换一个就是另一路（vod.VodSource.variant）。
+                quality = {"quality": {"current": source.quality, "choices": list(source.choices), "site": "youtube"}}
             begin = source.start if start is None else start
-            return {"ok": True, "sid": stream.sid, "title": source.label, "kind": "video", "mode": "vod",
-                    "url": f"vod/{stream.sid}/{self.vod.token(stream)}/media", "start": round(float(begin), 1),
+            base = f"vod/{stream.sid}/{self.vod.token(stream)}/"
+            return {"ok": True, "sid": stream.sid, "title": source.label, "kind": "video",
+                    "mode": "dash" if source.dash else "vod",
+                    "url": base if source.dash else base + "media", "start": round(float(begin), 1),
                     "duration": int(duration or source.duration or 0), "seekable": True, **quality, **extra}
         if getattr(source, "quality", ""):
             quality = {"quality": {"current": source.quality, "choices": list(QUALITY_CHOICES)}}
@@ -1356,6 +1376,10 @@ class Relay:
             client = self.clients.get("youtube")
             if client is None:
                 return self._youtube_off("YouTube 还没配置")
+            if prefer is not None:
+                found = self._yt_vod_source(key, video, position, prefer)
+                if found is not None:
+                    return found
             return watch_pc.Source(key, opener=lambda: client.open(video.bvid, position), paced=False,
                                    label=video.title, site="youtube", start=position)
         client = self.clients.get("bilibili")
@@ -1405,6 +1429,46 @@ class Relay:
                              label=video.title, site="bilibili", start=position,
                              duration=float(video.duration or info.get("duration") or 0), first=vod.media_of(info),
                              quality="720p", hd=login is not None)
+
+    def _yt_vod_on(self) -> bool:
+        """YouTube 能在电脑上点播：本机模式（地址绑的是这台电脑经代理的出口；用 cstone 节点时地址绑的是 cstone，
+        这里取不了），开着在电脑上看，节点认 /yt/formats（旧节点 404，见 ytvod.py）。"""
+        client = self.clients.get("youtube")
+        return self.ytvod is not None and getattr(self, "youtube_kind", "") == "local" \
+            and getattr(client, "formats", None) is not None
+
+    def _yt_vod_source(self, key: tuple, video, position: float, prefer):
+        """YouTube 的这个视频在电脑上点播（ytvod.py）：DASH（页面能用 MediaSource 时）或 360p 的合体文件，
+        vod.VodSource；放不了、节点太旧、取地址出了别的错时 None（照旧走节点的流 → HLS，由那条路说原因）；
+        视频本身看不了（删了、私享）时是原因（字符串），不用再让 HLS 那条路白跑一次 yt-dlp。"""
+        if not self._yt_vod_on():
+            return None
+        try:
+            return self.ytvod.source(key, video, position, getattr(prefer, "yt", ytvod.DEFAULT_QUALITY),
+                                     dash=getattr(prefer, "dash", False))
+        except SourceError as error:
+            if getattr(error, "reason", "") == "unsupported":
+                self.log("在电脑上点播 YouTube：节点太旧（没有 /yt/formats），转 HLS")
+                return None
+            if error.permanent:
+                return "这个 YouTube 视频看不了（删了、私享或者有地区限制）"
+            self.log(f"在电脑上点播 YouTube {video.bvid} 取不到地址（{watch_pc.explain('youtube', str(error))}），转 HLS")
+            return None
+
+    def yt_prefetch(self, caller: Caller, body: dict) -> dict:
+        """POST /api/yt/prefetch {ids: [视频 id, …], q}：电脑版先替看得见的、鼠标停住的 YouTube 视频取好地址
+        （ytvod.Prefetcher；不耽误真正的播放）。没开在电脑上看（云端）404；不是本机模式时 off 为真，页面就不再发。"""
+        if self.watch is None:
+            raise NotFound("watch")
+        ids = body.get("ids")
+        if caller.guest or caller.user is None or not isinstance(ids, list) \
+                or not 0 < len(ids) <= ytvod.PREFETCH_IDS_MAX \
+                or not all(isinstance(v, str) and youtube_links._ID.match(v) for v in ids):
+            return {"ok": False, "error": "请求格式不对"}
+        if not self._yt_vod_on():
+            return {"ok": True, "off": True, "queued": 0}
+        quality = body.get("q") if body.get("q") in ytvod.QUALITIES else ytvod.DEFAULT_QUALITY
+        return {"ok": True, "queued": self.ytvod.prefetch(ids, quality)}
 
     def _live_source(self, cid: str):
         """全局频道表（main_channels）里的直播台：地址和 User-Agent；不在表里的是原因（字符串）。"""
@@ -2886,6 +2950,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/watch/warm":
                 self._json(relay.watch_warm(caller, body))
+                return
+            if path == "/api/yt/prefetch":
+                self._json(relay.yt_prefetch(caller, body))
                 return
             if path == "/api/pet":
                 self._json(relay.set_pet(body.get("pet"), caller, device))

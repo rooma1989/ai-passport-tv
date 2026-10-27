@@ -669,8 +669,43 @@ removed on 2026-10-26 together with the separate admin page (section 17).
   (remembered; `<` `>`), picture-in-picture (`P`), the start via `#t=` and `loadedmetadata`. A failure
   before the first frame switches to HLS (`vod` left out); a failure mid-play reopens at the same position
   once. A signed-in Bilibili account gets a 720P (VOD, default) / 1080P (HLS) menu, remembered per browser.
-  Live channels, YouTube (the node only gives a real-time MPEG-TS stream, no ranged file), multi-segment,
-  FLV and HEVC files and TVs stay on HLS / the relay streams.
+  Live channels, multi-segment, FLV and HEVC files and TVs stay on HLS / the relay streams.
+- **YouTube on demand (DASH over MSE, 2026-10-26, branch `desktop-ytvod`)**: YouTube used to start only after
+  yt-dlp (with its JS challenge) and a real-time ffmpeg MPEG-TS → HLS chain had produced a first segment, and every
+  seek rebuilt the chain. Now, in YouTube local mode only (googlevideo addresses are bound to the exit IP that
+  resolved them; with a cstone node they are cstone's), `server/relay/ytvod.py` plays it the way YouTube's own page
+  does. The node has `GET /yt/formats?id=[&prefetch=1][&fresh=1]`: every direct format yt-dlp resolved (codecs,
+  size, address, http headers, `init_range`/`index_range` when given), sharing `/yt/stream`'s cache (now slimmed and
+  bounded to 48 videos); an old node answers 404 Not Found and the relay stays on HLS. The relay caches the answer per
+  video in memory (LRU 64) until the googlevideo `expire` minus 30 minutes (5 h at most), and one resolution serves
+  every caller of the same video. `choose` takes the best H.264 video-only file at or below the page's quality
+  (360p/480p/720p/1080p, default 720p, `rootv.ytQuality`; the lowest above when none is below) plus the original,
+  non-DRC AAC; VP9/AV1-only videos and pages without MediaSource get the 360p progressive file (format 18) through
+  the same range proxy and `VodPlayer`; nothing playable stays on HLS. The page asks with `dash: true` and `ytq`
+  (`home.play` passes both); the answer is `mode: "dash"`, the base `vod/<id>/<token>/` and a quality menu of the
+  heights the video has (`quality.site: "youtube"`; another quality is another stream, `VodSource.variant`).
+  `…/manifest` gives both tracks' init range and segment table (`t`, `o`: n + 1 time and byte boundaries) read from
+  the `sidx` in the file head (64 KB, more if needed; one request when yt-dlp gave the ranges), cached per (video,
+  format); `…/v` and `…/a` forward Range like `…/media`. Upstream requests go through the YouTube proxy
+  (`ytvod.Fetcher`: HTTP CONNECT or SOCKS5 tunnels via `ytnode.open_tunnel`, kept-alive connections reused,
+  redirects followed); a 403/404/410 re-resolves once with `fresh=1`. `DashPlayer` in `console.js` keeps 30 s
+  ahead buffered in two SourceBuffers, evicts 30 s behind (and anything left 120 s ahead after seeking back), maps
+  a seek to segments (`dashResume`) and aborts the fetches that no longer fit, ends the stream when both tracks are
+  in, and otherwise behaves like `VodPlayer` (position = `currentTime`, speed, PiP, progress, resume, next part). A
+  failure before the first frame asks again without `dash` (progressive, then HLS); a failure mid-play reopens at
+  the same position. **Prefetch**: the console posts the first three visible YouTube cards (Home, search results;
+  again after scrolling) and the one under the mouse or focus (250 ms) to `POST /api/yt/prefetch {ids, q}` (at most
+  6 ids, the same id at most every 10 minutes, `off: true` when not in local mode); the relay queues them newest
+  first (8 at most), one at a time, 12 a minute, paused while a play is resolving, and warms the default quality's
+  indexes too. The node never lets a prefetch delay a real request: a prefetch is refused while yt-dlp is busy and
+  killed when a play, search or list arrives (a play of the same video waits for it instead); a refused prefetch is
+  retried up to three times. **Immediate feedback**: `playOnPc` opens the window at once for every kind of item,
+  with the card's cover (`#pcPoster`, a YouTube thumbnail derived from the id when there is none) and the stages
+  "resolving YouTube… → connecting… → buffering…" in Chinese (Bilibili: "opening…"; live: the frozen last frame); closing the
+  window cancels (the stream that opens afterwards is stopped at once). Measured locally (generated files, a fake
+  node with a 3 s yt-dlp, a CDN with 60 ms latency behind a local CONNECT proxy): click to first frame 0.25 s when
+  prefetched, 3.3 s when not (the yt-dlp time); seek outside the buffer 0.15 s, inside 0.05 s; quality change 0.26 s;
+  DASH → progressive fallback 0.24 s; a play during a running prefetch took one yt-dlp time, not two.
 - **M3 Live (guide)**, branch `rootv-live` (2026-10-26): the Live page has a **Channels | Guide** segment
   (remembered per browser, `rootv.liveView`). Channel tiles read the channel name, then "Now: <title> ·
   HH:MM–HH:MM" with a progress bar and "next"; the console asks `/api/epg?channels=` only for the visible
@@ -697,7 +732,9 @@ removed on 2026-10-26 together with the separate admin page (section 17).
   selected-programme header and the Lineup segment; "remind me" for future programmes.
 - **Not verified**: real playback on the PC in the new player window (the UI check used generated
   data and no network), Safari and Firefox, Windows, screen readers, a real touch device; for the PC
-  player, real Bilibili multi-part videos, collections and bangumi, YouTube playlists and fullscreen.
+  player, real Bilibili multi-part videos, collections and bangumi, YouTube playlists and fullscreen; YouTube DASH
+  against real YouTube (the one cookie-less check was asked to sign in, so real format fields such as `init_range`
+  and the exact codecs were not seen).
 
 ## 17. Admin section and classic parity (2026-10-26)
 

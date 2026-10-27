@@ -268,8 +268,8 @@ def play(relay, caller: Caller, body: dict) -> dict:
         if request is None:
             return _bad()
         request["viewer"] = body.get("viewer")
-        # 页面会放点播（vod.py）、要哪个清晰度：原样带给 watch_direct（web.py 的 _prefer）。
-        request.update({k: body[k] for k in ("vod", "quality") if k in body})
+        # 页面会放点播（vod.py）、要哪个清晰度、能不能放 DASH（ytvod.py）：原样带给 watch_direct（web.py 的 _prefer）。
+        request.update({k: body[k] for k in ("vod", "quality", "dash", "ytq") if k in body})
         device = body.get("device") if isinstance(body.get("device"), str) and body.get("device") else None
         answer = relay.watch_direct(caller, device, request)
         answer["target"] = "pc"

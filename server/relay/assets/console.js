@@ -245,6 +245,7 @@ const imgTag = (url, cls) => url ? `<img src="${esc(url)}" alt="" loading="lazy"
 // 取不到的图（404、502、图床连不上）：去掉，露出下面的占位图。
 document.addEventListener("error", (event) => {
   const t = event.target;
+  if (t && t.id === "pcPoster") { t.hidden = true; t.removeAttribute("src"); return; }   // 播放器的封面留着下次用
   if (t && t.tagName === "IMG" && !t.closest("#petgrid")) t.remove();
 }, true);
 
@@ -731,6 +732,7 @@ function render() {
   if (feedsOn() && !feedsInfo && !feedsAt) loadFeeds();
   if (route === "up" && feedsOn() && !fw && $("followsBox").hidden) { renderFollows(); loadFollows(); }
   if (feedsInfo) applyFeedSettings();
+  ytPrefetchView();
 }
 
 function renderNotice() {
@@ -820,16 +822,16 @@ function renderChips() {
 }
 
 // 播放一个节目（/api/home 的 play，或者页面自己拼的 {kind, channel, …}）：播到 to，不给就是记住的地方。
-async function play(item, to, label) {
+async function play(item, to, label, poster) {
   if (!item || !me) return null;
   if (!to) {
     to = currentTarget();
-    if (!to) { openTarget(item, "", label); return null; }
-    if (!remember) { openTarget(item, "", label); return null; }
-    if (!targetOnline(to)) { openTarget(item, targetName(to) + "没在线，换一个地方", label); return null; }
+    if (!to) { openTarget(item, "", label, poster); return null; }
+    if (!remember) { openTarget(item, "", label, poster); return null; }
+    if (!targetOnline(to)) { openTarget(item, targetName(to) + "没在线，换一个地方", label, poster); return null; }
   }
   if (remember && to !== targetPref) setTarget(to, true);
-  if (to === PC) return playOnPc(item, label);
+  if (to === PC) return playOnPc(item, label, poster);
   let answer;
   try { answer = await call("POST", "api/play", { target: to, item }); }
   catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return null; }
@@ -849,23 +851,31 @@ async function play(item, to, label) {
   setTimeout(() => { loadHome(true); loadTargets(); }, 2500);
   return answer;
 }
-async function playOnPc(item, label) {
+async function playOnPc(item, label, poster) {
   if (watching) watching.busy = true;
-  // 直播台：马上说在切换（上一台的画面停住），不等中转回答。
-  if (item.kind === "live" && !$("pcwin").hidden) switching(label || item.title || item.channel);
+  // 不等中转回答：窗口马上打开，封面上写着在做什么（直播台是上一台的画面停住、「正在切换…」），可以直接关掉。
+  const n = pcOpening(item, label, poster);
   const body = vodAsk({ target: PC, item, viewer });
   if (item.channel === "cast" && deviceId()) body.device = deviceId();
   let answer;
   try { answer = await call("POST", "api/play", body); }
   catch (error) {
+    if (!openingIs(n)) return null;
+    opening = null;
     if (watching) watching.busy = false;
-    switched();
+    openFailed();
     if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
     return null;
   }
+  if (!openingIs(n)) {
+    // 等回答时关掉了窗口（取消）：中转那边刚开的这一路马上停掉。换成了别的节目时不管（新的那次会顶掉它）。
+    if (answer.ok && opening === null && !watching) call("POST", "api/watch/stop", { viewer }).catch(() => {});
+    return answer;
+  }
+  opening = null;
   if (!answer.ok) {
     if (watching) watching.busy = false;
-    switched();
+    openFailed();
     toast(answer.error, true);
     return answer;
   }
@@ -876,10 +886,11 @@ async function playOnPc(item, label) {
 }
 
 // 「播放到」面板：每台小电视（在线、在播什么）+ 这台电脑；item 给了就是「选一个地方马上播」。
-let pendingItem = null, pendingLabel = "";
-function openTarget(item, message, label) {
+let pendingItem = null, pendingLabel = "", pendingPoster = "";
+function openTarget(item, message, label, poster) {
   pendingItem = item || null;
   pendingLabel = label || "";
+  pendingPoster = poster || "";
   $("tgTitle").textContent = "播放到";
   $("tgSub").textContent = item ? "选一个地方，马上开始播" : "以后点「播放」默认播到这里";
   $("tgBody").dataset.msg = message || "";
@@ -1313,7 +1324,9 @@ $("mini").addEventListener("click", (event) => {
 // ======================================================================= 在电脑上看（浮动窗口里的播放器）
 // 自建 / 电脑客户端才有（/api/state 的 watch）。两种放法，按回答里的 mode：
 // - "vod"（点播）：B 站的视频，中转按 Range 转发原文件（server/relay/vod.py），<video> 直接放（VodPlayer）：
-//   秒开、拖到哪里浏览器自己去取、能倍速和画中画。放不了原文件的（分段、FLV、HEVC、YouTube、选了 1080P）走下面的。
+//   秒开、拖到哪里浏览器自己去取、能倍速和画中画。放不了原文件的（分段、FLV、HEVC、选了 1080P）走下面的。
+// - "dash"：YouTube（本机模式，server/relay/ytvod.py）：画面、声音两条轨按清单用 Range 取、MediaSource 拼（DashPlayer），
+//   和点播一样秒开、拖哪到哪；浏览器放不了时退到 360p 的合体文件（"vod"），再不行 HLS。
 // - "hls"：中转把片源转成 HLS（fMP4 段），这里用浏览器自带的 MediaSource 一段段接上放（server/relay/watch.py，
 //   WatchPlayer）。直播一律这样。
 // 两种看法：
@@ -1335,7 +1348,7 @@ const UPNEXT_S = 5;           // 放完以后几秒自动放下一集
 function watchKey(now) { return [now.channel, now.title, now.episode].join("|"); }
 
 function watchSay(text, bad, retry) {
-  if (bad) switched();
+  if (bad || text) switched();
   const box = $("watchMsg");
   box.className = "watchmsg" + (bad ? " bad" : "");
   box.replaceChildren();
@@ -1404,7 +1417,7 @@ class WatchPlayer {
       return;
     }
     // 直播：画面上是「正在切换…」（switching），不再另说。
-    if (!this.live) this.say("正在连片源…（要几秒钟）");
+    if (!this.live) pcStage("正在连片源…（要几秒钟）");
     try {
       const master = await this.fetch("master.m3u8", "text");
       if (!this.alive) return;
@@ -1586,7 +1599,7 @@ class VodPlayer {
   start() {
     const v = this.video;
     this.t0 = performance.now();
-    this.say("正在打开…");
+    pcStage("正在打开…");
     v.src = this.url + (this.at > 0 ? "#t=" + this.at.toFixed(1) : "");
     v.play().catch((error) => { if (this.alive && error && error.name === "NotAllowedError") this.say("点一下画面开始播放"); });
   }
@@ -1603,11 +1616,253 @@ class VodPlayer {
     v.load();
   }
 }
+// ---- DASH 的几个纯函数（tests/console_dash_test.mjs 截出这一段单独测）----
+// YouTube 的点播（server/relay/ytvod.py）：画面、声音各一条轨，清单里每条轨有 t（n + 1 个时间边界，秒）和
+// o（n + 1 个字节边界）：第 i 段从 t[i] 放到 t[i + 1]，字节是 o[i] 到 o[i + 1] − 1。
+// 缓冲：当前位置往后 AHEAD 秒，往前留 BEHIND 秒；跳回来以后远处（AHEAD_MAX 秒以外）的清掉；NEAR：算「接得上」的缝。
+const DASH = { AHEAD: 30, BEHIND: 30, AHEAD_MAX: 120, NEAR: 0.3 };
+// 包含 t 秒的是第几段（t 在第一段之前算第 0 段，在最后之后算最后一段）。
+function dashIndex(times, t) {
+  let lo = 0, hi = times.length - 2;
+  if (hi < 0) return -1;
+  if (t <= times[0]) return 0;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (times[mid] <= t) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+// 第 i 段的 Range 头。
+function dashRange(offsets, i) { return "bytes=" + offsets[i] + "-" + (offsets[i + 1] - 1); }
+// 缓冲（[[起, 止], …]）里包含 t 的那一截（往前容 NEAR 秒的缝），没有时 null。
+function dashCovering(ranges, t) {
+  for (const r of ranges) if (t >= r[0] - DASH.NEAR && t <= r[1]) return r;
+  return null;
+}
+// 跳到 t 以后从第几段接着取：t 已经在缓冲里时从那一截末尾的下一段，否则从包含 t 的那一段。
+function dashResume(times, ranges, t) {
+  const r = dashCovering(ranges, t);
+  if (!r) return dashIndex(times, t);
+  return Math.min(times.length - 1, dashIndex(times, Math.max(t, r[1] - 0.2)) + 1);
+}
+// 第 next 段要不要现在取：还没取完，而且它在 now + AHEAD 秒以内。
+function dashWant(times, next, now) { return next >= 0 && next < times.length - 1 && times[next] < now + DASH.AHEAD; }
+// 要清掉的缓冲：now − BEHIND 以前的，now + AHEAD_MAX 以后的。
+function dashEvict(ranges, now) {
+  const out = [];
+  for (const [a, b] of ranges) {
+    if (a < now - DASH.BEHIND) out.push([a, Math.min(b, now - DASH.BEHIND)]);
+    if (b > now + DASH.AHEAD_MAX) out.push([Math.max(a, now + DASH.AHEAD_MAX), b]);
+  }
+  return out.filter((r) => r[1] - r[0] > 0.5);
+}
+// ---- DASH 的纯函数到此 ----
+
+// YouTube 的点播（mode "dash"）：两个 SourceBuffer（画面、声音），按清单把要的那几段用 Range 取来接上（取的是中转的
+// vod/<编号>/<令牌>/v 和 …/a，中转经 YouTube 的代理转发）。位置就是 currentTime（和 VodPlayer 一样，vod 为真）：
+// 跳转时只重算从第几段取、掐掉在取的，缓冲里有就直接放；倍速、画中画、进度、自动下一集都和 VodPlayer 一样。
+// opts：say、ended、start、meta、fallback（还没放起来就出错：多半是浏览器放不了，改要合体文件或 HLS）、broken。
+const DASH_OK = (() => {
+  try { return !!window.MediaSource && MediaSource.isTypeSupported('video/mp4; codecs="avc1.640028"') && MediaSource.isTypeSupported('audio/mp4; codecs="mp4a.40.2"'); }
+  catch (error) { return false; }
+})();
+function rangesOf(buffered) {
+  const out = [];
+  try { for (let i = 0; i < buffered.length; i++) out.push([buffered.start(i), buffered.end(i)]); } catch (error) { /* 已经拆掉了 */ }
+  return out;
+}
+class DashPlayer {
+  constructor(video, base, opts) {
+    this.vod = true; this.dash = true; this.video = video; this.base = base; this.opts = opts; this.say = opts.say;
+    this.at = Math.max(0, opts.start || 0);
+    this.alive = true; this.started = false; this.ready = false; this.ended = false; this.origin = 0; this.failed = false;
+    this.tracks = []; this.offs = [];
+    this.stats = { start: null, manifest: null, seeks: [] };
+    const on = (name, fn) => { video.addEventListener(name, fn); this.offs.push(() => video.removeEventListener(name, fn)); };
+    on("playing", () => {
+      if (!this.alive) return;
+      if (!this.started) { this.started = true; this.stats.start = Math.round(performance.now() - this.t0); this.say(""); }
+      if (this.seekT) { this.stats.seeks.push(Math.round(performance.now() - this.seekT)); this.seekT = 0; }
+    });
+    on("seeking", () => {
+      if (!this.alive || !this.ready) return;
+      this.ended = false; this.seekT = performance.now();
+      this.reseek();
+    });
+    on("seeked", () => { if (this.alive && video.paused && this.seekT) { this.stats.seeks.push(Math.round(performance.now() - this.seekT)); this.seekT = 0; } });
+    on("waiting", () => {
+      if (!this.alive) return;
+      this.kick(); this.pump();
+      if (this.started) this.slow = setTimeout(() => { if (this.alive && video.readyState < 3) this.say("缓冲中…"); }, 1500);
+    });
+    on("canplay", () => { clearTimeout(this.slow); if (this.alive && this.started) this.say(""); });
+    on("timeupdate", () => this.pump());
+    on("ended", () => { if (this.alive) { this.ended = true; opts.ended(); } });
+    on("error", () => { if (this.alive && this.ms) this.fail("浏览器解不了这个视频"); });
+  }
+  async start() {
+    const v = this.video;
+    this.t0 = performance.now();
+    pcStage("正在连接…");
+    let m;
+    try {
+      const r = await fetch(this.base + "manifest", { credentials: "same-origin", cache: "no-store" });
+      if (!r.ok) throw Object.assign(new Error((await r.text()) || "取不到视频的索引"), { gone: r.status === 404 });
+      m = await r.json();
+    } catch (error) { if (this.alive) this.fail(error.message || "取不到视频的索引", error.gone); return; }
+    if (!this.alive) return;
+    this.stats.manifest = Math.round(performance.now() - this.t0);
+    const kinds = ["v", "a"];
+    if (!window.MediaSource || !kinds.every((k) => m.tracks[k] && MediaSource.isTypeSupported(m.tracks[k].mime))) { this.fail("这个浏览器放不了这种格式"); return; }
+    this.ms = new MediaSource();
+    this.objectUrl = URL.createObjectURL(this.ms);
+    v.src = this.objectUrl;
+    await new Promise((ok) => this.ms.addEventListener("sourceopen", ok, { once: true }));
+    if (!this.alive) return;
+    try {
+      this.ms.duration = m.duration;
+      this.tracks = kinds.map((k) => ({ k, t: m.tracks[k].t, o: m.tracks[k].o, init: m.tracks[k].init, sb: this.ms.addSourceBuffer(m.tracks[k].mime),
+                                        next: 0, busy: false, gen: 0, ctl: null, q: Promise.resolve() }));
+      pcStage("缓冲中…");
+      await Promise.all(this.tracks.map(async (t) => this.append(t, await this.get(t, "bytes=" + t.init[0] + "-" + t.init[1]))));
+    } catch (error) { if (this.alive) this.fail(error.message || "放不了", error.gone); return; }
+    if (!this.alive) return;
+    for (const t of this.tracks) t.next = dashIndex(t.t, this.at);
+    if (this.at > 0) v.currentTime = this.at;
+    v.defaultPlaybackRate = v.playbackRate = savedRate();
+    this.ready = true;
+    if (this.opts.meta) this.opts.meta();
+    this.pump();
+    v.play().catch((error) => { if (this.alive && error && error.name === "NotAllowedError") this.say("点一下画面开始播放"); });
+  }
+  // 取一段字节（中转按 Range 转发）：网络断了、中转说片源连不上（502）时再试两次；404 是这一路已经停了。
+  async get(t, range) {
+    for (let round = 0; ; round++) {
+      if (!this.alive) throw new Error("");
+      t.ctl = new AbortController();
+      let r;
+      try { r = await fetch(this.base + t.k, { credentials: "same-origin", cache: "no-store", headers: { Range: range }, signal: t.ctl.signal }); }
+      catch (error) { if (error.name === "AbortError" || round >= 2) throw error; await sleep(600); continue; }
+      if (r.ok) return r.arrayBuffer();
+      if (r.status === 404 || r.status === 410) throw Object.assign(new Error("这一路已经停了"), { gone: true });
+      const text = await r.text();
+      if (round >= 2) throw new Error(text || "片源连不上");
+      await sleep(600);
+    }
+  }
+  // SourceBuffer 一次只能做一件事：每条轨的追加、清除排成一队。
+  op(t, fn) {
+    const run = t.q.then(() => new Promise((ok, bad) => {
+      if (!this.alive) { ok(); return; }
+      const sb = t.sb;
+      const done = () => { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); ok(); };
+      const fail = () => { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); bad(new Error("浏览器解不了这一段")); };
+      sb.addEventListener("updateend", done);
+      sb.addEventListener("error", fail);
+      try { fn(sb); } catch (error) { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); bad(error); }
+    }));
+    t.q = run.catch(() => {});
+    return run;
+  }
+  async append(t, buffer) {
+    try { await this.op(t, (sb) => sb.appendBuffer(buffer)); }
+    catch (error) {
+      if (!error || error.name !== "QuotaExceededError") throw error;
+      // 浏览器给的缓冲用完了：清掉当前位置 10 秒以前的，再试一次。
+      const now = this.video.currentTime;
+      if (now > 12) await this.op(t, (sb) => sb.remove(0, now - 10));
+      await this.op(t, (sb) => sb.appendBuffer(buffer));
+    }
+  }
+  async evict(t) {
+    for (const [a, b] of dashEvict(rangesOf(t.sb.buffered), this.video.currentTime)) await this.op(t, (sb) => sb.remove(a, b));
+  }
+  pump() {
+    if (!this.alive || !this.ready) return;
+    const now = this.video.currentTime;
+    for (const t of this.tracks) if (!t.busy && dashWant(t.t, t.next, now)) this.fill(t);
+    this.maybeEnd();
+  }
+  async fill(t) {
+    t.busy = true;
+    const gen = t.gen, i = t.next;
+    try {
+      const data = await this.get(t, dashRange(t.o, i));
+      if (!this.alive || gen !== t.gen) return;
+      await this.evict(t);
+      await this.append(t, data);
+      if (gen !== t.gen) return;
+      t.next = i + 1;
+      this.kick();
+    } catch (error) {
+      if (!this.alive || gen !== t.gen || (error && error.name === "AbortError")) return;
+      this.fail(error.message || "片源断了", error.gone);
+      return;
+    } finally { if (gen === t.gen) t.busy = false; }
+    this.pump();
+  }
+  // 跳转：每条轨重算从第几段接着取（缓冲里有就从那一截的末尾），正在取的不是那一段就掐掉。
+  reseek() {
+    const now = this.video.currentTime;
+    for (const t of this.tracks) {
+      const next = dashResume(t.t, rangesOf(t.sb.buffered), now);
+      if (t.busy && next === t.next) continue;
+      t.gen++;
+      if (t.ctl) t.ctl.abort();
+      t.busy = false; t.next = next;
+    }
+    this.pump();
+  }
+  // 两条轨都取完了：告诉浏览器到头了（放到结尾才会有 ended）；之后再往回跳，追加时浏览器自己重新打开。
+  maybeEnd() {
+    if (!this.ms || this.ms.readyState !== "open" || !this.tracks.every((t) => t.next >= t.t.length - 1 && !t.busy)) return;
+    Promise.all(this.tracks.map((t) => t.q)).then(() => {
+      if (!this.alive || this.ms.readyState !== "open" || this.tracks.some((t) => t.sb.updating || t.next < t.t.length - 1)) return;
+      try { this.ms.endOfStream(); } catch (error) { /* 正好又在追加 */ }
+    });
+  }
+  // 画面和声音的段的边界不完全对齐：停在一条小缝前面时跳过去。
+  kick() {
+    const v = this.video;
+    if (!this.alive || v.seeking) return;
+    const ranges = rangesOf(v.buffered), now = v.currentTime;
+    if (!ranges.length || ranges.some((r) => now >= r[0] - 0.05 && now < r[1])) return;
+    const ahead = ranges.map((r) => r[0]).find((a) => a > now && a - now < 1);
+    if (ahead !== undefined) v.currentTime = ahead + 0.01;
+  }
+  fail(text, gone) {
+    if (!this.alive || this.failed) return;
+    this.failed = true;
+    if (!this.started) this.opts.fallback(text, gone); else this.opts.broken(text, gone);
+  }
+  seek(target) { if (this.alive) this.video.currentTime = Math.max(0, target); }
+  stop() {
+    this.alive = false;
+    clearTimeout(this.slow);
+    for (const t of this.tracks) if (t.ctl) t.ctl.abort();
+    for (const off of this.offs) off();
+    const v = this.video;
+    v.pause();
+    v.defaultPlaybackRate = v.playbackRate = 1;
+    v.removeAttribute("src");
+    v.load();
+    if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+  }
+}
 function playerFor(answer) {
   const live = answer.kind === "live";
   if (live) switching(answer.name || answer.title || answer.channel);
   if (watching) watching.player.stop();
   $("pcwin").hidden = false;
+  if (answer.mode === "dash") {
+    const player = new DashPlayer($("watchVideo"), answer.url, {
+      say: watchSay, ended: watchEnded, start: answer.start || 0,
+      meta: () => {
+        const d = $("watchVideo").duration;
+        if (watching && watching.player === player && isFinite(d) && d > 0) { watching.duration = d; renderPc(); }
+      },
+      fallback: (why) => { if (watching && watching.player === player) dashFallback(why); },
+      broken: () => { if (watching && watching.player === player) vodBroken(); },
+    });
+    return player;
+  }
   if (answer.mode === "vod") {
     const player = new VodPlayer($("watchVideo"), answer.url, {
       say: watchSay, ended: watchEnded, start: answer.start || 0,
@@ -1661,7 +1916,53 @@ function switching(name, text) {
 function switched() {
   $("pcSwitch").hidden = true;
   $("pcFreeze").hidden = true;
+  setPoster("");
 }
+
+// ---- 点了马上开窗口（每一种节目都这样，playOnPc）：封面，上面写着在做什么，关掉窗口就是取消 ----
+// YouTube：正在解析 YouTube…（中转问节点取地址，预取过的马上就有）→ 正在连接…（取索引）→ 缓冲中…（第一段），出画面时收起。
+let opening = null;        // {n}：正在等中转回答的那一次；关窗口时清掉
+let openSeq = 0;
+function openingIs(n) { return !!opening && opening.n === n; }
+function setPoster(url) {
+  const img = $("pcPoster");
+  if (!img) return;
+  if (url) { if (img.getAttribute("src") !== url) img.src = url; img.hidden = false; }
+  else if (!img.hidden) { img.hidden = true; img.removeAttribute("src"); }
+}
+function ytIdOfItem(item) {
+  if (!item) return "";
+  if (item.site === "youtube" && /^[A-Za-z0-9_-]{11}$/.test(item.id || "")) return item.id;
+  if (item.video && item.video.site === "youtube") return item.video.id || "";
+  const m = String(item.url || "").match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/live\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : "";
+}
+function ytPoster(id) { return id ? "api/bili/thumb?" + new URLSearchParams({ s: "v", u: "https://i.ytimg.com/vi/" + id + "/mqdefault.jpg" }) : ""; }
+function pcOpening(item, label, poster) {
+  const n = ++openSeq;
+  opening = { n };
+  const yt = ytIdOfItem(item) || ytIdOfCard({ art: { url: poster } }), live = item.kind === "live";
+  const name = label || item.title || item.channel || "";
+  $("pcwin").hidden = false;
+  if (!watching) { $("watchWhat").textContent = name || "在电脑上看"; $("watchWhat").title = name; $("watchSub").textContent = "这台电脑"; }
+  switching(name, live ? "" : yt || item.site === "youtube" ? "正在解析 YouTube…" : "正在打开…");
+  $("pcSwitch").classList.remove("wrap");
+  const img = poster || ytPoster(yt);
+  if (img && !live) { $("pcFreeze").hidden = true; setPoster(img); }
+  return n;
+}
+// 起播的每一步：遮罩还在时写在遮罩上，否则写在画面上的提示里。
+function pcStage(text) {
+  if (!$("pcSwitch").hidden) { $("pcSwitchText").textContent = text; return; }
+  watchSay(text);
+}
+// 没开成（中转说不行、网络不通）：之前在放的照旧放，什么都没在放就收起窗口。
+function openFailed() {
+  switched();
+  if (!watching) $("pcwin").hidden = true;
+}
+// 不管哪种播放器，出画面了就收起遮罩和封面。
+$("watchVideo").addEventListener("playing", () => { if (watching) switched(); });
 
 // ---- 直播台的备用线路（server/routes.py）：中转在一路里按顺序换线路，这里只把它说的话显示出来 ----
 // 换台的遮罩还在时写在遮罩上（台名下面），否则写在画面上的提示里。
@@ -2011,9 +2312,15 @@ function pcToggleMute() {
 // ---- 点播：倍速、清晰度、画中画，和出错时换一种放法 ----
 
 function qualityPref() { return lsGet("rootv.quality", "720p") === "1080p" ? "1080p" : "720p"; }
-// 请求里说这个页面会放点播（新的电脑版才说；旧版只会放 HLS），和要的清晰度（web.py 的 _prefer）。
+const YT_QUALITIES = ["360p", "480p", "720p", "1080p"];
+function ytQualityPref() { const q = lsGet("rootv.ytQuality", "720p"); return YT_QUALITIES.includes(q) ? q : "720p"; }
+// 请求里说这个页面会放点播（新的电脑版才说；旧版只会放 HLS），和要的清晰度（web.py 的 _prefer）；能用 MediaSource
+// 放 H.264 + AAC 时再说 dash（YouTube 按 DASH 放，ytq 是 YouTube 的清晰度）。hls：true 只要 HLS，"nodash" 不要 DASH。
 function vodAsk(body, hls) {
-  if (VOD_OK && !hls) { body.vod = true; body.quality = qualityPref(); }
+  if (VOD_OK && hls !== true) {
+    body.vod = true; body.quality = qualityPref(); body.ytq = ytQualityPref();
+    if (DASH_OK && hls !== "nodash") body.dash = true;
+  }
   return body;
 }
 function rateLabel(r) { return (Math.round(r * 100) / 100) + "×"; }
@@ -2040,10 +2347,11 @@ function pcTogglePip() {
   if (typeof v.requestPictureInPicture === "function") v.requestPictureInPicture().catch(() => toast("这个浏览器现在不让画中画", true));
   else v.webkitSetPresentationMode(v.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
 }
-// 换清晰度：720P 是点播，1080P 走 HLS（要登录 B 站）。从现在的位置接着放，选的记在这个浏览器里。
+// 换清晰度：B 站 720P 是点播，1080P 走 HLS（要登录 B 站）；YouTube 是这个视频有的 360P…1080P（都是 DASH，换一个就是
+// 另一路）。从现在的位置接着放，选的记在这个浏览器里（两个网站分开记）。
 function pickQuality(q) {
   if (!watching || !watching.quality) return;
-  lsSet("rootv.quality", q);
+  lsSet(watching.quality.site === "youtube" ? "rootv.ytQuality" : "rootv.quality", q);
   if (watching.quality.current === q) return;
   const at = Math.round(pcPos() * 10) / 10;
   watchSay("正在换成 " + q.toUpperCase() + "…");
@@ -2051,6 +2359,7 @@ function pickQuality(q) {
   else startWatch(false, true, at);
 }
 // 速度、清晰度的小菜单。
+const QUALITY_NOTES = { "720p": "秒开，拖到哪里都快", "1080p": "要转一下，拖动时稍等" };
 function openMenu(kind) {
   const menu = $("pcMenu"), anchor = kind === "rate" ? $("pcRate") : $("pcQuality");
   if (!menu.hidden && menu.dataset.kind === kind) { closeMenu(); return; }
@@ -2059,8 +2368,9 @@ function openMenu(kind) {
   menu.replaceChildren();
   const items = kind === "rate"
     ? RATES.map((r) => ({ value: r, label: rateLabel(r) + (r === 1 ? " 正常" : ""), on: r === savedRate() }))
-    : [{ value: "720p", label: "720P", note: "秒开，拖到哪里都快" }, { value: "1080p", label: "1080P", note: "要转一下，拖动时稍等" }]
-        .map((x) => Object.assign(x, { on: watching.quality && watching.quality.current === x.value }));
+    : (watching.quality.choices || ["720p", "1080p"]).map((v) => ({
+        value: v, label: v.toUpperCase(), note: watching.quality.site === "youtube" ? "" : (QUALITY_NOTES[v] || ""),
+        on: watching.quality.current === v }));
   for (const item of items) {
     const b = el("button");
     b.setAttribute("role", "menuitemradio");
@@ -2086,9 +2396,16 @@ document.addEventListener("pointerdown", (event) => {
   const menu = $("pcMenu");
   if (!menu.hidden && !menu.contains(event.target) && event.target !== $("pcRate") && event.target !== $("pcQuality")) closeMenu();
 }, true);
+// YouTube 的 DASH 还没放起来就出错（浏览器放不了、取不到索引）：改要合体的 360p 文件（没有时中转给 HLS）。
+function dashFallback(why) {
+  if (window.console && console.debug) console.debug("DASH 放不了：" + (why || ""));
+  pcStage("换一种方式放…");
+  if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: Math.round((watching.start || 0) * 10) / 10 }), { group: watching.group, seek: true, again: true, hls: "nodash" });
+  else startWatch(false, true, undefined, "nodash");
+}
 // 点播还没放起来就出错：多半是这个浏览器放不了这个文件（或者地址不通），改要 HLS（中转用 ffmpeg 转）。
 function vodFallback() {
-  watchSay("换一种方式放…");
+  pcStage("换一种方式放…");
   if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: Math.round((watching.start || 0) * 10) / 10 }), { group: watching.group, seek: true, again: true, hls: true });
   else startWatch(false, true, undefined, true);
 }
@@ -2345,6 +2662,11 @@ function openDirect(answer, ctx) {
 }
 
 function stopWatch() {
+  if (opening) {
+    // 还在等中转回答时关掉：取消。回答到了也不放（playOnPc 收到后会让中转停掉那一路）。
+    opening = null;
+    if (!watching) call("POST", "api/watch/stop", { viewer }).catch(() => {});
+  }
   if (watching) {
     const body = pcTracked() ? pcBody() : { viewer };
     watching.player.stop();
@@ -3305,6 +3627,8 @@ function renderYtHits(box) {
       body.append(el("div", "t", item.title), meta);
       const go = el("button", "go", "播放");
       go.onclick = () => play({ kind: "cast", url: item.link, title: item.title }, null, item.title);
+      const yid = ytIdOfItem({ url: item.link });
+      if (yid) row.dataset.ytid = yid;      // 鼠标停住、焦点到「播放」时先取好地址（ytPrefetch）
       acts.appendChild(go);
       if (item.channel_link) acts.appendChild(subscribeChannel(item));
       row.append(cover, body, acts);
@@ -3396,6 +3720,7 @@ function renderSearch() {
     renderYtHits(box);
     $("bsMore").hidden = true;          // YouTube 一次给 20 个，不翻页
     markSubscribed();
+    ytPrefetchView();
     return;
   }
   for (const item of bs.items) {
@@ -4836,7 +5161,69 @@ function renderHome() {
   box.innerHTML = o + "</div>";
   qsa("#homeBody .shelf").forEach((e, i) => { if (scrolls[i] !== undefined) e.scrollLeft = scrolls[i]; });
   restoreFocus(fk);
+  ytPrefetchView();
 }
+
+// ---- YouTube 预取（server/relay/ytvod.py）：看得见的前几个、鼠标停住或焦点到的那个，先让中转取好地址 ----
+// 只在本机模式（data.youtube.kind === "local"）、这台电脑能看时发；中转说 off 就不再发。中转那边一次一个、
+// 不耽误真正的播放；同一个视频 10 分钟内不再问。
+const YT_PREFETCH = { FIRST: 3, HOVER_MS: 250, AGAIN_MS: 600000 };
+let ytPrefetchOff = false, ytHoverTimer = 0;
+const ytAsked = {};
+function ytPrefetchOk() {
+  return !ytPrefetchOff && VOD_OK && !!(data && data.watch && data.youtube && data.youtube.kind === "local") && !!me && !isGuest();
+}
+// 首页的卡片（ITEMS）是哪个 YouTube 视频：节目里写着，或者封面是 i.ytimg.com/vi/<id>/。
+function ytIdOfCard(x) {
+  if (!x) return "";
+  const id = x.play ? ytIdOfItem(x.play) : "";
+  if (id) return id;
+  let url = (x.art && x.art.url) || "";
+  try { url = decodeURIComponent(url); } catch (error) { /* 原样 */ }
+  const m = url.match(/i\.ytimg\.com\/vi\/([A-Za-z0-9_-]{11})\//);
+  return m ? m[1] : "";
+}
+function ytIdAt(node) {
+  const card = node && node.closest && node.closest("[data-play], [data-ytid]");
+  if (!card) return "";
+  return card.dataset.ytid || ytIdOfCard(ITEMS[card.dataset.play]);
+}
+function ytPrefetch(ids) {
+  if (!ytPrefetchOk()) return;
+  const now = Date.now();
+  const want = [...new Set(ids)].filter((id) => id && !(now - (ytAsked[id] || 0) < YT_PREFETCH.AGAIN_MS)).slice(0, 6);
+  if (!want.length) return;
+  for (const id of want) ytAsked[id] = now;
+  call("POST", "api/yt/prefetch", { ids: want, q: ytQualityPref() })
+    .then((answer) => { if (answer && answer.off) ytPrefetchOff = true; }).catch(() => {});
+}
+function ytPrefetchVisible(root) {
+  if (!ytPrefetchOk() || !root) return;
+  const h = window.innerHeight, w = window.innerWidth, ids = [];
+  for (const node of root.querySelectorAll("[data-play], [data-ytid]")) {
+    const r = node.getBoundingClientRect();
+    if (r.bottom <= 0 || r.top >= h || r.right <= 0 || r.left >= w || !r.width) continue;
+    const id = ytIdAt(node);
+    if (id && !ids.includes(id)) ids.push(id);
+    if (ids.length >= YT_PREFETCH.FIRST) break;
+  }
+  ytPrefetch(ids);
+}
+// 页面画好、滚动停下以后（横排的卡片也算）再看一眼哪些看得见。
+let ytViewTimer = 0;
+function ytPrefetchView() {
+  clearTimeout(ytViewTimer);
+  ytViewTimer = setTimeout(() => ytPrefetchVisible($("view")), 400);
+}
+addEventListener("scroll", () => { if (ytPrefetchOk()) ytPrefetchView(); }, { capture: true, passive: true });
+function ytPrefetchSoon(event) {
+  const id = ytIdAt(event.target);
+  if (!id) return;
+  clearTimeout(ytHoverTimer);
+  ytHoverTimer = setTimeout(() => ytPrefetch([id]), YT_PREFETCH.HOVER_MS);
+}
+document.addEventListener("mouseover", ytPrefetchSoon);
+document.addEventListener("focusin", ytPrefetchSoon);
 
 // ======================================================================= 点击（委托）
 
@@ -4849,19 +5236,19 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     const x = ITEMS[ds.play];
     if (t.closest("#csheet")) closeSheets(true);
-    if (x) play(x.play, null, x.title);
+    if (x) play(x.play, null, x.title, x.art && x.art.url);
     return;
   }
-  if (ds.pick) { const x = ITEMS[ds.pick]; if (x) openTarget(x.play, "", x.title); return; }
+  if (ds.pick) { const x = ITEMS[ds.pick]; if (x) openTarget(x.play, "", x.title, x.art && x.art.url); return; }
   if (ds.series) { openEpisodes(ds.series); return; }
   if (ds.sheet === "target") { openTarget(null); return; }
   if (ds.tg) {
     if (t.getAttribute("aria-disabled") === "true") { toast(targetName(ds.tg) + "离线了，看看电源和 Wi-Fi"); return; }
     if (pendingItem) {
-      const item = pendingItem, label = pendingLabel;
+      const item = pendingItem, label = pendingLabel, poster = pendingPoster;
       if (remember) setTarget(ds.tg, true);
       closeSheets(true);
-      play(item, ds.tg, label);
+      play(item, ds.tg, label, poster);
     } else { setTarget(ds.tg); closeSheets(); if (route === "home") renderHome(); }
     return;
   }

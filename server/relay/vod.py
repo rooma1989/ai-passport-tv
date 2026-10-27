@@ -16,8 +16,13 @@
   （浏览器跳转时有时还没关旧的连接）。没有请求、没有进度报告 IDLE_S 秒就收掉；页面关闭时马上收（/api/watch/stop）。
 - 令牌和 watch.py 的一样（位置 + 编号 + 到期时间的 HMAC），密钥派生得不同：两种地址的令牌不能互换。
 - 只在自建 / 电脑客户端（--selfhost）有，和 watch.py 一样；云端没有这个接口。
-- 放不了原文件的（HEVC、FLV、分成好几段的老视频、登录后要 1080P 的、YouTube、直播）照旧走 watch.py
+- 放不了原文件的（HEVC、FLV、分成好几段的老视频、登录后要 1080P 的、直播）照旧走 watch.py
   （web.py 的 _vod_source 决定，playable 说原因）。
+- YouTube（本机模式，ytvod.py）：画面和声音是分开的两个分片 MP4（DASH，H.264 + AAC），各是一条「轨」
+  （Media.tracks 的 v、a）：GET /vod/<编号>/<令牌>/v 和 …/a 同样按 Range 转发，…/manifest 是两条轨的初始化段和
+  按 sidx 算好的每一段（时间 → 字节范围），页面的 DashPlayer 用 MediaSource 自己拼；放不了时退到 360p 的合体
+  文件（格式 18，…/media，和 B 站一样 <video> 直接放）。上游经 YouTube 的代理（VodSource.opener，地址绑着
+  出口 IP），地址过期时同样重新取一次。
 
 只用标准库；地址里有签名，日志里只写「<地址>」。
 """
@@ -25,6 +30,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import secrets
 import socket
@@ -51,7 +57,7 @@ UPSTREAM_TIMEOUT_S = 20
 # 上游这些回答说明地址过期了（或被换了节点）：重新取地址再试一次。
 EXPIRED = (403, 404, 410)
 _SID = re.compile(r"^[0-9a-f]{16}$")
-_PATH = re.compile(r"^/vod/([0-9a-f]{16})/([0-9]{1,12}\.[A-Za-z0-9_-]{16,32})/media$")
+_PATH = re.compile(r"^/vod/([0-9a-f]{16})/([0-9]{1,12}\.[A-Za-z0-9_-]{16,32})/(media|v|a|manifest)$")
 _RANGE = re.compile(r"^bytes=(\d{0,15})-(\d{0,15})$")
 # B 站 playurl 的 video_codecid：7 是 H.264，12 是 HEVC，13 是 AV1。
 CODEC_AVC = 7
@@ -66,12 +72,28 @@ def derive_secret(key: str) -> bytes:
 # ---------------------------------------------------------------- 片源
 
 @dataclass(frozen=True)
+class Track:
+    """DASH 的一条轨（YouTube 的只有画面或只有声音的分片 MP4）：地址、MIME（带 codecs）、大小，
+    格式编号（itag，认「是不是同一个文件」：sidx 按它缓存），yt-dlp 给的初始化段、索引的字节范围（没有为 None）。"""
+    url: str
+    mime: str
+    size: int = 0
+    itag: str = ""
+    init: tuple[int, int] | None = None
+    index: tuple[int, int] | None = None
+    height: int = 0
+    bitrate: int = 0
+
+
+@dataclass(frozen=True)
 class Media:
-    """取到的一个原文件：地址、备用地址、大小（字节，不知道为 0）、时长（秒）。"""
+    """取到的一个原文件：地址、备用地址、大小（字节，不知道为 0）、时长（秒）。
+    tracks：DASH 的轨（{"v": Track, "a": Track}）；只有合体文件时为空，url 是合体文件（也可以两者都有）。"""
     url: str
     backups: tuple[str, ...] = ()
     size: int = 0
     duration: float = 0.0
+    tracks: dict = field(default_factory=dict, compare=False)
 
 
 @dataclass(frozen=True)
@@ -80,7 +102,10 @@ class VodSource:
 
     resolve：取（或重新取）地址，返回 Media；first：决定走点播时已经取到的那一次（第一次请求不用再取）。
     headers：上游要的头（B 站：Referer、User-Agent）。start：从第几秒起（播放器自己跳过去）。
-    quality：给人看的清晰度（"720p"）；hd：这个人还能选 1080P（登录了 B 站，走 watch.py 那条路）。"""
+    quality：给人看的清晰度（"720p"）；hd：这个人还能选 1080P（登录了 B 站，走 watch.py 那条路）。
+    YouTube（ytvod.py）多几项：opener 是上游用的连接（经 YouTube 的代理，签名同 VodService 的 opener）；dash 为真时
+    页面用 MediaSource 拼两条轨，manifest(session) 给页面那份清单；choices 是能选的清晰度；variant 认「同一个视频的
+    哪种放法」（换清晰度就换一路）。"""
     key: tuple
     resolve: Callable[[], Media] = field(compare=False)
     headers: tuple[tuple[str, str], ...] = ()
@@ -91,6 +116,13 @@ class VodSource:
     first: Media | None = field(default=None, compare=False)
     quality: str = "720p"
     hd: bool = False
+    opener: Callable | None = field(default=None, compare=False)
+    dash: bool = False
+    manifest: Callable | None = field(default=None, compare=False)
+    choices: tuple[str, ...] = ()
+    variant: str = ""
+    # 地址取到多久以后先换新的（B 站约两小时过期；YouTube 按地址里的 expire 算）。
+    refresh_s: float = URL_REFRESH_S
 
 
 def playable(info: dict) -> str:
@@ -174,7 +206,7 @@ class VodSession:
     def media(self, refresh: bool = False) -> Media:
         """现在用的地址；refresh 或者取到太久了就重新取（可能抛 SourceError、NotPlayable）。"""
         with self._lock:
-            stale = self._media is None or self.clock() - self._resolved > URL_REFRESH_S
+            stale = self._media is None or self.clock() - self._resolved > self.source.refresh_s
         if not refresh and not stale:
             return self._media
         fresh = self.source.resolve()
@@ -254,7 +286,8 @@ class VodService:
         别的就换一路。这个位置上的 HLS（watch.py）先关掉。满了时 watch.Busy。"""
         with self._lock:
             current = self._by_device.get(device)
-            if current is not None and current.alive and current.source.key == source.key:
+            if current is not None and current.alive and current.source.key == source.key \
+                    and current.source.variant == source.variant:
                 current.touch()
                 return current
             others = [s.user for d, s in self._by_device.items() if d != device and s.alive]
@@ -325,6 +358,24 @@ class VodService:
         for session in sessions:
             session.stop()
 
+    def manifest(self, handler, session: VodSession) -> None:
+        """GET …/manifest：DASH 的清单（VodSource.manifest 算，JSON）；不是 DASH 的 404，算不出来 502（正文是原因）。"""
+        build = session.source.manifest
+        if build is None:
+            handler._not_found()
+            return
+        try:
+            data = build(session)
+        except Exception as error:  # noqa: BLE001 —— 取不到索引、地址失效、格式不对：页面据此换一种放法
+            reason = watch_pc.explain(session.source.site, f"取不到索引：{error}")
+            session.error = reason
+            self.log(f"在电脑上点播 {session.device}：{reason}")
+            handler._send(502, reason.encode(), "text/plain; charset=utf-8", {"Cache-Control": "no-store"})
+            return
+        session.touch()
+        handler._send(200, json.dumps(data, separators=(",", ":")).encode(), "application/json",
+                      {"Cache-Control": "no-store"})
+
     def _ensure_reaper(self) -> None:
         if not self.background or (self._reaper is not None and self._reaper.is_alive()):
             return
@@ -346,8 +397,9 @@ class VodService:
 
     # ---- 转发一个请求 ----
 
-    def _upstream(self, session: VodSession, wanted: str | None):
-        """连上游：返回 (回答, None) 或 (None, (状态码, 给人看的原因, 多给的头))。地址过期时重新取一次。"""
+    def _upstream(self, session: VodSession, wanted: str | None, part: str = "media"):
+        """连上游：返回 (回答, None) 或 (None, (状态码, 给人看的原因, 多给的头))。地址过期时重新取一次。
+        part：media（原文件）或 DASH 的一条轨（v、a）。"""
         refreshed = False
         last = (502, "片源连不上", {})
         while True:
@@ -357,14 +409,20 @@ class VodService:
                 reason = watch_pc.explain(session.source.site, f"取不到片源地址：{error}")
                 return None, (502, reason, {})
             expired = False
-            for url in (media.url, *media.backups):
+            track = media.tracks.get(part) if part != "media" else None
+            urls = (track.url,) if track is not None else (media.url, *media.backups) if part == "media" and media.url \
+                else ()
+            if not urls:
+                return None, (404, "没有这一条", {})
+            opener = session.source.opener or self.opener
+            for url in urls:
                 headers = dict(session.source.headers)
                 headers["Accept-Encoding"] = "identity"
                 if wanted:
                     headers["Range"] = wanted
                 request = urllib.request.Request(url, headers=headers)
                 try:
-                    return self.opener(request, UPSTREAM_TIMEOUT_S), None
+                    return opener(request, UPSTREAM_TIMEOUT_S), None
                 except urllib.error.HTTPError as error:
                     code = error.code
                     extra = {}
@@ -386,15 +444,15 @@ class VodService:
                 continue
             return None, last
 
-    def serve(self, handler, session: VodSession) -> None:
-        """把上游的字节转给浏览器（handler 是 web.py 的 ManageHandler）。"""
+    def serve(self, handler, session: VodSession, part: str = "media") -> None:
+        """把上游的字节转给浏览器（handler 是 web.py 的 ManageHandler）。part：media、v、a（DASH 的轨）。"""
         wanted = handler.headers.get("Range") or ""
         match = _RANGE.match(wanted.strip())
         wanted = wanted.strip() if match and (match.group(1) or match.group(2)) else None
         conn = session.admit(getattr(handler, "connection", None), self.max_connections)
         upstream = None
         try:
-            upstream, failed = self._upstream(session, wanted)
+            upstream, failed = self._upstream(session, wanted, part)
             if upstream is None:
                 code, reason, extra = failed
                 if code != 416:
@@ -406,7 +464,7 @@ class VodService:
             status = getattr(upstream, "status", None) or upstream.getcode()
             kind = upstream.headers.get("Content-Type") or ""
             if not kind.startswith(("video/", "audio/")):
-                kind = "video/mp4"
+                kind = "audio/mp4" if part == "a" else "video/mp4"
             length = upstream.headers.get("Content-Length")
             handler.send_response(206 if status == 206 else 200)
             handler.send_header("Content-Type", kind)
@@ -449,7 +507,7 @@ class VodService:
 # ---------------------------------------------------------------- HTTP（中转的网页端口）
 
 def get(handler, relay, path: str) -> bool:
-    """GET /vod/<编号>/<令牌>/media（前端去掉了 /tv）：只认令牌，不看登录。处理了返回 True。"""
+    """GET /vod/<编号>/<令牌>/media|v|a|manifest（前端去掉了 /tv）：只认令牌，不看登录。处理了返回 True。"""
     if not path.startswith("/vod/"):
         return False
     service = getattr(relay, "vod", None)
@@ -459,5 +517,8 @@ def get(handler, relay, path: str) -> bool:
         handler._not_found()
         return True
     session.touch()
-    service.serve(handler, session)
+    if match.group(3) == "manifest":
+        service.manifest(handler, session)
+    else:
+        service.serve(handler, session, match.group(3))
     return True

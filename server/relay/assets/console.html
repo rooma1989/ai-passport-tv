@@ -275,6 +275,7 @@
   <header id="top"></header>
 
   <!-- 在电脑上看：浮在右下角的播放器。B 站的视频是点播（server/relay/vod.py 转发原文件，<video> 直接放）；
+       YouTube 是 DASH（server/relay/ytvod.py，画面、声音两条轨用 MediaSource 拼）；
        直播和放不了原文件的照旧是 server/relay/watch.py 转的 HLS（用 MediaSource 放） -->
   <div id="pcwin" role="region" aria-label="在电脑上看" hidden>
     <div class="pchead">
@@ -288,6 +289,8 @@
       <video id="watchVideo" playsinline></video>
       <!-- 换台时：上一台最后的画面停在这里，盖着「正在切换…」，新的台出画面时收起（console.js 的 switching） -->
       <canvas class="pcfreeze" id="pcFreeze" hidden></canvas>
+      <!-- 点了马上开窗口：还没出画面时先放封面（console.js 的 pcOpening），出画面时收起 -->
+      <img class="pcposter" id="pcPoster" alt="" referrerpolicy="no-referrer" hidden>
       <div class="pcswitch" id="pcSwitch" hidden role="status"><i class="pcspin" aria-hidden="true"></i><b id="pcSwitchName"></b><span id="pcSwitchText">正在切换…</span></div>
       <div class="watchmsg" id="watchMsg"></div>
       <div class="pcbanner" id="pcResume" hidden><span id="pcResumeText"></span><button class="pctxt" id="pcFromStart">从头播放</button><button class="pcb sm" id="pcResumeX" aria-label="知道了" data-ic="x" data-ics="14"></button></div>
