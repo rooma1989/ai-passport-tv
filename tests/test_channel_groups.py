@@ -189,6 +189,101 @@ class ConfigTests(unittest.TestCase):
         self.assertLess(size + 400, self.live.TV_CONTROL_MAX)
 
 
+    def _long_table(self, count=400):
+        """A global table far longer than a device holds, after the relay's 13 channels."""
+        root = Path(self.tmp.name)
+        main = root / "long.txt"
+        main.write_text("".join(f"ch{i:03d} | 很长的频道名字{i} | https://example.com/{i}.m3u8\n"
+                                for i in range(count)), encoding="utf-8")
+        self.live.load_channels(main, root / "relay-channels.txt")
+        self.assertEqual(len(self.live.CHANNELS), count + 13)
+
+    def test_long_table_is_cut_to_what_the_device_accepts(self):
+        import json
+        self._long_table()
+        config = self.live.channel_config()
+        listed = [c["id"] for c in config["channel_list"]]
+        # The relay's own channels first, all of them; then the table in order, cut short.
+        self.assertEqual(listed[:13], ["cast"] + [f"up{i:02d}" for i in range(1, 13)])
+        self.assertEqual(listed[13:], [f"ch{i:03d}" for i in range(len(listed) - 13)])
+        self.assertLessEqual(len(listed), cg.CHANNEL_MAX)
+        size = len(json.dumps(config, ensure_ascii=True, separators=(",", ":")))
+        self.assertLessEqual(size + cg.CONFIG_SPARE_BYTES, cg.CONFIG_MAX)
+        # Groups name only what was sent, and every index points at one of them.
+        used = {config["groups"][c["g"]] for c in config["channel_list"]}
+        self.assertEqual(set(config["groups"]), used)
+        # The PC still has the whole table.
+        self.assertEqual(len(self.live.channel_list()), 413)
+
+    def test_the_channel_playing_stays_in_the_list(self):
+        self._long_table()
+        plain = [c["id"] for c in self.live.channel_config()["channel_list"]]
+        kept = [c["id"] for c in self.live.channel_config(keep="ch300")["channel_list"]]
+        self.assertNotIn("ch300", plain)
+        self.assertEqual(kept[-1], "ch300")
+        self.assertEqual(kept[:-1], plain[:len(kept) - 1])
+        self.assertLessEqual(len(kept), cg.CHANNEL_MAX)
+        # Already in the list, or not in the table at all: nothing changes.
+        self.assertEqual([c["id"] for c in self.live.channel_config(keep="ch001")["channel_list"]], plain)
+        self.assertEqual([c["id"] for c in self.live.channel_config(keep="nope")["channel_list"]], plain)
+
+    def test_the_whole_packet_fits_however_much_else_config_carries(self):
+        import json
+        import types
+        from server import tv_server
+        self._long_table()
+        logged = []
+        fake = types.SimpleNamespace(remote_url_path=None, device_id="aaaa", logger=logged.append)
+        fake._note_trimmed = lambda shown: tv_server.AVServer._note_trimmed(fake, shown)
+        others = dict(tv_server.CONFIG, session=1, channel="ch300", playing={"title": "长标题" * 60})
+        payload = tv_server.AVServer._channel_payload(fake, "ch300", others)
+        whole = json.dumps(dict(others, **payload), ensure_ascii=True, separators=(",", ":"))
+        self.assertLessEqual(len(whole), cg.CONFIG_MAX)
+        self.assertEqual(payload["channel_list"][-1]["id"], "ch300")
+        self.assertEqual(fake._sent_channels["channel_list"], payload["channel_list"])
+        # Voice matches against what the device was sent: its numbering, and only channels it can switch to.
+        fake.channel_name, fake.device_status = "ch300", None
+        voice = tv_server.AVServer._voice_context(fake)["config"]["channel_list"]
+        self.assertEqual(voice, payload["channel_list"])
+        # Logged once, without addresses; the same cut again is not logged again.
+        tv_server.AVServer._channel_payload(fake, "ch300", others)
+        self.assertEqual(len(logged), 1)
+        self.assertIn("trimmed", logged[0])
+        self.assertNotIn("http", logged[0])
+        # A small CONFIG gets the same list as the admin page predicts (CONFIG_SPARE_BYTES).
+        small = tv_server.AVServer._channel_payload(fake, "", dict(tv_server.CONFIG, session=1, channel="cast"))
+        self.assertEqual(small["channel_list"], self.live.channel_config()["channel_list"])
+
+
+class DeviceListTests(unittest.TestCase):
+    """channel_groups.device_list: the cut every device's list goes through."""
+
+    NAMES = [(f"ch{i:03d}", "频道" * (i % 7) + str(i)) for i in range(300)]
+
+    def test_longest_prefix_within_count_and_bytes(self):
+        for budget in (500, 2000, cg.DEVICE_BUDGET):
+            for limit in (5, cg.CHANNEL_MAX):
+                got = cg.device_list(self.NAMES, budget=budget, limit=limit)
+                self.assertEqual(got, self.NAMES[:len(got)])
+                self.assertLessEqual(len(got), limit)
+                self.assertLessEqual(cg.config_bytes(got), budget)
+                more = self.NAMES[:len(got) + 1]
+                self.assertTrue(len(more) > limit or cg.config_bytes(more) > budget, (budget, limit))
+
+    def test_short_list_is_untouched(self):
+        self.assertEqual(cg.device_list(self.NAMES[:10]), self.NAMES[:10])
+        self.assertEqual(cg.device_list([]), [])
+
+    def test_keep_takes_the_last_place(self):
+        got = cg.device_list(self.NAMES, keep="ch250")
+        self.assertEqual(got[-1], self.NAMES[250])
+        self.assertEqual(got[:-1], self.NAMES[:len(got) - 1])
+        self.assertLessEqual(len(got), cg.CHANNEL_MAX)
+        self.assertLessEqual(cg.config_bytes(got), cg.DEVICE_BUDGET)
+        # Deterministic: the same input, the same list.
+        self.assertEqual(cg.device_list(self.NAMES, keep="ch250"), got)
+
+
 class RemoteUrlTests(unittest.TestCase):
     def test_limit_agrees_with_the_firmware(self):
         import re

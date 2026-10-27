@@ -42,10 +42,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 HELP_PAGE = Path(__file__).resolve().parent.parent / "packaging" / "help" / "index.html"
-# 请求体上限：普通接口很小（中转自己也只收 4–8 KB）；导入播放列表可以上传整个 M3U 文件。
+# 请求体上限：普通接口很小（中转自己也只收 4–8 KB）；导入播放列表可以上传整个 M3U 文件；保存频道表
+# 一次可以带几百个新台（中转那边是 admin.SELFHOST_CHANNELS_BODY_MAX，同样大）。
 BODY_MAX = 64 * 1024
 IMPORT_PATH = "/api/admin/channels/import"
 IMPORT_BODY_MAX = 3 * 1024 * 1024
+CHANNELS_PATH = "/api/admin/channels"
+CHANNELS_BODY_MAX = 2 * 1024 * 1024
 # 电脑版登录的长轮询最多等 25 秒；留足余量。
 UPSTREAM_TIMEOUT_S = 65
 CHUNK = 64 * 1024
@@ -301,7 +304,7 @@ def _handler(options: Options, public: bool):
 
         def _proxy(self, method: str, port: int, path: str, query: str) -> None:
             length = self._length()
-            limit = IMPORT_BODY_MAX if path == IMPORT_PATH else BODY_MAX
+            limit = {IMPORT_PATH: IMPORT_BODY_MAX, CHANNELS_PATH: CHANNELS_BODY_MAX}.get(path, BODY_MAX)
             if length is None or length > limit:
                 self.close_connection = True
                 self._reply(411 if length is None else 413, b"", "text/plain")

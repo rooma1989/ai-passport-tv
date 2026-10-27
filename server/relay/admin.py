@@ -33,9 +33,9 @@ from .ytnode import MAX_STREAMS
 
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
 BODY_MAX = 8000
-# 自建模式（没有 nginx，前面是 server/front.py，它给普通接口 64 KB）保存频道表时可以大一些：一次从播放列表
-# 加一百多个台，每个新台都带完整地址，整张表的请求有十几 KB。
-SELFHOST_CHANNELS_BODY_MAX = 60 * 1024
+# 自建模式（没有 nginx，前面是 server/front.py，它给这个接口同样的上限）保存频道表时可以大得多：表最多
+# channel_groups.TABLE_MAX 个台，一次从播放列表加几百个台，每个新台都带完整地址和备用线路，请求有几百 KB。
+SELFHOST_CHANNELS_BODY_MAX = 2 * 1024 * 1024
 # 自建模式的「导入播放列表」可以直接上传 M3U 文件的内容（playlist.py）；云端没有这个接口。
 IMPORT_PATH = "/api/admin/channels/import"
 _USER = re.compile(r"^/api/admin/users/(\d{1,9})(?:/(rename|ban|unban|reviewed|login-link|delete|export|"
@@ -306,14 +306,28 @@ def _owners_rows(relay) -> list[tuple[str, list[tuple[str, str]]]]:
 
 
 def _fit(relay, rows: list[tuple[str, str]]) -> list[dict]:
-    """每个用户的设备频道列表放不放得下（和加 UP 主时的检查一样，留 CONFIG_SPARE_BYTES 余量）。"""
-    from .web import CONFIG_SPARE_BYTES
+    """每个用户的设备频道列表：整份放不放得下（fits，和加 UP 主时一样留 CONFIG_SPARE_BYTES 余量），放不下时
+    小电视上显示几个台（shown，自己的台在前）、其中全局表的前几个（table_shown）。电视服务按同样的算法截断
+    （channel_groups.device_list）；电脑上看不受这个限制。"""
     found = []
     for name, own in _owners_rows(relay) or [("", [(table.CAST_ID, table.CAST_LABEL)])]:
         listed = own + rows
-        used = channel_groups.config_bytes(listed) + CONFIG_SPARE_BYTES
+        used = channel_groups.config_bytes(listed) + channel_groups.CONFIG_SPARE_BYTES
+        shown = len(channel_groups.device_list(listed))
         found.append({"user": name, "channels": len(listed), "bytes": used,
-                      "fits": used <= channel_groups.CONFIG_MAX and len(listed) <= channel_groups.CHANNEL_MAX})
+                      "fits": shown == len(listed), "shown": shown,
+                      "table_shown": max(0, shown - len(own))})
+    return found
+
+
+def _fit_warnings(fit: list[dict], total: int) -> list[str]:
+    """放不下整张表的设备：小电视上只显示表里的前几个台（不是错误，电脑上照样全能看）。"""
+    found = []
+    for item in fit:
+        if not item["fits"]:
+            who = f"「{item['user']}」的" if item["user"] else ""
+            found.append(f"{who}小电视上只显示前 {item['table_shown']} 个台（按表里的顺序，常看的往前挪）；"
+                         f"表里一共 {total} 个，电脑上都能看")
     return found
 
 
@@ -330,7 +344,8 @@ def channels(relay) -> dict:
     backups = sorted(p.name for p in path.parent.glob(path.name + ".bak-*"))
     return {"ok": True, "configured": True, "version": current["version"], "rows": rows, "bad": current["bad"],
             "groups": list(channel_groups.GROUPS[2:]), "limits": {"channels": channel_groups.CHANNEL_MAX,
-                                                                  "bytes": channel_groups.CONFIG_MAX},
+                                                                  "bytes": channel_groups.CONFIG_MAX,
+                                                                  "table": channel_groups.TABLE_MAX},
             "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:],
             "import": relay.selfhost is not None, "routes_max": routes.ROUTES_MAX,
             # 网上公开的第三方播放列表（只有列表地址）：和导入一样只在自建 / 电脑客户端里有。
@@ -364,13 +379,8 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
         problems = channeltable.problems(rows)
         route_problems, routes_changed = _route_problems(body["rows"], rows)
         problems += route_problems
+        # 设备收不下整张表不再挡保存：每台设备只收前一部分（电视服务截断），这里只提醒。
         fit = _fit(relay, [(r["id"], r["name"]) for r in rows])
-        for item in fit:
-            if not item["fits"]:
-                who = f"「{item['user']}」的" if item["user"] else ""
-                problems.append(f"{who}小电视放不下：频道列表 {item['channels']} 个台、约 {item['bytes']} 字节，"
-                                f"设备最多 {channel_groups.CHANNEL_MAX} 个台、{channel_groups.CONFIG_MAX} 字节。"
-                                "删几个台或缩短名字")
         if problems:
             return {"ok": False, "error": problems[0], "problems": problems[:20], "fit": fit}
         text = channeltable.render(rows)
@@ -388,8 +398,9 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
         summary = {"added": len(added), "removed": len(removed), "changed": len(changed), "moved": moved,
                    "groups": groups != {k: v for k, v in old_groups.items() if k in kept}, "total": len(rows),
                    "routes": routes_changed}
+        warnings = _fit_warnings(fit, len(rows)) + (checked.get("warnings") or [])
         if body.get("dry") is True:
-            return {"ok": True, "dry": True, "summary": summary, "warnings": checked.get("warnings") or [], "fit": fit}
+            return {"ok": True, "dry": True, "summary": summary, "warnings": warnings, "fit": fit}
         backup = channeltable.save(path, text, relay.clock)
         _save_meta(path, body["rows"], rows)
         _ops(relay).set_global_groups(groups)
@@ -401,7 +412,7 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
     # 分组变了：每台设备的分组文件要重写（电视服务下次发频道列表时读）。
     relay.sync_devices(force=True)
     return {"ok": True, "version": channeltable.version_of(text), "backup": backup, "summary": summary,
-            "warnings": checked.get("warnings") or []}
+            "warnings": warnings, "fit": fit}
 
 
 def _save_meta(path: Path, items: list, rows: list[dict]) -> None:

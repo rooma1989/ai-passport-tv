@@ -230,7 +230,7 @@ def apply_edits(current: list[dict], edits) -> list[dict]:
 
 
 def problems(rows: list[dict]) -> list[str]:
-    """表格本身的问题（中文，带行号）；空列表是没问题。数量和 CONFIG 大小另由调用方按每个用户算。"""
+    """表格本身的问题（中文，带行号）；空列表是没问题。每台设备收得下多少另由调用方按每个用户算。"""
     found = []
     for n, row in enumerate(rows, start=1):
         name, url, agent = row["name"], row["url"], row["agent"]
@@ -251,8 +251,9 @@ def problems(rows: list[dict]) -> list[str]:
             found.append(f"{label}：含有看不见的控制字符")
         if len(line_of(row).encode("utf-8")) > LINE_MAX:
             found.append(f"{label}：这一行太长（最多 {LINE_MAX} 字节）")
-    if len(rows) > channel_groups.CHANNEL_MAX:
-        found.append(f"一共 {len(rows)} 个台，设备最多收 {channel_groups.CHANNEL_MAX} 个")
+    # 设备收不下整张表不算问题（每台设备只收前一部分，admin._fit）；表本身有上限。
+    if len(rows) > channel_groups.TABLE_MAX:
+        found.append(f"一共 {len(rows)} 个台，频道表最多 {channel_groups.TABLE_MAX} 个")
     return found
 
 

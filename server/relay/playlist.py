@@ -35,7 +35,7 @@ FETCH_TIMEOUT_S = 20
 FETCH_TOTAL_S = 45
 _CHUNK = 64 * 1024
 URL_FIELD_MAX = 2000
-# 一次最多列出这么多个台（设备本身最多 128 个台，列太多页面也勾不过来）。
+# 一次最多列出这么多个台（频道表本身最多 channel_groups.TABLE_MAX 个，列太多页面也勾不过来）。
 ENTRIES_MAX = 2000
 # 试播：取一帧画面。SLOW 秒内出画面算「能放」，DEAD 秒还没有算「放不了」，中间算「慢」。
 PROBE_SLOW_S = 15

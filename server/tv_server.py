@@ -28,7 +28,7 @@ class SessionState(str, enum.Enum):
     RECOVERING = "RECOVERING"
     CLOSED = "CLOSED"
 
-from . import frames, live, netident, routes
+from . import channel_groups, frames, live, netident, routes
 from .timeline import SourceState
 from .rate import ADAPTIVE, ByteRate
 from .live import (CHANNELS, CHANNEL_AGENTS, DEFAULT_CHANNEL, LiveChannel, LiveError,
@@ -552,9 +552,13 @@ class AVServer:
         return False
 
     def _voice_context(self) -> dict:
-        """识别要用的背景：设备看到的频道表（序号、分组）、正在播的台、设备的音量亮度。"""
-        return {"config": live.channel_config(), "current": self.channel_name,
-                "device": dict(self.device_status or {})}
+        """识别要用的背景：设备看到的频道表（序号、分组）、正在播的台、设备的音量亮度。
+
+        频道表用这次会话 CONFIG 里真发出去的那份：表长时设备只收到前一部分，语音只能换到设备列表里有的台，
+        说「第 n 台」的序号也要和设备上的一样。"""
+        sent = getattr(self, "_sent_channels", None)
+        return {"config": sent if sent is not None else live.channel_config(keep=self.channel_name),
+                "current": self.channel_name, "device": dict(self.device_status or {})}
 
     def voice_flush(self, connection: socket.socket, session: int, seq: int) -> int:
         """把排好的语音结果发出去，像 SWITCH 一样占序号；返回下一个序号。"""
@@ -846,17 +850,44 @@ class AVServer:
         self.logger(f"cast {kind} while waiting {target or self.channel_name}")
         return True
 
-    def _channel_payload(self) -> dict:
-        """CONFIG 里的频道部分：分组、频道列表，有遥控地址时再加 remote_url。"""
-        payload = live.channel_config()
+    def _channel_payload(self, keep: str = "", others: dict | None = None) -> dict:
+        """CONFIG 里的频道部分：分组、频道列表，有遥控地址时再加 remote_url。
+
+        表比设备收得下的长时只给前一部分（live.channel_config）；keep 是这次会话的台，截在外面也留着。
+        others 是 CONFIG 里别的字段：按它们实际占的字节再收紧一次，整个包一定不超过设备的上限
+        （channel_groups.CONFIG_MAX），通常仍是 CONFIG_SPARE_BYTES 那个余量起作用，和总后台算的一样。"""
+        remote = ""
         if self.remote_url_path is not None:
             try:
                 url = self.remote_url_path.read_text(encoding="ascii").strip()
             except (OSError, UnicodeError):
                 url = ""
             if len(url) <= REMOTE_URL_MAX and _REMOTE_URL.match(url):
-                payload["remote_url"] = url
+                remote = url
+        budget = channel_groups.DEVICE_BUDGET
+        if others is not None:
+            rest = dict(others, **({"remote_url": remote} if remote else {}))
+            # 合进一个对象：少一对花括号、多一个逗号；config_bytes 按全部分组名算，只会多不会少。
+            budget = min(budget, channel_groups.CONFIG_MAX - len(json.dumps(
+                rest, separators=(",", ":"), ensure_ascii=True)) + 1)
+        payload = live.channel_config(keep=keep, budget=budget)
+        self._sent_channels = dict(payload)
+        self._note_trimmed(len(payload["channel_list"]))
+        if remote:
+            payload["remote_url"] = remote
         return payload
+
+    def _note_trimmed(self, shown: int) -> None:
+        """设备只收到频道表的前一部分时记一行日志（不带地址）；同一台设备、同样的截法只记一次。"""
+        total = len(CHANNELS)
+        key = (self.device_id, total, shown)
+        if shown >= total or getattr(self, "_trimmed_noted", None) == key:
+            if shown >= total:
+                self._trimmed_noted = None
+            return
+        self._trimmed_noted = key
+        self.logger(f"channel list trimmed for the device: {shown} of {total} channels "
+                    f"(device max {channel_groups.CHANNEL_MAX} channels / {channel_groups.CONFIG_MAX} bytes)")
 
     def make_channel(self) -> LiveChannel:
         """为会话的频道 id 创建新的未启动频道：有备用线路时用现在轮到的那条（route_cycle）。"""
@@ -920,15 +951,14 @@ class AVServer:
             playing = self._playing_info(channel_id)
             # 先发 CONFIG 再向源请求数据：设备握手只给约 2 秒，先采样调色板会使握手超时。
             # CONFIG 只描述格式，与调色板无关。
+            others = dict(CONFIG, session=session, channel=channel_id,
+                          **({"playing": playing} if playing else {}),
+                          **self._wifi_config(),
+                          **self._recover_config(),
+                          **self._listen_config(),
+                          **self.voice.config())
             send_packet(connection, Packet(Kind.CONFIG, session, 0, 0,
-                                           json_bytes(dict(CONFIG, session=session,
-                                                           channel=channel_id,
-                                                           **self._channel_payload(),
-                                                           **({"playing": playing} if playing else {}),
-                                                           **self._wifi_config(),
-                                                           **self._recover_config(),
-                                                           **self._listen_config(),
-                                                           **self.voice.config()))))
+                                           json_bytes(dict(others, **self._channel_payload(channel_id, others)))))
             self.phase = "live_palette"
             # 首帧前必须有调色板，缺失则设备无色可用，画面全黑。
             try:
@@ -1570,6 +1600,8 @@ class AVServer:
         self.device_recover = False
         self.device_id = ""
         self._recover_out = []
+        # 上一次会话发给设备的频道列表（语音按它认台）不带到这次。
+        self._sent_channels = None
         hello = receive_packet(connection, expected_session=0)
         self.phase = "authenticate"
         if self.tenancy is None:

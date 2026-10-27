@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from server import now_playing
+from server import channel_groups, now_playing
 from server.cast_switch import SwitchWatcher
 from server.protocol import ProtocolError
 from server.relay import admin, channeltable, events, hoststats, web
@@ -490,22 +490,59 @@ class AdminApiTests(unittest.TestCase):
             self.assertIn(needle, answer["error"], rows)
         self.assertEqual(self.main.read_text(encoding="utf-8"), MAIN)
 
-    def test_channel_table_refuses_what_a_users_device_cannot_hold(self):
+    def test_channel_table_longer_than_a_device_is_saved_and_says_what_the_tv_shows(self):
+        table = self.channels()
+        self.assertEqual(table["limits"], {"channels": channel_groups.CHANNEL_MAX, "bytes": channel_groups.CONFIG_MAX,
+                                           "table": channel_groups.TABLE_MAX})
+        self.assertTrue(all(f["fits"] and f["shown"] == f["channels"] for f in table["fit"]))
+        name = ("很长的频道名字" * 5)[:39]
+        rows = ["ch000"] + [{"name": name, "url": f"https://x/{n}.m3u8"} for n in range(30)]
+        # What the media server will send each device: the user's own channels, then the table, cut the same way.
+        own = [("cast", "我的投屏")]
+        expected = channel_groups.device_list(own + [("ch000", "CCTV1")] + [(f"ch{n:03d}", name) for n in range(30)])
+        self.assertLess(len(expected), 32)
+        for dry in (True, False):
+            status, answer = self.call("admin", "POST", "/api/admin/channels",
+                                       {"version": table["version"], "rows": rows, "dry": dry})
+            self.assertEqual(status, 200)
+            self.assertTrue(answer["ok"], answer)
+            fit = {f["user"]: f for f in answer["fit"]}
+            self.assertEqual(set(fit), {"Alice", "Bob"})
+            for user, item in fit.items():
+                self.assertFalse(item["fits"])
+                self.assertEqual(item["channels"], 32)
+                self.assertEqual(item["shown"], len(expected))
+                self.assertEqual(item["table_shown"], len(expected) - 1)
+                self.assertTrue(any(w.startswith(f"「{user}」的小电视上只显示前 {len(expected) - 1} 个台"
+                                                 "（按表里的顺序，常看的往前挪）") for w in answer["warnings"]),
+                                answer["warnings"])
+            if dry:
+                self.assertEqual(self.main.read_text(encoding="utf-8"), MAIN)
+        lines = [l for l in self.main.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")]
+        self.assertEqual(len(lines), 31)
+        # The cloud's 8 kB body limit still applies before anything is read.
         version = self.channels()["version"]
-        name = "很长的频道名字" * 5
-        rows = ["ch000"] + [{"name": name[:39], "url": f"https://x/{n}.m3u8"} for n in range(30)]
-        status, answer = self.call("admin", "POST", "/api/admin/channels", {"version": version, "rows": rows})
-        self.assertEqual(status, 200)
-        self.assertFalse(answer["ok"])
-        self.assertIn("放不下", answer["error"])
-        self.assertEqual({f["user"] for f in answer["fit"] if not f["fits"]}, {"Alice", "Bob"})
-        # A body over 8 kB is refused before anything is read into it.
-        rows = ["ch000"] + [{"name": name[:39], "url": f"https://x/{n}.m3u8"} for n in range(60)]
+        rows = [{"name": name, "url": f"https://x/{n}.m3u8"} for n in range(60)]
         self.assertEqual(self.call("admin", "POST", "/api/admin/channels", {"version": version, "rows": rows})[0], 400)
-        self.assertEqual(self.main.read_text(encoding="utf-8"), MAIN)
-        fit = admin._fit(self.relay, [(f"c{n:03d}", "很长的频道名字很长的频道") for n in range(120)])
-        self.assertFalse(any(f["fits"] for f in fit))
-        self.assertEqual({f["user"] for f in fit}, {"Alice", "Bob"})
+
+    def test_channel_table_has_a_ceiling_of_its_own(self):
+        rows = [{"id": f"ch{n:04d}", "name": "台", "url": "https://x/a.m3u8", "agent": ""}
+                for n in range(channel_groups.TABLE_MAX)]
+        self.assertEqual(channeltable.problems(rows), [])
+        found = channeltable.problems(rows + [{"id": "ch9999", "name": "台", "url": "https://x/b.m3u8", "agent": ""}])
+        self.assertEqual(found, [f"一共 {channel_groups.TABLE_MAX + 1} 个台，频道表最多 {channel_groups.TABLE_MAX} 个"])
+        # The media server's parser takes a whole table of that size too (the PC plays all of it).
+        checked = channeltable.media_check(channeltable.render(rows))
+        self.assertTrue(checked["ok"], checked)
+        self.assertEqual(checked["warnings"], [])
+
+    def test_a_long_table_does_not_block_adding_a_series(self):
+        # Before, the global table counted against the device's list and a long one refused every new channel.
+        self.main.write_text("".join(f"ch{n:03d} | 很长很长很长的频道名字{n} | https://x/{n}.m3u8\n"
+                                     for n in range(300)), encoding="utf-8")
+        room = self.relay.room_of(self.relay.user_state(self.alice), "海尔兄弟(B站)")
+        self.assertTrue(room["fits"])
+        self.assertEqual(room["channels"], channel_groups.CHANNEL_MAX - 2)
 
 
 class ChannelTableTests(unittest.TestCase):
