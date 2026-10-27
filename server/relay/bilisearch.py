@@ -12,6 +12,9 @@
   （youtube_thumb_url），经 YouTube 用的那个代理去取（本机模式在「设置 → YouTube」里填的；没填就直连），
   连不上时和 B 站图床分开记，互不拖累。
 
+登录了 B 站的人（家庭服务器、电脑客户端）：结果里的正版剧集、番剧，最近看过的那几季带 watched
+{"ep": <集 id>, "n": "<第几集>", "progress": <看到的秒数，-1 看完了>, "duration": <秒>}（accountfeeds.annotate_search）。
+
 谁能用：和订阅接口一样，要账号（单用户时是登录过的手机或电脑；多用户时是用户，访客 404）。
 别打扰 B 站：同样的搜索 10 分钟内直接用缓存；每个人每秒最多真去搜一次，全站每分钟最多 30 次；
 页面输入时也会等停手后才搜（console.html）。
@@ -246,8 +249,18 @@ def get(handler, relay, caller, path: str) -> None:
     relay._account(caller)
     query = handler._query()
     if path == "/api/bili/search":
-        handler._json(relay.bili_search.search(relay.clients.get("bilibili"), caller.key, query.get("q"),
-                                               query.get("kind"), query.get("page")))
+        # 正版剧集、番剧标上这个人看到了哪一集（accountfeeds.watched）：观看记录先在后台取着，搜完再拿，
+        # 一次都没取到时最多多等 SEASON_WAIT_S 秒。缓存里的结果大家共用，标注只加在这个人的副本上。
+        feeds = getattr(relay, "account_feeds", None)
+        mark = feeds is not None and (query.get("kind") or "video") in ("video", "bangumi", "ft")
+        if mark:
+            feeds.watched(caller)
+        answer = relay.bili_search.search(relay.clients.get("bilibili"), caller.key, query.get("q"),
+                                          query.get("kind"), query.get("page"))
+        if mark and answer.get("ok"):
+            from .accountfeeds import SEASON_WAIT_S, annotate_search
+            answer = annotate_search(answer, feeds.watched(caller, SEASON_WAIT_S))
+        handler._json(answer)
         return
     code, kind, body = relay.bili_search.thumb(query.get("u"), query.get("s"))
     if code != 200:

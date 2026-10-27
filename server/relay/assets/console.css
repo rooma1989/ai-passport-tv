@@ -397,6 +397,31 @@ a.li:hover, button.li:hover, .li.tap:hover { background: var(--fill); }
 a.li:focus-visible, button.li:focus-visible { outline: none; background: var(--fill-2); box-shadow: inset 0 0 0 2px var(--label); border-radius: 16px; }
 .li .empty-t { flex: 1; color: var(--label-3); font-size: 14px; padding: 6px 0; }
 
+/* ---- 片库 → 历史（console.js renderHist）：按天分组，一行一条，封面下沿一条细进度 ---- */
+.hbar { display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; margin: 0 0 6px; max-width: 980px; }
+.hbar .chips { flex: 1; margin: 0; }
+.hsync { display: inline-flex; align-items: center; gap: 10px; font: 500 14px var(--sans); color: var(--label-2); }
+.hgrp { margin: 20px 0 6px; font: 600 13px var(--sans); color: var(--label-3); letter-spacing: .02em; }
+.hlist { display: grid; gap: 2px; max-width: 980px; }
+.hrow { display: flex; align-items: center; gap: 16px; width: 100%; padding: 8px; border-radius: 14px; text-align: left; transition: background var(--t-fast); }
+.hrow:hover { background: var(--fill); }
+.hrow:focus-visible { outline: none; background: var(--fill-2); box-shadow: inset 0 0 0 2px var(--label); }
+.hrow .art { position: relative; flex: none; width: 160px; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: var(--bg-3); }
+.hrow .art > svg, .hrow .art > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hrow .pbar { left: 0; right: 0; bottom: 0; height: 3px; border-radius: 0; background: rgba(255,255,255,.25); }
+.hrow .pbar i { border-radius: 0; background: var(--brand); }
+.htx { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.htx b { font: 600 15px/1.35 var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.htx small { font: 400 13px var(--sans); color: var(--label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.htx .hm { color: var(--label-3); font-variant-numeric: tabular-nums; }
+.empty.sm { padding: 36px 24px; max-width: 980px; }
+.empty.sm b { margin: 0 0 14px; font-size: 17px; }
+.m .hbar .chips { flex: 1 1 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.m .hbar .chips button { flex: none; }
+.m .hsync { margin-left: auto; }
+.m .hrow { gap: 12px; padding: 6px 0; }
+.m .hrow .art { width: 124px; border-radius: 8px; }
+
 /* ---- 搜索 ---- */
 .bigsearch { display: flex; align-items: center; gap: 12px; height: 60px; padding: 0 20px; border-radius: 16px; background: var(--fill); margin: 0 0 16px; color: var(--label-3); max-width: 900px; transition: background var(--t-fast), box-shadow var(--t-fast); }
 .bigsearch:focus-within { background: var(--fill-2); box-shadow: 0 0 0 2px var(--label); }

@@ -119,11 +119,22 @@
         </div>
       </section>
 
-      <!-- 片库（M7） -->
+      <!-- 片库：「历史」是自己 B 站的观看记录（console.js renderHist，accountfeeds.py）；「本地片库」还没做（M7） -->
       <section class="page" data-route="lib" aria-label="片库">
         <header class="ph"><h1 class="lt">片库</h1></header>
-        <div class="empty"><div class="eic" data-ic="lib" data-ics="40"></div><b>片库即将推出</b>
-          <p>以后可以把电脑或 NAS 上的电影、剧集、动画和家庭视频加进来，在电脑上看，也能播到小电视上。</p></div>
+        <nav class="chips ssub" id="libNav" aria-label="片库分类"></nav>
+        <div class="lpane" data-pane="history">
+          <div class="hbar">
+            <div class="chips" id="histChips" role="group" aria-label="看哪些"></div>
+            <span class="hsync" id="histSyncRow" hidden>同步到 B 站<button class="sw" role="switch" aria-checked="false" id="histSync" aria-label="同步到 B 站：在小鼠电视上看的记进 B 站历史"></button></span>
+          </div>
+          <div id="histBox"></div>
+          <div class="bsmore"><button class="ghost" id="histMore" hidden>加载更多</button></div>
+        </div>
+        <div class="lpane" data-pane="local" hidden>
+          <div class="empty"><div class="eic" data-ic="lib" data-ics="40"></div><b>本地片库即将推出</b>
+            <p>电脑或 NAS 上的视频，以后在这里。</p></div>
+        </div>
       </section>
 
       <!-- 搜索：B 站或 YouTube 搜索 + 粘贴链接即播 -->
@@ -206,9 +217,9 @@
           <div class="panel" id="biliBlock" hidden>
             <h3>B 站账号 <small id="biliSum"></small></h3>
             <div id="biliBox"></div>
-            <!-- 回写（server/relay/accountfeeds.py）：默认关 -->
+            <!-- 回写（server/relay/accountfeeds.py）：默认开，自己关了就一直关；「片库 → 历史」上面也有这个开关 -->
             <div class="list fwset" id="writebackRow" hidden>
-              <div class="li"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">同步到 B 站观看记录<small>在小鼠电视上看到哪，B 站历史里就记到哪（番剧除外）</small></span><button class="sw" role="switch" aria-checked="false" id="writebackSw" aria-label="同步到 B 站观看记录"></button></div>
+              <div class="li"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">同步到 B 站观看记录<small>在小鼠电视上看到哪，B 站历史里就记到哪</small></span><button class="sw" role="switch" aria-checked="false" id="writebackSw" aria-label="同步到 B 站观看记录"></button></div>
             </div>
             <details class="more-info">
               <summary>说明</summary>
