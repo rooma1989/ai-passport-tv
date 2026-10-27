@@ -706,6 +706,20 @@ removed on 2026-10-26 together with the separate admin page (section 17).
   node with a 3 s yt-dlp, a CDN with 60 ms latency behind a local CONNECT proxy): click to first frame 0.25 s when
   prefetched, 3.3 s when not (the yt-dlp time); seek outside the buffer 0.15 s, inside 0.05 s; quality change 0.26 s;
   DASH → progressive fallback 0.24 s; a play during a running prefetch took one yt-dlp time, not two.
+- **Play feedback and YouTube start, follow-up (2026-10-27)**: the owner still found a YouTube click slow with no
+  reaction. Causes found: the node ran every yt-dlp through one lock, so a play waited for Home's YouTube
+  recommendations / watch history, a followings sync, a creator list or a search (ten to several tens of seconds each,
+  `accountfeeds.TTL_S`), and prefetches were refused (`busy`) for as long as those ran; a link's title and duration
+  came from `/yt/info`, whose node cache lasts 30 minutes while the relay keeps the formats for hours, so an older
+  prefetch still cost one yt-dlp run; playing to a TV showed nothing until the relay answered. Changes: in local mode
+  `ytnode.Node._play` is a second lane for `video_info` (plays and prefetches; the cloud node keeps one lane for its
+  400 MB limit) and searches no longer preempt prefetches there; `Relay._yt_video` takes the title and duration from
+  `ytvod.Resolver` (one resolution for information and formats); `Index.head` keeps the init segment read with the
+  index and `…/manifest` carries it as `ib` (base64, at most 64 KB), which `DashPlayer` appends without a request;
+  `pressed()` puts a spinner on the clicked card (`.opspin` over the cover) or button (`button.opening`) until
+  `play()` settles, `play()` toasts "sending to <TV>…" before asking the relay, the opening status counts seconds
+  after 3 s (`openingClock`), and `#pcwin .pcspin` keeps turning under reduced motion. Not measured against real
+  YouTube (no yt-dlp in the worktree and the owner's node was not touched).
 - **M3 Live (guide)**, branch `rootv-live` (2026-10-26): the Live page has a **Channels | Guide** segment
   (remembered per browser, `rootv.liveView`). Channel tiles read the channel name, then "Now: <title> ·
   HH:MM–HH:MM" with a progress bar and "next"; the console asks `/api/epg?channels=` only for the visible

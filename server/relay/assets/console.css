@@ -647,6 +647,14 @@ button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px
 #pcwin .pcswitch.wrap span { flex: 1 1 auto; }
 #pcwin .pcspin { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); border-top-color: #f5f5f7; animation: pcspin .8s linear infinite; }
 @keyframes pcspin { to { transform: rotate(360deg); } }
+/* 「减少动态效果」打开时别的动画都停了，表示「正在做」的转圈留着（慢一点），不然看着像卡住了 */
+@media (prefers-reduced-motion: reduce) { #pcwin .pcspin { animation: pcspin 1.6s linear infinite !important; } }
+/* 点了「播放」以后、中转回答之前（console.js 的 pressed）：卡片封面上盖一层转圈，按钮前面一个小圈 */
+.opspin { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; background: rgba(0,0,0,.45); border-radius: inherit; pointer-events: none; }
+.opspin::after { content: ""; width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.3); border-top-color: #fff; animation: pcspin .8s linear infinite; }
+button.opening { cursor: progress; }
+button.opening:not(.card)::before { content: ""; flex: none; display: inline-block; width: .9em; height: .9em; margin-right: 6px; vertical-align: -1px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent; animation: pcspin .8s linear infinite; }
 #pcwin .watchmsg button { pointer-events: auto; margin-top: 10px; }
 #pcwin .pcfoot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; background: rgba(26,26,30,.92); font-size: 12px; color: rgba(235,235,245,.6); }
 #pcwin .pcfoot .ghost { height: 32px; padding: 0 12px; font-size: 13px; background: rgba(255,255,255,.14); color: #f5f5f7; }

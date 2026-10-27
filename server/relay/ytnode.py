@@ -17,6 +17,8 @@
                                       和 /yt/stream 共用解析缓存。prefetch=1 是中转的预取：yt-dlp 正忙时马上回答
                                       503 busy，正在跑时来了真正的请求（起播、搜索、列表……）就把它杀掉让路，
                                       绝不让真正的播放等它；fresh=1 不用缓存（地址过期、换了出口 IP 以后重取）。
+                                      本机模式下解析视频另走一道（Node._play），起播、预取不排在搜索、列表、
+                                      推荐这些后面，搜索、列表也不用挤掉预取
                                       旧节点没有这个路径（404 Not Found），中转据此照旧走 /yt/stream
 
 流用分块编码发送：正常播完发结束块，转码出错则不发直接断开，对端据此分辨。
@@ -775,10 +777,14 @@ class Node:
         self._info_lock = threading.Lock()
         # 搜索结果：(种类, 词, 个数) → (时刻, 回答)。
         self._searches: dict[tuple[str, str, int], tuple[float, dict]] = {}
-        # 一次只跑一个 yt-dlp：每个要带一个 deno，两个并发在 400M 的内存上限里会被 OOM 杀掉。
+        # 列表、搜索、推荐这些一次只跑一个 yt-dlp：每个要带一个 deno，两个并发在 400M 的内存上限里会被 OOM 杀掉。
         # 设备每次起播连两次（先采样调色板），同一视频的第二个请求等第一个解析完直接用缓存。
         self._ytdlp = threading.Lock()
-        # 预取（/yt/formats?prefetch=1）让路用：等着 yt-dlp 的真正请求有几个、正在跑的预取（_Prefetch）。
+        # 解析视频（起播、预取：video_info）走的那一道。cstone 上就是上面那一道；本机模式（tools_dir）另开一道：
+        # 家里的电脑没有 400M 的上限，起播不用排在首页的推荐、观看记录、关注同步、搜索后面（一次十几到几十秒，
+        # 以前点了 YouTube 视频要先等它们跑完）。所以本机模式下最多同时两个 yt-dlp。
+        self._play = threading.Lock() if tools_dir is not None else self._ytdlp
+        # 预取（/yt/formats?prefetch=1）让路用：等着解析那一道的真正请求有几个、正在跑的预取（_Prefetch）。
         self._gate = threading.Lock()
         self._waiting = 0
         self._prefetch: _Prefetch | None = None
@@ -863,16 +869,21 @@ class Node:
                 return cached[1]
         return None
 
-    def _take(self, video_id: str | None = None, timeout: float | None = None) -> bool:
+    def _take(self, video_id: str | None = None, timeout: float | None = None, lane=None) -> bool:
         """真正的请求要 yt-dlp：正在跑的预取（别的视频的）马上杀掉让路；同一个视频的预取等它跑完（结果进缓存）。
-        timeout：最多等几秒（None 一直等）；等到了返回 True，之后要 release()。"""
+        timeout：最多等几秒（None 一直等）；lane：哪一道（默认解析视频的那一道），不是预取那一道时不用让路。
+        等到了返回 True，之后要 release() 那一道。"""
+        lane = self._play if lane is None else lane
+        wait = -1 if timeout is None else timeout
+        if lane is not self._play:
+            return lane.acquire(timeout=wait)
         with self._gate:
             self._waiting += 1
             running = self._prefetch
         try:
             if running is not None and running.video_id != video_id:
                 running.preempt()
-            return self._ytdlp.acquire(timeout=-1 if timeout is None else timeout)
+            return self._play.acquire(timeout=wait)
         finally:
             with self._gate:
                 self._waiting -= 1
@@ -909,7 +920,7 @@ class Node:
                 return 200, info
             code, info = self._ytdlp_json(info_args(tools, video_id))
         finally:
-            self._ytdlp.release()
+            self._play.release()
         if code == 200:
             info = self._remember(video_id, info)
         return code, info
@@ -917,7 +928,7 @@ class Node:
     def _prefetch_info(self, tools: Tools, video_id: str) -> tuple[int, dict | str]:
         job = _Prefetch(video_id)
         with self._gate:
-            if self._waiting or not self._ytdlp.acquire(blocking=False):
+            if self._waiting or not self._play.acquire(blocking=False):
                 return 503, "busy"
             self._prefetch = job
         try:
@@ -946,7 +957,7 @@ class Node:
         finally:
             with self._gate:
                 self._prefetch = None
-            self._ytdlp.release()
+            self._play.release()
         if code == 200:
             data = self._remember(video_id, data)
             self.log(f"预取了 {video_id}")
@@ -962,8 +973,8 @@ class Node:
         tools = self.current_tools()
         if tools is None:
             return 503, "tools missing"
-        # 仍然一次只跑一个 yt-dlp；只是不像起播那样一直排队：语音那头只等几秒（预取给它让路）。
-        if not self._take(timeout=SEARCH_WAIT_S):
+        # 和列表、推荐一道（一次一个）；只是不像它们那样一直排队：语音那头只等几秒（cstone 上预取给它让路）。
+        if not self._take(timeout=SEARCH_WAIT_S, lane=self._ytdlp):
             return 503, "busy"
         try:
             code, data = self._ytdlp_json(search_args(tools, query, n, kind))
@@ -1021,7 +1032,7 @@ class Node:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
 
     def ytdlp_json(self, args: list[str]) -> tuple[int, dict | str]:
-        self._take()
+        self._take(lane=self._ytdlp)
         try:
             return self._ytdlp_json(args)
         finally:

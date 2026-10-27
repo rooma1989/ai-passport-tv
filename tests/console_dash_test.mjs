@@ -13,8 +13,8 @@ const source = readFileSync(join(ROOT, 'server/relay/assets/console.js'), 'utf8'
 const begin = source.indexOf('// ---- DASH 的几个纯函数');
 const end = source.indexOf('// ---- DASH 的纯函数到此');
 assert.ok(begin > 0 && end > begin, 'the pure block is marked in console.js');
-const { DASH, dashIndex, dashRange, dashCovering, dashResume, dashWant, dashEvict } = new Function(
-  source.slice(begin, end) + '\nreturn { DASH, dashIndex, dashRange, dashCovering, dashResume, dashWant, dashEvict };')();
+const { DASH, dashIndex, dashRange, dashCovering, dashResume, dashWant, dashEvict, dashBytes } = new Function(
+  source.slice(begin, end) + '\nreturn { DASH, dashIndex, dashRange, dashCovering, dashResume, dashWant, dashEvict, dashBytes };')();
 
 // Five-second segments starting at 0.067 s (an H.264 file with B-frames), the last one shorter.
 const t = [0.067, 5.067, 10.067, 15.067, 20.067, 22.5];
@@ -60,5 +60,11 @@ assert.deepEqual(dashEvict([[0, 100]], 80), [[0, 80 - DASH.BEHIND]]);
 assert.deepEqual(dashEvict([[0, 40]], 20), [], 'nothing old enough');
 assert.deepEqual(dashEvict([[0, 25], [500, 560]], 10), [[500, 560]], 'a far-ahead range after a seek back');
 assert.deepEqual(dashEvict([[50, 50.3]], 100), [], 'slivers are left alone');
+
+// The init segment carried in the manifest (base64) becomes bytes; nothing or garbage means "fetch it".
+assert.deepEqual([...dashBytes(Buffer.from([0, 1, 2, 250, 255]).toString('base64'))], [0, 1, 2, 250, 255]);
+assert.equal(dashBytes(undefined), null);
+assert.equal(dashBytes(''), null);
+assert.equal(dashBytes('%%%'), null, 'not base64');
 
 console.log('console dash logic: ok');
