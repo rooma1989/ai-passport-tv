@@ -571,6 +571,50 @@ def play_info(play: dict) -> dict:
             "quality": number(play.get("quality")), "preview": bool(play.get("is_preview"))}
 
 
+def _byte_span(text) -> tuple[int, int] | None:
+    """DASH 的 SegmentBase 里的「起-止」（含两头）。"""
+    match = re.match(r"^(\d{1,12})-(\d{1,12})$", str(text or ""))
+    if not match or int(match.group(2)) < int(match.group(1)):
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _dash_track(item: dict) -> dict | None:
+    """playurl 的 dash.video / dash.audio 里的一条 → {url, backups, codecs, id, height, bandwidth, init, index}；
+    缺地址或 SegmentBase（初始化段、sidx 的范围）时 None。"""
+    if not isinstance(item, dict):
+        return None
+    url = item.get("base_url") or item.get("baseUrl")
+    base = item.get("SegmentBase") or item.get("segment_base") or {}
+    init = _byte_span(base.get("Initialization") or base.get("initialization"))
+    index = _byte_span(base.get("indexRange") or base.get("index_range"))
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")) or init is None or index is None:
+        return None
+    backups = item.get("backup_url") or item.get("backupUrl") or []
+    return {"url": url, "backups": tuple(u for u in backups if isinstance(u, str) and u)[:3],
+            "codecs": str(item.get("codecs") or ""), "id": _count(item, "id"),
+            "height": _count(item, "height"), "bandwidth": _count(item, "bandwidth"), "init": init, "index": index}
+
+
+def dash_info(play: dict, max_quality: int = HTML5_MAX_QUALITY) -> dict:
+    """playurl（fnval=16，DASH）的回答 → 电脑上点播长视频（bilidash.py）要的：画面选 H.264（avc1）里不超过
+    max_quality 的最高一档，声音选 AAC（mp4a）里码率最高的；{duration（秒）, video, audio}，每条见 _dash_track。
+    没有浏览器能放的一对（只有 HEVC / AV1、没有 DASH、试看）时为空 dict。"""
+    play = play if isinstance(play, dict) else {}
+    dash = play.get("dash") if isinstance(play.get("dash"), dict) else {}
+    if play.get("is_preview") or not dash:
+        return {}
+    videos = [t for t in map(_dash_track, dash.get("video") or [])
+              if t is not None and t["codecs"].startswith("avc1") and 0 < t["id"] <= max_quality]
+    audios = [t for t in map(_dash_track, dash.get("audio") or []) if t is not None and t["codecs"].startswith("mp4a")]
+    if not videos or not audios:
+        return {}
+    video = max(videos, key=lambda t: (t["id"], t["bandwidth"]))
+    audio = max(audios, key=lambda t: t["bandwidth"])
+    duration = _count(dash, "duration") or _count(play, "timelength") / 1000
+    return {"duration": float(duration), "video": video, "audio": audio}
+
+
 def _count(data, *keys) -> int:
     """回答里的一个非负整数（投稿总数之类）；没有或看不懂时为 0。"""
     if not isinstance(data, dict):
@@ -864,6 +908,37 @@ class Bilibili:
             except BilibiliError:
                 pass
         return play_info(self._call("/x/player/playurl", **params))
+
+    def vod_dash(self, bvid: str, login=None) -> dict:
+        """电脑上点播很长的视频（bilidash.py）：同一个视频的 DASH（画面、声音两个分片 MP4，文件头里有 sidx），
+        dash_info 的结果。html5 的 MP4 把整个索引（moov）放在文件头：九个多小时的视频光 moov 就有四十多 MB，
+        浏览器要先下完它才出画面；DASH 的索引只有几十 KB。不登录时 B 站的 DASH 最高给 480P。
+        login 和 vod_media 一样：带 cookies 的请求出错时退回不登录的。"""
+        episode = _EPISODE.match(bvid)
+        if episode and episode.group(1).startswith("ep"):
+            params = dict(ep_id=episode.group(1)[2:], cid=episode.group(2), qn=HTML5_MAX_QUALITY, fnval=16, fnver=0,
+                          fourk=0)
+            path = "/pgc/player/web/playurl"
+        else:
+            if episode:
+                bvid, cid = episode.group(1), episode.group(2)
+            else:
+                kept = self._views.get(bvid)
+                view = kept[1] if kept is not None and self._clock() - kept[0] < VIEW_KEEP_S else \
+                    self._call("/x/web-interface/view", bvid=bvid)
+                cid = view.get("cid")
+                if not cid:
+                    raise BilibiliError(f"{bvid}: 没有 cid", permanent=True)
+            params = dict(bvid=bvid, cid=cid, qn=HTML5_MAX_QUALITY, fnval=16, fnver=0, fourk=0)
+            path = "/x/player/playurl"
+        if login is not None:
+            try:
+                found = dash_info(self._call(path, _login=login, **params))
+                if found:
+                    return found
+            except BilibiliError:
+                pass            # 登录失效、会员才有的：退回不登录的
+        return dash_info(self._call(path, **params))
 
     # ---- 剧集 ----
 

@@ -324,6 +324,9 @@
       <button class="iconbtn" id="watchBig" title="放大" aria-label="放大" data-ic="expand" data-ics="16"></button>
       <button class="iconbtn" id="watchClose" title="关闭" aria-label="关闭" data-ic="x" data-ics="16"></button>
     </div>
+    <!-- 画面和（小窗里）选集并排：选集在画面右边（放不下时在下面），不盖住画面和控制条；放大、全屏时选集回到画面里
+         靠右，停在控制条上面（console.js 的 placeParts） -->
+    <div class="pcmain" id="pcMain">
     <div class="pcbox" id="pcBox" tabindex="0" aria-label="画面：空格暂停，左右键快退快进 10 秒，F 全屏，M 静音，P 画中画，&lt; &gt; 调速度">
       <video id="watchVideo" playsinline></video>
       <!-- 换台时：上一台最后的画面停在这里，盖着「正在切换…」，新的台出画面时收起（console.js 的 switching） -->
@@ -366,6 +369,13 @@
         </div>
       </div>
     </div>
+    </div>
+    <!-- 拖边、拖角改大小（画面的宽高比不变，console.js 的 pcResize）；左上角的那个也能用方向键调 -->
+    <i class="pcgrip w" data-edge="w" aria-hidden="true"></i><i class="pcgrip e" data-edge="e" aria-hidden="true"></i>
+    <i class="pcgrip sw" data-edge="sw" aria-hidden="true"></i><i class="pcgrip se" data-edge="se" aria-hidden="true"></i>
+    <i class="pcgrip ne" data-edge="ne" aria-hidden="true"></i>
+    <span class="pcgrip nw" data-edge="nw" id="pcGrip" role="slider" tabindex="0" aria-label="小窗大小：方向键调大调小"
+          aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" title="拖动改大小"></span>
     <div class="pcfoot">
       <label class="follow" id="watchFollowBox" title="小电视换台、换下一个视频时，电脑上也跟着换"><input type="checkbox" id="watchFollow" checked>跟随小电视换台</label>
       <span class="note" id="watchNote"></span>
