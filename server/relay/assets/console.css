@@ -93,6 +93,10 @@ svg { display: block; }
 .ttabs a em { position: absolute; top: 4px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--brand); color: #fff; font: 700 10px/16px var(--sans); font-style: normal; text-align: center; }
 .ttabs a:focus-visible, .iconbtn:focus-visible, .wml:focus-visible, .tchip:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); transform: scale(1.06); box-shadow: 0 10px 26px rgba(0,0,0,.35); }
 .ntitle { display: none; }
+/* 右上角的设备、管理、设置：和中间的导航一样放在一条毛玻璃胶囊里 */
+#top .tbtns { flex: none; display: flex; gap: 2px; padding: 5px; border-radius: 999px; background: var(--mat); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: inset 0 0 0 1px var(--mat-line); }
+#top .tbtns .iconbtn { width: 40px; height: 40px; color: var(--label-2); }
+#top .tbtns .iconbtn:hover, #top .tbtns .iconbtn[aria-current=page] { color: var(--label); }
 .iconbtn { width: 44px; height: 44px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--label);
            transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast), box-shadow var(--t-focus); }
 .iconbtn:hover, .iconbtn[aria-current=page] { background: var(--fill-2); }
@@ -109,7 +113,7 @@ svg { display: block; }
 a.me:focus-visible { outline: 2px solid var(--label); outline-offset: 2px; }
 @media (max-width: 1180px) { .d #top .tchip small, .d .ttabs a svg { display: none; } .d .ttabs a { padding: 0 14px; } .d #top .wml .wmk { display: none; } }
 @media (max-width: 1000px) { .d .ttabs a { padding: 0 10px; font-size: 14px; } .d #top { gap: 8px; padding: 0 20px; } .d #top .tchip { max-width: 150px; } .d #top .me { display: none; } }
-@media (max-width: 860px) { .d #top .tr .iconbtn { width: 36px; height: 36px; } .d .ttabs a { padding: 0 8px; } }
+@media (max-width: 860px) { .d #top .tr .iconbtn { width: 34px; height: 34px; } .d .ttabs a { padding: 0 8px; } }
 
 /* ---- 通用控件 ---- */
 .btn, .go, .ghost { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 46px; padding: 0 22px; border-radius: 12px; white-space: nowrap;
@@ -418,6 +422,25 @@ a.li:focus-visible, button.li:focus-visible { outline: none; background: var(--f
 .hit .acts .done { opacity: .5; }
 .bsmore { margin-top: 14px; text-align: center; }
 /* 搜索「视频」第一页前面的正版影视、番剧（console.js pgcHit）：小标题一整行，角标（大会员、独家）是小胶囊 */
+/* 正版影视、番剧：像 B 站的「影视」搜索页（海报、类型、出演、简介、评分、选集） */
+.hit.pgc { grid-template-columns: 150px minmax(0, 1fr); align-items: start; gap: 18px; padding: 14px; }
+.hit.pgc .cover.poster { width: 150px; margin: 0; border-radius: 12px; }
+.hit.pgc .t { font-size: 17px; -webkit-line-clamp: 1; }
+.hit.pgc .t .kind { display: inline-block; margin-right: 8px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--brand); color: var(--brand); font: 600 11px/18px var(--sans); vertical-align: 2px; }
+.hit.pgc .m { margin-top: 6px; }
+.hit.pgc .c { margin-top: 4px; font-size: 12px; color: var(--label-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hit.pgc .score { margin-top: 6px; font-size: 12px; color: var(--label-3); }
+.hit.pgc .score b { font: 700 18px var(--sans); color: var(--brand); }
+.hit.pgc .pacts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.hit.pgc .pacts .go { padding: 0 22px; }
+.hit.pgc .peps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.hit.pgc .pep { position: relative; min-width: 40px; height: 36px; padding: 0 10px; border-radius: 10px; background: var(--fill); color: var(--label); font: 600 14px var(--sans); }
+.hit.pgc .pep:hover, .hit.pgc .pep:focus-visible { background: var(--fill-2); outline: none; }
+.hit.pgc .pep.seen { box-shadow: inset 0 0 0 2px var(--brand); color: var(--brand); }
+.hit.pgc .pep.more { font-size: 12px; color: var(--label-2); }
+.hit.pgc .pep i { position: absolute; top: -7px; right: -4px; padding: 0 3px; border-radius: 4px; background: #fb7299; color: #fff; font: 600 9px/13px var(--sans); font-style: normal; }
+.m .hit.pgc { grid-template-columns: 96px minmax(0, 1fr); gap: 12px; }
+.m .hit.pgc .cover.poster { width: 96px; margin: 0; }
 .bshead { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 14px; margin: 6px 10px 0; font-size: 13px; color: var(--label-2); }
 .bshead b { font-weight: 600; color: var(--label); }
 .hit .m .tag { display: inline-block; padding: 0 5px; border-radius: 5px; background: var(--fill-2); font: 600 11px/16px var(--sans); color: var(--label-2); }
@@ -665,6 +688,10 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcfoot .ghost { height: 32px; padding: 0 12px; font-size: 13px; background: rgba(255,255,255,.14); color: #f5f5f7; }
 #pcwin .follow { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 #pcwin .note { flex-basis: 100%; }
+/* 宽屏：小窗停在右边，页面让出它的宽度（console.js 的 pcDock）；标题栏可以拖动 */
+@media (min-width: 1200px) { .d#app.pcdock #view { padding-right: 556px; } }
+#pcwin .pchead { cursor: grab; touch-action: none; }
+#pcwin[data-moved] .pchead { cursor: grabbing; }
 #pcwin.big { left: var(--g); right: var(--g); top: calc(var(--topH) + 6px); bottom: 104px; width: auto; display: flex; flex-direction: column; }
 #pcwin.big .pcbox { flex: 1; aspect-ratio: auto; min-height: 0; }
 
@@ -781,7 +808,7 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m .ph { margin: 4px 0 16px; gap: 12px; }
 .m .lt { font-size: 34px; letter-spacing: 0; }
 .m #top { padding: var(--sat) 12px 0; gap: 6px; }
-.m .ttabs, .m #top .tr .iconbtn, .m #top .me { display: none; }
+.m .ttabs, .m #top .tr .tbtns, .m #top .me { display: none; }
 .m #top:not(.home) .wml { display: none; }
 .m .ntitle { display: grid; place-items: center; position: absolute; left: 70px; right: 70px; bottom: 0; height: 52px; font: 600 17px var(--sans); opacity: 0; transition: opacity var(--t-fast); pointer-events: none; white-space: nowrap; overflow: hidden; }
 .m #top.tt .ntitle { opacity: 1; }

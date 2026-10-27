@@ -172,7 +172,7 @@ class AdminApiTests(unittest.TestCase):
         # Every section of the old page is in the console, against the same endpoints.
         for path in ("api/admin/overview", "api/admin/users", "api/admin/devices", "api/admin/channels",
                      "api/admin/audit?", "api/admin/system", "api/admin/epg", "api/admin/invites",
-                     "api/admin/channels/import", "api/admin/channels/probe", "api/admin/channels/check", "合并为备用线路", "检测全部线路", "/login-link", "/sessions/revoke",
+                     "api/admin/channels/import", "api/admin/channels/probe", "api/admin/channels/check", "当备用", "检测全部线路", "/login-link", "/sessions/revoke",
                      "/reconnect", "/repair", "/unbind", "api/admin/system/legacy-token"):
             self.assertIn(path, script, path)
         console_js = (ASSETS / "console.js").read_text(encoding="utf-8")

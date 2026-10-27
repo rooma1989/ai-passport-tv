@@ -105,7 +105,8 @@ const IC = {
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
   guide: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M8 9v11M12 14h6M12 17h4"/>',
   remote: '<rect x="7" y="2" width="10" height="20" rx="4"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17h4"/>',
-  set: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  set: '<path d="M19.18 9.51 L21.77 9.86 L21.77 14.14 L19.18 14.49 L18.84 15.32 L20.42 17.39 L17.39 20.42 L15.32 18.84 L14.49 19.18 L14.14 21.77 L9.86 21.77 L9.51 19.18 L8.68 18.84 L6.61 20.42 L3.58 17.39 L5.16 15.32 L4.82 14.49 L2.23 14.14 L2.23 9.86 L4.82 9.51 L5.16 8.68 L3.58 6.61 L6.61 3.58 L8.68 5.16 L9.51 4.82 L9.86 2.23 L14.14 2.23 L14.49 4.82 L15.32 5.16 L17.39 3.58 L20.42 6.61 L18.84 8.68Z"/><circle cx="12" cy="12" r="3.2"/>',
+  sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.2"/><circle cx="9" cy="17" r="2.2"/>',
   play: '<path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z" fill="currentColor" stroke="none"/>',
   pause: '<rect x="6" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.5" y="4" width="4.5" height="16" rx="1.2" fill="currentColor" stroke="none"/>',
   next: '<path d="M4 5.5v13a1 1 0 0 0 1.6.8l9-6.5a1 1 0 0 0 0-1.6l-9-6.5A1 1 0 0 0 4 5.5zM17 5h2.5v14H17z" fill="currentColor" stroke="none"/>',
@@ -496,9 +497,9 @@ function renderTop() {
   const tabs = TOPT.filter(([id]) => !isGuest() || GUEST_ROUTES.includes(id));
   const initial = me ? [...me.name][0] || "?" : "?";
   const role = me ? (me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人") : "";
-  $("top").innerHTML = `<div class="tl"><a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${iconSVG(30, true)}${wordmarkSVG(21, false)}</a></div>
+  $("top").innerHTML = `<div class="tl"><a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${iconSVG(40, true)}${wordmarkSVG(28, false)}</a></div>
     <nav class="ttabs" aria-label="主导航">${tabs.map(([id, t, i]) => `<a href="#/${id}" ${cr(id)}>${i ? ic(i, 17) : ""}${t}</a>`).join("")}</nav>
-    <div class="tr">${chipHTML()}${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv")}</a>`}${isAdmin() ? `<a class="iconbtn" href="#/admin" aria-label="管理" title="管理：用户、设备、频道表、操作记录" ${cr("admin")}>${ic("shield")}</a>` : ""}<a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set")}</a><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
+    <div class="tr">${chipHTML()}<div class="tbtns">${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv", 20)}</a>`}${isAdmin() ? `<a class="iconbtn" href="#/admin" aria-label="管理" title="管理：用户、设备、频道表" ${cr("admin")}>${ic("sliders", 20)}</a>` : ""}<a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set", 20)}</a></div><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
     <span class="ntitle" aria-hidden="true">${esc(TITLES[route])}</span>`;
   $("top").classList.toggle("home", route === "home");
 }
@@ -526,7 +527,7 @@ addEventListener("resize", () => applyLayout(false));
 
 function renderMe() {
   const rows = [["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["live", "直播和分组", "live"],
-                ["devices", "设备", "tv"], ["settings", "设置", "set"], ["admin", "管理", "shield"]]
+                ["devices", "设备", "tv"], ["settings", "设置", "set"], ["admin", "管理", "sliders"]]
     .filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && (id !== "admin" || isAdmin()));
   $("meList").innerHTML = rows.map(([id, t, i]) => `<a class="li" href="#/${id}"><span class="ico">${ic(i, 18)}</span><span class="tx">${t}</span><em>›</em></a>`).join("")
     + `<div class="li"><span class="me">${esc(me ? [...me.name][0] : "?")}</span><span class="tx">${esc(me ? me.name : "")}<small>${me && me.role === "admin" ? "管理员" : isGuest() ? "访客" : "家人"}</small></span></div>`;
@@ -2840,6 +2841,35 @@ $("watchClose").onclick = stopWatch;
 $("watchPrevCh").onclick = () => stepChannel(-1);
 $("watchNextCh").onclick = () => stepChannel(1);
 $("watchFollow").onchange = () => { if ($("watchFollow").checked && watching && watching.mode === "direct") startWatch(false); };
+// 电脑上看的小窗：宽屏（.pcdock，见 console.css）时页面右边让出小窗的位置，不挡内容；窄一点的窗口里小窗
+// 可以按住标题栏拖开（拖过就不再让位置，放大、关掉以后回到右下角）。
+function pcDock() {
+  const w = $("pcwin");
+  $("app").classList.toggle("pcdock", !w.hidden && !w.classList.contains("big") && !w.dataset.moved);
+}
+new MutationObserver(() => {
+  const w = $("pcwin");
+  if ((w.hidden || w.classList.contains("big")) && w.dataset.moved) { delete w.dataset.moved; w.style.left = w.style.top = w.style.right = w.style.bottom = ""; }
+  pcDock();
+}).observe($("pcwin"), { attributes: true, attributeFilter: ["hidden", "class"] });
+qs("#pcwin .pchead").addEventListener("pointerdown", (event) => {
+  const w = $("pcwin");
+  if (event.button !== 0 || w.classList.contains("big") || isM() || event.target.closest("button, a, input")) return;
+  const box = w.getBoundingClientRect(), area = w.offsetParent.getBoundingClientRect();
+  const dx = event.clientX - box.left, dy = event.clientY - box.top;
+  let moved = false;
+  const move = (e) => {
+    if (!moved && Math.abs(e.clientX - event.clientX) + Math.abs(e.clientY - event.clientY) < 6) return;
+    moved = true;
+    const x = Math.min(Math.max(0, e.clientX - area.left - dx), area.width - box.width);
+    const y = Math.min(Math.max(0, e.clientY - area.top - dy), area.height - box.height);
+    Object.assign(w.style, { left: x + "px", top: y + "px", right: "auto", bottom: "auto" });
+    if (!w.dataset.moved) { w.dataset.moved = "1"; pcDock(); }
+  };
+  const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); };
+  addEventListener("pointermove", move);
+  addEventListener("pointerup", up);
+});
 $("watchBig").onclick = () => {
   const big = $("pcwin").classList.toggle("big");
   $("watchBig").innerHTML = ic(big ? "shrink" : "expand", 16);
@@ -3851,29 +3881,61 @@ function renderSearch() {
   $("bsMore").hidden = !bs.items.length || bs.page >= bs.pages;
   markSubscribed();
 }
-// 正版的影视、番剧（一整季，ss<季 id>）：「在电脑上看」按番剧链接放（web.py 的 _pc_resolve：一季的各集，
-// 有选集，大会员的会员集也在）；小电视上要「加为剧集」。要不要大会员、地区限制在放的时候由中转说。
+// 正版的影视、番剧（一整季，ss<季 id>），排得和 B 站的「影视」搜索页一样：海报、类型、出演、简介、评分、选集。
+// 「立即观看」按番剧链接放（web.py 的 _pc_resolve：一季的各集，有选集）；点一集按 /bangumi/play/ep<集 id> 放；
+// 看过的（中转按你的 B 站观看记录标的 item.watched）是「继续看第 N 集」，那一集标出来。小电视上要「加为剧集」。
+// 要不要大会员、地区限制在放的时候由中转说。
+const PGC_EPS_SHOWN = 12;
 function pgcHit(item) {
   const row = el("div", "hit pgc");
   const body = el("div", "body");
-  const acts = el("div", "acts");
-  const t = el("div", "t", item.title);
+  const poster = item.cover ? "api/bili/thumb?" + new URLSearchParams({ s: "p", u: item.cover }) : "";
+  const playEp = (ep, n, node) => pressed(node, playOnPc({ kind: "cast", url: "https://www.bilibili.com/bangumi/play/ep" + ep,
+                                                           title: item.title + " 第" + n + "集" }, item.title, poster));
+  const t = el("div", "t");
+  if (item.badge) t.appendChild(el("span", "kind", item.badge));
+  t.append(item.title);
   if (item.org_title) t.title = item.org_title;
-  const meta = el("div", "m");
-  meta.append(el("b", "", item.badge || "番剧"));
-  const more = [item.year ? item.year + " 年" : "", item.areas, item.show || (item.eps ? "共 " + item.eps + " 集" : ""),
-                item.score ? "评分 " + item.score.toFixed(1) : ""].filter(Boolean).join(" · ");
-  if (more) meta.append(" · " + more);
+  const meta = el("div", "m", [item.styles, item.date || (item.year ? item.year + " 年" : ""), item.areas,
+                               item.show || (item.eps ? "共 " + item.eps + " 集" : "")].filter(Boolean).join(" · "));
   for (const tag of item.tags || []) meta.append(" ", el("span", "tag" + (/会员|付费/.test(tag) ? " vip" : ""), tag));
-  body.append(t, meta, el("div", "d", item.desc || item.styles || ""));
+  body.append(t, meta);
+  if (item.cast) body.appendChild(el("div", "c", "出演：" + item.cast));
+  if (item.desc) body.appendChild(el("div", "d", item.desc));
+  if (item.score) {
+    const sc = el("div", "score");
+    if (item.votes) sc.append(bigNumber(item.votes) + " 人评分 ");
+    sc.appendChild(el("b", "", item.score.toFixed(1) + " 分"));
+    body.appendChild(sc);
+  }
+  const acts = el("div", "pacts");
+  const w = item.watched;
   if (canPc()) {
-    const go = el("button", "go", "在电脑上看");
-    go.onclick = () => playOnPc({ kind: "cast", url: item.link, title: item.title }, item.title,
-                                item.cover ? "api/bili/thumb?" + new URLSearchParams({ s: "p", u: item.cover }) : "");
+    const go = el("button", "go", w && w.ep ? "继续看第 " + w.n + " 集" : "立即观看");
+    go.onclick = () => w && w.ep ? playEp(w.ep, w.n, go)
+      : pressed(go, playOnPc({ kind: "cast", url: item.link, title: item.title }, item.title, poster));
     acts.appendChild(go);
   }
   acts.appendChild(addAsSeries(item));
-  row.append(thumb(item, "p", "poster"), body, acts);
+  body.appendChild(acts);
+  const eps = canPc() ? item.episodes || [] : [];
+  if (eps.length > 1) {
+    const box = el("div", "peps");
+    const draw = (all) => {
+      box.replaceChildren();
+      for (const e of all ? eps : eps.slice(0, PGC_EPS_SHOWN)) {
+        const b = el("button", "pep" + (w && w.ep === e.ep ? " seen" : ""), e.n);
+        b.title = item.title + " 第" + e.n + "集" + (e.vip ? "（会员）" : "");
+        if (e.vip) b.appendChild(el("i", "", "会员"));
+        b.onclick = () => playEp(e.ep, e.n, b);
+        box.appendChild(b);
+      }
+      if (!all && eps.length > PGC_EPS_SHOWN) box.appendChild(button("全部 " + eps.length + " 集", "pep more", () => draw(true)));
+    };
+    draw(false);
+    body.appendChild(box);
+  }
+  row.append(thumb(item, "p", "poster"), body);
   return row;
 }
 

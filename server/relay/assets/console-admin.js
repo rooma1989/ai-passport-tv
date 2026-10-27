@@ -931,14 +931,14 @@ function achShell() {
           <button class="ghost" id="achImpAll">全选</button>
           <button class="ghost" id="achImpNone">全不选</button>
           <button class="ghost" id="achImpProbe">试一下选中的</button>
-          <button class="ghost" id="achImpMergeAll">重复的并为备用线路</button>
+          <button class="go" id="achImpAdd">加入</button>
+          <span class="hint" id="achImpCount" style="margin:0"></span>
         </div>
         <div class="tbl chedit implist" id="achImpTable" style="background:var(--fill)"></div>
-        <div class="inline imp-go"><button class="go" id="achImpAdd">加入</button><span class="hint" id="achImpCount"></span></div>
       </div>
       <details class="more-info">
         <summary>说明</summary>
-        <p>地址只在点「读取」时取一次，不会保存。同名（或同 tvg-id）的几行、TXT 里 # 隔开的几个地址合成一个台的几条线路（每台最多 ${d.routes_max || 5} 条）。表里已经有的台标成「重复」，「全选」不选它们，可以并为备用线路。小电视最多收 ${d.limits.channels} 个台。「试一下」一次开两个 ffmpeg，各取一帧，再点一下停。</p>
+        <p>地址只在点「读取」时取一次，不会保存。同名（或同 tvg-id）的几行、TXT 里 # 隔开的几个地址合成一个台的几条线路（每台最多 ${d.routes_max || 5} 条）。表里已经有的台，新地址并进去当备用线路，放不起来时自动换。小电视只收表里前 ${d.limits.channels} 个台，常看的往前挪。「试一下」一次开两个 ffmpeg，各取一帧，再点一下停。</p>
       </details>
     </div>
     <div class="achpane" data-pane="epg" id="achEpg" hidden>
@@ -1308,28 +1308,17 @@ function achImpTarget(r) {
   const has = (urls) => ach.rows.find((c) => achLines(c).some((x) => urls.includes(x.url)));
   return has([r.url]) || ach.rows.find((c) => achNameKey(c.name) === key) || has((r.routes || []).map((x) => x.url)) || null;
 }
-// 把导入的几项的地址加成表里对应的台的备用线路（已经有的地址不重复加，每个台至多 achRoutesMax() 条）。
-function achImpMerge(items) {
-  let added = 0, full = 0;
-  const touched = new Set();
-  for (const r of items) {
-    const target = achImpTarget(r);
-    if (!target) continue;
-    const lines = achLines(target);
-    for (const x of [{ url: r.url, ua: r.agent || "" }].concat(r.routes || [])) {
-      if (lines.some((y) => y.url === x.url)) continue;
-      if (lines.length >= achRoutesMax()) { full++; break; }
-      lines.push({ url: x.url, ua: x.ua || "" });
-      added++; touched.add(target);
-    }
-    achSetLines(target, lines);
-    r.merged = true; r.on = false;
-  }
-  achRender();
-  achRenderImport();
-  if (!added) { toast(full ? "这些台的线路已经满了（每个台最多 " + achRoutesMax() + " 条）" : "没有新的线路可加：地址都已经在表里了", true); return; }
-  achSaveNow("给 " + touched.size + " 个台加了 " + added + " 条备用线路" + (full ? "（有的台满了，没加完）" : ""));
+// 导入的一项怎么加：表里没有这个台的，加成新台（add）；有的（同名或地址一样），把它表里还没有的地址并进那个台
+// 当备用线路（target + fresh，一个台可以有几条线路切换）；地址全都已经在那个台里的，没什么可加（fresh 为空）。
+function achImpPlan(r) {
+  const target = r.dup ? achImpTarget(r) : null;
+  if (!target) return { add: true, target: null, fresh: [] };
+  const have = new Set(achLines(target).map((x) => x.url));
+  const fresh = [{ url: r.url, ua: r.agent || "" }].concat((r.routes || []).map((x) => ({ url: x.url, ua: x.ua || "" })))
+    .filter((x) => !have.has(x.url));
+  return { add: false, target, fresh };
 }
+function achImpUseful(r) { const plan = achImpPlan(r); return plan.add || plan.fresh.length > 0; }
 
 // ---------- 节目单（server/relay/epg.py） ----------
 // 来源是地址的列表（最多 max 个，排前面的优先）；预设只是一点就加上的地址。改了要点「保存」。
@@ -1491,22 +1480,25 @@ function achRenderImport() {
   const visible = achImpVisible();
   const rows = visible.slice(0, 500).map((r) => {
     const tr = el("tr");
+    const plan = achImpPlan(r);
     const check = el("input");
     check.type = "checkbox"; check.checked = r.on; check.setAttribute("aria-label", "选「" + r.name + "」");
+    check.disabled = !r.done && !plan.add && !plan.fresh.length;
     check.onchange = () => { r.on = check.checked; achImpCount(); };
     const st = r.state;
+    const dup = r.done || (plan.add ? (r.dup === "list" ? ACH_DUP.list : "")
+      : plan.fresh.length ? "并入「" + plan.target.name + "」当备用" : "已在表里");
     const cells = [admTd(""), admTd("", r.name), admTd("kind", r.kind), admTd("st", r.url), admTd("kind", (1 + (r.routes || []).length) + " 条"),
-                   admTd("dup", r.merged ? "已合并为备用线路" : ACH_DUP[r.dup] || ""),
+                   admTd("dup", dup),
                    admTd("st " + (st === "能放" || st.startsWith("能放，") ? "ok" : st === "放不了" ? "dead" : ""), st)];
     cells[0].appendChild(check);
     cells[1].style.whiteSpace = "nowrap";
     cells[3].title = [r.url].concat((r.routes || []).map((x) => x.url)).join("\n");
-    if (r.dup && !r.merged && achImpTarget(r)) cells[5].append(" ", button("合并为备用线路", "linkbtn", () => achImpMerge([r])));
     tr.append(...cells);
     return tr;
   });
   if (!rows.length) { const tr = el("tr"); const td = admTd("empty-t", ach.impKind ? "这个列表里没有「" + ach.impKind + "」的台" : "没有名字里带这几个字的台"); td.colSpan = 7; tr.appendChild(td); rows.push(tr); }
-  const table = admTable("", "", ["", "名字", "分组", "地址", "线路", "重复", "能不能放"], rows);
+  const table = admTable("", "", ["", "名字", "分组", "地址", "线路", "怎么加", "能不能放"], rows);
   box.replaceChildren(...table.childNodes);
   achImpCount();
 }
@@ -1532,17 +1524,19 @@ function achRoom(extra) {
   }
   return worst;
 }
-function achImpChosen() { return ach.imp.filter((r) => r.on && r.dup !== "url" && r.state !== "放不了"); }
+function achImpChosen() { return ach.imp.filter((r) => r.on && !r.done && r.state !== "放不了" && achImpUseful(r)); }
 function achImpCount() {
   if (!$("achImpCount")) return;
   const d = ach.data;
   const chosen = achImpChosen();
-  const room = achRoom(chosen);
-  $("achImpAdd").textContent = chosen.length ? "加入 " + chosen.length + " 个台" : "加入";
+  const adds = chosen.filter((r) => achImpPlan(r).add).length, merges = chosen.length - adds;
+  const total = ach.rows.length + adds;
+  $("achImpAdd").textContent = chosen.length ? "加入 " + chosen.length + " 个" : "加入";
   $("achImpAdd").disabled = !chosen.length;
-  $("achImpCount").textContent = (chosen.length ? "加上后 " + room.count + " / " + d.limits.channels + " 个台" + (room.fits ? "" : "，放不下的不加") : "勾选要的台") +
-    (achImpVisible().length > 500 ? " · 只显示前 500 个，用「找台」缩小" : "");
-  $("achImpCount").style.color = room.fits ? "" : "var(--bad)";
+  $("achImpCount").textContent = (chosen.length
+    ? [adds ? adds + " 个新台" : "", merges ? merges + " 个并入已有的台当备用" : ""].filter(Boolean).join("，") + "；加上后 " + total + " 个台"
+      + (total > d.limits.channels ? "，小电视只收前 " + d.limits.channels + " 个" : "")
+    : "勾选要的台") + (achImpVisible().length > 500 ? " · 只显示前 500 个，用「找台」缩小" : "");
 }
 function achWireImport() {
   if (!ach.data.import) return;
@@ -1562,16 +1556,11 @@ function achWireImport() {
     try { await achImpRead({ text: await file.text() }, "文件 " + file.name); } catch (error) { admFail(error); }
   };
   $("achImpFilter").oninput = () => { ach.impFilter = $("achImpFilter").value; achRenderImport(); };
-  // 全选只选不重复的；重复的要自己一个个勾。
-  $("achImpAll").onclick = () => { achImpVisible().forEach((r) => { r.on = !r.dup; }); achRenderImport(); };
+  // 全选：表里已经有的台也选上（新地址并进去当备用线路）；加过的、没什么可加的不选。
+  $("achImpAll").onclick = () => { achImpVisible().forEach((r) => { r.on = !r.done && achImpUseful(r); }); achRenderImport(); };
   $("achImpNone").onclick = () => { achImpVisible().forEach((r) => { r.on = false; }); achRenderImport(); };
   $("achImpProbe").onclick = achProbe;
   $("achImpAdd").onclick = () => admBusy($("achImpAdd"), achImpAdd);
-  $("achImpMergeAll").onclick = () => {
-    const dups = achImpVisible().filter((r) => r.dup && !r.merged && achImpTarget(r));
-    if (!dups.length) { toast("没有可以合并的重复台", true); return; }
-    achImpMerge(dups);
-  };
 }
 async function achProbe() {
   const btn = $("achImpProbe");
@@ -1599,25 +1588,36 @@ async function achProbe() {
 }
 async function achImpAdd() {
   achImpMark();
-  const d = ach.data;
   const chosen = achImpChosen();
-  if (!chosen.length) { toast("没有可加的台：先勾选（已在表里的、试过放不了的不加）", true); return; }
-  const added = [];
+  if (!chosen.length) { toast("先勾选要的台", true); return; }
+  let added = 0, lines = 0, full = 0;
+  const touched = new Set();
+  // 按列表的顺序一个个来：同一个台在列表里出现几次时，第一次加成新台，后面的并进它。
   for (const r of chosen) {
-    if (!achRoom(added.concat([r])).fits) break;
-    added.push(r);
-  }
-  if (!added.length) { toast("放不下了：小电视最多 " + d.limits.channels + " 个台、" + d.limits.bytes + " 字节的频道列表。先删几个台", true); return; }
-  for (const r of added) {
-    ach.rows.push({ name: r.name, url: r.url, agent: r.agent, group: "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
-                    routes: (r.routes || []).map((x) => ({ ...x })), checks: {}, good: "" });
+    const plan = achImpPlan(r);
     r.on = false;
+    if (plan.add) {
+      ach.rows.push({ name: r.name, url: r.url, agent: r.agent, group: "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
+                      routes: (r.routes || []).map((x) => ({ ...x })), checks: {}, good: "" });
+      r.done = "已加入";
+      added++;
+      continue;
+    }
+    const all = achLines(plan.target);
+    for (const x of plan.fresh) {
+      if (all.length >= achRoutesMax()) { full++; break; }
+      all.push(x);
+      lines++;
+      touched.add(plan.target);
+    }
+    achSetLines(plan.target, all);
+    r.done = "已并入「" + plan.target.name + "」";
   }
   achImpMark();
   ach.filter = $("achFilter").value = "";
   achRender();
   achRenderImport();
-  const rest = chosen.length - added.length;
-  await achSaveNow("加了 " + added.length + " 个台" + (rest ? "（" + rest + " 个放不下没加）" : ""));
+  if (!added && !lines) { toast("这些台的线路已经满了（每台最多 " + achRoutesMax() + " 条）", true); return; }
+  await achSaveNow([added ? "加了 " + added + " 个台" : "", lines ? "给 " + touched.size + " 个台加了 " + lines + " 条备用线路" : ""]
+    .filter(Boolean).join("，") + (full ? "（有的台线路满了）" : ""));
 }
-

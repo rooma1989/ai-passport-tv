@@ -72,6 +72,32 @@ class ShapeTests(unittest.TestCase):
                          ("好", 0, "", ["大会员"]))
 
 
+class CardFieldTests(unittest.TestCase):
+    """Fields for the Bilibili-style card: cast, staff, votes, date and the episode buttons with 会员 marks."""
+
+    def test_cast_votes_date_and_episodes(self):
+        data = {"result": [{"season_id": 41282, "title": "<em class=\"keyword\">Doctor X</em> 第七季",
+                            "cv": "米仓凉子\n内田有纪\n\n岸部一德", "staff": "导演：田村直己\n编剧：中园美保",
+                            "media_score": {"score": 9.8, "user_count": 1087}, "pubtime": 1634140800,
+                            "eps": [{"id": 472181, "index_title": "1", "badges": None},
+                                    {"id": 472182, "index_title": "2", "badges": [{"text": "会员"}]},
+                                    {"id": "bad"}, {"id": 472183, "title": "3"}]}]}
+        item = bilibili.browse_pgc(data)[0]
+        self.assertEqual(item["title"], "Doctor X 第七季")
+        self.assertEqual(item["cast"], "米仓凉子 内田有纪 岸部一德")
+        self.assertEqual(item["staff"], "导演：田村直己 编剧：中园美保")
+        self.assertEqual((item["votes"], item["score"], item["date"]), (1087, 9.8, "2021-10-13"))
+        self.assertEqual(item["episodes"], [{"ep": 472181, "n": "1", "vip": False}, {"ep": 472182, "n": "2", "vip": True},
+                                            {"ep": 472183, "n": "3", "vip": False}])
+
+    def test_long_lists_are_capped(self):
+        data = {"result": [{"season_id": 1, "title": "长剧", "cv": "\n".join(f"演员{i}" for i in range(50)),
+                            "eps": [{"id": i + 1, "index_title": str(i + 1)} for i in range(200)]}]}
+        item = bilibili.browse_pgc(data)[0]
+        self.assertLessEqual(len(item["cast"]), bilibili.PGC_CAST_MAX)
+        self.assertEqual(len(item["episodes"]), bilibili.PGC_EPISODES)
+
+
 class BrowseTests(unittest.TestCase):
     def answers(self, **extra):
         return {"finger/spi": SPI, "search_type=video": SEARCH_VIDEOS, "search_type=media_ft": MEDIA_FT,
@@ -85,8 +111,10 @@ class BrowseTests(unittest.TestCase):
         self.assertTrue(all("/x/web-interface/search/type?" in url for url, _ in fetch.calls[1:]))
         self.assertEqual(len(found["items"]), 3)
         ids = [i["id"] for i in found["pgc"]]
-        self.assertEqual(ids[:bilibili.PGC_TOP], ["ss41282", "ss31126", "ss22417", "ss23735"], "dramas first")
-        self.assertEqual(len(ids), bilibili.PGC_TOP + len(MEDIA_BANGUMI["data"]["result"]))
+        dramas = [f"ss{r['season_id']}" for r in MEDIA_FT["data"]["result"]][:bilibili.PGC_TOP]
+        self.assertEqual(len(dramas), 7, "all seven seasons, like Bilibili's own page")
+        self.assertEqual(ids[:len(dramas)], dramas, "dramas first")
+        self.assertEqual(len(ids), len(dramas) + min(bilibili.PGC_TOP, len(MEDIA_BANGUMI["data"]["result"])))
         self.assertEqual(found["pgc"][-1]["badge"], "番剧")
 
     def test_a_failed_series_lookup_keeps_the_videos(self):

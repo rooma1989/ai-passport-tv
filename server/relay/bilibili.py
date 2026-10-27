@@ -291,7 +291,10 @@ BROWSE_PAGES = 20
 BROWSE_KINDS = {"video": "video", "user": "bili_user", "bangumi": "media_bangumi", "ft": "media_ft"}
 # 「视频」第一页顺带搜的正版影视、番剧（PGC）：每种最多放几部、每次等多久（搜不到、出错都不影响视频结果）。
 PGC_KINDS = ("media_ft", "media_bangumi")
-PGC_TOP = 4
+PGC_TOP = 8
+# 一季列出几集（选集按钮）；出演、导演一行最多多长。
+PGC_EPISODES = 60
+PGC_CAST_MAX = 60
 PGC_TIMEOUT_S = 4.0
 DESC_MAX = 160
 # 封面和头像只认 B 站图床（*.hdslb.com）上 /bfs/ 下的图片；缩略图代理（bilisearch.py）用同一条规则。
@@ -401,9 +404,40 @@ def _year(at) -> int:
     return time.gmtime(at + 8 * 3600).tm_year
 
 
+def _date(at) -> str:
+    """上映时间（秒）→「2021-10-13」：按 UTC 的日期，和 B 站自己的搜索页一样（它给的是首播地当地零点）；没有为空。"""
+    if not isinstance(at, int) or isinstance(at, bool) or at <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d", time.gmtime(at))
+
+
+def _names(value) -> str:
+    """出演（cv，一行一个，番剧是「角色：声优」）→「米仓凉子 内田有纪 …」，最多 PGC_CAST_MAX 个字。"""
+    names = [clean_title(line) for line in str(value or "").splitlines()]
+    return _text(" ".join(n for n in names if n), PGC_CAST_MAX)
+
+
+def _episodes(eps) -> list[dict]:
+    """一季的各集 → [{"ep": 集 id, "n": 「1」「SP」, "vip": 是不是会员集}]，最多 PGC_EPISODES 集。"""
+    out = []
+    for e in eps if isinstance(eps, list) else []:
+        if not isinstance(e, dict):
+            continue
+        ep = e.get("id")
+        if not isinstance(ep, int) or isinstance(ep, bool) or ep <= 0:
+            continue
+        badges = [b.get("text") for b in e.get("badges") or [] if isinstance(b, dict)]
+        out.append({"ep": ep, "n": _text(e.get("index_title") or e.get("title"), 8) or str(len(out) + 1),
+                    "vip": any(t in ("会员", "付费") for t in badges)})
+        if len(out) >= PGC_EPISODES:
+            break
+    return out
+
+
 def browse_pgc(data: dict) -> list[dict]:
     """影视、番剧（PGC）搜索的 data → [{"kind": "pgc", "id": "ss<季 id>", "title", "org_title", "desc", "cover",
-    "eps", "show", "badge", "year", "areas", "styles", "score", "tags", "link"}]。
+    "eps", "show", "badge", "year", "date", "areas", "styles", "score", "votes", "cast", "staff", "episodes",
+    "tags", "link"}]。episodes 是各集（_episodes），点一集按 /bangumi/play/ep<集 id> 放。
 
     badge 是「电视剧」「番剧」「电影」这种；show 是「全10集」「更新至第3话」；tags 是角标（大会员、独家、限免）。
     标题里的 <em> 高亮去掉。能不能看、要不要大会员到放的时候才知道（Bilibili.series）。"""
@@ -419,7 +453,8 @@ def browse_pgc(data: dict) -> list[dict]:
             continue
         seen.add(season)
         org = _text(item.get("org_title"), 80)
-        score = (item.get("media_score") or {}).get("score") if isinstance(item.get("media_score"), dict) else 0
+        rating = item.get("media_score") if isinstance(item.get("media_score"), dict) else {}
+        score = rating.get("score") or 0
         tags = []
         for badge in item.get("badges") or []:
             text = _text(badge.get("text"), 6) if isinstance(badge, dict) else ""
@@ -429,9 +464,13 @@ def browse_pgc(data: dict) -> list[dict]:
                       "desc": _text(item.get("desc"), DESC_MAX), "cover": cover_url(item.get("cover")),
                       "eps": _number(item.get("ep_size")), "show": _text(item.get("index_show"), 20),
                       "badge": _text(item.get("season_type_name"), 10), "year": _year(item.get("pubtime")),
+                      "date": _date(item.get("pubtime")),
                       "areas": _text(item.get("areas"), 20), "styles": _text(item.get("styles"), 40),
                       "score": round(float(score), 1) if isinstance(score, (int, float)) and
                       not isinstance(score, bool) and 0 < score <= 10 else 0,
+                      "votes": _number(rating.get("user_count")),
+                      "cast": _names(item.get("cv")), "staff": _names(item.get("staff")),
+                      "episodes": _episodes(item.get("eps")),
                       "tags": tags[:3], "link": f"https://www.bilibili.com/bangumi/play/ss{season}"})
     return items[:BROWSE_SIZE]
 

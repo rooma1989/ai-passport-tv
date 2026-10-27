@@ -143,7 +143,8 @@ class ShapeTests(unittest.TestCase):
         self.assertEqual(bilibili.browse_pgc(SEARCH_BANGUMI["data"]), [
             {"kind": "pgc", "id": "ss2307", "title": "海尔兄弟", "org_title": "", "desc": "经典科普动画",
              "cover": "https://i0.hdslb.com/bfs/bangumi/p.jpg", "eps": 52, "show": "", "badge": "番剧", "year": 0,
-             "areas": "", "styles": "科普/冒险", "score": 0, "tags": [],
+             "date": "", "areas": "", "styles": "科普/冒险", "score": 0, "votes": 0, "cast": "", "staff": "", "episodes": [],
+             "tags": [],
              "link": "https://www.bilibili.com/bangumi/play/ss2307"}])
 
     def test_browse_calls_the_unsigned_search(self):
