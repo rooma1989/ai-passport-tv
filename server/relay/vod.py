@@ -33,6 +33,7 @@ import hashlib
 import json
 import re
 import secrets
+import select
 import socket
 import threading
 import time
@@ -59,6 +60,13 @@ EXPIRED = (403, 404, 410)
 _SID = re.compile(r"^[0-9a-f]{16}$")
 _PATH = re.compile(r"^/vod/([0-9a-f]{16})/([0-9]{1,12}\.[A-Za-z0-9_-]{16,32})/(media|v|a|manifest)$")
 _RANGE = re.compile(r"^bytes=(\d{0,15})-(\d{0,15})$")
+# 很长的视频：html5 的 MP4 把整个索引（moov）放在文件头，九个多小时的视频光 moov 就有四十多 MB，浏览器要先下完
+# 它才出画面（经代理 1 MB/s 时要等四十多秒）。不短于 MOOV_CHECK_S 秒的视频先看一眼文件头（probe_moov，一个 64 字节的
+# Range 请求），moov 超过 MOOV_MAX 字节就改放 B 站的 DASH（bilidash.py，索引只有几十 KB）。
+MOOV_CHECK_S = 1800
+MOOV_MAX = 6 * 1024 * 1024
+PROBE_BYTES = 64
+PROBE_TIMEOUT_S = 6
 # B 站 playurl 的 video_codecid：7 是 H.264，12 是 HEVC，13 是 AV1。
 CODEC_AVC = 7
 _CODECS = {12: "HEVC", 13: "AV1"}
@@ -151,6 +159,38 @@ def media_of(info: dict) -> Media:
                  duration=float(info.get("duration") or 0))
 
 
+def moov_size(head: bytes, total: int = 0) -> int:
+    """MP4 文件头的前几十个字节（head）→ 浏览器出画面前要下完的索引（moov）有多大：moov 在前面时是它的大小；
+    先是 mdat（moov 在文件尾）时是文件大小（total）减去 mdat 的末尾；看不出来时 0。"""
+    pos = 0
+    while pos + 8 <= len(head):
+        size, kind = int.from_bytes(head[pos:pos + 4], "big"), head[pos + 4:pos + 8]
+        if size == 1:
+            if pos + 16 > len(head):
+                return 0
+            size = int.from_bytes(head[pos + 8:pos + 16], "big")
+        if size < 8:
+            return 0
+        if kind == b"moov":
+            return size
+        if kind == b"mdat":
+            return max(0, total - (pos + size)) if total else 0
+        pos += size
+    return 0
+
+
+def probe_moov(media: Media, headers: tuple, opener, timeout: float = PROBE_TIMEOUT_S) -> int:
+    """取文件头 PROBE_BYTES 个字节看 moov 有多大（moov_size）；取不到时 0（照旧放 MP4）。"""
+    request = urllib.request.Request(media.url, headers={**dict(headers), "Range": f"bytes=0-{PROBE_BYTES - 1}",
+                                                         "Accept-Encoding": "identity"})
+    try:
+        with opener(request, timeout) as answer:
+            head = answer.read(PROBE_BYTES)
+    except (OSError, ValueError, urllib.error.URLError):
+        return 0
+    return moov_size(head, media.size)
+
+
 class NotPlayable(RuntimeError):
     """重新取到的地址浏览器放不了了（少见：B 站换了格式）。"""
 
@@ -239,6 +279,22 @@ class VodSession:
 
 
 # ---------------------------------------------------------------- 管所有路
+
+def client_gone(sock) -> bool:
+    """浏览器那头关了（跳转时掐掉旧的请求）：连接可读、却读不出东西（浏览器不会在回答没完时发下一个请求）。
+    上游慢的时候转发的线程等在上游上，写的时候才会发现；每读一块上游以前先看一眼，掐掉的请求马上关上游。"""
+    if sock is None or not hasattr(sock, "fileno") or hasattr(sock, "getpeercert"):
+        return False                    # 测试里的假连接、TLS 的连接（不能 MSG_PEEK）：只靠写的时候发现
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        if not readable:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b""
+    except ValueError:
+        return False
+    except OSError:
+        return True
+
 
 def _open(request: urllib.request.Request, timeout: float):
     return urllib.request.urlopen(request, timeout=timeout)
@@ -482,7 +538,11 @@ class VodService:
             handler.end_headers()
             read = getattr(upstream, "read1", None) or upstream.read
             total, expected = 0, int(length) if length and length.isdigit() else None
+            sock = getattr(handler, "connection", None)
             while not conn.cancelled and not session.stopped:
+                if client_gone(sock):
+                    conn.cancelled = True
+                    break
                 chunk = read(CHUNK)
                 if not chunk:
                     break

@@ -767,7 +767,83 @@ def upstream_headers(choice: Choice) -> tuple[tuple[str, str], ...]:
                  if str(k).lower() not in ("range", "accept-encoding", "host", "connection", "cookie"))
 
 
-class YtVod:
+class DashIndexes:
+    """取 DASH 索引、给页面清单的那一半（YouTube 的 YtVod 和 B 站长视频的 bilidash.BiliDash 共用）：
+    indexes 是按 (视频, 格式) 缓存的索引（_Lru），fetcher() 是上游的连接。清单的样子见 manifest。"""
+
+    indexes: "_Lru"
+
+    def fetcher(self):
+        raise NotImplementedError
+
+    def _index(self, video_id: str, track: vod.Track, current: Callable, headers: dict, opener) -> Index:
+        """一条轨的索引（缓存）。current(refresh)：现在的那条轨（refresh 为真时先重新取地址）。"""
+        cached = self.indexes.get((video_id, track.itag))
+        if cached is not None:
+            return cached
+
+        def fetch(start: int, end: int) -> bytes:
+            for attempt in (0, 1):
+                url = current(refresh=attempt == 1).url
+                request = urllib.request.Request(url, headers={**headers, "Range": f"bytes={start}-{end}",
+                                                               "Accept-Encoding": "identity"})
+                try:
+                    answer = opener(request, UPSTREAM_TIMEOUT_S)
+                except urllib.error.HTTPError as error:
+                    if error.code == 416:
+                        return b""
+                    if error.code in vod.EXPIRED and attempt == 0:
+                        continue
+                    raise OSError(f"HTTP {error.code}") from None
+                try:
+                    return answer.read(end - start + 1)
+                finally:
+                    answer.close()
+            return b""
+
+        found = read_index(fetch, track.init, track.index)
+        self.indexes.put((video_id, track.itag), found)
+        return found
+
+    def manifest(self, session: vod.VodSession) -> dict:
+        """DASH 的清单：{"duration", "tracks": {"v"|"a": {"mime", "init": [起, 止], "t": [...], "o": [...],
+        "height", "bitrate", "ib"（初始化段的字节，base64；没留下时没有）}}}。两条轨的索引同时取。"""
+        media = session.media()
+        video_id = session.source.key[3]
+        opener = session.source.opener or self.fetcher()
+        headers = dict(session.source.headers)
+        found: dict[str, Index] = {}
+        errors: list[Exception] = []
+
+        def one(kind: str) -> None:
+            def current(refresh: bool = False) -> vod.Track:
+                return session.media(refresh=refresh).tracks[kind]
+            try:
+                found[kind] = self._index(video_id, media.tracks[kind], current, headers, opener)
+            except Exception as error:  # noqa: BLE001 —— 交给 manifest 的调用方说原因
+                errors.append(error)
+
+        threads = [threading.Thread(target=one, args=(kind,), daemon=True) for kind in ("v", "a")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(UPSTREAM_TIMEOUT_S * 3)
+        if errors or len(found) < 2:
+            raise errors[0] if errors else OSError("取索引超时")
+        tracks = {}
+        for kind in ("v", "a"):
+            track, index = media.tracks[kind], found[kind]
+            tracks[kind] = {"mime": track.mime, "init": list(index.init),
+                            "t": [round(t, 3) for t in index.times], "o": list(index.offsets),
+                            "height": track.height, "bitrate": track.bitrate}
+            if index.head:
+                # 初始化段的字节（base64）：页面直接喂给 MediaSource，不用再取 init 那一段。
+                tracks[kind]["ib"] = base64.b64encode(index.head).decode("ascii")
+        duration = max(found["v"].duration, found["a"].duration)
+        return {"duration": round(duration, 3), "tracks": tracks}
+
+
+class YtVod(DashIndexes):
     """web.py 用的这一套：client() 是现在的 YouTube 客户端，proxy() 是现在的 YouTube 代理（空串直连）。"""
 
     def __init__(self, client: Callable[[], object], proxy: Callable[[], str] = lambda: "", log=print,
@@ -847,69 +923,3 @@ class YtVod:
                              choices=choice.choices if dashed else (), opener=self.fetcher(), dash=dashed,
                              manifest=self.manifest if dashed else None, variant=choice.variant,
                              refresh_s=max(600.0, keep_until(info, self.clock()) - self.clock()))
-
-    def _index(self, video_id: str, track: vod.Track, current: Callable, headers: dict, opener) -> Index:
-        """一条轨的索引（缓存）。current(refresh)：现在的那条轨（refresh 为真时先重新取地址）。"""
-        cached = self.indexes.get((video_id, track.itag))
-        if cached is not None:
-            return cached
-
-        def fetch(start: int, end: int) -> bytes:
-            for attempt in (0, 1):
-                url = current(refresh=attempt == 1).url
-                request = urllib.request.Request(url, headers={**headers, "Range": f"bytes={start}-{end}",
-                                                               "Accept-Encoding": "identity"})
-                try:
-                    answer = opener(request, UPSTREAM_TIMEOUT_S)
-                except urllib.error.HTTPError as error:
-                    if error.code == 416:
-                        return b""
-                    if error.code in vod.EXPIRED and attempt == 0:
-                        continue
-                    raise OSError(f"HTTP {error.code}") from None
-                try:
-                    return answer.read(end - start + 1)
-                finally:
-                    answer.close()
-            return b""
-
-        found = read_index(fetch, track.init, track.index)
-        self.indexes.put((video_id, track.itag), found)
-        return found
-
-    def manifest(self, session: vod.VodSession) -> dict:
-        """DASH 的清单：{"duration", "tracks": {"v"|"a": {"mime", "init": [起, 止], "t": [...], "o": [...],
-        "height", "bitrate", "ib"（初始化段的字节，base64；没留下时没有）}}}。两条轨的索引同时取。"""
-        media = session.media()
-        video_id = session.source.key[3]
-        opener = session.source.opener or self.fetcher()
-        headers = dict(session.source.headers)
-        found: dict[str, Index] = {}
-        errors: list[Exception] = []
-
-        def one(kind: str) -> None:
-            def current(refresh: bool = False) -> vod.Track:
-                return session.media(refresh=refresh).tracks[kind]
-            try:
-                found[kind] = self._index(video_id, media.tracks[kind], current, headers, opener)
-            except Exception as error:  # noqa: BLE001 —— 交给 manifest 的调用方说原因
-                errors.append(error)
-
-        threads = [threading.Thread(target=one, args=(kind,), daemon=True) for kind in ("v", "a")]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(UPSTREAM_TIMEOUT_S * 3)
-        if errors or len(found) < 2:
-            raise errors[0] if errors else OSError("取索引超时")
-        tracks = {}
-        for kind in ("v", "a"):
-            track, index = media.tracks[kind], found[kind]
-            tracks[kind] = {"mime": track.mime, "init": list(index.init),
-                            "t": [round(t, 3) for t in index.times], "o": list(index.offsets),
-                            "height": track.height, "bitrate": track.bitrate}
-            if index.head:
-                # 初始化段的字节（base64）：页面直接喂给 MediaSource，不用再取 init 那一段。
-                tracks[kind]["ib"] = base64.b64encode(index.head).decode("ascii")
-        duration = max(found["v"].duration, found["a"].duration)
-        return {"duration": round(duration, 3), "tracks": tracks}

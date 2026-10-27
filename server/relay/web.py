@@ -29,7 +29,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import accountfeeds, bililogin, follows, ytsearch, ytsettings, ytvod
+from . import accountfeeds, bilidash, bililogin, follows, ytsearch, ytsettings, ytvod
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
     UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -220,6 +220,8 @@ class Relay:
         self.ytvod = (ytvod.YtVod(lambda: self.clients.get("youtube"), proxy=lambda: self.youtube_proxy(),
                                   log=lambda m: self.log(m))
                       if self.vod is not None else None)
+        # 很长的 B 站视频在电脑上按 DASH 放（bilidash.py）：索引缓存和到 B 站视频主机的连接（复用）。
+        self.bilidash = bilidash.BiliDash(log=lambda m: self.log(m)) if self.vod is not None else None
         # 电脑上直接看 UP 主、剧集、投屏视频时各自的进度（和小电视的分开）：键是 (用户, 台) 或
         # (用户, "v:<网站>:<id>")，值是 {"bvid", "offset"（这一路从第几秒起）, "stream"（那一路，估计看到了哪里）,
         # 和存进度用的 title、name、duration、index、total、site}。存进数据目录的 pc-progress.json（home.PcProgress），
@@ -1398,7 +1400,7 @@ class Relay:
         whose = viewer if self.bili_login(viewer) is not None else owner
         login = self.bili_login(whose)
         if prefer is not None and not (login is not None and prefer == "1080p"):
-            found = self._vod_source(key, video, position, login)
+            found = self._vod_source(key, video, position, login, dash=getattr(prefer, "dash", False))
             if found is not None:
                 return found
         if login is None:
@@ -1410,10 +1412,11 @@ class Relay:
                                offset=position, label=video.title, site="bilibili", start=position,
                                quality="1080p" if login is not None and prefer == "1080p" else "")
 
-    def _vod_source(self, key: tuple, video, position: float, login):
+    def _vod_source(self, key: tuple, video, position: float, login, dash: bool = False):
         """B 站的这个视频能不能在电脑上直接放原文件（vod.py）：能就是 vod.VodSource（地址已经取好，过期了再取），
         不能（分段的、FLV、HEVC、取地址出错——会员集登录失效之类的原因交给 HLS 那条路照旧说）是 None。
-        login：取地址带的 B 站登录（会员剧集）；清晰度最高 720p，登录了的人另有 1080P（hd，走 HLS）。"""
+        login：取地址带的 B 站登录（会员剧集）；清晰度最高 720p，登录了的人另有 1080P（hd，走 HLS）。
+        dash：页面能用 MediaSource 放分片 MP4。很长的视频 MP4 的索引（moov）太大时改放 DASH（_bili_dash_source）。"""
         getter = getattr(self.clients.get("bilibili"), "vod_media", None)
         if getter is None or self.vod is None:
             return None
@@ -1427,6 +1430,14 @@ class Relay:
         if reason:
             self.log(f"在电脑上点播 {video.bvid}：{reason}，转 HLS")
             return None
+        headers = (("Referer", BILIBILI_REFERER), ("User-Agent", BILIBILI_UA))
+        length = float(video.duration or info.get("duration") or 0)
+        if dash and self.bilidash is not None and length >= vod.MOOV_CHECK_S:
+            moov = vod.probe_moov(vod.media_of(info), headers, self.vod.opener)
+            if moov > vod.MOOV_MAX:
+                found = self._bili_dash_source(key, video, position, login, headers, moov)
+                if found is not None:
+                    return found
 
         def resolve() -> vod.Media:
             again = fetch()
@@ -1439,6 +1450,24 @@ class Relay:
                              label=video.title, site="bilibili", start=position,
                              duration=float(video.duration or info.get("duration") or 0), first=vod.media_of(info),
                              quality="720p", hd=login is not None)
+
+    def _bili_dash_source(self, key: tuple, video, position: float, login, headers: tuple, moov: int):
+        """很长的 B 站视频按 DASH 放（bilidash.py）：vod.VodSource，取不到 DASH、没有 H.264 时 None（照旧放 MP4）。"""
+        getter = getattr(self.clients.get("bilibili"), "vod_dash", None)
+        if getter is None:
+            return None
+        fetch = (lambda: getter(video.bvid, login=login)) if login is not None else (lambda: getter(video.bvid))
+        try:
+            info = fetch()
+        except SourceError as error:
+            self.log(f"在电脑上点播 {video.bvid}：MP4 的索引有 {moov >> 20} MB，DASH 取不到"
+                     f"（{watch_pc.explain('bilibili', str(error))}），照旧放 MP4")
+            return None
+        if not info:
+            self.log(f"在电脑上点播 {video.bvid}：MP4 的索引有 {moov >> 20} MB，没有能放的 DASH，照旧放 MP4")
+            return None
+        self.log(f"在电脑上点播 {video.bvid}：MP4 的索引有 {moov >> 20} MB，改放 DASH（{bilidash.label(info)}）")
+        return self.bilidash.source(key, video, position, info, fetch, headers, hd=login is not None)
 
     def _yt_vod_on(self) -> bool:
         """YouTube 能在电脑上点播：本机模式（地址绑的是这台电脑经代理的出口；用 cstone 节点时地址绑的是 cstone，
