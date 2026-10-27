@@ -1333,6 +1333,11 @@ class Relay:
             quality = {"quality": {"current": source.quality, "choices": list(QUALITY_CHOICES)}}
         if source.key[0] == "live":
             extra.setdefault("routes", max(1, len(getattr(source, "routes", ()) or ())))
+            if extra["routes"] > 1 and isinstance(stream, watch_pc.WatchStream):
+                # 几条线路：现在放（或先试）第几条（从 0 数；之后自动换了线路看列表的 X-RTV-Route），和每条的
+                # 用时 / 好坏（给播放器头上的线路菜单，不带地址）。
+                extra.setdefault("route", stream.route)
+                extra.setdefault("lines", self.watch.routes.lines(source.key[1], list(source.routes)))
         return {"ok": True, "sid": stream.sid, "title": source.label, "kind": source.key[0], "mode": "hls",
                 "url": f"watch/{stream.sid}/{self.watch.token(stream)}/",
                 "start": round(float(source.start), 1) if video else 0.0,
@@ -1679,7 +1684,9 @@ class Relay:
           url：视频链接，投到电脑（记进自己的投屏历史，不动任何设备的投屏位）。多 P 视频、合集、番剧、
                YouTube 播放列表可以带 part（第几集，从 1 数）；不带时是链接里的 ?p= / 那一集，或者上次看到的那一集。
           video：{"site", "id"}，投屏历史里的一条，在电脑上重播（也可以带 part）。
-        再可以带 start（从第几秒起：跳转、「从头播放」是 0）：同一个片源也重起一路。
+        再可以带 start（从第几秒起：跳转、「从头播放」是 0）：同一个片源也重起一路；直播台可以带 route（第几条线路，
+        从 0 数）：先试这条，起不来照常换别的，放起来了就记成好用的那条。回答里几条线路的直播台有 routes（几条）、
+        route（现在放第几条）和 lines（每条的 ms / bad，频道表的顺序）。
         进度：UP 主、剧集从电脑上次看到的地方起，没有时从小电视下次会播的地方起（只读）；之后电脑上的进度另记
         （_pc_cursor，播放器报的位置，pc-progress.json），不标看过、不存进小电视——小电视的剧集不会因为在电脑上看了
         而往后推。回答里的 parts 是选集用的各集（电脑上看完了的打 ✓），resume 是接着上次看的地方起的秒数。
@@ -1692,8 +1699,9 @@ class Relay:
         if not isinstance(viewer, str) or not _VIEWER.match(viewer):
             viewer = "0"
         start = _seconds(body.get("start"))
-        part = body.get("part")
-        if start is False or (part is not None and (not isinstance(part, int) or isinstance(part, bool))):
+        part, route = body.get("part"), body.get("route")
+        if start is False or any(v is not None and (not isinstance(v, int) or isinstance(v, bool))
+                                 for v in (part, route)) or (route is not None and route < 0):
             return {"ok": False, "error": "请求格式不对"}
         dev = self.find_device(device, caller) if device else None
         account = self._account(caller)
@@ -1745,8 +1753,9 @@ class Relay:
                 if self.vod is not None:
                     self.vod.close(self._pc_slot(caller, viewer))
                 # keep_old：这个页面刚才在看的直播台再转一会儿，换回来马上有画面（开了预热时，watch.py）。
+                # route：直播台在播放器头上选了第几条线路（从 0 数），这一次先试它（watch.WatchService.open）。
                 stream = self.watch.open(self._pc_slot(caller, viewer), source, user=caller.user,
-                                         restart=video and start is not None, keep_old=True)
+                                         restart=video and start is not None, keep_old=True, route=route)
         except watch_pc.Busy as busy:
             return {"ok": False, "error": self._watch_busy(busy)}
         begin = source.start if native else stream.source.start

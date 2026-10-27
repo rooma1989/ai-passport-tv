@@ -268,17 +268,19 @@ def reload_channels_if_changed() -> bool:
     return True
 
 
-def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tuple[str, str]], str]:
-    """([(地址, UA)], 上次好用的线路的指纹)：频道表里的主线路（url、agent）在前，再是主表旁边 meta 里的备用线路
-    （server/routes.py，总后台导入时存的）。中转的台、内置台、没有 meta 的只有一条。"""
+def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tuple[str, str]], str, dict]:
+    """([(地址, UA)], 上次好用的线路的指纹, {指纹: 用时毫秒})：频道表里的主线路（url、agent）在前，再是主表旁边
+    meta 里的备用线路（server/routes.py，总后台导入时存的）。用时是电视上真放起来的，没有时是检测线路的
+    （routes.speeds_of）。中转的台、内置台、没有 meta 的只有一条。"""
     main = _LOADED.get("main")
     if main is None:
-        return [(url, agent)], ""
+        return [(url, agent)], "", {}
     try:
+        entry = routes.entry_of(main, channel_id)
         return (routes.table_routes(main, channel_id, url, agent, frames.DEFAULT_USER_AGENT if agent else ""),
-                routes.good_of(main, channel_id))
+                routes.good_in(entry), routes.speeds_of(entry, "tv"))
     except (OSError, ValueError):
-        return [(url, agent)], ""
+        return [(url, agent)], "", {}
 
 
 def remember_good_route(channel_id: str, url: str) -> None:
@@ -289,6 +291,18 @@ def remember_good_route(channel_id: str, url: str) -> None:
             routes.remember_good(main, channel_id, url)
         except OSError:
             pass
+
+
+def remember_route_start(channel_id: str, url: str, ms: float) -> None:
+    """记下这条线路在电视上真放起来用了多久（和以前的各占一半，变得多才写 meta）；写不了不要紧。"""
+    main = _LOADED.get("main")
+    if main is None:
+        return
+    try:
+        before = routes.starts_in(routes.entry_of(main, channel_id), "tv").get(routes.fingerprint(url))
+        routes.remember_start(main, channel_id, url, routes.blend(before, int(ms)), "tv")
+    except (OSError, ValueError):
+        pass
 
 
 def channel_list() -> list[dict]:

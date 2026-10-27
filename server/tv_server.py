@@ -871,9 +871,11 @@ class AVServer:
 
     def _start_routes(self, channel_id: str) -> tuple[str, str]:
         """会话开始：这个台的线路和顺序（上次好用的先试）；返回先用的（地址, UA）。"""
-        lines, good = live.channel_routes(channel_id, CHANNELS[channel_id], CHANNEL_AGENTS.get(channel_id, ""))
-        self.route_cycle = routes.RouteCycle(lines, good)
+        lines, good, speeds = live.channel_routes(channel_id, CHANNELS[channel_id], CHANNEL_AGENTS.get(channel_id, ""))
+        self.route_cycle = routes.RouteCycle(lines, good, speeds=speeds)
         self._route_channel = channel_id
+        # 第一条线路从这时开始试：缓冲够了（route_ok）时算起播用了多久。换过线路的不算（中间有重连的等待）。
+        self._route_began = time.monotonic()
         return self.route_cycle.current
 
     def route_failed(self, reason: str) -> None:
@@ -881,6 +883,7 @@ class AVServer:
         cycle = getattr(self, "route_cycle", None)
         if cycle is None or cycle.count < 2:
             return
+        self._route_began = None
         before = cycle.index
         moved = cycle.failed()
         if moved:
@@ -893,8 +896,11 @@ class AVServer:
         if cycle is None:
             return
         cycle.started()
+        began, self._route_began = getattr(self, "_route_began", None), None
         if cycle.count > 1:
             live.remember_good_route(self._route_channel, cycle.current[0])
+            if began is not None:
+                live.remember_route_start(self._route_channel, cycle.current[0], (time.monotonic() - began) * 1000)
 
     def route_extra_s(self) -> float:
         cycle = getattr(self, "route_cycle", None)

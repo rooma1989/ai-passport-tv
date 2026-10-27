@@ -8,7 +8,8 @@
     "ch003": {"tvg_id": "CCTV2", "logo": "…",
               "routes": [{"url": "https://…", "ua": "…"}, …],     # 备用线路，不含主线路，至多 BACKUPS_MAX 条
               "good": "<指纹>",                                   # 上次放得起来的那条（电脑上看和电视服务都写）
-              "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000}}}   # 总后台「检测线路」的结果
+              "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000, "ms": 800}},  # 总后台「检测线路」的结果
+              "starts": {"pc": {"<指纹>": 4200}, "tv": {"<指纹>": 6100}}}  # 真放起来用了多久（毫秒，见 speeds_of）
 
 指纹是地址的 SHA-256 前 12 位：meta 里不重复存地址，地址里常有会话参数，也不进日志。这个文件坏了、没有
 都不要紧：只有主线路，和以前一样。
@@ -37,6 +38,13 @@ META_SUFFIX = ".meta.json"
 # 一条线路起播以后至少放了这么久，再断才算「放过一阵的线路断了」（先在它上面重试）；不到这么久就断
 # 和起不来一样，换下一条。
 EARLY_S = 45.0
+# 快多少才不再先试上次好的那条：别的线路的用时不到它的 FASTER 倍（快 40% 以上）。差得不多的多半是网络抖动，
+# 不为它换来换去。
+FASTER = 0.6
+# 真放起来的用时（starts）变了这么多（相对上次存的）才写文件；内存里每次都记。
+START_CHANGE = 0.2
+START_KINDS = ("pc", "tv")
+MS_MAX = 600_000
 # 同一个进程里改 meta 文件的人排队（总后台保存、检测线路、记住好线路）；跨进程（电视服务和中转）靠整份
 # 原子替换，偶尔丢一次「上次好的线路」不要紧。
 META_LOCK = threading.Lock()
@@ -153,15 +161,90 @@ def table_routes(path, cid: str, url: str, agent: str = "", default_agent: str =
 
 def good_of(path, cid: str) -> str:
     """上次放得起来的那条线路的指纹（没有时空串）。"""
-    good = read_meta(path).get(cid, {}).get("good") if path is not None else ""
+    return good_in(read_meta(path).get(cid, {}) if path is not None else {})
+
+
+def good_in(entry) -> str:
+    good = entry.get("good") if isinstance(entry, dict) else ""
     return good if isinstance(good, str) and re.fullmatch(r"[0-9a-f]{12}", good) else ""
 
 
-def preferred(routes: list[tuple[str, str]], good: str = "", bad: set[str] | frozenset = frozenset()) -> list[int]:
-    """试线路的顺序（下标）：上次好的那条先试，最近坏过的（bad，指纹）放最后，别的按频道表的顺序。"""
+def entry_of(path, cid: str) -> dict:
+    """meta 里这个台的那一项（没有时 {}）。"""
+    entry = read_meta(path).get(cid, {}) if path is not None else {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def _ms(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= MS_MAX else None
+
+
+def speeds_of(entry, kind: str = "pc") -> dict[str, int]:
+    """每条线路（指纹）多快（毫秒）：真放起来过的（starts[kind]：电脑上看从起 ffmpeg 到出第一段，电视服务从开会话到
+    缓冲够）用它；没放过的用上次「检测线路」能连上时的用时（取列表和一个片段的头几 KB）。检测的用时比真放起来短
+    （不起 ffmpeg），所以只检测过的快线路会先被试一次，放过以后按真的用时排——慢的自然排到后面。"""
+    speeds: dict[str, int] = {}
+    if not isinstance(entry, dict):
+        return speeds
+    checks = entry.get("checks") if isinstance(entry.get("checks"), dict) else {}
+    for mark, found in checks.items():
+        if isinstance(found, dict) and found.get("ok") is True and _ms(found.get("ms")):
+            speeds[mark] = found["ms"]
+    speeds.update(starts_in(entry, kind))
+    return speeds
+
+
+def starts_in(entry, kind: str = "pc") -> dict[str, int]:
+    """meta 里这个台各条线路真放起来的用时（毫秒，指纹 → 毫秒），kind 是 "pc" 或 "tv"。"""
+    starts = entry.get("starts") if isinstance(entry, dict) and isinstance(entry.get("starts"), dict) else {}
+    played = starts.get(kind) if isinstance(starts.get(kind), dict) else {}
+    return {mark: ms for mark, ms in played.items() if _ms(ms)}
+
+
+def preferred(routes: list[tuple[str, str]], good: str = "", bad: set[str] | frozenset = frozenset(),
+              speeds: dict[str, int] | None = None) -> list[int]:
+    """试线路的顺序（下标）：
+    1. 上次好的那条先试——除非另有一条没坏的线路比它快很多（用时不到它的 FASTER 倍；它的用时不知道时照旧先试它）；
+    2. 别的按用时（speeds，指纹 → 毫秒）从快到慢，不知道用时的在后面，同样快的、都不知道的按频道表的顺序；
+    3. 最近坏过的（bad，指纹）放最后。"""
+    speeds = speeds or {}
     marks = [fingerprint(url) for url, _ in routes]
     order = list(range(len(routes)))
-    return sorted(order, key=lambda i: (marks[i] in bad, marks[i] != good, i))
+    speed = [speeds.get(m) for m in marks]
+    sticky = good in marks and good not in bad
+    if sticky:
+        mine = speed[marks.index(good)]
+        known = [s for i, s in enumerate(speed) if s is not None and marks[i] not in bad and marks[i] != good]
+        if mine is not None and known and min(known) <= mine * FASTER:
+            sticky = False
+    return sorted(order, key=lambda i: (marks[i] in bad, not (sticky and marks[i] == good),
+                                        speed[i] is None, speed[i] or 0, i))
+
+
+def blend(old: int | None, ms: int) -> int:
+    """新量的用时和以前的各占一半（一次网络抖动不至于翻盘）；以前没有时就是这一次。"""
+    return int(ms) if not old else int(round((old + ms) / 2))
+
+
+def remember_start(path, cid: str, url: str, ms: int, kind: str = "pc") -> bool:
+    """记下这条线路真放起来用了多久（毫秒，调用方已经和以前的 blend 过）。和存着的差不到 START_CHANGE 不写文件。"""
+    ms = _ms(int(ms)) if isinstance(ms, (int, float)) else None
+    if path is None or not url or ms is None or kind not in START_KINDS:
+        return False
+    mark = fingerprint(url)
+    stored = starts_in(entry_of(path, cid), kind).get(mark)
+    if stored and abs(ms - stored) < stored * START_CHANGE:
+        return False
+
+    def change(data: dict) -> None:
+        entry = data.setdefault(cid, {})
+        starts = entry.get("starts") if isinstance(entry.get("starts"), dict) else {}
+        mine = starts.get(kind) if isinstance(starts.get(kind), dict) else {}
+        mine[mark] = ms
+        starts[kind] = mine
+        entry["starts"] = starts
+
+    return update_meta(path, change)
 
 
 def remember_good(path, cid: str, url: str) -> bool:
@@ -188,9 +271,9 @@ class RouteCycle:
       由调用方的期限（reconnect.hold 的 deadline）收尾，不会无限地快速重试。"""
 
     def __init__(self, routes: list[tuple[str, str]], good: str = "", clock=time.monotonic,
-                 early_s: float = EARLY_S):
+                 early_s: float = EARLY_S, speeds: dict[str, int] | None = None):
         self.routes = list(routes) or [("", "")]
-        self.order = preferred(self.routes, good)
+        self.order = preferred(self.routes, good, speeds=speeds)
         self.clock = clock
         self.early_s = early_s
         self.pos = 0

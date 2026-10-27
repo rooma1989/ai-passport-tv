@@ -16,7 +16,12 @@ that answers 403, cuts a segment short, stalls, or works; the PC player's
 stream switching lines inside one stream (notice, memory, all lines failing,
 dying after it played) and the 503/410 answers that carry it; the TV media
 server's channel start using the next line; and the admin check endpoint's
-authorisation.
+authorisation. Fastest line: the check stores how long a line took, real plays
+(PC and TV, kept apart) record how long they took to start, and the order puts
+the last good line first only while no other line is much faster (FASTER), then
+the rest by speed; a failed check drops a line's start time; promoting a backup
+to main on save forgets the last good line; the PC player can ask for one line
+(route) and is told which line plays (answer and X-RTV-Route).
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from server import m3u, reconnect, routes
 from server.relay import admin, channeltable, playlist, routecheck, watch
 
 import test_relay_admin as admin_base     # functions only: inheriting the TestCase would run its tests twice
+import test_relay_watch as watch_base     # the same
 from test_relay_watch import INPUT_DUMP, LIVE_DATA, FakeProc
 
 
@@ -117,6 +123,58 @@ class MetaTests(unittest.TestCase):
         channels, _, _ = live.parse_channels(self.table.read_text(encoding="utf-8"))
         self.assertEqual(list(channels), ["ch000", "ch001"], "channels.txt is the same file")
 
+    def test_start_time_is_written_only_when_it_changes(self):
+        self.assertTrue(routes.remember_start(self.table, "ch001", "https://y/2.m3u8", 4000))
+        stamp = routes.meta_path(self.table).stat().st_mtime_ns
+        self.assertFalse(routes.remember_start(self.table, "ch001", "https://y/2.m3u8", 4500), "within 20 %")
+        self.assertEqual(routes.meta_path(self.table).stat().st_mtime_ns, stamp)
+        self.assertTrue(routes.remember_start(self.table, "ch001", "https://y/2.m3u8", 6000))
+        self.assertTrue(routes.remember_start(self.table, "ch001", "https://y/2.m3u8", 9000, "tv"))
+        entry = routes.entry_of(self.table, "ch001")
+        mark = routes.fingerprint("https://y/2.m3u8")
+        self.assertEqual(entry["starts"], {"pc": {mark: 6000}, "tv": {mark: 9000}})
+        self.assertFalse(routes.remember_start(self.table, "ch001", "https://y/2.m3u8", 0))
+        self.assertFalse(routes.remember_start(self.table, "ch001", "https://y/2.m3u8", 100, "phone"))
+        self.assertNotIn("https://", routes.meta_path(self.table).read_text(encoding="utf-8"))
+
+    def test_promoting_a_backup_forgets_the_good_line_and_keeps_times(self):
+        mark = routes.fingerprint
+        routes.write_meta(self.table, {
+            "ch000": {"routes": [{"url": "https://y/1.m3u8"}, {"url": "https://z/1.m3u8"}],
+                      "good": mark("https://y/1.m3u8"),
+                      "starts": {"pc": {mark("https://z/1.m3u8"): 3000, mark("https://gone"): 1},
+                                 "xx": {mark("https://z/1.m3u8"): 1}}}})
+        items = [{"id": "ch000", "url": "https://z/1.m3u8",
+                  "routes": [{"url": "https://x/1.m3u8"}, {"url": "https://y/1.m3u8"}]}]
+        new = channeltable.apply_edits(self.rows(), items)
+        routes.update_meta(self.table, lambda d: channeltable.merge_meta(d, items, new))
+        entry = routes.read_meta(self.table)["ch000"]
+        self.assertNotIn("good", entry, "the admin chose a new main line: try it first")
+        self.assertEqual(entry["starts"], {"pc": {mark("https://z/1.m3u8"): 3000}})
+        # Moving only backups around keeps the good line.
+        routes.update_meta(self.table, lambda d: d["ch000"].update(good=mark("https://y/1.m3u8")))
+        items = [{"id": "ch000", "url": "https://z/1.m3u8",
+                  "routes": [{"url": "https://y/1.m3u8"}, {"url": "https://x/1.m3u8"}]}]
+        new = channeltable.apply_edits(self.rows(), items)
+        routes.update_meta(self.table, lambda d: channeltable.merge_meta(d, items, new))
+        self.assertEqual(routes.read_meta(self.table)["ch000"]["good"], mark("https://y/1.m3u8"))
+
+    def test_check_keeps_times_and_drops_a_failed_lines_start(self):
+        mark = routes.fingerprint
+        routes.write_meta(self.table, {"ch000": {"routes": [{"url": "https://y/1.m3u8"}],
+                                                 "starts": {"pc": {mark("https://x/1.m3u8"): 4000,
+                                                                   mark("https://y/1.m3u8"): 5000}}}})
+        answers = {"https://x/1.m3u8": {"ok": False, "why": "源站超时", "code": "timeout", "ms": 6000, "raw": "t"},
+                   "https://y/1.m3u8": {"ok": True, "why": "", "code": "", "ms": 812}}
+        with unittest.mock.patch.object(routecheck, "probe", lambda url, agent, opener=None: answers[url]):
+            routecheck.check_channel(self.table, "ch000", clock=lambda: 7, log=lambda _m: None)
+        entry = routes.entry_of(self.table, "ch000")
+        self.assertEqual(entry["checks"][mark("https://y/1.m3u8")], {"ok": True, "why": "", "at": 7, "ms": 812})
+        self.assertNotIn("ms", entry["checks"][mark("https://x/1.m3u8")])
+        self.assertEqual(entry["starts"], {"pc": {mark("https://y/1.m3u8"): 5000}}, "the dead line's start goes")
+        view = channeltable.routes_view(self.table, self.rows())["ch000"]
+        self.assertEqual(view["checks"]["https://y/1.m3u8"]["ms"], 812)
+
     def test_merge_keeps_replaces_and_drops(self):
         mark = routes.fingerprint
         routes.write_meta(self.table, {
@@ -174,6 +232,30 @@ class OrderTests(unittest.TestCase):
         self.assertEqual(routes.preferred(self.LINES), [0, 1, 2])
         self.assertEqual(routes.preferred(self.LINES, good), [2, 0, 1])
         self.assertEqual(routes.preferred(self.LINES, "", bad), [1, 2, 0])
+
+    def test_speed_order_and_a_sticky_good_line(self):
+        mark = routes.fingerprint
+        a, b, c = (mark(u) for u, _ in self.LINES)
+        self.assertEqual(routes.preferred(self.LINES, speeds={b: 500, c: 300}), [2, 1, 0],
+                         "fastest first, unknown after, then table order")
+        # The line that worked last time stays first unless another is at least 40 % faster.
+        self.assertEqual(routes.preferred(self.LINES, a, speeds={a: 1000, c: 700}), [0, 2, 1])
+        self.assertEqual(routes.preferred(self.LINES, a, speeds={a: 1000, c: 600}), [2, 0, 1])
+        self.assertEqual(routes.preferred(self.LINES, a, speeds={c: 100}), [0, 2, 1], "good with no time stays")
+        # A fast line that just failed neither jumps ahead nor unseats the good one.
+        self.assertEqual(routes.preferred(self.LINES, a, {c}, speeds={a: 1000, c: 100}), [0, 1, 2])
+        self.assertEqual(routes.RouteCycle(self.LINES, a, speeds={a: 900, b: 300}).current[0], "https://b")
+
+    def test_speeds_from_checks_and_plays(self):
+        mark = routes.fingerprint
+        a, b, c = (mark(u) for u, _ in self.LINES)
+        entry = {"checks": {a: {"ok": True, "ms": 800}, b: {"ok": False, "why": "x", "ms": 50}, c: {"ok": True}},
+                 "starts": {"pc": {a: 4200, c: "bad"}, "tv": {b: 6000}}}
+        self.assertEqual(routes.speeds_of(entry, "pc"), {a: 4200})
+        self.assertEqual(routes.speeds_of(entry, "tv"), {a: 800, b: 6000})
+        self.assertEqual(routes.speeds_of(None), {})
+        self.assertEqual(routes.blend(None, 3000), 3000)
+        self.assertEqual(routes.blend(3000, 5000), 4000)
 
     def test_cycle_moves_on_and_stays_after_a_long_play(self):
         now = [0.0]
@@ -329,7 +411,10 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual([(r["ok"], r["why"]) for r in answer["results"]],
                              [(False, "线路被源站拒绝（403），可能已失效"), (True, "")])
             view = channeltable.routes_view(table, channeltable.read(table)["rows"])["ch000"]
-            self.assertEqual(view["checks"][f"{self.base}/ok.m3u8"], {"ok": True, "why": "", "at": 1234})
+            found = view["checks"][f"{self.base}/ok.m3u8"]
+            self.assertEqual({k: found[k] for k in ("ok", "why", "at")}, {"ok": True, "why": "", "at": 1234})
+            self.assertGreater(found["ms"], 0, "how long it took to reach the first media bytes")
+            self.assertNotIn("ms", view["checks"][f"{self.base}/deny.m3u8"], "no time for a line that failed")
             self.assertFalse(any(self.base in line for line in logs), "no address in the log")
             self.assertFalse(routecheck.check_channel(table, "ch404", self.opener)["ok"])
 
@@ -459,6 +544,75 @@ class PlayerFailoverTests(unittest.TestCase):
         self.assertEqual(self.service.routes.order("ch002", LINES), [1, 2, 0], "the line that died goes last")
 
 
+    def test_first_segment_records_how_long_the_line_took(self):
+        self.service.popen = ByInput(GOOD)
+        with unittest.mock.patch.object(self.service.routes, "ok", wraps=self.service.routes.ok) as ok:
+            stream = self.service.open("pc1-a", live_source(), user=1)
+            self.assertTrue(stream.wait_ready(5))
+        cid, url, count, ms = ok.call_args.args
+        self.assertEqual((cid, url, count), ("ch002", "https://a/2.m3u8", 3))
+        self.assertGreaterEqual(ms, 0)
+        # In memory and in the sidecar (blended with what was there, written when it moved enough).
+        memory = watch.RouteMemory(lambda: self.table)
+        memory.ok("ch002", "https://b/2.m3u8", 3, 4000)
+        memory.ok("ch002", "https://b/2.m3u8", 3, 2000)
+        mark = routes.fingerprint("https://b/2.m3u8")
+        self.assertEqual(memory._starts[("ch002", mark)], 3000)
+        self.assertEqual(routes.starts_in(routes.entry_of(self.table, "ch002"))[mark], 3000)
+        fresh = watch.RouteMemory(lambda: self.table)
+        fresh.ok("ch002", "https://b/2.m3u8", 3, 1000)
+        self.assertEqual(fresh._starts[("ch002", mark)], 2000, "carries on from the sidecar after a restart")
+        # Single-line channels keep no times.
+        fresh.ok("ch009", "https://z/9.m3u8", 1, 1000)
+        self.assertNotIn(("ch009", routes.fingerprint("https://z/9.m3u8")), fresh._starts)
+
+    def test_a_much_faster_line_goes_first(self):
+        mark = routes.fingerprint
+        routes.write_meta(self.table, {"ch002": {"good": mark("https://a/2.m3u8"),
+                                                 "starts": {"pc": {mark("https://a/2.m3u8"): 9000,
+                                                                   mark("https://c/2.m3u8"): 3000}}}})
+        self.assertEqual(self.service.routes.order("ch002", LINES), [2, 0, 1])
+        self.assertEqual(self.service.routes.order("ch002", LINES, first=1), [1, 2, 0], "the page's pick first")
+        # A promoted main line (good cleared by the admin save) is not overridden by a stale in-memory good.
+        self.service.routes.ok("ch002", "https://a/2.m3u8", 3)
+        routes.update_meta(self.table, lambda d: d["ch002"].pop("good"))
+        self.assertEqual(self.service.routes.order("ch002", LINES)[0], 2)
+
+    def test_the_page_picks_a_line(self):
+        self.service.popen = ByInput(GOOD)
+        stream = self.service.open("pc1-a", live_source(), user=1, keep_old=True, route=2)
+        self.assertEqual(stream.route, 2, "known before the thread runs")
+        self.assertTrue(stream.wait_ready(5))
+        self.assertEqual(self.service.popen.inputs(), ["https://c/2.m3u8"])
+        self.assertIs(self.service.open("pc1-a", live_source(), user=1, keep_old=True, route=2), stream,
+                      "already on that line: keep it")
+        self.assertIs(self.service.open("pc1-a", live_source(), user=1, keep_old=True), stream)
+        handler = FakeHandler()
+        watch.get(handler, types.SimpleNamespace(watch=self.service),
+                  f"/watch/{stream.sid}/{self.service.token(stream)}/index.m3u8")
+        self.assertEqual((handler.sent[0], handler.sent[3]), (200, {"X-RTV-Route": "3"}))
+        other = self.service.open("pc1-a", live_source(), user=1, keep_old=True, route=0)
+        self.assertIsNot(other, stream)
+        self.assertFalse(stream.alive, "the old line stops (not parked as a warm stream)")
+        self.assertTrue(other.wait_ready(5))
+        self.assertEqual(self.service.popen.inputs()[-1], "https://a/2.m3u8")
+        self.assertEqual(routes.good_of(self.table, "ch002"), routes.fingerprint("https://a/2.m3u8"))
+        # Out of range: ignored.
+        self.assertIs(self.service.open("pc1-a", live_source(), user=1, route=7), other)
+
+    def test_a_picked_line_that_fails_falls_back(self):
+        self.service.popen = ByInput(GOOD, **{"https://b/2.m3u8": DENY})
+        stream = self.service.open("pc1-a", live_source(), user=1, route=1)
+        self.assertTrue(stream.wait_ready(5) or stream.wait_ready(5))
+        self.assertEqual(self.service.popen.inputs(), ["https://b/2.m3u8", "https://a/2.m3u8"])
+        self.assertEqual(stream.route, 0)
+        lines = self.service.routes.lines("ch002", LINES)
+        self.assertEqual(lines[1], {"bad": True})
+        self.assertEqual(set(lines[0]) - {"ms"}, set(), "the line playing has its time, if any")
+        self.assertEqual(lines[2], {})
+        self.assertNotIn("https://", json.dumps(lines))
+
+
 class FakeHandler:
     def __init__(self):
         self.sent = None
@@ -494,6 +648,17 @@ class TvServerTests(unittest.TestCase):
                 self.assertFalse(any("https://" in m[1] for m in made if m[0] == "log"))
                 tv_server.AVServer.route_ok(fake)
                 self.assertEqual(routes.good_of(table, "ch002"), routes.fingerprint("https://a/2.m3u8"))
+                self.assertNotIn("starts", routes.entry_of(table, "ch002"), "a start after a switch is not timed")
+                # A clean start is timed (kept apart from the PC's), and a much faster line goes first next time.
+                tv_server.AVServer._start_routes(fake, "ch002")
+                fake._route_began -= 9.0
+                tv_server.AVServer.route_ok(fake)
+                played = routes.starts_in(routes.entry_of(table, "ch002"), "tv")
+                self.assertGreaterEqual(played[routes.fingerprint("https://a/2.m3u8")], 9000)
+                self.assertEqual(routes.starts_in(routes.entry_of(table, "ch002"), "pc"), {})
+                routes.update_meta(table, lambda d: d["ch002"]["starts"]["tv"].update(
+                    {routes.fingerprint("https://b/2.m3u8"): 2000}))
+                self.assertEqual(tv_server.AVServer._start_routes(fake, "ch002"), ("https://b/2.m3u8", "UB"))
                 self.assertEqual(tv_server.AVServer.route_extra_s(fake), reconnect.ATTEMPT_TIMEOUT_S)
                 fake.channel_name = "ch003"     # another channel: no lines of its own
                 with unittest.mock.patch.dict(tv_server.CHANNELS, {"ch003": "https://z/3.m3u8"}):
@@ -545,6 +710,43 @@ class TvServerTests(unittest.TestCase):
         self.assertGreater(len(calls), 3, "each failed restart reported")
         self.assertNotIn("ok", calls)
         self.assertLessEqual(clock[0] - 1000.0, 2.0 + 4.0 + 0.2, "ends at the extended deadline")
+
+
+class RelayLineTests(unittest.TestCase):
+    """POST /api/watch {channel, viewer, route}: the answer says how many lines, which one plays, and each line's
+    time or trouble (no addresses)."""
+    selfhost = True
+    setUp = watch_base.RelayWatchTests.setUp
+    tearDown = watch_base.RelayWatchTests.tearDown
+    online = watch_base.RelayWatchTests.online
+    request = watch_base.RelayWatchTests.request
+
+    def watch(self, **extra):
+        status, _, raw = self.request("POST", "/tv/api/watch", "alice", {"channel": "ch000", "viewer": "c0ffee00",
+                                                                         **extra})
+        self.assertEqual(status, 200)
+        return json.loads(raw)
+
+    def test_answer_and_picking_a_line(self):
+        mark = routes.fingerprint
+        routes.write_meta(self.relay.main_channels, {"ch000": {
+            "routes": [{"url": "https://y/1.m3u8"}],
+            "checks": {mark("https://y/1.m3u8"): {"ok": True, "why": "", "at": 1, "ms": 900}}}})
+        answer = self.watch()
+        self.assertEqual((answer["routes"], answer["route"]), (2, 1), "the measured line first")
+        self.assertEqual(answer["lines"], [{}, {"ms": 900}])
+        self.assertNotIn("https://", json.dumps(answer))
+        picked = self.watch(route=0)
+        self.assertEqual(picked["route"], 0)
+        self.assertNotEqual(picked["sid"], answer["sid"], "a new stream on the picked line")
+        self.assertEqual(self.watch(route=0)["sid"], picked["sid"], "same line again: same stream")
+        for bad in (-1, "1", True, 1.5):
+            self.assertFalse(self.watch(route=bad)["ok"], bad)
+        # One-line channels have no menu.
+        single = json.loads(self.request("POST", "/tv/api/watch", "alice",
+                                         {"channel": "ch001", "viewer": "c0ffee00", "route": 1})[2])
+        self.assertEqual(single["routes"], 1)
+        self.assertNotIn("lines", single)
 
 
 # ---------------------------------------------------------------- admin

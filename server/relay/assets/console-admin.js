@@ -1186,7 +1186,23 @@ function achSetLines(r, lines) {
 }
 function achCheckText(c) {
   if (!c) return "";
-  return (c.ok ? "✓ 能连上" : "✗ " + (c.why || "连不上")) + (c.at ? " · " + when(c.at) : "");
+  // ms：从取列表到拿到一个片段的头几 KB 用了多久（server/relay/routecheck.py），越短越快。
+  return (c.ok ? (c.ms ? "✓ " + achSecs(c.ms) : "✓ 能连上") : "✗ " + (c.why || "连不上")) + (c.at ? " · " + when(c.at) : "");
+}
+function achSecs(ms) { return (ms / 1000).toFixed(1) + " 秒"; }
+// 检测过、能连上的线路里最快的那条该不该当主线路：是第几条（从 0 数），不用换时 -1。只在主线路不通、没检测过，
+// 或者最快的比它快 40% 以上时换（和服务端 routes.FASTER 一样：差得不多的多半是网络抖动）。
+const ACH_FASTER = 0.6;
+function achFastest(r) {
+  const lines = achLines(r), checks = r.checks || {};
+  let best = -1;
+  lines.forEach((x, k) => {
+    const c = checks[x.url];
+    if (c && c.ok && c.ms && (best < 0 || c.ms < checks[lines[best].url].ms)) best = k;
+  });
+  if (best <= 0) return -1;
+  const main = checks[lines[0].url];
+  return !main || !main.ok || !main.ms || checks[lines[best].url].ms <= main.ms * ACH_FASTER ? best : -1;
 }
 // 表里「线路」一格：几条线路、检测过的几条通几条不通；点开是线路编辑。
 function achLineSummary(r, key) {
@@ -1198,6 +1214,8 @@ function achLineSummary(r, key) {
   box.appendChild(b);
   if (ok) box.append(admTag("✓" + ok, "ok"));
   if (bad) box.append(admTag("✗" + bad, "bad"));
+  const times = checked.filter((c) => c.ok && c.ms).map((c) => c.ms);
+  if (times.length) box.appendChild(el("small", "", "最快 " + achSecs(Math.min(...times))));
   if (checked.length) {
     const last = Math.max(...checked.map((c) => c.at || 0));
     if (last) box.appendChild(el("small", "", "检测于 " + when(last)));
@@ -1217,6 +1235,7 @@ async function achCheckOne(r, quiet) {
   if (!answer.ok) { if (!quiet) toast(answer.error || "没检测成", true); return null; }
   for (const x of answer.results) {
     r.checks[x.url] = { ok: x.ok, why: x.why, at: x.at };
+    if (x.ok && x.ms) r.checks[x.url].ms = x.ms;
     if (r.orig) { r.orig.checks = r.orig.checks || {}; r.orig.checks[x.url] = r.checks[x.url]; }
   }
   return answer;
@@ -1251,6 +1270,29 @@ async function achCheckAll() {
   if ($("achCheckAll") === btn) btn.textContent = "检测全部线路";
   say((stopped ? "停了：" : "检测完了：") + done + " 个台" +
       (bad ? "，" + bad + " 个台有线路不通（点「线路」看）" : "，都能连上"));
+  achOfferFastest();
+}
+// 检测完了：有台的备用线路比主线路快很多（或主线路不通）时，给一个「把最快的设为主线路」，一下子换好，
+// 和线路编辑里的「设为主线路」一样，要点「保存」才生效。
+function achOfferFastest() {
+  const box = $("achCheckState"), todo = ach.rows.filter((r) => achFastest(r) > 0);
+  if (!box || !todo.length) return;
+  const b = button("把最快的设为主线路（" + todo.length + " 个台）", "linkbtn", () => {
+    let moved = 0;
+    for (const r of ach.rows) {
+      const k = achFastest(r);
+      if (k <= 0) continue;
+      const lines = achLines(r);
+      lines.unshift(lines.splice(k, 1)[0]);
+      achSetLines(r, lines);
+      moved++;
+    }
+    b.remove();
+    achRender();
+    toast(moved + " 个台的主线路换成了最快的那条，点「保存」生效");
+  });
+  b.title = "只换主线路不通、或者备用线路快 40% 以上的台";
+  box.append(" ", b);
 }
 function achRouteEditor(r) {
   const lines = achLines(r);

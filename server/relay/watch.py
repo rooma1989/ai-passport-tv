@@ -576,8 +576,10 @@ class LiveMemory:
 
 
 class RouteMemory:
-    """每个直播台上次放得起来的线路（先试它）和最近坏了的线路（BAD_ROUTE_S 秒内排在最后）。
-    好的线路也记进频道表旁边的 meta（routes.remember_good，变了才写），下次启动先试它；path() 给频道表的路径。"""
+    """每个直播台上次放得起来的线路（先试它）、每条线路真放起来用了多久（快很多的排到前面，routes.preferred）和
+    最近坏了的线路（BAD_ROUTE_S 秒内排在最后）。好的线路和用时也记进频道表旁边的 meta（routes.remember_good、
+    remember_start，变了才写），下次启动接着用；path() 给频道表的路径。有 meta 时上次好的那条以 meta 为准（总后台
+    把备用线路设为主线路时会清掉它），没有频道表时只在内存里。"""
 
     def __init__(self, path: Callable[[], Path | None] = lambda: None, clock=time.monotonic,
                  bad_s: float = BAD_ROUTE_S, log=print):
@@ -587,26 +589,88 @@ class RouteMemory:
         self.log = log
         self._good: dict[str, str] = {}
         self._bad: dict[tuple[str, str], float] = {}
+        # (台, 指纹) → 起播用时（毫秒，和以前的 blend 过）：只在内存里也算，写 meta 的变了才写。
+        self._starts: dict[tuple[str, str], int] = {}
+        # 读过的 meta（文件的修改时间, 内容）：直播页一次预解析几十个台，不必每个台都重读、重解析一遍。
+        self._meta: tuple[tuple, dict] | None = None
         self._lock = threading.Lock()
 
-    def order(self, cid: str, routes: list[tuple[str, str]]) -> list[int]:
+    def _entry(self, cid: str) -> dict:
+        """meta 里这个台的那一项（没有频道表、没有 meta 时 {}）；文件没变就用读过的。"""
+        path = self.path()
+        if path is None:
+            return {}
+        try:
+            info = live_routes.meta_path(path).stat()
+            stamp = (str(path), info.st_mtime_ns, info.st_size)
+        except OSError:
+            return {}
+        cached = self._meta
+        if cached is None or cached[0] != stamp:
+            cached = (stamp, live_routes.read_meta(path))
+            self._meta = cached
+        entry = cached[1].get(cid, {})
+        return entry if isinstance(entry, dict) else {}
+
+    def _known(self, cid: str) -> tuple[str, set[str], dict[str, int]]:
+        """(上次好的指纹, 最近坏了的指纹, 每条的用时)。"""
+        path = self.path()
+        entry = self._entry(cid)
+        speeds = live_routes.speeds_of(entry, "pc")
         now = self.clock()
         with self._lock:
-            good = self._good.get(cid)
+            good = live_routes.good_in(entry) if path is not None else self._good.get(cid, "")
             bad = {mark for (c, mark), at in self._bad.items() if c == cid and now - at < self.bad_s}
-        if good is None:
-            good = live_routes.good_of(self.path(), cid)
-        return live_routes.preferred(routes, good, bad)
+            speeds.update({mark: ms for (c, mark), ms in self._starts.items() if c == cid})
+        return good, bad, speeds
 
-    def ok(self, cid: str, url: str, count: int) -> None:
+    def order(self, cid: str, routes: list[tuple[str, str]], first: int | None = None) -> list[int]:
+        """试线路的顺序；first（页面上选的第几条，从 0 数）给了就先试它，别的照常。"""
+        good, bad, speeds = self._known(cid)
+        order = live_routes.preferred(routes, good, bad, speeds)
+        if first is not None and 0 <= first < len(routes):
+            order = [first] + [i for i in order if i != first]
+        return order
+
+    def lines(self, cid: str, routes: list[tuple[str, str]]) -> list[dict]:
+        """给页面的线路菜单：频道表的顺序，每条 {ms?（起播或检测的用时）, bad?（最近坏过、或上次检测连不上）}。
+        不带地址。"""
+        good, bad, speeds = self._known(cid)
+        checks = self._entry(cid).get("checks")
+        checks = checks if isinstance(checks, dict) else {}
+        found = []
+        for url, _ in routes:
+            mark = live_routes.fingerprint(url)
+            check = checks.get(mark) if isinstance(checks.get(mark), dict) else {}
+            item: dict = {}
+            if mark in bad or (check.get("ok") is False and mark not in speeds):
+                item["bad"] = True
+            elif speeds.get(mark):
+                item["ms"] = speeds[mark]
+            found.append(item)
+        return found
+
+    def ok(self, cid: str, url: str, count: int, ms: float | None = None) -> None:
+        """这条线路出了第一段（ms：从起这条线路到这时用了多久）。"""
         mark = live_routes.fingerprint(url)
+        timed = ms is not None and ms > 0 and count > 1
+        # 内存里还没有时（刚启动）接着 meta 里存的（只算真放起来的，不算检测的用时）。
+        stored = live_routes.starts_in(self._entry(cid), "pc").get(mark) if timed else None
         with self._lock:
-            before = self._good.get(cid)
             self._good[cid] = mark
             self._bad.pop((cid, mark), None)
-        if count > 1 and before != mark:
+            value = None
+            if timed:
+                before = self._starts.get((cid, mark), stored)
+                value = live_routes.blend(before, int(ms))
+                self._starts[(cid, mark)] = value
+                while len(self._starts) > MODE_CACHE_MAX:
+                    self._starts.pop(next(iter(self._starts)))
+        if count > 1:
             try:
                 live_routes.remember_good(self.path(), cid, url)
+                if value is not None:
+                    live_routes.remember_start(self.path(), cid, url, value, "pc")
             except OSError as error:
                 self.log(f"在电脑上看：记不下好用的线路（{type(error).__name__}）")
 
@@ -677,7 +741,7 @@ class WatchStream:
     def __init__(self, sid: str, device: str, source: Source, ffmpeg: str, log=print,
                  clock=time.monotonic, popen=subprocess.Popen, user: int | None = None,
                  mode: Mode = FIRST_MODE, memory: LiveMemory | None = None, cheap: bool = False,
-                 route_memory: RouteMemory | None = None):
+                 route_memory: RouteMemory | None = None, first_route: int | None = None):
         self.sid = sid
         self.device = device
         self.user = user
@@ -715,10 +779,15 @@ class WatchStream:
         self.route_memory = route_memory if is_live(source) else None
         self.leg = source
         self.route = 0
+        # 页面上选的线路（第几条，从 0 数）：先试它，起不来照常换别的。
+        self.first_route = first_route
+        self._legs: list[tuple[int, Source]] = []
         self.notice = ""
         self.reopen = False
         self._leg_segments = 0
         self._leg_since: float | None = None
+        # 这条线路从什么时候开始试（出第一段时算起播用了多久，RouteMemory.ok）。
+        self._leg_began: float | None = None
         self._starved = False
 
     # ---- 状态 ----
@@ -754,8 +823,17 @@ class WatchStream:
     # ---- 起停 ----
 
     def start(self) -> None:
+        self._legs = self._plan()
+        self.route = self._legs[0][0]
         self._thread = threading.Thread(target=self._run, name=f"watch-{self.sid}", daemon=True)
         self._thread.start()
+
+    def _plan(self) -> list[tuple[int, Source]]:
+        """按什么顺序试线路（RouteMemory.order；页面选了线路时先试它）。在 start() 里先排好：回答页面时就知道先放哪条。"""
+        order = None
+        if self.route_memory is not None and len(self.source.routes) > 1:
+            order = self.route_memory.order(self.source.key[1], list(self.source.routes), self.first_route)
+        return legs_of(self.source, order)
 
     def stop(self) -> None:
         self.stopped = True
@@ -774,14 +852,11 @@ class WatchStream:
     def _run(self) -> None:
         try:
             source = self.source
-            order = None
-            if self.route_memory is not None and len(source.routes) > 1:
-                order = self.route_memory.order(source.key[1], list(source.routes))
-            legs = legs_of(source, order)
+            legs = self._legs or self._plan()
             last = ""
             for n, (index, leg) in enumerate(legs):
                 self.leg, self.route = leg, index
-                self._leg_segments, self._leg_since = 0, None
+                self._leg_segments, self._leg_since, self._leg_began = 0, None, self.clock()
                 outcome, detail = self._run_leg()
                 if self.stopped or outcome == "stopped":
                     return
@@ -971,7 +1046,10 @@ class WatchStream:
         if self.notice:
             self.notice = ""
         if self.route_memory is not None and self.source.routes:
-            self.route_memory.ok(self.source.key[1], self.leg.url, len(self.source.routes))
+            # 起播用时只算真有人在看的（预热的同时开着别的台，慢一点不说明线路慢）。
+            began = None if self.cheap else self._leg_began
+            ms = (self._leg_since - began) * 1000 if began is not None else None
+            self.route_memory.ok(self.source.key[1], self.leg.url, len(self.source.routes), ms)
 
     def _segment(self, stdout) -> int:
         """读 ffmpeg 的分片 MP4：ftyp+moov 是初始化段，每个 moof+mdat 是一段。返回出了几段。"""
@@ -1163,16 +1241,26 @@ class WatchService:
         self._prepare_pool: ThreadPoolExecutor | None = None
 
     def open(self, device: str, source: Source, user: int | None = None, restart: bool = False,
-             keep_old: bool = False) -> WatchStream:
+             keep_old: bool = False, route: int | None = None) -> WatchStream:
         """device 这个位置（设备 id，或直接看时的「pc<用户>-<页面>」）要看 source：同一个片源还在转就
         接着用，否则停掉旧的、起新的。满了（全中转 max_streams 路，或这个用户 max_per_user 路）时 Busy。
         restart：跳转（播放器上拖进度条）——同一个片源也重起一个 ffmpeg，从 source.offset / start 起；
         新的一路有新的编号，地址（令牌）跟着换，旧地址马上失效。
         keep_old：电脑上直接看时换台——旧的是直播台就不马上停，再转 warm_s 秒（开了预热时）；
-        新的这个台已经在预热（或刚换走）就接上那一路。"""
+        新的这个台已经在预热（或刚换走）就接上那一路。
+        route：直播台在页面上选了第几条线路（从 0 数）——正在这条线路上放的照旧接着用，否则重起一路、先试它
+        （不接预热的、换走的这一路不留）。"""
         evicted: list[WatchStream] = []
+        if route is not None and not (is_live(source) and len(source.routes) > 1 and 0 <= route < len(source.routes)):
+            route = None
         with self._lock:
             current = self._by_device.get(device)
+            if route is not None:
+                if current is not None and current.alive and current.source.key == source.key \
+                        and current.route == route and current._legs:
+                    current.touch()
+                    return current
+                restart, keep_old = True, False
             if current is not None and current.alive and current.source.key == source.key and not restart:
                 current.touch()
                 return current
@@ -1201,7 +1289,7 @@ class WatchService:
                 adopted.touch()
                 stream = adopted
             else:
-                stream = self._new(device, source, user)
+                stream = self._new(device, source, user, route=route)
             self._by_device[device] = stream
             evicted += self._fit()
             self._ensure_reaper()
@@ -1292,10 +1380,11 @@ class WatchService:
             stream.start()
         return result
 
-    def _new(self, device: str, source: Source, user: int | None, cheap: bool = False) -> WatchStream:
+    def _new(self, device: str, source: Source, user: int | None, cheap: bool = False,
+             route: int | None = None) -> WatchStream:
         return WatchStream(secrets.token_hex(8), device, source, self.ffmpeg, log=self.log, clock=self.clock,
                            popen=self.popen, user=user, mode=self.mode_of(source), memory=self.memory,
-                           cheap=cheap, route_memory=self.routes)
+                           cheap=cheap, route_memory=self.routes, first_route=route)
 
     def mode_of(self, source: Source) -> Mode:
         """这个片源先按哪种转法起：记住了的直播台按记住的，别的先试只换封装。"""
@@ -1483,7 +1572,10 @@ def get(handler, relay, path: str) -> bool:
             return True
         stream.touch()
         text = stream.window.master() if name == "master.m3u8" else stream.window.playlist()
-        handler._send(200, text.encode(), PLAYLIST_TYPE)
+        # 有几条线路的直播台：X-RTV-Route 是现在在放第几条（从 1 数）。自动换了线路以后播放器头上的「线路 2/3」
+        # 跟着变（页面每秒取一次列表，不用再问 /api/state）。
+        multi = is_live(stream.source) and len(stream.source.routes) > 1
+        handler._send(200, text.encode(), PLAYLIST_TYPE, {"X-RTV-Route": str(stream.route + 1)} if multi else None)
         return True
     data = stream.window.init if name == "init.mp4" else stream.window.segment(int(seq))
     if data is None:

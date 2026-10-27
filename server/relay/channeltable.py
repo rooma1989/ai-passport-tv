@@ -108,7 +108,7 @@ def save_meta(path: Path, meta: dict[str, dict]) -> None:
 
 def routes_view(path: Path, rows: list[dict]) -> dict[str, dict]:
     """总后台页面看的每个台的线路（server/routes.py）：{台 id: {routes: [{url, ua?}]（备用线路）,
-    checks: {地址: {ok, why, at}}（上次检测的结果）, good: 上次放得起来的那条的地址（没有时空串）}}。"""
+    checks: {地址: {ok, why, at, ms?}}（上次检测的结果，ms 是能连上时的用时）, good: 上次放得起来的那条的地址（没有时空串）}}。"""
     meta = routes.read_meta(path)
     view = {}
     for row in rows:
@@ -122,6 +122,8 @@ def routes_view(path: Path, rows: list[dict]) -> dict[str, dict]:
             if isinstance(found, dict) and isinstance(found.get("ok"), bool):
                 checks[url] = {"ok": found["ok"], "why": str(found.get("why") or "")[:routes.WHY_MAX],
                                "at": found.get("at") if isinstance(found.get("at"), int) else 0}
+                if found["ok"] and routes.speeds_of({"checks": {mark: found}}).get(mark):
+                    checks[url]["ms"] = found["ms"]
             if entry.get("good") == mark:
                 good = url
         view[row["id"]] = {"routes": backups, "checks": checks, "good": good}
@@ -132,7 +134,7 @@ def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
     """保存频道表时整理 meta（原地改 data，见 routes.update_meta）：
     - tvg-id / 台标：新台用页面带来的（从播放列表导入的才有），留下的台照旧，删掉的台跟着删；
     - 备用线路：页面给了 routes 的用页面的，没给的照旧；和主线路一样的去掉；
-    - 上次好的线路、检测结果：只留还在这个台的线路里的。"""
+    - 上次好的线路、检测结果、真放起来的用时：只留还在这个台的线路里的；备用线路换成了主线路时不留上次好的。"""
     old = dict(data)
     data.clear()
     for item, row in zip(items, rows):
@@ -144,12 +146,22 @@ def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
         if backups:
             entry["routes"] = backups
         marks = {routes.fingerprint(row["url"])} | {routes.fingerprint(b["url"]) for b in backups}
-        if prev.get("good") in marks:
+        # 原来的一条备用线路成了主线路（「设为主线路」「把最快的设为主线路」）：管理员选的，下次先试它，
+        # 不再先试上次好的那条（上次好的就是它时照旧）。
+        promoted = row["url"] in {b["url"] for b in routes.clean_routes(prev.get("routes"))} \
+            and prev.get("good") != routes.fingerprint(row["url"])
+        if prev.get("good") in marks and not promoted:
             entry["good"] = prev["good"]
         checks = prev.get("checks") if isinstance(prev.get("checks"), dict) else {}
         checks = {k: v for k, v in checks.items() if k in marks and isinstance(v, dict)}
         if checks:
             entry["checks"] = checks
+        starts = prev.get("starts") if isinstance(prev.get("starts"), dict) else {}
+        starts = {kind: {k: v for k, v in found.items() if k in marks}
+                  for kind, found in starts.items() if kind in routes.START_KINDS and isinstance(found, dict)}
+        starts = {kind: found for kind, found in starts.items() if found}
+        if starts:
+            entry["starts"] = starts
         if entry:
             data[row["id"]] = entry
 
