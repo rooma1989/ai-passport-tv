@@ -673,20 +673,31 @@ button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px
 .offbox svg { margin: 0 auto; }
 .offbox b { display: block; font: 700 18px var(--sans); color: var(--label); margin: 12px 0 4px; }
 
-/* ---- 在电脑上看：浮在右下角的播放器窗口，可以放大 ---- */
-#pcwin { position: absolute; z-index: 9; right: 18px; bottom: 104px; width: min(520px, calc(100% - 36px)); border-radius: 20px; overflow: hidden; background: #000;
+/* ---- 在电脑上看：浮在右下角的播放器窗口，可以放大 ----
+   小窗的宽和画面的高由 console.js 的 pcLayout 按视频的宽高比算（--pc-vw、--pc-vh：竖着的视频是瘦高的窗口），
+   拖边、拖角改大小（.pcgrip），宽屏时页面右边让出小窗的实际宽度（#app 的 --pcw）。 */
+#pcwin { position: absolute; z-index: 9; right: 18px; bottom: 104px; width: min(520px, calc(100% - 36px)); display: flex; flex-direction: column;
+         border-radius: 18px; overflow: hidden; background: #000;
          box-shadow: 0 24px 60px rgba(0,0,0,.55), inset 0 0 0 1px var(--mat-line); color: #f5f5f7; }
-#pcwin .pchead { display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 14px; background: rgba(26,26,30,.92); }
-#pcwin .pchead > div { flex: 1; min-width: 0; }
-#pcwin .pchead b { display: block; font: 600 14px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#pcwin .pchead span { display: block; font-size: 12px; color: rgba(235,235,245,.6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#pcwin .pchead .iconbtn { width: 36px; height: 36px; color: #f5f5f7; }
-#pcwin .pchead .iconbtn:hover { background: rgba(255,255,255,.14); }
-#pcwin .pchead .pcline { flex: none; height: 28px; padding: 0 10px; border: 0; border-radius: 14px; background: rgba(255,255,255,.12); color: #f5f5f7;
+/* 宽由画面（和旁边的选集）撑开（console.js 把 width 设成 auto）：标题栏、脚注不参与算宽，长标题不会把小窗撑宽 */
+#pcwin .pchead, #pcwin .pcfoot { contain: inline-size; }
+#pcwin.sizing, #pcwin.sizing .pcbox { transition: none; }
+#pcwin .pchead { display: flex; align-items: center; gap: 2px; min-height: 46px; padding: 5px 6px 5px 14px; background: rgba(24,24,28,.96);
+                 box-shadow: inset 0 -1px 0 rgba(255,255,255,.06); }
+#pcwin .pchead > div { flex: 1; min-width: 0; margin-right: 4px; }
+#pcwin .pchead b { display: block; font: 600 13.5px/1.35 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pcwin .pchead span { display: block; font-size: 11.5px; line-height: 1.35; color: rgba(235,235,245,.55); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pcwin .pchead .iconbtn { flex: none; width: 32px; height: 32px; border-radius: 10px; color: rgba(245,245,247,.82); }
+#pcwin .pchead .iconbtn:hover { background: rgba(255,255,255,.12); color: #fff; }
+#pcwin .pchead #watchClose:hover { background: rgba(255,90,80,.85); }
+#pcwin .pchead .pcline { flex: none; height: 26px; margin-right: 4px; padding: 0 10px; border: 0; border-radius: 13px; background: rgba(255,255,255,.12); color: #f5f5f7;
                          font: 600 12px var(--sans); white-space: nowrap; cursor: pointer; }
 #pcwin .pchead .pcline:hover { background: rgba(255,255,255,.2); }
 #pcwin .pchead .pcline:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
-#pcwin .pcbox { position: relative; aspect-ratio: 16 / 9; background: #000; }
+#pcwin .pcmain { position: relative; display: flex; min-height: 0; }
+#pcwin .pcmain.below { flex-direction: column; }
+#pcwin .pcbox { position: relative; flex: none; width: var(--pc-vw, 100%); height: var(--pc-vh, auto); aspect-ratio: var(--pc-ar, 16 / 9);
+                background: #000; transition: width .28s var(--ease), height .28s var(--ease); }
 #pcwin video { display: block; width: 100%; height: 100%; background: #000; }
 #pcwin .watchmsg { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); padding: 0 24px; text-align: center; font: 15px/1.6 var(--sans); color: #f5f5f7; pointer-events: none; }
 #pcwin .watchmsg.bad { color: #ff8a80; }
@@ -713,23 +724,42 @@ button.opening { cursor: progress; }
 button.opening:not(.card)::before { content: ""; flex: none; display: inline-block; width: .9em; height: .9em; margin-right: 6px; vertical-align: -1px; border-radius: 50%;
   border: 2px solid currentColor; border-right-color: transparent; animation: pcspin .8s linear infinite; }
 #pcwin .watchmsg button { pointer-events: auto; margin-top: 10px; }
-#pcwin .pcfoot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 12px; background: rgba(26,26,30,.92); font-size: 12px; color: rgba(235,235,245,.6); }
+#pcwin .pcfoot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 7px 12px; background: rgba(24,24,28,.96); font-size: 12px; color: rgba(235,235,245,.6); }
+/* 直接在电脑上看时脚注里什么都没有：整条收起，不留一道空白 */
+#pcwin .pcfoot:not(:has(> :not([hidden]))) { display: none; }
 #pcwin .pcfoot .ghost { height: 32px; padding: 0 12px; font-size: 13px; background: rgba(255,255,255,.14); color: #f5f5f7; }
 #pcwin .follow { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 #pcwin .note { flex-basis: 100%; }
-/* 宽屏：小窗停在右边，页面让出它的宽度（console.js 的 pcDock）；标题栏可以拖动 */
-@media (min-width: 1200px) { .d#app.pcdock #view { padding-right: 556px; } }
+/* 宽屏：小窗停在右边，页面让出它的实际宽度（console.js 的 pcDock、pcLayout 写的 --pcw）；标题栏可以拖动 */
+@media (min-width: 1200px) { .d#app.pcdock #view { padding-right: calc(var(--pcw, 520px) + 36px); transition: padding-right .28s var(--ease); } }
 #pcwin .pchead { cursor: grab; touch-action: none; }
 #pcwin[data-moved] .pchead { cursor: grabbing; }
-#pcwin.big { left: var(--g); right: var(--g); top: calc(var(--topH) + 6px); bottom: 104px; width: auto; display: flex; flex-direction: column; }
-#pcwin.big .pcbox { flex: 1; aspect-ratio: auto; min-height: 0; }
+#pcwin.big { left: var(--g); right: var(--g); top: calc(var(--topH) + 6px); bottom: 104px; width: auto !important; }
+#pcwin.big .pcmain { flex: 1; }
+#pcwin.big .pcbox { flex: 1; width: auto; height: auto; aspect-ratio: auto; max-height: none; min-height: 0; }
+/* 改大小的把手：左右两边、四个角（放大、手机上没有）。左上角那个能用方向键调。 */
+#pcwin .pcgrip { position: absolute; z-index: 12; display: block; touch-action: none; }
+#pcwin .pcgrip.w, #pcwin .pcgrip.e { top: 16px; bottom: 16px; width: 6px; cursor: ew-resize; }
+#pcwin .pcgrip.w { left: 0; }
+#pcwin .pcgrip.e { right: 0; }
+#pcwin .pcgrip.nw, #pcwin .pcgrip.ne, #pcwin .pcgrip.sw, #pcwin .pcgrip.se { width: 14px; height: 14px; }
+#pcwin .pcgrip.nw { left: 0; top: 0; cursor: nwse-resize; border-top-left-radius: 18px; }
+#pcwin .pcgrip.se { right: 0; bottom: 0; cursor: nwse-resize; }
+#pcwin .pcgrip.ne { right: 0; top: 0; cursor: nesw-resize; }
+#pcwin .pcgrip.sw { left: 0; bottom: 0; cursor: nesw-resize; }
+#pcwin .pcgrip.nw::after { content: ""; position: absolute; left: 5px; top: 5px; width: 7px; height: 7px; border-left: 2px solid rgba(255,255,255,.45);
+                           border-top: 2px solid rgba(255,255,255,.45); border-top-left-radius: 3px; opacity: 0; transition: opacity var(--t-fast); }
+#pcwin:hover .pcgrip.nw::after, #pcwin .pcgrip.nw:focus-visible::after, #pcwin.sizing .pcgrip.nw::after { opacity: 1; }
+#pcwin .pcgrip.nw:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
+#pcwin.big .pcgrip, .m #pcwin .pcgrip, #pcwin:not([data-moved]) .pcgrip:is(.e, .se, .ne, .sw) { display: none; }
+#pcwin.sizing { user-select: none; }
 
 /* 播放器自己的控制条（不用浏览器自带的：那个进度条是缓冲窗口，不是视频的时间线）。
    画面上点一下暂停 / 继续；不动鼠标 3 秒后控制条和指针收起来（.idle）。全屏的是整个 .pcbox，选集、下一集也在里面。 */
 #pcwin .pcbox:focus { outline: none; }
 #pcwin .pcbox:focus-visible { box-shadow: inset 0 0 0 3px var(--brand); }
 #pcwin .pcbox.idle { cursor: none; }
-#pcwin .pcbox:fullscreen { aspect-ratio: auto; width: 100%; height: 100%; }
+#pcwin .pcbox:fullscreen { aspect-ratio: auto; width: 100%; height: 100%; max-height: none; }
 #pcwin .pcbox:fullscreen video { object-fit: contain; }
 #pcwin .pcctl { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 10px 6px; background: linear-gradient(transparent, rgba(0,0,0,.78));
                 transition: opacity var(--t-fade) var(--ease); }
@@ -759,7 +789,7 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pctxt { height: 30px; padding: 0 11px; border: 0; border-radius: 9px; background: rgba(255,255,255,.12); color: #f5f5f7; font: 600 13px var(--sans); cursor: pointer; flex: none; }
 #pcwin .pctxt.pri { background: #f5f5f7; color: #0b0b0d; }
 #pcwin .pctxt.pri:hover { background: #fff; }
-#pcwin .pctime { margin: 0 8px; font: 500 13px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: rgba(245,245,247,.92); }
+#pcwin .pctime { min-width: 0; margin: 0 8px; overflow: hidden; text-overflow: ellipsis; font: 500 13px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: rgba(245,245,247,.92); }
 #pcwin .pclive { margin: 0 6px; padding: 1px 8px; border-radius: 6px; background: var(--live); color: #fff; font: 700 12px/20px var(--sans); }
 #pcwin #pcVol { width: 76px; accent-color: #f5f5f7; margin: 0 6px 0 0; }
 #pcwin .pcbanner { position: absolute; left: 12px; top: 12px; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 6px 6px 12px; border-radius: 12px;
@@ -775,8 +805,13 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcupnext .pcring circle + circle { stroke: var(--brand); stroke-dasharray: 106.8; stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
 #pcwin .pcupnext .pcring span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 700 15px var(--mono); }
 #pcwin .pcupnext .row { grid-column: 1 / -1; display: flex; gap: 8px; margin-top: 8px; }
-#pcwin .pcparts { position: absolute; top: 0; right: 0; bottom: 64px; border-bottom-left-radius: 14px; width: min(340px, 86%); display: flex; flex-direction: column; background: rgba(18,18,22,.94);
-                  box-shadow: -12px 0 30px rgba(0,0,0,.45); }
+/* 选集：小窗里在画面旁边（.pcmain 里，小窗变宽；放不下时在画面下面，.below），不盖画面和控制条；
+   放大、全屏时在画面里靠右，停在控制条上面（--pcctl-h 是控制条的高，console.js 量的）。 */
+#pcwin .pcparts { display: flex; flex-direction: column; min-height: 0; background: rgba(18,18,22,.97); }
+#pcwin .pcmain > .pcparts { flex: none; width: var(--pc-pw, 300px); height: var(--pc-vh, auto); box-shadow: inset 1px 0 0 rgba(255,255,255,.08); }
+#pcwin .pcmain.below > .pcparts { width: auto; contain: inline-size; height: var(--pc-ph, 240px); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+#pcwin .pcbox > .pcparts { position: absolute; z-index: 2; top: 0; right: 0; bottom: calc(var(--pcctl-h, 72px) + 4px); width: min(340px, 86%);
+                           border-bottom-left-radius: 14px; box-shadow: -12px 0 30px rgba(0,0,0,.45); }
 #pcwin .pcphead { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 14px; border-bottom: 1px solid rgba(255,255,255,.1); }
 #pcwin .pcphead > div { flex: 1; min-width: 0; }
 #pcwin .pcphead b { display: block; font: 600 14px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -795,6 +830,13 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcpart.cur .n { color: var(--brand); }
 #pcwin.compact .pcrow #pcVol, #pcwin.compact .pcrow #pcBack, #pcwin.compact .pcrow #pcFwd,
 #pcwin.compact .pcrow #pcQuality { display: none; }
+/* 窄的小窗（竖着的视频、拖小了）：按钮紧一点，再收起倍速、画中画、下一集；标题栏收起副标题和上一台 / 下一台 */
+#pcwin.compact .pcctl { padding: 22px 6px 4px; }
+#pcwin.compact .pcb { width: 32px; height: 32px; }
+#pcwin.compact .pctxt { height: 28px; padding: 0 8px; font-size: 12px; }
+#pcwin.compact .pctime { margin: 0 4px; font-size: 12px; }
+#pcwin.tiny .pcrow #pcRate, #pcwin.tiny .pcrow #pcPip, #pcwin.tiny .pcrow #pcNext,
+#pcwin.tiny .pchead #watchPrevCh, #pcwin.tiny .pchead #watchNextCh, #pcwin.tiny .pchead span { display: none; }
 #pcwin #pcRate { min-width: 46px; padding: 0 8px; font-family: var(--mono); background: transparent; }
 #pcwin #pcQuality { padding: 0 8px; background: transparent; }
 #pcwin #pcRate:hover, #pcwin #pcQuality:hover { background: rgba(255,255,255,.16); }
@@ -904,6 +946,7 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m.onremote #mini { display: none; }
 .m .rpad button { height: 60px; }
 .m #pcwin { left: 8px; right: 8px; width: auto; bottom: calc(var(--sab) + 134px); }
+.m #pcwin .pcbox { max-height: 56vh; }
 .m #pcwin.big { left: 0; right: 0; top: var(--topH); bottom: calc(var(--sab) + 134px); border-radius: 0; }
 .m .petgrid { grid-template-columns: repeat(4, 1fr); }
 .m .wifiform { grid-template-columns: 1fr; }

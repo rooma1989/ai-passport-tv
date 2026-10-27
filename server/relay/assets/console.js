@@ -2252,7 +2252,51 @@ async function seekRestart(target) {
     : await startWatch(false, true, Math.round(target * 10) / 10);
   if (!ok && watching) { watching.seeking = null; watchSay(""); renderPc(); }
 }
-function pcSkip(delta) { if (watching && watching.seekable) pcSeek(pcPos() + delta); }
+// 进度条上显示的位置：拖着、连按方向键时是要去的地方（watching.preview，还没真跳），否则是 pcPos。
+function pcShown() { return watching && watching.preview != null ? watching.preview : pcPos(); }
+// 快进快退（← →、按钮）：连按时只记目标、只动进度条和时间，每 SEEK_EVERY_MS 至多真跳一次（只跳最后那个目标）：
+// 点播每跳一次浏览器就掐掉在取的、另开一个 Range 请求，按住方向键一秒三十次会把中转和上游堵住。
+const SEEK_EVERY_MS = 250;
+let skipTimer = 0, skipAt = 0;
+function pcSkip(delta) {
+  if (!watching || !watching.seekable) return;
+  const dur = watching.duration;
+  let target = Math.max(0, pcShown() + delta);
+  if (dur) target = Math.min(target, Math.max(0, dur - 3));
+  watching.preview = target;
+  seekPreview(target, true);
+  clearTimeout(skipTimer);
+  skipTimer = setTimeout(pcSkipNow, Math.max(0, SEEK_EVERY_MS - (performance.now() - skipAt)));
+}
+function pcSkipNow() {
+  clearTimeout(skipTimer);
+  if (!watching || watching.preview == null) return;
+  const target = watching.preview;
+  watching.preview = null;
+  skipAt = performance.now();
+  pcSeek(target);
+}
+// 拖动、连按时只改进度条、时间和气泡（下一帧画一次），不走整个 renderPc。tip：气泡跟着滑块（键盘时）。
+let previewFrame = 0, tipTimer = 0;
+function seekPreview(pos, tip) {
+  if (previewFrame) return;
+  previewFrame = requestAnimationFrame(() => {
+    previewFrame = 0;
+    if (!watching) return;
+    const at = watching.preview != null ? watching.preview : pos, dur = watching.duration || 0;
+    const frac = dur ? Math.min(1, Math.max(0, at / dur)) : 0;
+    $("pcCur").style.width = (frac * 100).toFixed(2) + "%";
+    $("pcKnob").style.left = (frac * 100).toFixed(2) + "%";
+    $("pcTime").textContent = clock(at) + (dur ? " / " + clock(dur) : "");
+    if (!tip) return;
+    const bubble = $("pcTip"), bar = $("pcSeek");
+    bubble.hidden = false;
+    bubble.textContent = clock(at);
+    bubble.style.left = Math.min(bar.clientWidth - 24, Math.max(24, frac * bar.clientWidth)) + "px";
+    clearTimeout(tipTimer);
+    tipTimer = setTimeout(() => { if (!$("pcSeek").classList.contains("drag")) bubble.hidden = true; }, 900);
+  });
+}
 
 // ---- 进度（电脑上看的，和小电视的分开记） ----
 
@@ -2329,14 +2373,17 @@ function openParts() {
   }
   box.hidden = false;
   $("pcResume").hidden = true;
+  pcLayout();
   const cur = list.querySelector(".cur") || list.firstChild;
   if (cur) { cur.scrollIntoView({ block: "center" }); cur.focus({ preventScroll: true }); }
   pcActive();
 }
 function closeParts() {
   if ($("pcParts").hidden) return;
+  const had = $("pcParts").contains(document.activeElement);
   $("pcParts").hidden = true;
-  if ($("pcParts").contains(document.activeElement)) $("pcPartsBtn").focus({ preventScroll: true });
+  pcLayout();
+  if (had) $("pcPartsBtn").focus({ preventScroll: true });
 }
 
 // 放完以后的「下一集」：倒数 5 秒自动放，可以马上放或取消。
@@ -2387,7 +2434,7 @@ function watchEnded() {
 
 function renderPc() {
   if (!watching) return;
-  const v = $("watchVideo"), live = watching.kind === "live", dur = watching.duration || 0, pos = pcPos();
+  const v = $("watchVideo"), live = watching.kind === "live", dur = watching.duration || 0, pos = pcShown();
   const seekable = !!watching.seekable;
   $("pcLive").hidden = !live;
   $("pcTime").hidden = live;
@@ -2400,7 +2447,7 @@ function renderPc() {
   $("pcKnob").style.left = (frac * 100).toFixed(2) + "%";
   let buf = 0;
   const p = watching.player;
-  if (dur && p && p.vod && v.buffered.length && watching.seeking == null) {
+  if (dur && p && p.vod && v.buffered.length && watching.seeking == null && watching.preview == null) {
     // 点播：现在的位置所在的那一段缓冲（跳过以后前面的缓冲不算）。
     for (let i = 0; i < v.buffered.length; i++) {
       if (v.buffered.start(i) <= pos + 0.5 && v.buffered.end(i) >= pos) buf = Math.min(1, v.buffered.end(i) / dur);
@@ -2451,7 +2498,6 @@ function renderPc() {
     fb.setAttribute("aria-label", full ? "退出全屏" : "全屏");
     fb.title = (full ? "退出全屏" : "全屏") + "（F）";
   }
-  $("pcwin").classList.toggle("compact", $("pcwin").offsetWidth < 440 && !full);
 }
 function pcTogglePlay() {
   const v = $("watchVideo");
@@ -2627,7 +2673,8 @@ function pcActive() {
   }, 3000);
 }
 
-// 进度条：点、拖（停手 0.45 秒后才让中转重起）、键盘（← → 10 秒，Home / End）。
+// 进度条：点、拖、键盘（← → 10 秒，Home / End）。拖的时候只动滑块、时间和上面的时间气泡（seekPreview，一帧画一次），
+// 松手才真跳一次（点播是浏览器另开一个 Range 请求，HLS 是中转从那里重起一路，停手 0.45 秒后才发）。
 (function seekBar() {
   const bar = $("pcSeek"), tip = $("pcTip");
   let drag = false;
@@ -2643,31 +2690,35 @@ function pcActive() {
     tip.style.left = Math.min(r.width - 24, Math.max(24, event.clientX - r.left)) + "px";
   };
   bar.addEventListener("pointerdown", (event) => {
-    if (!watching || !watching.seekable || !watching.duration) return;
+    if (!watching || !watching.seekable || !watching.duration || event.button > 0) return;
     drag = true;
     bar.classList.add("drag");
     bar.setPointerCapture(event.pointerId);
-    watching.seeking = at(event);
-    clearTimeout(seekTimer);
-    renderPc(); showTip(event);
+    clearTimeout(skipTimer); clearTimeout(seekTimer);
+    watching.preview = at(event);
+    seekPreview(watching.preview); showTip(event);
   });
   bar.addEventListener("pointermove", (event) => {
     showTip(event);
     if (!drag || !watching) return;
-    watching.seeking = at(event);
-    renderPc();
+    watching.preview = at(event);
+    seekPreview(watching.preview);
   });
-  const end = (event) => {
+  const end = (event, cancel) => {
     if (!drag) return;
     drag = false;
     bar.classList.remove("drag");
+    tip.hidden = true;
     if (!watching) return;
-    const target = at(event);
-    watching.seeking = null;
+    const target = cancel ? null : at(event);
+    watching.preview = null;
+    if (target == null) { if (watching.seeking != null) seekRestart(watching.seeking); else renderPc(); return; }
+    skipAt = performance.now();
     pcSeek(target);
   };
-  bar.addEventListener("pointerup", end);
-  bar.addEventListener("pointercancel", end);
+  bar.addEventListener("pointerup", (event) => end(event, false));
+  bar.addEventListener("pointercancel", (event) => end(event, true));
+  bar.addEventListener("lostpointercapture", (event) => { if (drag) end(event, false); });
   bar.addEventListener("pointerleave", () => { if (!drag) tip.hidden = true; });
   bar.addEventListener("keydown", (event) => {
     if (!watching || !watching.seekable) return;
@@ -2675,6 +2726,13 @@ function pcActive() {
     else if (event.key === "End" && watching.duration) { event.preventDefault(); event.stopPropagation(); pcSeek(watching.duration - 3); }
   });
 })();
+// 画面多宽（拖动改大小、放大、竖着的视频）：窄了收起控制条上次要的按钮（.compact、.tiny），不在 renderPc 里每次量
+// （那会逼浏览器重排）。按画面量，不按小窗：选集开在旁边时小窗宽，控制条还是画面那么宽。
+new ResizeObserver(() => {
+  const w = $("pcwin"), width = $("pcBox").offsetWidth, full = document.fullscreenElement === $("pcBox");
+  w.classList.toggle("compact", !w.hidden && width > 0 && width < 560 && !full);
+  w.classList.toggle("tiny", !w.hidden && width > 0 && width < 340 && !full);
+}).observe($("pcBox"));
 
 $("pcPlay").onclick = pcTogglePlay;
 $("pcBack").onclick = () => pcSkip(-10);
@@ -2730,7 +2788,7 @@ addEventListener("keydown", (event) => {
   if (!watching || $("pcwin").hidden || $("app").hidden || anyOverlay() || event.altKey || event.metaKey || event.ctrlKey) return;
   const a = document.activeElement, tag = (event.target.tagName || "").toLowerCase();
   if (["input", "select", "textarea"].includes(tag) && event.target.type !== "range") return;
-  const box = $("pcBox"), inBox = box.contains(a), full = document.fullscreenElement === box;
+  const box = $("pcBox"), inBox = box.contains(a) || $("pcParts").contains(a), full = document.fullscreenElement === box;
   const big = $("pcwin").classList.contains("big") && !(a && a.closest && a.closest("#view, #top, #mini, #tabs"));
   if (!inBox && !full && !big) return;
   const key = event.key, inParts = $("pcParts").contains(a);
@@ -2872,6 +2930,7 @@ function stopWatch() {
     if (watching.mode === "direct" || watching.own) call("POST", "api/watch/stop", body).catch(() => {});
   }
   clearTimeout(seekTimer);
+  clearTimeout(skipTimer);
   clearTimeout(warmTimer);
   switched();
   hideUpNext();
@@ -2954,15 +3013,149 @@ $("watchNextCh").onclick = () => stepChannel(1);
 $("watchFollow").onchange = () => { if ($("watchFollow").checked && watching && watching.mode === "direct") startWatch(false); };
 // 电脑上看的小窗：宽屏（.pcdock，见 console.css）时页面右边让出小窗的位置，不挡内容；窄一点的窗口里小窗
 // 可以按住标题栏拖开（拖过就不再让位置，放大、关掉以后回到右下角）。
+// 小窗拖得太宽（超过页面的六成）时不再让位置（页面会挤得没法看），浮在上面。
 function pcDock() {
-  const w = $("pcwin");
-  $("app").classList.toggle("pcdock", !w.hidden && !w.classList.contains("big") && !w.dataset.moved);
+  const w = $("pcwin"), width = parseFloat($("app").style.getPropertyValue("--pcw")) || 520;
+  $("app").classList.toggle("pcdock", !w.hidden && !w.classList.contains("big") && !w.dataset.moved && width + 36 <= innerWidth * 0.62);
 }
 new MutationObserver(() => {
   const w = $("pcwin");
   if ((w.hidden || w.classList.contains("big")) && w.dataset.moved) { delete w.dataset.moved; w.style.left = w.style.top = w.style.right = w.style.bottom = ""; }
   pcDock();
+  pcLayoutSoon();
 }).observe($("pcwin"), { attributes: true, attributeFilter: ["hidden", "class"] });
+
+// ---- 小窗的大小：跟着视频的宽高比（竖着的视频是瘦高的窗口，横着的和以前一样），拖边、拖角改大小（画面的宽高比
+// 不变），横的、竖的各记各的宽（这个浏览器里）。选集开着时在画面旁边，小窗变宽；旁边放不下就放在画面下面。
+// 放大（.big）、全屏、手机上不管这些：CSS 照旧铺满。
+const PCW = { LAND: 520, PORT: 360, MIN: 240, PARTS: 300, PARTS_BELOW: 240, MARGIN: 18, BOTTOM: 104, STEP: 40 };
+let pcAr = 16 / 9;
+const pcWidths = {};
+function pcPortrait() { return pcAr < 0.9; }
+function pcSizeKey() { return pcPortrait() ? "portrait" : "landscape"; }
+function pcWantWidth() {
+  const key = pcSizeKey();
+  if (pcWidths[key] === undefined) { const n = Number(lsGet("rootv.pcw." + key, "")); pcWidths[key] = n >= PCW.MIN ? n : 0; }
+  return pcWidths[key] || (pcPortrait() ? PCW.PORT : PCW.LAND);
+}
+// 视频的宽高比知道了（换了视频、直播换了分辨率）：小窗跟着变。
+function pcAspect() {
+  const v = $("watchVideo");
+  if (!v.videoWidth || !v.videoHeight) return;
+  const ar = Math.min(3, Math.max(0.4, v.videoWidth / v.videoHeight));
+  if (Math.abs(ar - pcAr) < 0.01) return;
+  pcAr = ar;
+  $("pcwin").classList.toggle("portrait", pcPortrait());
+  pcLayout();
+}
+$("watchVideo").addEventListener("loadedmetadata", pcAspect);
+$("watchVideo").addEventListener("resize", pcAspect);
+// 选集放在哪：小窗里在画面旁边（手机上在下面，#pcMain），放大、全屏时在画面里（#pcBox，全屏时也看得见）。挪的时候焦点跟着。
+function placeParts() {
+  const parts = $("pcParts"), box = $("pcBox");
+  const inside = $("pcwin").classList.contains("big") || document.fullscreenElement === box;
+  const host = inside ? box : $("pcMain");
+  if (parts.parentNode === host) return;
+  const had = parts.contains(document.activeElement);
+  if (inside) box.insertBefore(parts, $("pcMenu")); else host.appendChild(parts);
+  if (had) (parts.querySelector(".cur") || parts.querySelector("button") || parts).focus({ preventScroll: true });
+}
+let pcLayoutFrame = 0;
+function pcLayoutSoon() { if (!pcLayoutFrame) pcLayoutFrame = requestAnimationFrame(() => { pcLayoutFrame = 0; pcLayout(); }); }
+// 算画面的宽高（--pc-vw、--pc-vh；小窗的宽由它和旁边的选集撑开），页面让出的宽（#app 的 --pcw）。拖开过的小窗不出屏幕。
+function pcLayout() {
+  const w = $("pcwin"), app = $("app"), main = $("pcMain");
+  w.style.setProperty("--pc-ar", String(pcAr));
+  placeParts();
+  if (w.hidden || isM() || w.classList.contains("big")) {
+    w.style.removeProperty("--pc-vw"); w.style.removeProperty("--pc-vh");
+    w.style.width = "";
+    main.classList.toggle("below", isM() && !w.classList.contains("big"));
+    app.style.removeProperty("--pcw");
+    return;
+  }
+  const area = w.offsetParent ? w.offsetParent.getBoundingClientRect() : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+  const top = ($("top") ? $("top").offsetHeight : 76) + 6;
+  const chrome = w.querySelector(".pchead").offsetHeight + w.querySelector(".pcfoot").offsetHeight;
+  const roomW = area.width - 2 * PCW.MARGIN, roomH = area.height - PCW.BOTTOM - top - chrome;
+  const open = !$("pcParts").hidden;
+  const below = open && roomW - PCW.PARTS < PCW.MIN;
+  const maxW = Math.max(160, Math.min(roomW - (open && !below ? PCW.PARTS : 0), (roomH - (below ? PCW.PARTS_BELOW : 0)) * pcAr));
+  const vw = Math.round(Math.min(maxW, Math.max(PCW.MIN, pcWantWidth())));
+  const vh = Math.round(vw / pcAr);
+  main.classList.toggle("below", below);
+  w.style.setProperty("--pc-vw", vw + "px");
+  w.style.setProperty("--pc-vh", vh + "px");
+  const total = vw + (open && !below ? PCW.PARTS : 0);
+  w.style.width = "auto";       // 由画面撑开：画面的宽有过渡，小窗跟着一起变
+  app.style.setProperty("--pcw", total + "px");
+  pcDock();
+  const grip = $("pcGrip");
+  grip.setAttribute("aria-valuenow", String(Math.round(100 * (vw - PCW.MIN) / Math.max(1, maxW - PCW.MIN))));
+  grip.setAttribute("aria-valuetext", "宽 " + vw + " 像素");
+  if (w.dataset.moved) {
+    const height = chrome + vh + (below ? PCW.PARTS_BELOW : 0);
+    const left = Math.max(0, Math.min(parseFloat(w.style.left) || 0, area.width - total - 4));
+    const y = Math.max(0, Math.min(parseFloat(w.style.top) || 0, area.height - height - 4));
+    Object.assign(w.style, { left: left + "px", top: y + "px" });
+  }
+  return { vw, maxW };
+}
+// 把画面的宽改成 width（按能放下的夹住）；save：记进这个浏览器（松手时）。
+function pcSetWidth(width, save) {
+  const key = pcSizeKey();
+  pcWidths[key] = Math.max(PCW.MIN, Math.round(width));
+  const done = pcLayout();
+  if (done) pcWidths[key] = done.vw;
+  if (save && done) lsSet("rootv.pcw." + key, String(done.vw));
+}
+addEventListener("resize", pcLayoutSoon);
+new ResizeObserver(pcLayoutSoon).observe(qs("#pcwin .pcfoot"));
+new ResizeObserver(() => $("pcwin").style.setProperty("--pcctl-h", $("pcCtl").offsetHeight + "px")).observe($("pcCtl"), { box: "border-box" });
+// 画面现在要的宽（有过渡时 offsetWidth 还是旧的）。
+function pcBoxWidth() { return parseFloat($("pcwin").style.getPropertyValue("--pc-vw")) || $("pcBox").offsetWidth; }
+document.addEventListener("fullscreenchange", pcLayoutSoon);
+// 拖把手改大小：拖开过的小窗对角不动；停在右边的小窗右下角不动（只有左边和左上角的把手，CSS 收起了别的）。
+// 角上的把手按横竖里拉得多的算。
+for (const g of qsa("#pcwin .pcgrip")) {
+  g.addEventListener("pointerdown", (event) => {
+    const w = $("pcwin");
+    if (event.button !== 0 || w.classList.contains("big") || isM()) return;
+    event.preventDefault(); event.stopPropagation();
+    const edge = g.dataset.edge, west = edge.includes("w"), north = edge.startsWith("n");
+    const r = w.getBoundingClientRect(), area = w.offsetParent.getBoundingClientRect();
+    const vw0 = pcBoxWidth(), x0 = event.clientX, y0 = event.clientY;
+    w.classList.add("sizing");
+    try { g.setPointerCapture(event.pointerId); } catch (error) { /* 没捕获也能拖 */ }
+    const move = (e) => {
+      const dx = (e.clientX - x0) * (west ? -1 : 1), dy = (e.clientY - y0) * (north ? -1 : 1);
+      pcSetWidth(vw0 + (edge.length === 2 ? Math.max(dx, dy * pcAr) : dx), false);
+      if (!w.dataset.moved) return;
+      const now = w.getBoundingClientRect();
+      if (west) w.style.left = Math.max(0, r.right - now.width - area.left) + "px";
+      if (north) w.style.top = Math.max(0, r.bottom - now.height - area.top) + "px";
+    };
+    const up = () => {
+      g.removeEventListener("pointermove", move);
+      g.removeEventListener("pointerup", up);
+      g.removeEventListener("pointercancel", up);
+      w.classList.remove("sizing");
+      pcSetWidth(pcBoxWidth(), true);
+    };
+    g.addEventListener("pointermove", move);
+    g.addEventListener("pointerup", up);
+    g.addEventListener("pointercancel", up);
+  });
+}
+// 键盘：左上角的把手上 → ↑ 调大，← ↓ 调小，Home 最小，End 最大。
+$("pcGrip").addEventListener("keydown", (event) => {
+  const k = event.key, cur = pcBoxWidth();
+  const to = k === "ArrowRight" || k === "ArrowUp" ? cur + PCW.STEP : k === "ArrowLeft" || k === "ArrowDown" ? cur - PCW.STEP
+    : k === "Home" ? PCW.MIN : k === "End" ? 99999 : null;
+  if (to === null) return;
+  event.preventDefault(); event.stopPropagation();
+  pcSetWidth(to, true);
+});
 qs("#pcwin .pchead").addEventListener("pointerdown", (event) => {
   const w = $("pcwin");
   if (event.button !== 0 || w.classList.contains("big") || isM() || event.target.closest("button, a, input")) return;
