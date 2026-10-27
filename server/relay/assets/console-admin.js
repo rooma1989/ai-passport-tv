@@ -1013,17 +1013,16 @@ function achRenderFit(fit) {
   const rows = (fit || []).map((f) => {
     const tr = el("tr");
     const state = admTd("");
-    state.appendChild(admTag(f.fits ? "放得下" : "放不下", f.fits ? "ok" : "bad"));
+    state.appendChild(admTag(f.fits ? "全部" : "前 " + (f.shown != null ? f.shown : d.limits.channels) + " 个", f.fits ? "ok" : ""));
     tr.append(admTd("", f.user || "（还没有绑定设备的用户）"), admTd("n", f.channels + " / " + d.limits.channels), admTd("n", f.bytes + " / " + d.limits.bytes), state);
     return tr;
   });
-  const box = admTable("每个用户的设备放不放得下", "投屏台 + 他的 UP 主和剧集 + 这张表", ["用户", "#台数", "#约多少字节", "放得下"], rows);
+  const box = admTable("每个用户的小电视收到几个台", "投屏台 + 他的 UP 主和剧集 + 这张表的前面部分；电脑上都能看", ["用户", "#台数", "#约多少字节", "小电视上"], rows);
   $("achFit").replaceChildren(...box.childNodes);
-  const worst = (fit || []).reduce((w, f) => ({ channels: Math.max(w.channels, f.channels), bytes: Math.max(w.bytes, f.bytes), fits: w.fits && f.fits }),
-                                   { channels: 0, bytes: 0, fits: true });
-  const line = $("achFitLine");
-  line.textContent = (fit || []).length ? "小电视的频道列表：" + worst.channels + " / " + d.limits.channels + " 个台" + (worst.fits ? "" : "，放不下了，删掉几个台") : "";
-  line.style.color = worst.fits ? "" : "var(--bad)";
+  // 最少的那台：小电视上显示前几个（服务端算的 shown；全部放得下时就是全部）。
+  const cut = (fit || []).filter((f) => !f.fits);
+  const shown = cut.length ? Math.min(...cut.map((f) => f.table_shown != null ? f.table_shown : f.shown != null ? f.shown : d.limits.channels)) : null;
+  $("achFitLine").textContent = shown != null ? "小电视上只显示前 " + shown + " 个台（常看的往前挪）；电脑上都能看" : "";
 }
 function achGroupSelect(r) {
   const select = el("select", "field");
@@ -1502,28 +1501,6 @@ function achRenderImport() {
   box.replaceChildren(...table.childNodes);
   achImpCount();
 }
-// 设备上的频道列表（CONFIG 包）大约多大：和 server/channel_groups.config_bytes 的算法一样（JSON 转义后每个汉字 6 字节）。
-function achCfgEntry(id, name) {
-  let n = 26 + id.length;     // {"id":"…","name":"…","g":0} 加一个逗号
-  for (const ch of name) {
-    const c = ch.codePointAt(0);
-    n += c > 0xffff ? 12 : c > 127 || c < 32 ? 6 : (ch === '"' || ch === "\\") ? 2 : 1;
-  }
-  return n;
-}
-function achListBytes(rows) { return rows.reduce((n, r) => n + achCfgEntry(r.id || "ch000", r.name), 0); }
-// 这张表（加上 extra）放进每个用户的设备后最挤的那份：{fits, bytes, count}。保存时服务端会再准确地查一遍。
-function achRoom(extra) {
-  const d = ach.data;
-  const saved = achListBytes(d.rows), table = achListBytes(ach.rows) + achListBytes(extra);
-  let worst = { fits: true, bytes: 0, count: 0 };
-  for (const f of d.fit || []) {
-    const bytes = f.bytes - saved + table, count = f.channels - d.rows.length + ach.rows.length + extra.length;
-    worst = { fits: worst.fits && bytes <= d.limits.bytes && count <= d.limits.channels,
-              bytes: Math.max(worst.bytes, bytes), count: Math.max(worst.count, count) };
-  }
-  return worst;
-}
 function achImpChosen() { return ach.imp.filter((r) => r.on && !r.done && r.state !== "放不了" && achImpUseful(r)); }
 function achImpCount() {
   if (!$("achImpCount")) return;
@@ -1592,9 +1569,12 @@ async function achImpAdd() {
   if (!chosen.length) { toast("先勾选要的台", true); return; }
   let added = 0, lines = 0, full = 0;
   const touched = new Set();
-  // 按列表的顺序一个个来：同一个台在列表里出现几次时，第一次加成新台，后面的并进它。
+  // 按列表的顺序一个个来：同一个台在列表里出现几次时，第一次加成新台，后面的并进它。表最多 limits.table 个台。
+  const tableMax = ach.data.limits.table || 1000;
+  let over = 0;
   for (const r of chosen) {
     const plan = achImpPlan(r);
+    if (plan.add && ach.rows.length >= tableMax) { over++; continue; }
     r.on = false;
     if (plan.add) {
       ach.rows.push({ name: r.name, url: r.url, agent: r.agent, group: "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
@@ -1617,7 +1597,7 @@ async function achImpAdd() {
   ach.filter = $("achFilter").value = "";
   achRender();
   achRenderImport();
-  if (!added && !lines) { toast("这些台的线路已经满了（每台最多 " + achRoutesMax() + " 条）", true); return; }
+  if (!added && !lines) { toast(over ? "表满了：最多 " + tableMax + " 个台" : "这些台的线路已经满了（每台最多 " + achRoutesMax() + " 条）", true); return; }
   await achSaveNow([added ? "加了 " + added + " 个台" : "", lines ? "给 " + touched.size + " 个台加了 " + lines + " 条备用线路" : ""]
-    .filter(Boolean).join("，") + (full ? "（有的台线路满了）" : ""));
+    .filter(Boolean).join("，") + (full ? "（有的台线路满了）" : "") + (over ? "（表最多 " + tableMax + " 个台，" + over + " 个没加）" : ""));
 }
