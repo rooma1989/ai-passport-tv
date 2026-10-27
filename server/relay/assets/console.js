@@ -2062,7 +2062,7 @@ function routeReopen(answer, text) {
 
 // ---- 预热：电脑上看直播时，让中转先把上一台、下一台（和鼠标停着的台）转起来，换过去马上有画面 ----
 // 中转没开预热（云端没有在电脑上看；自建看 config.toml 的 [pc] warm_channels 和内存）时 /api/state 没有 watch_warm。
-const WARM_AFTER_MS = 5000;     // 一个台放了几秒以后预热它的上一台、下一台
+const WARM_AFTER_MS = 2000;     // 一个台放了几秒以后预热它的上一台、下一台
 const WARM_AGAIN_MS = 20000;    // 同一个台多久内不再问（中转那边转 30 秒）
 let warmTimer = 0, warmOff = false;
 const warmedAt = {};
@@ -2098,6 +2098,25 @@ function warmOnHover(node, id) {
 }
 warmOnHover($("watchPrevCh"), () => neighbourIds().prev);
 warmOnHover($("watchNextCh"), () => neighbourIds().next);
+
+// ---- 预先解析：直播页上这一组台，让中转先把跳转和主列表走一遍（不起 ffmpeg，watch.WatchService.prepare），
+// 点下去起播少等几秒。只在这台电脑是播放的地方时问；同一个台 PREPARE_AGAIN_MS 内不再问（中转记的地址 10 分钟内有效）。
+const PREPARE_AGAIN_MS = 240000;
+const preparedAt = {};
+let prepareTimer = 0;
+function prepareGroupSoon() {
+  clearTimeout(prepareTimer);
+  prepareTimer = setTimeout(() => {
+    if (route !== "live" || document.hidden || !data || !data.watch || isGuest() || currentTarget() !== PC) return;
+    const g = data.groups.find((x) => x.name === group);
+    const now = Date.now();
+    const want = (g ? g.channels : []).map((c) => c.id)
+      .filter((id) => !isRelay(id) && id !== "cast" && !(now - (preparedAt[id] || 0) < PREPARE_AGAIN_MS)).slice(0, 40);
+    if (!want.length) return;
+    for (const id of want) preparedAt[id] = now;
+    call("POST", "api/watch/prepare", { channels: want }).catch(() => {});
+  }, 400);
+}
 
 // ---- 视频里的位置、跳转 ----
 
@@ -2923,6 +2942,7 @@ function relaySites() {
 let channelsSig = "";
 function renderChannels() {
   if (route !== "live" || liveView !== "grid" || !data) return;
+  prepareGroupSoon();
   const grid = $("channels");
   const current = data.groups.find((g) => g.name === group);
   const shown = current ? current.channels.map((c) => epgNow(c.id)) : [];

@@ -1647,6 +1647,28 @@ class Relay:
             done[cid] = source if isinstance(source, str) else self.watch.warm(caller.user, source)
         return {"ok": True, "warm": done}
 
+    def watch_prepare(self, caller: Caller, body: dict) -> dict:
+        """POST /api/watch/prepare {channels: [台 id, …]}：直播页上看得见的那一组台，先在后台把跳转和主列表走一遍
+        （watch.WatchService.prepare，不起 ffmpeg），点下去时起播少等几秒。只认全局频道表里的直播台，至多
+        watch.PREPARE_MAX 个。"""
+        if self.watch is None:
+            raise NotFound("watch")
+        if caller.guest or caller.user is None:
+            return {"ok": False, "error": "请求格式不对"}
+        channels = body.get("channels")
+        if not isinstance(channels, list) or len(channels) > watch_pc.PREPARE_MAX or \
+                not all(isinstance(c, str) and c for c in channels):
+            return {"ok": False, "error": "请求格式不对"}
+        table_ids = {c for c, _ in channel_groups.read_table(self.main_channels)} \
+            if self.main_channels is not None else set()
+        sources = []
+        for cid in dict.fromkeys(channels):
+            if cid in table_ids and not _relay_channel(cid) and cid != table.CAST_ID:
+                source = self._live_source(cid)
+                if not isinstance(source, str):
+                    sources.append(source)
+        return {"ok": True, **self.watch.prepare(sources)}
+
     def watch_direct(self, caller: Caller, device: str | None, body: dict) -> dict:
         """电脑版「在电脑上看」一个台，不经小电视（没有小电视、小电视没在线、或者只想在电脑上看）。
 
@@ -2982,6 +3004,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/watch/warm":
                 self._json(relay.watch_warm(caller, body))
+                return
+            if path == "/api/watch/prepare":
+                self._json(relay.watch_prepare(caller, body))
                 return
             if path == "/api/yt/prefetch":
                 self._json(relay.yt_prefetch(caller, body))

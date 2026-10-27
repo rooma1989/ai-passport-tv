@@ -51,6 +51,9 @@ import struct
 import subprocess
 import threading
 import time
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -98,6 +101,15 @@ MODE_CACHE_MAX = 256
 # 每一步约 1 秒；记住了下次直接从它起，出第一段从六七秒变成三四秒。地址里带会话参数，量过 9 分钟以后还能用；
 # 记的时间短一点，失效了（打不开、一段也没出）就忘掉、从频道表里的地址重来。只在内存里，从不写日志。
 RESOLVED_S = 600.0
+# 预先解析（WatchService.prepare）：直播页上看得见的台，先在后台把跳转和主列表走一遍（几个小请求，不起 ffmpeg），
+# 真正的列表地址记进 LiveMemory；点下去 ffmpeg 直接从它起。量过（咪咕的 CCTV：跳两次、主列表、子列表，每步约 1 秒）：
+# 出第一段从约 8 秒变成约 4.5 秒。同时至多 PREPARE_WORKERS 个，一次至多 PREPARE_MAX 个台；记住的地址还不到
+# PREPARE_FRESH_S 秒的不再走（地址带会话参数，RESOLVED_S 内有效）。
+PREPARE_WORKERS = 4
+PREPARE_MAX = 40
+PREPARE_FRESH_S = 300.0
+PREPARE_TIMEOUT_S = 8.0
+PREPARE_BYTES = 256 * 1024
 # 直播台有几条线路（server/routes.py）时：一条线路起来以后这么久还没出第一段就算它不行（源站超时），换下一条。
 FIRST_SEGMENT_S = 20.0
 # 有备用线路时等 ffmpeg 报出输入流编码最多这么久（只有一条线路时照旧 PROBE_WAIT_S）。
@@ -553,6 +565,15 @@ class LiveMemory:
         with self._lock:
             self._urls.pop(key, None)
 
+    def age(self, key: tuple) -> float | None:
+        """记住的列表地址记了多少秒；没有（或已过期）时 None。"""
+        with self._lock:
+            found = self._urls.get(key)
+        if found is None:
+            return None
+        age = self.clock() - found[1]
+        return age if age <= self.resolved_s else None
+
 
 class RouteMemory:
     """每个直播台上次放得起来的线路（先试它）和最近坏了的线路（BAD_ROUTE_S 秒内排在最后）。
@@ -607,6 +628,42 @@ def resolved_playlist(line: str, given: str) -> str | None:
     url = match.group(1)
     path = url.split("?", 1)[0].split("#", 1)[0]
     return url if path.endswith(".m3u8") and url != given else None
+
+
+def resolve_playlist(url: str, user_agent: str = "", timeout: float = PREPARE_TIMEOUT_S,
+                     urlopen=urllib.request.urlopen) -> str | None:
+    """像 ffmpeg 那样打开一个直播地址：跟着跳转，主列表里只有一路（没有单独的声音列表）时进到那一路。返回 ffmpeg
+    会记下的那个列表地址（和 resolved_playlist 一样：.m3u8 结尾、和给的不同）；多路清晰度、不是 HLS、打不开时 None。
+    地址里带会话参数：不写日志。"""
+    if not url.startswith(("http://", "https://")):
+        return None
+    # 频道表里偶尔有中文路径：ffmpeg 原样发，urllib 要先转义。
+    asked = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
+    # 没写 User-Agent 的台：和 ffmpeg 一样报 Lavf（ffmpeg_args 只在台写了时才加 -user_agent）。
+    request = urllib.request.Request(asked, headers={"User-Agent": user_agent or "Lavf/61"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            final = response.geturl()
+            text = response.read(PREPARE_BYTES).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 —— 解析不了就算了，点下去时 ffmpeg 照常从频道表里的地址起
+        return None
+    if "#EXTM3U" not in text:
+        return None
+    if "#EXT-X-STREAM-INF" in text:
+        if "#EXT-X-MEDIA:" in text and "URI=" in text:
+            return None        # 单独的声音（字幕）列表：ffmpeg 会打开几个列表，LiveMemory 也不记
+        lines = text.splitlines()
+        variants = [lines[i + 1].strip() for i, line in enumerate(lines[:-1])
+                    if line.startswith("#EXT-X-STREAM-INF") and lines[i + 1].strip() and not lines[i + 1].startswith("#")]
+        if len(variants) != 1:
+            return None
+        found = urllib.parse.urljoin(final, variants[0])
+    elif "#EXTINF" in text:
+        found = final
+    else:
+        return None
+    path = found.split("?", 1)[0].split("#", 1)[0]
+    return found if path.endswith(".m3u8") and found not in (url, asked) else None
 
 
 # ---------------------------------------------------------------- 一路
@@ -1100,6 +1157,10 @@ class WatchService:
         self._reaper: threading.Thread | None = None
         # 别处占着的名额：点播（vod.py 的 VodService.load）的 [(位置, 用户)]，和这里的一起数。
         self.also: Callable[[], list] = lambda: []
+        # 预先解析（prepare）：解析用的函数（测试换掉）、正在解析的键、线程池（第一次用时才建）。
+        self.resolver: Callable[[str, str], str | None] = resolve_playlist
+        self._preparing: set[tuple] = set()
+        self._prepare_pool: ThreadPoolExecutor | None = None
 
     def open(self, device: str, source: Source, user: int | None = None, restart: bool = False,
              keep_old: bool = False) -> WatchStream:
@@ -1151,6 +1212,46 @@ class WatchService:
         self.log(f"在电脑上看 {device}：开始 {source.label or source.key[1]}")
         stream.start()
         return stream
+
+    def prepare(self, sources: list[Source]) -> dict[str, int]:
+        """直播页上看得见的这些台：先把跳转和主列表走一遍，真正的列表地址记进 LiveMemory（resolve_playlist）。
+        有几条线路的只解析会先试的那条。返回各有几个：started 开始解析、fresh 记住的还新、busy 正在解析、skipped 不用。"""
+        counts = {"started": 0, "fresh": 0, "busy": 0, "skipped": 0}
+        jobs = []
+        for source in sources[:PREPARE_MAX]:
+            if not is_live(source) or source.opener is not None or not isinstance(source.url, str):
+                counts["skipped"] += 1
+                continue
+            order = self.routes.order(source.key[1], list(source.routes)) if len(source.routes) > 1 else None
+            leg = legs_of(source, order)[0][1]
+            age = self.memory.age(leg.key)
+            with self._lock:
+                if age is not None and age < PREPARE_FRESH_S:
+                    counts["fresh"] += 1
+                    continue
+                if leg.key in self._preparing:
+                    counts["busy"] += 1
+                    continue
+                self._preparing.add(leg.key)
+            counts["started"] += 1
+            jobs.append(leg)
+        for leg in jobs:
+            if self.background:
+                if self._prepare_pool is None:
+                    self._prepare_pool = ThreadPoolExecutor(PREPARE_WORKERS, thread_name_prefix="watch-prepare")
+                self._prepare_pool.submit(self._prepare_one, leg)
+            else:
+                self._prepare_one(leg)
+        return counts
+
+    def _prepare_one(self, leg: Source) -> None:
+        try:
+            found = self.resolver(leg.url, leg.user_agent)
+            if found is not None:
+                self.memory.remember_url(leg.key, found)
+        finally:
+            with self._lock:
+                self._preparing.discard(leg.key)
 
     def warm(self, user: int | None, source: Source) -> str:
         """先把这个直播台转起来（没人看），换过去时 open 接上。返回发生了什么（给页面和测试看）：
