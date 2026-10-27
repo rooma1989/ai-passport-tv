@@ -72,6 +72,22 @@ class MemberOnly(SourceError):
         super().__init__(message, permanent=True, reason="vip")
 
 
+# 番剧、影视剧放不了时说给人听的：要大会员（会员集、整季都要会员），或者 B 站按地区不给（code -10403）。
+MEMBER_HINT = "这部剧要大会员才能看：在「设置 → B 站账号」用大会员账号扫码登录后再试"
+EPISODE_MEMBER_HINT = "这一集要大会员才能看：在「设置 → B 站账号」用大会员账号扫码登录后再试"
+AREA_HINT = "B 站说你所在的地区看不了这部剧（版权限制）"
+
+
+def pgc_refusal(error) -> str:
+    """B 站拒绝放番剧、影视剧的原因 → 人话（MEMBER_HINT、AREA_HINT）；看不出是这两种时为空串。"""
+    text = str(error or "")
+    if "-10403" in text or "地区" in text:
+        return AREA_HINT
+    if "会员" in text or getattr(error, "reason", "") == "vip":
+        return MEMBER_HINT
+    return ""
+
+
 # 「账号未登录」：带的 cookies 被 B 站拒绝了（过期、在别处退出了）。
 CODE_NOT_LOGGED_IN = -101
 
@@ -271,8 +287,12 @@ def creator_hits(data: dict, limit: int = SEARCH_MAX) -> list[dict]:
 BROWSE_SIZE = 20
 BROWSE_TIMEOUT_S = 8.0
 BROWSE_PAGES = 20
-# 搜索的种类 → 接口的 search_type。
-BROWSE_KINDS = {"video": "video", "user": "bili_user", "bangumi": "media_bangumi"}
+# 搜索的种类 → 接口的 search_type。ft 是「影视」（电视剧、电影、纪录片，B 站叫 media_ft），bangumi 是番剧。
+BROWSE_KINDS = {"video": "video", "user": "bili_user", "bangumi": "media_bangumi", "ft": "media_ft"}
+# 「视频」第一页顺带搜的正版影视、番剧（PGC）：每种最多放几部、每次等多久（搜不到、出错都不影响视频结果）。
+PGC_KINDS = ("media_ft", "media_bangumi")
+PGC_TOP = 4
+PGC_TIMEOUT_S = 4.0
 DESC_MAX = 160
 # 封面和头像只认 B 站图床（*.hdslb.com）上 /bfs/ 下的图片；缩略图代理（bilisearch.py）用同一条规则。
 _IMAGE_HOST = re.compile(r"^[a-z0-9-]{1,20}\.hdslb\.com$")
@@ -374,9 +394,19 @@ def browse_users(data: dict) -> list[dict]:
     return items[:BROWSE_SIZE]
 
 
-def browse_bangumi(data: dict) -> list[dict]:
-    """番剧搜索的 data → [{"kind": "bangumi", "id": "ss<季 id>", "title", "desc", "cover", "eps", "styles",
-    "badge", "link"}]。"""
+def _year(at) -> int:
+    """上映时间（秒）→ 年份，按北京时间算（B 站给的是当地零点）；没有为 0。"""
+    if not isinstance(at, int) or isinstance(at, bool) or at <= 0:
+        return 0
+    return time.gmtime(at + 8 * 3600).tm_year
+
+
+def browse_pgc(data: dict) -> list[dict]:
+    """影视、番剧（PGC）搜索的 data → [{"kind": "pgc", "id": "ss<季 id>", "title", "org_title", "desc", "cover",
+    "eps", "show", "badge", "year", "areas", "styles", "score", "tags", "link"}]。
+
+    badge 是「电视剧」「番剧」「电影」这种；show 是「全10集」「更新至第3话」；tags 是角标（大会员、独家、限免）。
+    标题里的 <em> 高亮去掉。能不能看、要不要大会员到放的时候才知道（Bilibili.series）。"""
     items, seen = [], set()
     for item in (data or {}).get("result") or []:
         if not isinstance(item, dict):
@@ -388,15 +418,25 @@ def browse_bangumi(data: dict) -> list[dict]:
         if not title:
             continue
         seen.add(season)
-        items.append({"kind": "bangumi", "id": f"ss{season}", "title": title,
+        org = _text(item.get("org_title"), 80)
+        score = (item.get("media_score") or {}).get("score") if isinstance(item.get("media_score"), dict) else 0
+        tags = []
+        for badge in item.get("badges") or []:
+            text = _text(badge.get("text"), 6) if isinstance(badge, dict) else ""
+            if text and text not in tags:
+                tags.append(text)
+        items.append({"kind": "pgc", "id": f"ss{season}", "title": title, "org_title": "" if org == title else org,
                       "desc": _text(item.get("desc"), DESC_MAX), "cover": cover_url(item.get("cover")),
-                      "eps": _number(item.get("ep_size")), "styles": _text(item.get("styles"), 40),
-                      "badge": _text(item.get("season_type_name"), 10),
-                      "link": f"https://www.bilibili.com/bangumi/play/ss{season}"})
+                      "eps": _number(item.get("ep_size")), "show": _text(item.get("index_show"), 20),
+                      "badge": _text(item.get("season_type_name"), 10), "year": _year(item.get("pubtime")),
+                      "areas": _text(item.get("areas"), 20), "styles": _text(item.get("styles"), 40),
+                      "score": round(float(score), 1) if isinstance(score, (int, float)) and
+                      not isinstance(score, bool) and 0 < score <= 10 else 0,
+                      "tags": tags[:3], "link": f"https://www.bilibili.com/bangumi/play/ss{season}"})
     return items[:BROWSE_SIZE]
 
 
-_BROWSE_SHAPERS = {"video": browse_videos, "user": browse_users, "bangumi": browse_bangumi}
+_BROWSE_SHAPERS = {"video": browse_videos, "user": browse_users, "bangumi": browse_pgc, "ft": browse_pgc}
 
 
 def _resolve(url: str) -> str:
@@ -878,14 +918,37 @@ class Bilibili:
 
     def browse(self, query: str, kind: str = "video", page: int = 1,
                timeout: float = BROWSE_TIMEOUT_S) -> dict:
-        """电脑版的搜索：{"items": [...], "page", "pages", "total"}。kind 是 video、user 或 bangumi。"""
+        """电脑版的搜索：{"items": [...], "page", "pages", "total"}。kind 是 video、user、bangumi 或 ft（影视）。
+
+        只搜视频时 B 站只给 UP 主投的（剪辑、合集），正版的剧集、番剧搜不到：「视频」的第一页另给 "pgc"
+        （pgc_top，页面放在最前面）。综合搜索（wbi/search/all/v2）本来一次就有这些，可不登录时它常被风控
+        （code 0，只给一个 v_voucher），所以和视频一样用不带签名的分类搜索，多问两次。"""
         if kind not in BROWSE_KINDS:
             raise ValueError(kind)
         data = self._call("/x/web-interface/search/type", _timeout=timeout, search_type=BROWSE_KINDS[kind],
                           keyword=query, page=page)
         pages = min(_count(data, "numPages"), BROWSE_PAGES)
-        return {"items": _BROWSE_SHAPERS[kind](data), "page": page, "pages": pages,
-                "total": _count(data, "numResults")}
+        found = {"items": _BROWSE_SHAPERS[kind](data), "page": page, "pages": pages,
+                 "total": _count(data, "numResults")}
+        if kind == "video" and page == 1:
+            found["pgc"] = self.pgc_top(query)
+        return found
+
+    def pgc_top(self, query: str, timeout: float = PGC_TIMEOUT_S) -> list[dict]:
+        """正版影视、番剧里最像的几部（每种最多 PGC_TOP 部，影视在前）。哪一种出错、超时就当没有：
+        视频的结果照给。"""
+        found, seen = [], set()
+        for search_type in PGC_KINDS:
+            try:
+                data = self._call("/x/web-interface/search/type", _timeout=timeout, search_type=search_type,
+                                  keyword=query, page=1)
+            except BilibiliError:
+                continue
+            for item in browse_pgc(data)[:PGC_TOP]:
+                if item["id"] not in seen:
+                    seen.add(item["id"])
+                    found.append(item)
+        return found
 
     def video(self, bvid: str) -> Video:
         view = self._call("/x/web-interface/view", bvid=bvid)

@@ -30,8 +30,8 @@ from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
 from . import accountfeeds, bililogin, follows, ytsearch, ytsettings, ytvod
-from .bilibili import PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, UA as BILIBILI_UA, BilibiliError, \
-    MemberOnly, SourceError
+from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
+    UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
 
@@ -1753,6 +1753,9 @@ class Relay:
         found = self._pc_cast(account, text, video, caller.user)
         if isinstance(found, str):
             return found
+        if found.get("missing") and part is None:
+            return EPISODE_MEMBER_HINT if self._vip_login(caller.user) is None else \
+                "B 站上这一集现在放不了（可能下架了或要单独付费），可以在选集里挑别的集"
         item, parts = found["item"], found["parts"]
         key = f"v:{item.site}:{item.bvid}"
         saved = self._pc_saved(caller.user, key)
@@ -1856,7 +1859,9 @@ class Relay:
         except SourceError as error:
             self.log(f"投到电脑失败：{error}")
             if error.permanent:
-                return "这个视频放不了（可能已删除、私享或需要会员）"
+                # 番剧、影视剧的链接：要大会员、地区限制分开说（整季都要会员时 series() 说「都要会员」）。
+                pgc = site == "bilibili" and (parse_series_link(text) or "")[:2] in ("ss", "ep", "md")
+                return (pgc_refusal(error) if pgc else "") or "这个视频放不了（可能已删除、私享或需要会员）"
             return f"{_SITE_NAMES[site].strip()}连不上：检查路由器或代理" if site == "bilibili" \
                 else f"{_SITE_NAMES[site].strip()}暂时取不到，请稍后再试"
         item = found["item"]
@@ -1869,7 +1874,7 @@ class Relay:
     def _keep_item(self, found: dict) -> None:
         item = found["item"]
         self._pc_items.pop((item.site, item.bvid), None)
-        self._pc_items[(item.site, item.bvid)] = (self.monotonic(), dict(found, asked=None))
+        self._pc_items[(item.site, item.bvid)] = (self.monotonic(), dict(found, asked=None, missing=False))
         while len(self._pc_items) > PC_ITEMS_MAX:
             self._pc_items.pop(next(iter(self._pc_items)))
 
@@ -1888,6 +1893,9 @@ class Relay:
             if asked:
                 at = next((n for n, e in enumerate(episodes, 1) if e.bvid.startswith(f"ep{asked.group(1)}/")), None)
                 found["asked"] = at
+                # 点名的那一集不在列表里（会员集而这个人不是大会员，或者下架、付费）：别换成别的集
+                # （首页观看记录带着的进度是那一集的），_pc_cast_item 说清楚。
+                found["missing"] = at is None
             return found
         if not vid and site == "youtube" and playlist:
             name, videos = client.series(playlist)
@@ -2245,6 +2253,9 @@ class Relay:
             return {"ok": False, "error": self._youtube_off("YouTube 还没配置好，暂时只能投 B 站视频")}
         try:
             bvid = self.clients[site].video_id(text)
+            if bvid is None and site == "bilibili" and (parse_series_link(text) or "")[:2] in ("ss", "ep", "md"):
+                return {"ok": False, "error": "番剧、影视剧在小电视上要先「加为剧集」（搜索结果里有这个按钮），"
+                                             "或者在这台电脑上看"}
             if bvid is None:
                 return {"ok": False, "error": "看不懂这个链接。请粘贴视频链接（App 里“分享 → 复制链接”）"}
             video = self.clients[site].video(bvid)

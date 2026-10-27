@@ -417,6 +417,11 @@ a.li:focus-visible, button.li:focus-visible { outline: none; background: var(--f
 .hit .acts { display: flex; flex-direction: column; gap: 8px; min-width: 112px; }
 .hit .acts .done { opacity: .5; }
 .bsmore { margin-top: 14px; text-align: center; }
+/* 搜索「视频」第一页前面的正版影视、番剧（console.js pgcHit）：小标题一整行，角标（大会员、独家）是小胶囊 */
+.bshead { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 14px; margin: 6px 10px 0; font-size: 13px; color: var(--label-2); }
+.bshead b { font-weight: 600; color: var(--label); }
+.hit .m .tag { display: inline-block; padding: 0 5px; border-radius: 5px; background: var(--fill-2); font: 600 11px/16px var(--sans); color: var(--label-2); }
+.hit .m .tag.vip { background: var(--brand); color: #fff; }
 /* 搜索页的 YouTube：没开、要 cookies 时代替结果列表的说明（console.js renderYtGate） */
 #ytGate { max-width: 900px; margin: 0 0 18px; }
 #ytGate .empty { padding: 40px 24px; }
