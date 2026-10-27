@@ -2015,7 +2015,10 @@ function pcOpening(item, label, poster) {
   switching(name, live ? "" : yt || item.site === "youtube" ? "正在解析 YouTube…" : "正在打开…");
   $("pcSwitch").classList.remove("wrap");
   const img = poster || ytPoster(yt);
+  // 直播台：有后台自检取的真画面封面就先显示它（linecheck.py），出画面了照常收起。
+  const cover = live ? liveCover(item.channel) : "";
   if (img && !live) { $("pcFreeze").hidden = true; setPoster(img); }
+  else if (cover) { $("pcFreeze").hidden = true; setPoster(cover); }
   openingClock(n);
   return n;
 }
@@ -2996,6 +2999,12 @@ function channelById(id) {
   return null;
 }
 const logoImg = (id) => `<img src="api/art/logo/${encodeURIComponent(id)}" alt="" loading="lazy" decoding="async">`;
+// 直播台的真画面封面和「暂时打不开」（中转在后台自动检测线路时取、时测的，linecheck.py；/api/state 的 live_status）。
+function liveCover(id) {
+  const v = data && data.live_status && data.live_status.covers[id];
+  return v ? "api/art/live/" + encodeURIComponent(id) + "?v=" + v : "";
+}
+const liveDead = (id) => !!(data && data.live_status && data.live_status.dead.includes(id));
 // 没有节目单时（UP 主、剧集、投屏台）在节目表里写的一句话。
 function relayLine(c, sites) {
   if (c.id === "cast") return "投屏：手机或电脑投过来的视频";
@@ -3016,7 +3025,7 @@ function renderChannels() {
   const current = data.groups.find((g) => g.name === group);
   const shown = current ? current.channels.map((c) => epgNow(c.id)) : [];
   const sig = JSON.stringify([group, current, data.now.channel, data.now.online, pending, watching && watching.channel, adjusting,
-                              Math.floor(Date.now() / 60000), shown, deviceId()]);
+                              Math.floor(Date.now() / 60000), shown, deviceId(), data.live_status]);
   if (sig === channelsSig && grid.childElementCount) return;
   channelsSig = sig;
   const fk = focusKey();
@@ -3029,21 +3038,27 @@ function renderChannels() {
     const air = !pending && c.id === data.now.channel && data.now.online;
     const going = pending && pending.kind === "switch" && c.id === pending.channel;
     const pc = watching && watching.mode === "direct" && watching.channel === c.id;
-    const card = el("button", "card" + (air ? " air" : "") + (going ? " going" : "") + (pc ? " pcair" : ""));
+    const relay = isRelay(c.id);
+    // 全部线路都不通（后台自检的结果）：变暗、标「暂时打不开」，照样能点（点了会再试）。
+    const dead = !relay && !air && !pc && liveDead(c.id);
+    const card = el("button", "card" + (air ? " air" : "") + (going ? " going" : "") + (pc ? " pcair" : "") + (dead ? " dead" : ""));
     card.dataset.k = "ch-" + c.id;
     const e = shown[i];
-    const relay = isRelay(c.id);
-    const badge = air ? deviceName() + "在播" : pc ? "电脑上在放" : relay ? (c.id === "cast" ? "投屏" : sites[c.id] ? siteTag(sites[c.id]) : "") : "直播";
-    const logo = relay ? "" : `<span class="logo-big">${badgeSVG(c.name)}${logoImg(c.id)}</span>`;
+    const badge = air ? deviceName() + "在播" : pc ? "电脑上在放" : relay ? (c.id === "cast" ? "投屏" : sites[c.id] ? siteTag(sites[c.id]) : "") : dead ? "暂时打不开" : "直播";
+    // 有真画面封面时它铺满卡片，台标缩到左下角；没有时照旧是生成的图加居中的大台标。
+    const cover = relay ? "" : liveCover(c.id);
+    const logo = relay ? "" : cover
+      ? `<span class="logo-on">${badgeSVG(c.name)}${logoImg(c.id).replace("<img ", '<img style="position:absolute;inset:4px;margin:auto" ')}</span>`
+      : `<span class="logo-big">${badgeSVG(c.name)}${logoImg(c.id)}</span>`;
     const pct = progressOf(e.now, nowS);
     const line = going ? "切换中…" : e.now ? epgText(e.now, hm) : relay ? relayLine(c, sites) : "";
-    card.innerHTML = `<span class="art">${art(c.name, "w", { title: relay ? c.name : "" })}${logo}${badge ? `<span class="badge ${relay && !air && !pc ? "" : "live"}">${esc(badge)}</span>` : ""}`
+    card.innerHTML = `<span class="art">${art(c.name, "w", { title: relay ? c.name : "" })}${imgTag(cover)}${logo}${badge ? `<span class="badge ${(relay || dead) && !air && !pc ? "" : "live"}">${esc(badge)}</span>` : ""}`
       + `<span class="badge r">${pad(c.n)}</span>${e.now ? `<span class="pbar"><i style="width:${(pct * 100).toFixed(1)}%"></i></span>` : ""}</span>`
       + `<span class="t">${esc(c.name)}</span>`
       + (e.now && !going ? `<span class="s onair"><span class="et">正在播：${esc(e.now.title)}</span><span class="tm">&nbsp;· ${hm(e.now.start)}–${hm(e.now.end)}</span></span>`
         : `<span class="s">${esc(line) || "&nbsp;"}</span>`)
       + `<span class="s2">${e.next ? "接下来 " + hm(e.next.start) + " " + esc(e.next.title) : "&nbsp;"}</span>`;
-    card.setAttribute("aria-label", "播放 " + c.name + (e.now ? "，正在播 " + e.now.title + "，" + hm(e.now.start) + " 到 " + hm(e.now.end) : ""));
+    card.setAttribute("aria-label", "播放 " + c.name + (dead ? "（暂时打不开）" : "") + (e.now ? "，正在播 " + e.now.title + "，" + hm(e.now.start) + " 到 " + hm(e.now.end) : ""));
     if (adjusting && movable) {
       const select = el("select", "field");
       select.style.marginTop = "8px";
@@ -5434,7 +5449,7 @@ function cardLive(x) {
   const now = Date.now() / 1000;
   const pct = l && l.start && l.end ? (now - l.start) / (l.end - l.start) : 0;
   const logo = `<span class="logo-on ${c.logo ? "img" : ""}">${badgeSVG(c.name || x.title)}${c.logo ? `<img src="${esc(c.logo)}" alt="" loading="lazy" style="position:absolute;inset:4px;margin:auto">` : ""}</span>`;
-  return `<button class="card" data-play="${esc(id)}" data-k="l-${esc(id)}" aria-label="播放 ${esc(c.name || x.title)}${l && l.title ? "，正在播 " + esc(l.title) : ""}"><span class="art">${art(x.title, "w", { motif: 2 })}<span class="badge live">直播</span>${x.on_tv ? `<span class="badge r">${esc(deviceName())}在播</span>` : ""}${logo}${pbar(pct)}</span>
+  return `<button class="card" data-play="${esc(id)}" data-k="l-${esc(id)}" aria-label="播放 ${esc(c.name || x.title)}${l && l.title ? "，正在播 " + esc(l.title) : ""}"><span class="art">${itemArt(x, "w", { motif: 2 })}<span class="badge live">直播</span>${x.on_tv ? `<span class="badge r">${esc(deviceName())}在播</span>` : ""}${logo}${pbar(pct)}</span>
     <span class="t">${esc(l && l.title ? l.title : c.name || x.title)}</span><span class="s">${esc(c.name || "")}${l && l.start ? " · " + hm(l.start) + "–" + hm(l.end) : ""}</span>${l && l.next_title ? `<span class="s2">接下来 ${hm(l.next_start)} ${esc(l.next_title)}</span>` : ""}</button>`;
 }
 function cardVideo(x) {

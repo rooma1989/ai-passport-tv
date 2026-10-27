@@ -257,19 +257,35 @@ def reload_channels_if_changed() -> bool:
     return True
 
 
-def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tuple[str, str]], str, dict]:
-    """([(地址, UA)], 上次好用的线路的指纹, {指纹: 用时毫秒})：频道表里的主线路（url、agent）在前，再是主表旁边
-    meta 里的备用线路（server/routes.py，总后台导入时存的）。用时是电视上真放起来的，没有时是检测线路的
-    （routes.speeds_of）。中转的台、内置台、没有 meta 的只有一条。"""
+def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tuple[str, str]], str, dict, set]:
+    """([(地址, UA)], 上次好用的线路的指纹, {指纹: 用时毫秒}, {上次检测连不上的指纹})：频道表里的主线路（url、agent）
+    在前，再是主表旁边 meta 里的备用线路（server/routes.py，总后台导入时存的）。用时是电视上真放起来的，没有时是
+    检测线路的（routes.speeds_of）；检测连不上的（总后台点的、中转的后台自检、电脑上放时明确坏了的）排最后。
+    中转的台、内置台、没有 meta 的只有一条。"""
     main = _LOADED.get("main")
     if main is None:
-        return [(url, agent)], "", {}
+        return [(url, agent)], "", {}, set()
     try:
         entry = routes.entry_of(main, channel_id)
         return (routes.table_routes(main, channel_id, url, agent, frames.DEFAULT_USER_AGENT if agent else ""),
-                routes.good_in(entry), routes.speeds_of(entry, "tv"))
+                routes.good_in(entry), routes.speeds_of(entry, "tv"), routes.bad_in(entry))
     except (OSError, ValueError):
-        return [(url, agent)], "", {}
+        return [(url, agent)], "", {}, set()
+
+
+def mark_route(channel_id: str, url: str, ok: bool, why: str = "") -> None:
+    """电视上放的结果记进 meta 的检测结果（routes.mark_ok / mark_failed）：放起来了、或者源站明说 403 / 404。
+    写不了不要紧。"""
+    main = _LOADED.get("main")
+    if main is None:
+        return
+    try:
+        if ok:
+            routes.mark_ok(main, channel_id, url, time.time())
+        else:
+            routes.mark_failed(main, channel_id, url, why, time.time())
+    except (OSError, ValueError):
+        pass
 
 
 def remember_good_route(channel_id: str, url: str) -> None:

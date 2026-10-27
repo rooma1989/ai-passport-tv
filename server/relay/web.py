@@ -62,6 +62,8 @@ _BIND_INFO_SHORT = re.compile(r"^/api/bind/([0-9]{6})$")
 _DEVICE_API = re.compile(r"^/api/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})(?:/(unbind|repair))?$")
 # 电脑版（媒体中心界面）的台标：只报台 id，地址只来自频道表的 meta（logos.py）。
 _LOGO = re.compile(r"^/api/art/logo/([A-Za-z0-9_-]{1,15})$")
+# 直播台的真画面封面（linecheck.py 在后台检测线路时取的一帧）：只报台 id，只读数据目录的 covers/live/。
+_LIVE_COVER = re.compile(r"^/api/art/live/([A-Za-z0-9_-]{1,15})$")
 # 只作用在一台设备上的遥控接口。多用户时，带密钥（X-Key）并点名设备的这些请求——电视服务替
 # 说话的那台设备发的语音命令——按那台设备的访客处理：只能动那一台，按设备主人的剧和进度来，
 # 碰不到账号数据（例外：语音搜到的、或正在投屏的 UP 主可以订阅到主人名下，用户决定的；设备上确认过的
@@ -236,6 +238,8 @@ class Relay:
         self._home_lock = threading.Lock()
         # 直播台的台标缓存（logos.py）：__main__ 建，存在数据目录的 logos/；没建时台标接口一律 404。
         self.logos = None
+        # 直播台线路的后台自检和真画面封面（linecheck.py）：自建 / 电脑客户端由 __main__ 建，云端为 None。
+        self.linecheck = None
         self.starter = starter
         self.pumper = pumper
         self._quick_failures: dict[tuple, int] = {}
@@ -2182,6 +2186,13 @@ class Relay:
         if self.guide is not None and self.guide.enabled:
             # 节目单打开了：遥控页和电脑版据此去问 /api/epg，在台名下面写「正在播：…」。
             summary["epg"] = True
+        if self.linecheck is not None:
+            # 直播页：有真画面封面的台（台 id → 封面的时刻，页面拼 api/art/live/<id>?v=…）和全部线路都不通的台
+            # （卡片上标「暂时打不开」）。
+            status = self.linecheck.status()
+            covers = self.linecheck.covers
+            summary["live_status"] = {"covers": covers.stamps() if covers is not None else {},
+                                      "dead": status["dead"]}
         if dev["id"]:
             # 遥控面板的「定时关」（POST /api/sleep，和语音的定时是同一个）：还剩几秒，或「看完这集」。
             summary["sleep"] = voicecmds.timer_of(self, dev)
@@ -2842,6 +2853,15 @@ def _manage_handler(relay: Relay):
                     self._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "private, max-age=3600"})
                 else:
                     self._send(200, found[1], found[0], {"Cache-Control": "private, max-age=86400"})
+            elif _LIVE_COVER.match(path):
+                # 直播台的真画面封面（linecheck.py）：和台标一样，登录了的（访客也算）都能看；只在本机，不上传。
+                covers = relay.linecheck.covers if relay.linecheck is not None else None
+                found = covers.get(_LIVE_COVER.match(path).group(1)) if covers is not None else None
+                if found is None:
+                    self._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "private, max-age=300"})
+                else:
+                    # 页面的地址带 ?v=<封面的时刻>：换了封面地址就变，所以可以缓存久一点。
+                    self._send(200, found, "image/jpeg", {"Cache-Control": "private, max-age=86400"})
             elif relay.tenant and path == "/api/devices":
                 self._json({"ok": True, "devices": relay.my_devices(caller)})
             elif relay.tenant and path == "/api/wifi":

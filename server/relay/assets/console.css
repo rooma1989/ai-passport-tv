@@ -261,6 +261,9 @@ input[type=text]:focus, input[type=search]:focus, input[type=password]:focus, te
 .logo-on.img { background: rgba(255,255,255,.92); padding: 4px; }
 .logo-big { position: absolute; z-index: 1; left: 50%; top: 44%; transform: translate(-50%, -50%); width: 46%; height: 46%; display: grid; place-items: center; }
 .logo-big img { max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 4px 14px rgba(0,0,0,.35)); }
+/* 全部线路都不通的直播台（后台自检，linecheck.py）：变暗，标「暂时打不开」。 */
+.card.dead .art > svg, .card.dead .art > img, .card.dead .logo-big, .card.dead .logo-on { opacity: .42; filter: grayscale(.7); }
+.card.dead .t { color: var(--label-2); }
 .pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 34px 24px; }
 .wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 30px 24px; }
 .pgrid .card, .wgrid .card { width: auto; }

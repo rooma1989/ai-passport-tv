@@ -978,6 +978,7 @@ function achShell() {
   $("achCheck").onclick = () => admBusy($("achCheck"), achCheck);
   $("achSave").onclick = () => admBusy($("achSave"), achSave);
   $("achCheckAll").onclick = achCheckAll;
+  achAutoLine();
   achWireImport();
   achWireEpg();
   achRenderFit(d.fit);
@@ -1238,6 +1239,17 @@ async function achCheckOne(r, quiet) {
     if (r.orig) { r.orig.checks = r.orig.checks || {}; r.orig.checks[x.url] = r.checks[x.url]; }
   }
   return answer;
+}
+// 后台在自动检测线路（中转的 linecheck.py，自建 / 电脑客户端）：不用点「检测全部线路」，结果已经在表里；
+// 这里一句话说上次什么时候测的、几个台全部线路不通（鼠标停上去看是哪几个）。
+function achAutoLine() {
+  const a = ach.data && ach.data.auto, box = $("achCheckState");
+  if (!a || !box || ach.checking) return;
+  const names = a.dead.map((id) => (ach.rows.find((r) => r.id === id) || {}).name).filter(Boolean);
+  box.textContent = "后台在自动检测：" + (a.last ? "上次 " + ago(a.last) : "马上开始")
+    + (a.paused ? " · 正在放的多，先停一下" : "")
+    + (names.length ? " · " + names.length + " 个台全部线路不通" : a.checked ? " · 没有打不开的台" : "");
+  box.title = names.length ? names.slice(0, 20).join("、") + (names.length > 20 ? "……" : "") : "";
 }
 // 检测全部线路：同时至多两个台（服务端也只让两个台同时测）；再点一下停。
 async function achCheckAll() {

@@ -184,6 +184,10 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 电脑版首页的台标（logos.py）：用到时取一次，存在数据库旁边的 logos/ 里。
     from .logos import LogoCache
     relay.logos = LogoCache(args.db.parent / "logos", relay.main_channels, log=lambda message: print(message, flush=True))
+    # 直播台线路的后台自检和真画面封面（linecheck.py）：只在自建 / 电脑客户端（有「在电脑上看」时）开，
+    # 封面存在数据库旁边的 covers/live/。
+    from . import linecheck
+    linecheck.attach(relay, args.db.parent / "covers" / "live")
     # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。
     from . import wifi as wifi_api
     wifi_api.setup_key(relay, args.wifi_key)

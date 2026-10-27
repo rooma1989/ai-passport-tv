@@ -363,6 +363,9 @@ def _live_rows(relay, caller: Caller, dev: dict, account) -> list[dict]:
     epg = guide.lookup([cid for cid, _ in live][:400], now) if guide is not None and guide.enabled else {}
     logos = getattr(relay, "logos", None)
     known = logos.known() if logos is not None else set()
+    # 真画面封面（linecheck.py 后台检测线路时取的）：有就用它当卡片的图，台标照旧叠在左下角。
+    checker = getattr(relay, "linecheck", None)
+    covers = checker.covers.stamps() if checker is not None and checker.covers is not None else {}
     playing = relay._playing(dev) if dev["id"] else {"online": False, "channel": ""}
     on_tv = playing["channel"] if playing["online"] else ""
     order = sorted(range(len(live)), key=lambda i: (live[i][0] != on_tv,
@@ -377,7 +380,8 @@ def _live_rows(relay, caller: Caller, dev: dict, account) -> list[dict]:
                 "subtitle": name, "source": "m3u", "play": {"kind": "live", "channel": cid},
                 "channel": {"id": cid, "name": name, "group": group, "n": n,
                             "logo": f"api/art/logo/{cid}" if cid in known else ""},
-                "art": {"url": "", "ratio": "wide"}, "on_tv": cid == on_tv}
+                "art": {"url": f"api/art/live/{cid}?v={covers[cid]}" if cid in covers else "", "ratio": "wide"},
+                "on_tv": cid == on_tv}
         if current or upcoming:
             item["live"] = {"title": current["title"] if current else "", "start": current["start"] if current else 0,
                             "end": current["end"] if current else 0,

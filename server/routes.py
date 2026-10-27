@@ -8,7 +8,7 @@
     "ch003": {"tvg_id": "CCTV2", "logo": "…",
               "routes": [{"url": "https://…", "ua": "…"}, …],     # 备用线路，不含主线路，至多 BACKUPS_MAX 条
               "good": "<指纹>",                                   # 上次放得起来的那条（电脑上看和电视服务都写）
-              "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000, "ms": 800}},  # 总后台「检测线路」的结果
+              "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000, "ms": 800}},  # 「检测线路」的结果（总后台点的、后台自检的、放的时候明确坏了的）
               "starts": {"pc": {"<指纹>": 4200}, "tv": {"<指纹>": 6100}}}  # 真放起来用了多久（毫秒，见 speeds_of）
 
 指纹是地址的 SHA-256 前 12 位：meta 里不重复存地址，地址里常有会话参数，也不进日志。这个文件坏了、没有
@@ -259,6 +259,87 @@ def remember_good(path, cid: str, url: str) -> bool:
     return update_meta(path, change)
 
 
+# ---------------------------------------------------------------- 检测结果（checks）
+
+# 一放就能认定线路坏了的原因（routes.classify 的分类）：源站明说拒绝、要登录、找不到。超时、中途断开这类
+# 可能是一时的网络问题，不算。
+DEFINITIVE = ("403", "401", "404")
+
+
+def definitive(text: str) -> bool:
+    """ffmpeg / HTTP 的原话说的是不是「这条线路坏了」（DEFINITIVE），而不是一时连不上。"""
+    return classify(text) in DEFINITIVE
+
+
+def bad_in(entry) -> set[str]:
+    """meta 里这个台上次检测连不上的线路（指纹）：排线路顺序时放最后（preferred 的 bad）。"""
+    checks = entry.get("checks") if isinstance(entry, dict) and isinstance(entry.get("checks"), dict) else {}
+    return {mark for mark, found in checks.items() if isinstance(found, dict) and found.get("ok") is False}
+
+
+def record_checks(path, cid: str, results, keep: set[str] | None = None) -> bool:
+    """把检测结果写进 meta 的 checks：results 是 [(指纹, ok, why, ms, at)]。keep 给了时只留这些线路的结果
+    （频道表里已经没有的线路的旧结果去掉）。连不上的线路：以前真放起来的用时不再算数（不然排序时它还显得快），
+    它是上次好的那条时也不再先试它。"""
+    return record_many(path, {cid: list(results)}, {cid: keep} if keep is not None else None)
+
+
+def record_many(path, found: dict, keep: dict | None = None) -> bool:
+    """几个台的检测结果一次写进 meta（{台 id: [(指纹, ok, why, ms, at)]}，后台自检攒一阵写一次，不必每测一条就
+    重写整个文件）。keep：{台 id: 只留哪些线路的结果}。"""
+    if path is None or not found:
+        return False
+
+    def change(data: dict) -> None:
+        for cid, results in found.items():
+            _apply_checks(data, cid, results, (keep or {}).get(cid))
+
+    return update_meta(path, change)
+
+
+def _apply_checks(data: dict, cid: str, results, keep: set[str] | None) -> None:
+    entry = data.setdefault(cid, {})
+    checks = entry.get("checks") if isinstance(entry.get("checks"), dict) else {}
+    checks = {k: v for k, v in checks.items() if keep is None or k in keep}
+    starts = entry.get("starts") if isinstance(entry.get("starts"), dict) else {}
+    for mark, ok, why, ms, at in results:
+        checks[mark] = {"ok": bool(ok), "why": str(why or "")[:WHY_MAX], "at": int(at)}
+        if ok and _ms(int(ms or 0)):
+            # 用时（毫秒）：从开始取列表到拿到片段的头几 KB，排线路顺序用（speeds_of）。
+            checks[mark]["ms"] = max(1, int(ms))
+        if not ok:
+            for played in starts.values():
+                if isinstance(played, dict):
+                    played.pop(mark, None)
+            if entry.get("good") == mark:
+                entry.pop("good", None)
+    entry["checks"] = checks
+    starts = {k: v for k, v in starts.items() if isinstance(v, dict) and v}
+    if starts:
+        entry["starts"] = starts
+    else:
+        entry.pop("starts", None)
+
+
+def mark_failed(path, cid: str, url: str, why: str, at: float) -> bool:
+    """放的时候这条线路明确坏了（403 / 404……，definitive）：马上记成检测连不上，下次起播排在最后，
+    后台的自检（server/relay/linecheck.py）半小时后再测它。"""
+    if path is None or not url:
+        return False
+    return record_checks(path, cid, [(fingerprint(url), False, why, 0, at)])
+
+
+def mark_ok(path, cid: str, url: str, at: float) -> bool:
+    """这条线路真放起来了：上次检测说它连不上的，改成能连上（不然这个台还显示「暂时打不开」）。
+    原来就不是「连不上」的不写文件。"""
+    if path is None or not url:
+        return False
+    mark = fingerprint(url)
+    if mark not in bad_in(entry_of(path, cid)):
+        return False
+    return record_checks(path, cid, [(mark, True, "", 0, at)])
+
+
 # ---------------------------------------------------------------- 按顺序换线路
 
 class RouteCycle:
@@ -271,9 +352,11 @@ class RouteCycle:
       由调用方的期限（reconnect.hold 的 deadline）收尾，不会无限地快速重试。"""
 
     def __init__(self, routes: list[tuple[str, str]], good: str = "", clock=time.monotonic,
-                 early_s: float = EARLY_S, speeds: dict[str, int] | None = None):
+                 early_s: float = EARLY_S, speeds: dict[str, int] | None = None,
+                 bad: set[str] | frozenset = frozenset()):
         self.routes = list(routes) or [("", "")]
-        self.order = preferred(self.routes, good, speeds=speeds)
+        # bad：上次检测连不上的线路（bad_in），排在最后。
+        self.order = preferred(self.routes, good, bad, speeds=speeds)
         self.clock = clock
         self.early_s = early_s
         self.pos = 0
@@ -379,14 +462,17 @@ def friendly(text: str) -> str:
     return REASONS[classify(text)]
 
 
-ALL_FAILED = "这个台的线路都打不开了：去「管理 → 频道表」检测线路或重新导入"
+ALL_FAILED = "这个台暂时打不开"
 
 
-def all_failed(last: str, count: int) -> str:
-    """所有线路都不行时说的话：几条线路时带上最后一条的原因。"""
+def all_failed(last: str, count: int, checking: bool = False) -> str:
+    """所有线路都不行时说的话，短：原因在日志里。checking：后台在自动检测线路（server/relay/linecheck.py），
+    不用让人去总后台点「检测」。"""
+    if checking:
+        return f"{ALL_FAILED}，已经在自动检测"
     if count <= 1:
-        return f"{friendly(last)}。去「管理 → 频道表」检测线路或重新导入"
-    return f"{ALL_FAILED}（{count} 条线路，最后一条：{friendly(last)}）"
+        return f"{ALL_FAILED}：{friendly(last)}"
+    return f"{ALL_FAILED}：{count} 条线路都不通"
 
 
 def switching(name: str, failed: int, reason: str, following: int) -> str:

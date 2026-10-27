@@ -348,6 +348,8 @@ def channels(relay) -> dict:
                                                                   "table": channel_groups.TABLE_MAX},
             "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:],
             "import": relay.selfhost is not None, "routes_max": routes.ROUTES_MAX,
+            # 后台在自动检测线路（linecheck.py，自建 / 电脑客户端）：上次测的时刻、全部线路不通的台。
+            "auto": relay.linecheck.status() if getattr(relay, "linecheck", None) is not None else None,
             # 网上公开的第三方播放列表（只有列表地址）：和导入一样只在自建 / 电脑客户端里有。
             "presets": presets.public() if relay.selfhost is not None else []}
 

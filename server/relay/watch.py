@@ -594,6 +594,9 @@ class RouteMemory:
         # 读过的 meta（文件的修改时间, 内容）：直播页一次预解析几十个台，不必每个台都重读、重解析一遍。
         self._meta: tuple[tuple, dict] | None = None
         self._lock = threading.Lock()
+        # 后台在自动检测线路（server/relay/linecheck.py 开着）：都打不开时只说「已经在自动检测」。
+        self.checking = False
+        self.wall = time.time
 
     def _entry(self, cid: str) -> dict:
         """meta 里这个台的那一项（没有频道表、没有 meta 时 {}）；文件没变就用读过的。"""
@@ -621,6 +624,8 @@ class RouteMemory:
         with self._lock:
             good = live_routes.good_in(entry) if path is not None else self._good.get(cid, "")
             bad = {mark for (c, mark), at in self._bad.items() if c == cid and now - at < self.bad_s}
+            # 上次检测（总后台点的、后台自检的）连不上的也排最后；刚在这里放起来的不算。
+            bad |= live_routes.bad_in(entry) - {self._good.get(cid, "")}
             speeds.update({mark: ms for (c, mark), ms in self._starts.items() if c == cid})
         return good, bad, speeds
 
@@ -666,13 +671,24 @@ class RouteMemory:
                 self._starts[(cid, mark)] = value
                 while len(self._starts) > MODE_CACHE_MAX:
                     self._starts.pop(next(iter(self._starts)))
-        if count > 1:
-            try:
+        try:
+            # 检测说它连不上、其实放起来了：改过来（不然直播页上这个台还标着「暂时打不开」）。
+            live_routes.mark_ok(self.path(), cid, url, self.wall())
+            if count > 1:
                 live_routes.remember_good(self.path(), cid, url)
                 if value is not None:
                     live_routes.remember_start(self.path(), cid, url, value, "pc")
-            except OSError as error:
-                self.log(f"在电脑上看：记不下好用的线路（{type(error).__name__}）")
+        except OSError as error:
+            self.log(f"在电脑上看：记不下好用的线路（{type(error).__name__}）")
+
+    def dead(self, cid: str, url: str, reason: str) -> None:
+        """这条线路明确坏了（403、404……，routes.definitive）：马上记进 meta 的检测结果，下次起播（电脑和电视）
+        排在最后，后台的自检过一阵再测它。"""
+        self.failed(cid, url)
+        try:
+            live_routes.mark_failed(self.path(), cid, url, live_routes.friendly(reason), self.wall())
+        except OSError as error:
+            self.log(f"在电脑上看：记不下坏了的线路（{type(error).__name__}）")
 
     def failed(self, cid: str, url: str) -> None:
         mark = live_routes.fingerprint(url)
@@ -870,6 +886,9 @@ class WatchStream:
                     early = self._leg_since is None or self.clock() - self._leg_since < live_routes.EARLY_S
                     if early and self.route_memory is not None:
                         self.route_memory.failed(source.key[1], leg.url)
+                if self.route_memory is not None and isinstance(leg.url, str) and live_routes.definitive(last):
+                    # 源站明说 403 / 404：一条线路的台也记下，直播页标「暂时打不开」，后台自检过一阵再测。
+                    self.route_memory.dead(source.key[1], leg.url, last)
                 if self._leg_segments:
                     # 放了一阵断了：这一路的段已经给了播放器（换线路得换初始化段），不在这一路里接着换；
                     # 还有别的线路时让播放器重开一次（RouteMemory 把这条排到了最后）。
@@ -886,7 +905,8 @@ class WatchStream:
                     self.error = (f"{live_routes.friendly(last)}，正在换线路…" if self.reopen
                                   else f"直播断了（{live_routes.friendly(last)}）")
                 else:
-                    self.error = live_routes.all_failed(last, len(legs))
+                    self.error = live_routes.all_failed(last, len(legs), self.route_memory is not None
+                                                        and self.route_memory.checking)
             else:
                 self.error = explain(source.site, last)
             # 已经有段的：列表收尾，播放器放完已有的就停。

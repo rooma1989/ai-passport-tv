@@ -902,8 +902,9 @@ class AVServer:
 
     def _start_routes(self, channel_id: str) -> tuple[str, str]:
         """会话开始：这个台的线路和顺序（上次好用的先试）；返回先用的（地址, UA）。"""
-        lines, good, speeds = live.channel_routes(channel_id, CHANNELS[channel_id], CHANNEL_AGENTS.get(channel_id, ""))
-        self.route_cycle = routes.RouteCycle(lines, good, speeds=speeds)
+        lines, good, speeds, bad = live.channel_routes(channel_id, CHANNELS[channel_id],
+                                                       CHANNEL_AGENTS.get(channel_id, ""))
+        self.route_cycle = routes.RouteCycle(lines, good, speeds=speeds, bad=bad)
         self._route_channel = channel_id
         # 第一条线路从这时开始试：缓冲够了（route_ok）时算起播用了多久。换过线路的不算（中间有重连的等待）。
         self._route_began = time.monotonic()
@@ -928,10 +929,24 @@ class AVServer:
             return
         cycle.started()
         began, self._route_began = getattr(self, "_route_began", None), None
+        # 检测说连不上、其实放起来了：改过来（电脑版的直播页据此不再标「暂时打不开」）。
+        live.mark_route(self._route_channel, cycle.current[0], True)
         if cycle.count > 1:
             live.remember_good_route(self._route_channel, cycle.current[0])
             if began is not None:
                 live.remember_route_start(self._route_channel, cycle.current[0], (time.monotonic() - began) * 1000)
+
+    def route_dead(self, channel) -> None:
+        """起不来的这条线路：ffmpeg 说的是 403 / 404（routes.definitive）就马上记进 meta 的检测结果，下次排最后，
+        中转的后台自检过一阵再测它。只看 ffmpeg 最后几行日志里能认出的原因；地址不进日志。"""
+        cycle = getattr(self, "route_cycle", None)
+        tail = getattr(getattr(channel, "timestamps", None), "tail", None)
+        if cycle is None or not tail:
+            return
+        lines = [line.decode("utf-8", "replace") if isinstance(line, bytes) else str(line) for line in list(tail)]
+        reason = routes.telling(lines)
+        if reason and routes.definitive(reason):
+            live.mark_route(self._route_channel, cycle.current[0], False, routes.friendly(reason))
 
     def route_extra_s(self) -> float:
         cycle = getattr(self, "route_cycle", None)
@@ -1028,7 +1043,8 @@ class AVServer:
             if not failed:
                 self.route_ok()
             if failed:
-                # 这条线路起不来：有备用线路时下面的重连从下一条起。
+                # 这条线路起不来：源站明说 403 / 404 时记下（route_dead）；有备用线路时下面的重连从下一条起。
+                self.route_dead(channel)
                 self.route_failed(failed)
                 wire = reconnect.WireState(seq=2, audio_pts=0)
                 now = time.monotonic()
