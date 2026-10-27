@@ -249,7 +249,7 @@ addEventListener("beforeunload", (event) => { if (adm.on && adm.sec === "channel
 function admShell() {
   const nav = ADM_SECTIONS.map(([id, t, i]) => `<a href="#/admin/${id}" data-k="adm-${id}"${id === adm.sec ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}${id === "users" && adm.review ? `<em>${adm.review}</em>` : ""}</a>`).join("");
   const k = focusKey();      // 用键盘在分区标签上按回车：重画后焦点还在那个标签上
-  $("admBody").innerHTML = `<header class="ph"><h1 class="lt">管理</h1><p class="hint">只有管理员看得到这一页；每个改动都会记进「操作记录」。</p></header>
+  $("admBody").innerHTML = `<header class="ph"><h1 class="lt">管理</h1></header>
     <nav class="chips asub" aria-label="管理分区">${nav}</nav><div id="admSec"><p class="aload">正在读取…</p></div>`;
   restoreFocus(k);
 }
@@ -847,8 +847,8 @@ async function admSystem() {
 // 在页面里改一份副本，保存时整张发过去：没改的台只发 id，改了的发改了的字段，新台没有 id（admin.py 的 save_channels）。
 
 // ach.rows：{id?, name, url, agent, group, routes: [{url, ua?}]（备用线路）, checks: {地址: {ok, why, at}}, good, orig?}
-const ach = { data: null, rows: [], imp: [], impKind: "", epg: null, epgSources: [], filter: "", impFilter: "", problems: null, checking: false };
-const ACH_PROBE_MAX = 20;
+const ach = { data: null, rows: [], imp: [], impKind: "", impSource: "", epg: null, epgSources: [], filter: "", impFilter: "", problems: null,
+              checking: false, probing: false, tab: "list" };
 const ACH_DUP = { url: "已在表里", name: "表里有同名", list: "列表里重复" };
 function achRoutesKey(routes) { return JSON.stringify((routes || []).map((x) => [x.url, x.ua || ""])); }
 function achKey(r) { return [r.name, r.url, r.agent, r.group, achRoutesKey(r.routes)].join("\u0001"); }
@@ -877,29 +877,48 @@ async function achLoad(keepMessage) {
   if (ach.imp.length) { achImpMark(); achRenderImport(); }
   achLoadEpg();
 }
-// 频道表这一页的骨架：上面是提示，表，导入，加一个台，节目单，放不放得下，最下面浮着的保存条。
+// 频道表这一页：上面一条标签（频道 / 导入 / 节目单），一次只显示一个；最下面浮着的保存条只管「频道」里的手动修改，
+// 导入和「加一个台」点了就直接保存。长说明都收进「说明」里。
 function achShell() {
   const d = ach.data;
   const box = el("div");
   box.id = "achPage";
   box.innerHTML = `
     <div class="problems" id="achProblems" hidden></div>
-    <div class="h2" style="margin:0 0 12px"><h2>全局直播频道表</h2><small id="achCount"></small></div>
-    <div class="inline" style="margin:0 0 12px"><input type="search" id="achFilter" placeholder="找台：输入名字的一部分" style="max-width:320px;flex:0 1 320px" autocomplete="off">
-      <span class="hint" style="margin:0">改名、调分组直接在表里改；顺序就是设备上换台的顺序。</span></div>
-    <div class="inline" style="margin:0 0 12px"><button class="ghost" id="achCheckAll">检测全部线路</button>
-      <span class="hint" id="achCheckState" style="margin:0">一个台可以有几条线路（主线路 + 备用）：放不起来时自动换下一条。「检测」只连一下列表和一个片段，不解码，很轻；能连上不等于一定能放。</span></div>
-    <div class="tbl chedit" id="achTable"></div>
-    <div class="panel" id="achImport" hidden>
-      <h3>导入播放列表 <small>从网址导入、选 M3U 或 TXT 文件，或点一个公开列表；勾选要的台，加到表里，再点下面的「保存」</small></h3>
+    <nav class="chips achtabs" id="achTabs" aria-label="频道表分类">
+      <button data-tab="list">${ic("live", 16)}频道 <em id="achCount"></em></button>
+      <button data-tab="import" id="achTabImport">${ic("plus", 16)}导入</button>
+      <button data-tab="epg" id="achTabEpg" hidden>${ic("guide", 16)}节目单</button>
+    </nav>
+    <div class="achpane" data-pane="list">
+      <div class="inline achtools">
+        <input type="search" id="achFilter" placeholder="找台" autocomplete="off">
+        <button class="ghost" id="achAddToggle">${ic("plus", 16)}加一个台</button>
+        <button class="ghost" id="achCheckAll">检测全部线路</button>
+        <span class="hint" id="achCheckState"></span>
+      </div>
+      <div class="addrow" id="achAddRow" hidden>
+        <input type="text" id="achNewName" placeholder="名字，例如 CCTV13" maxlength="40" autocomplete="off">
+        <input type="text" id="achNewUrl" placeholder="地址 http(s)://…" autocomplete="off" spellcheck="false">
+        <input type="text" id="achNewUa" placeholder="User-Agent（可不填）" autocomplete="off" spellcheck="false">
+        <button class="go" id="achAdd">加入</button>
+      </div>
+      <div class="tbl chedit" id="achTable"></div>
+      <p class="hint" id="achFitLine"></p>
+      <details class="more-info">
+        <summary>说明</summary>
+        <p>名字、分组直接在表里改，改完点下面的「保存」；顺序就是设备上换台的顺序。一个台可以有几条线路（主线路 + 备用），放不起来时自动换下一条。「检测」只连一下，不解码，很轻；能连上不等于一定能放。</p>
+        <p id="achBackups"></p>
+        <div class="tbl" id="achFit"></div>
+      </details>
+    </div>
+    <div class="achpane" data-pane="import" id="achImport" hidden>
       <div id="achPresetBox" hidden>
-        <div class="implabel">一键导入：网上公开的播放列表（有央视、卫视）</div>
-        <p class="disclaimer">以下是网上公开的第三方播放列表，内容由其维护者负责，本项目不提供也不保证任何直播源；请只添加你有权观看的内容。</p>
+        <p class="disclaimer">下面是网上公开的第三方列表，内容由维护者负责，本项目不提供任何直播源；请只添加你有权观看的内容。</p>
         <div class="presets" id="achPresets"></div>
       </div>
-      <div class="implabel">从网址导入</div>
       <div class="improw">
-        <input type="text" id="achImpUrl" placeholder="播放列表地址 http(s)://…（.m3u 或 .txt）" autocomplete="off" spellcheck="false">
+        <input type="text" id="achImpUrl" placeholder="或者填播放列表地址（.m3u / .txt）" autocomplete="off" spellcheck="false">
         <button class="ghost" id="achImpFetch">读取</button>
         <label class="ghost" for="achImpFile" tabindex="0" id="achImpPick">选文件</label>
         <input type="file" id="achImpFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl" hidden>
@@ -908,47 +927,38 @@ function achShell() {
         <p class="hint" id="achImpSource"></p>
         <div class="inline">
           <span class="chips" id="achImpKinds" role="group" aria-label="快速筛选" style="margin:0"><button data-kind="" aria-pressed="true">全部</button><button data-kind="央视" aria-pressed="false">央视</button><button data-kind="卫视" aria-pressed="false">卫视</button></span>
-          <input type="search" id="achImpFilter" placeholder="找台：输入名字的一部分" style="max-width:240px;flex:0 1 240px" autocomplete="off">
+          <input type="search" id="achImpFilter" placeholder="找台" style="max-width:200px;flex:0 1 200px" autocomplete="off">
           <button class="ghost" id="achImpAll">全选</button>
           <button class="ghost" id="achImpNone">全不选</button>
-          <button class="ghost" id="achImpProbe">试一下选中的（最多 20 个）</button>
-          <button class="ghost" id="achImpMergeAll">重复的都合并为备用线路</button>
-          <span class="hint" id="achImpCount" style="margin:0"></span>
+          <button class="ghost" id="achImpProbe">试一下选中的</button>
+          <button class="ghost" id="achImpMergeAll">重复的并为备用线路</button>
         </div>
         <div class="tbl chedit implist" id="achImpTable" style="background:var(--fill)"></div>
-        <p class="hint" id="achImpRoom"></p>
-        <p><button class="go" id="achImpAdd">加入频道表</button></p>
+        <div class="inline imp-go"><button class="go" id="achImpAdd">加入</button><span class="hint" id="achImpCount"></span></div>
       </div>
-      <p class="hint">地址只在点「读取」时取一次，不会保存。请只添加你有权观看的来源。列表里同名（或同 tvg-id）的几行、TXT 列表一行里 # 隔开的几个地址，合成一个台的几条线路（每个台最多 ${d.routes_max || 5} 条）。地址或名字已经在表里的台标成「重复」，默认不勾、「全选」也不选：点「合并为备用线路」把它的地址加给表里那个台；确实要另加一个台的可以自己勾上（同一个地址的不会再加）。小电视最多收 ${d.limits.channels} 个台，挑常看的就好。「试一下」要一个一个开 ffmpeg，只在你点的时候试选中的，一次最多 ${ACH_PROBE_MAX} 个。</p>
+      <details class="more-info">
+        <summary>说明</summary>
+        <p>地址只在点「读取」时取一次，不会保存。同名（或同 tvg-id）的几行、TXT 里 # 隔开的几个地址合成一个台的几条线路（每台最多 ${d.routes_max || 5} 条）。表里已经有的台标成「重复」，「全选」不选它们，可以并为备用线路。小电视最多收 ${d.limits.channels} 个台。「试一下」一次开两个 ffmpeg，各取一帧，再点一下停。</p>
+      </details>
     </div>
-    <div class="panel">
-      <h3>加一个台 <small>加在最后，再用 ↑ 挪到想要的位置</small></h3>
-      <div class="addrow">
-        <input type="text" id="achNewName" placeholder="名字，例如 CCTV13" maxlength="40" autocomplete="off">
-        <input type="text" id="achNewUrl" placeholder="地址 http(s)://…（直播流 m3u8 等）" autocomplete="off" spellcheck="false">
-        <input type="text" id="achNewUa" placeholder="User-Agent（可不填）" autocomplete="off" spellcheck="false">
-        <button class="ghost" id="achAdd">加入</button>
-      </div>
-    </div>
-    <div class="panel" id="achEpg" hidden>
-      <h3>节目单 <small>台名下面显示「正在播：…」；默认关着，打开后每 <span id="achEpgHours">8</span> 小时更新一次</small></h3>
-      <p class="disclaimer">以下是网上公开的第三方节目单，内容由其维护者负责，本项目不提供也不保证任何节目信息；请只添加你有权使用的内容。</p>
+    <div class="achpane" data-pane="epg" id="achEpg" hidden>
+      <p class="disclaimer">下面是网上公开的第三方节目单，内容由维护者负责；请只添加你有权使用的内容。</p>
       <div class="presets" id="achEpgPresets"></div>
-      <div class="implabel">或者填节目单的地址（XMLTV，.xml 或 .xml.gz）</div>
       <div class="improw">
-        <input type="text" id="achEpgUrl" placeholder="https://…/e.xml" autocomplete="off" spellcheck="false">
+        <input type="text" id="achEpgUrl" placeholder="或者填节目单地址（XMLTV，.xml / .xml.gz）" autocomplete="off" spellcheck="false">
         <button class="ghost" id="achEpgAdd">加上</button><span></span>
       </div>
       <ul class="epgstat" id="achEpgStatus"></ul>
       <div class="inline">
-        <button class="go" id="achEpgSave">保存节目单设置</button>
+        <button class="go" id="achEpgSave">保存</button>
         <button class="ghost" id="achEpgRefresh">现在更新</button>
         <span class="hint" id="achEpgState" style="margin:0"></span>
       </div>
-      <p class="hint">节目单在服务器上取（下载的文件存在数据目录的 epg/ 里），只留频道表里有的台、前后一天的节目，按台名和播放列表里的 tvg-id 对台：CCTV-1、CCTV1综合、湖南卫视HD 这类写法都认。打开了也只是每天下载几次、读一遍约 1 秒；关掉就不再下载、不占内存。最多 <span id="achEpgMax">3</span> 个来源，排在前面的优先。</p>
+      <details class="more-info">
+        <summary>说明</summary>
+        <p>直播台名下面显示「正在播：…」。服务器每 <span id="achEpgHours">8</span> 小时下载一次（存在数据目录的 epg/ 里），只留表里有的台、前后一天的节目；按台名和 tvg-id 对台，CCTV-1、CCTV1综合、湖南卫视HD 这类写法都认。最多 <span id="achEpgMax">3</span> 个来源，排前面的优先；关掉就不再下载。</p>
+      </details>
     </div>
-    <div class="tbl" id="achFit"></div>
-    <p class="hint" id="achBackups" style="margin:-12px 0 22px"></p>
     <div class="savebar" role="region" aria-label="保存频道表">
       <span class="state" id="achState" role="status">没有改动</span>
       <button class="ghost" id="achReset">放弃修改</button>
@@ -956,12 +966,14 @@ function achShell() {
       <button class="go" id="achSave">保存</button>
     </div>`;
   admSec(box);
-  $("achImport").hidden = !d.import;
+  $("achTabImport").hidden = !d.import;
   if (d.import) achRenderPresets();
+  for (const b of $("achTabs").children) b.onclick = () => achTab(b.dataset.tab);
   $("achFilter").value = ach.filter;
   $("achFilter").oninput = () => { ach.filter = $("achFilter").value; achRender(); };
-  $("achAdd").onclick = achAddOne;
-  for (const id of ["achNewName", "achNewUrl", "achNewUa"]) $(id).onkeydown = (event) => { if (event.key === "Enter") achAddOne(); };
+  $("achAddToggle").onclick = () => { const row = $("achAddRow"); row.hidden = !row.hidden; if (!row.hidden) $("achNewName").focus(); };
+  $("achAdd").onclick = () => admBusy($("achAdd"), achAddOne);
+  for (const id of ["achNewName", "achNewUrl", "achNewUa"]) $(id).onkeydown = (event) => { if (event.key === "Enter") $("achAdd").click(); };
   $("achReset").onclick = () => { if (confirm("放弃所有没保存的修改？")) achLoad(); };
   $("achCheck").onclick = () => admBusy($("achCheck"), achCheck);
   $("achSave").onclick = () => admBusy($("achSave"), achSave);
@@ -970,8 +982,21 @@ function achShell() {
   achWireEpg();
   achRenderFit(d.fit);
   $("achBackups").textContent = d.backups.length ? "最近的备份（和频道表在同一个目录）：" + d.backups.slice().reverse().join("、") : "保存时会先把原文件复制一份备份。";
+  if (ach.imp.length) {        // 保存后重画：刚才读的列表还在
+    $("achImpList").hidden = false;
+    $("achImpSource").textContent = ach.impSource;
+  }
   achShowProblems();
   achRender();
+  achTab(ach.tab);
+}
+// 换标签：没有的标签（云端没有导入、没开节目单）退回「频道」。
+function achTab(tab) {
+  const btn = qs('#achTabs [data-tab="' + tab + '"]');
+  if (!btn || btn.hidden) tab = "list";
+  ach.tab = tab;
+  for (const b of $("achTabs").children) b.setAttribute("aria-pressed", String(b.dataset.tab === tab));
+  for (const pane of qsa("#achPage .achpane")) pane.hidden = pane.dataset.pane !== tab || (tab === "import" && !ach.data.import) || (tab === "epg" && !(ach.epg && ach.epg.available));
 }
 function achShowProblems() {
   const box = $("achProblems");
@@ -994,6 +1019,11 @@ function achRenderFit(fit) {
   });
   const box = admTable("每个用户的设备放不放得下", "投屏台 + 他的 UP 主和剧集 + 这张表", ["用户", "#台数", "#约多少字节", "放得下"], rows);
   $("achFit").replaceChildren(...box.childNodes);
+  const worst = (fit || []).reduce((w, f) => ({ channels: Math.max(w.channels, f.channels), bytes: Math.max(w.bytes, f.bytes), fits: w.fits && f.fits }),
+                                   { channels: 0, bytes: 0, fits: true });
+  const line = $("achFitLine");
+  line.textContent = (fit || []).length ? "小电视的频道列表：" + worst.channels + " / " + d.limits.channels + " 个台" + (worst.fits ? "" : "，放不下了，删掉几个台") : "";
+  line.style.color = worst.fits ? "" : "var(--bad)";
 }
 function achGroupSelect(r) {
   const select = el("select", "field");
@@ -1054,7 +1084,7 @@ function achMove(i, step) {
 function achState() {
   if (!ach.data || !$("achState")) return;
   const dirty = achDirty();
-  $("achCount").textContent = ach.rows.length + " 个台";
+  $("achCount").textContent = String(ach.rows.length);
   $("achState").textContent = dirty ? "有没保存的修改（" + ach.rows.length + " 个台）" : "没有改动";
   $("achState").className = "state" + (dirty ? " dirty" : "");
   $("achSave").disabled = $("achReset").disabled = !dirty;
@@ -1063,15 +1093,14 @@ function achState() {
   if (bar) bar.classList.toggle("clean", !dirty);
   if (ach.imp.length) achImpCount();
 }
-function achAddOne() {
+async function achAddOne() {
   const name = $("achNewName").value.trim(), url = $("achNewUrl").value.trim(), agent = $("achNewUa").value.trim();
   if (!name || !/^https?:\/\//.test(url)) { toast("要有名字，地址要以 http:// 或 https:// 开头", true); return; }
   ach.rows.push({ name, url, agent, group: "", routes: [], checks: {}, good: "" });
   $("achNewName").value = $("achNewUrl").value = $("achNewUa").value = "";
   ach.filter = $("achFilter").value = "";
   achRender();
-  if (ach.imp.length) { achImpMark(); achRenderImport(); }
-  toast("已加在最后，记得保存");
+  await achSaveNow("加了「" + name + "」");
 }
 function achPayload(dry) {
   const rows = ach.rows.map((r) => {
@@ -1132,6 +1161,17 @@ async function achSave() {
   achProblems(["已保存：" + achDescribe(answer.summary) + "。" + (answer.backup ? "原文件备份为 " + answer.backup + "。" : ""),
                "每台小电视下次换台或重新连接时拿到新的频道表。"].concat(answer.warnings || []), true);
   achLoad(true);
+}
+
+// 不问就保存（加台、导入、并为备用线路）：服务端照样先检查；没过就留着没保存的修改和问题提示。
+// 表里还有手动删掉的台时，走「保存」那条要确认的路。
+async function achSaveNow(what) {
+  if (ach.data.rows.some((r) => !ach.rows.some((x) => x.id === r.id))) { await achSave(); return; }
+  const answer = await achSubmit(false);
+  if (!answer) { toast(what + "，但没保存成：看上面的提示", true); return; }
+  toast(what + "，已保存");
+  ach.problems = null;
+  await achLoad(true);
 }
 
 // ---------- 线路（主线路 + 备用线路，server/routes.py） ----------
@@ -1210,7 +1250,7 @@ async function achCheckAll() {
   ach.checking = false;
   if ($("achCheckAll") === btn) btn.textContent = "检测全部线路";
   say((stopped ? "停了：" : "检测完了：") + done + " 个台" +
-      (bad ? "，" + bad + " 个台有线路不通（点「线路」一格看是哪条、为什么）" : "，线路都能连上"));
+      (bad ? "，" + bad + " 个台有线路不通（点「线路」看）" : "，都能连上"));
 }
 function achRouteEditor(r) {
   const lines = achLines(r);
@@ -1288,11 +1328,11 @@ function achImpMerge(items) {
   achRender();
   achRenderImport();
   if (!added) { toast(full ? "这些台的线路已经满了（每个台最多 " + achRoutesMax() + " 条）" : "没有新的线路可加：地址都已经在表里了", true); return; }
-  toast("给 " + touched.size + " 个台加了 " + added + " 条备用线路" + (full ? "（有的台满了，没加完）" : "") + "，记得点「保存」");
+  achSaveNow("给 " + touched.size + " 个台加了 " + added + " 条备用线路" + (full ? "（有的台满了，没加完）" : ""));
 }
 
 // ---------- 节目单（server/relay/epg.py） ----------
-// 来源是地址的列表（最多 max 个，排前面的优先）；预设只是一点就加上的地址。改了要点「保存节目单设置」。
+// 来源是地址的列表（最多 max 个，排前面的优先）；预设只是一点就加上的地址。改了要点「保存」。
 
 async function achLoadEpg() {
   const run = adm.run;
@@ -1300,7 +1340,8 @@ async function achLoadEpg() {
   try { data = await admCall("GET", "api/admin/epg"); } catch (error) { admFail(error); return; }
   if (!admStill(run, "channels") || !$("achEpg")) return;
   ach.epg = data;
-  $("achEpg").hidden = !data.available;
+  $("achTabEpg").hidden = !data.available;
+  achTab(ach.tab);
   if (!data.available) return;
   ach.epgSources = data.sources.slice();
   $("achEpgHours").textContent = data.refresh_hours;
@@ -1360,7 +1401,7 @@ function achRenderEpg() {
     list.appendChild(el("li", "", "频道表 " + c.total + " 个台里 " + c.matched + " 个有节目单" +
       (c.missing.length ? "；没对上的：" + c.missing.slice(0, 15).join("、") + (c.missing.length > 15 ? " 等" : "") : "") + "。"));
   }
-  if (!ach.epgSources.length) list.appendChild(el("li", "", "现在关着：勾选上面的节目单，或者填一个地址，再点「保存节目单设置」。"));
+  if (!ach.epgSources.length) list.appendChild(el("li", "", "现在关着：勾选一个节目单或填地址，再点「保存」。"));
   $("achEpgState").textContent = achEpgDirty() ? "有没保存的修改" : "";
   $("achEpgSave").disabled = !achEpgDirty();
   $("achEpgRefresh").hidden = !e.sources.length;
@@ -1431,13 +1472,13 @@ async function achImpRead(body, source) {
   achImpMark();
   ach.impKind = "";
   ach.impFilter = $("achImpFilter").value = "";
-  $("achImpSource").textContent = "来源：" + source + "。读到 " + answer.total + " 个台" +
-    (answer.merged ? "（同一个台的 " + answer.merged + " 行合成了备用线路）" : "") +
-    (answer.total > answer.entries.length ? "（只列出前 " + answer.entries.length + " 个）" : "") +
-    (answer.skipped ? "，另有 " + answer.skipped + " 个地址不合格没列出" : "") + "。";
+  ach.impSource = source + "：" + answer.total + " 个台" +
+    (answer.total > answer.entries.length ? "（列出前 " + answer.entries.length + " 个）" : "") +
+    (answer.skipped ? "，" + answer.skipped + " 个地址不合格" : "");
+  $("achImpSource").textContent = ach.impSource;
   $("achImpList").hidden = false;
   achRenderImport();
-  toast("读到 " + answer.total + " 个台");
+  $("achImpList").scrollIntoView({ block: "start", behavior: "smooth" });
 }
 function achImpVisible() {
   const filter = ach.impFilter.trim().toLowerCase();
@@ -1495,12 +1536,13 @@ function achImpChosen() { return ach.imp.filter((r) => r.on && r.dup !== "url" &
 function achImpCount() {
   if (!$("achImpCount")) return;
   const d = ach.data;
-  const chosen = ach.imp.filter((r) => r.on).length;
-  $("achImpCount").textContent = "共 " + ach.imp.length + " 个，选了 " + chosen + " 个" + (achImpVisible().length > 500 ? "（只显示前 500 个，用「找台」缩小）" : "");
-  const room = achRoom(achImpChosen());
-  $("achImpRoom").textContent = "加上选中的以后，小电视的频道列表约 " + room.count + " / " + d.limits.channels + " 个台、" +
-    room.bytes + " / " + d.limits.bytes + " 字节" + (room.fits ? "。" : "：放不下，加的时候只加放得下的前几个。");
-  $("achImpRoom").style.color = room.fits ? "" : "var(--bad)";
+  const chosen = achImpChosen();
+  const room = achRoom(chosen);
+  $("achImpAdd").textContent = chosen.length ? "加入 " + chosen.length + " 个台" : "加入";
+  $("achImpAdd").disabled = !chosen.length;
+  $("achImpCount").textContent = (chosen.length ? "加上后 " + room.count + " / " + d.limits.channels + " 个台" + (room.fits ? "" : "，放不下的不加") : "勾选要的台") +
+    (achImpVisible().length > 500 ? " · 只显示前 500 个，用「找台」缩小" : "");
+  $("achImpCount").style.color = room.fits ? "" : "var(--bad)";
 }
 function achWireImport() {
   if (!ach.data.import) return;
@@ -1523,8 +1565,8 @@ function achWireImport() {
   // 全选只选不重复的；重复的要自己一个个勾。
   $("achImpAll").onclick = () => { achImpVisible().forEach((r) => { r.on = !r.dup; }); achRenderImport(); };
   $("achImpNone").onclick = () => { achImpVisible().forEach((r) => { r.on = false; }); achRenderImport(); };
-  $("achImpProbe").onclick = () => admBusy($("achImpProbe"), achProbe);
-  $("achImpAdd").onclick = achImpAdd;
+  $("achImpProbe").onclick = achProbe;
+  $("achImpAdd").onclick = () => admBusy($("achImpAdd"), achImpAdd);
   $("achImpMergeAll").onclick = () => {
     const dups = achImpVisible().filter((r) => r.dup && !r.merged && achImpTarget(r));
     if (!dups.length) { toast("没有可以合并的重复台", true); return; }
@@ -1532,14 +1574,16 @@ function achWireImport() {
   };
 }
 async function achProbe() {
-  const selected = ach.imp.filter((r) => r.on);
-  if (!selected.length) { toast("先勾选要试的台", true); return; }
-  // 只试点的时候选中的，一次最多 ACH_PROBE_MAX 个；服务端同时最多开两个 ffmpeg，每个取一帧，慢的源要十几秒。
-  const chosen = selected.slice(0, ACH_PROBE_MAX);
-  if (selected.length > ACH_PROBE_MAX) toast("一次最多试 " + ACH_PROBE_MAX + " 个：先试前 " + ACH_PROBE_MAX + " 个");
+  const btn = $("achImpProbe");
+  if (ach.probing) { ach.probing = false; return; }
+  const chosen = ach.imp.filter((r) => r.on);
+  if (!chosen.length) { toast("先勾选要试的台", true); return; }
+  // 试点的时候选中的；服务端同时最多开两个 ffmpeg，每个取一帧，慢的源要十几秒。再点一下停。
+  ach.probing = true;
+  btn.textContent = "停止试";
   let next = 0;
   const worker = async () => {
-    while (next < chosen.length) {
+    while (ach.probing && next < chosen.length && adm.sec === "channels") {
       const r = chosen[next++];
       r.state = "正在试…"; achRenderImport();
       try {
@@ -1550,8 +1594,10 @@ async function achProbe() {
     }
   };
   await Promise.all([worker(), worker()]);
+  ach.probing = false;
+  if ($("achImpProbe") === btn) btn.textContent = "试一下选中的";
 }
-function achImpAdd() {
+async function achImpAdd() {
   achImpMark();
   const d = ach.data;
   const chosen = achImpChosen();
@@ -1572,6 +1618,6 @@ function achImpAdd() {
   achRender();
   achRenderImport();
   const rest = chosen.length - added.length;
-  toast("加了 " + added.length + " 个台" + (rest ? "，还有 " + rest + " 个放不下没加" : "") + "，记得点「保存」", rest > 0);
+  await achSaveNow("加了 " + added.length + " 个台" + (rest ? "（" + rest + " 个放不下没加）" : ""));
 }
 

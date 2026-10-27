@@ -148,7 +148,7 @@
         </div>
         <div id="ytGate" hidden></div>
         <p class="bsstate" id="bsState">输入关键词，停手一会儿就会搜；按回车马上搜。粘贴 B 站或 YouTube 视频链接可以直接播放。</p>
-        <p class="hint" id="castYt" hidden>YouTube 还没开启：去<a class="linkbtn" href="#/settings" id="castYtGo">「设置 → YouTube」</a>填代理即可</p>
+        <p class="hint" id="castYt" hidden>YouTube 还没开启：去<a class="linkbtn" href="#/settings/youtube" id="castYtGo">「设置 → YouTube」</a>填代理即可</p>
         <div class="hits" id="bsHits"></div>
         <div class="bsmore"><button class="ghost" id="bsMore" hidden>更多</button></div>
       </section>
@@ -160,80 +160,113 @@
         <div class="h2" style="margin-bottom:14px"><h2>手机遥控</h2></div>
         <div class="list noguest">
           <button class="li" id="phoneLink1"><span class="ico" data-ic="remote" data-ics="18"></span><span class="tx">让手机登录<small>手机扫码后就是遥控器，出门在外也能用</small></span><em>›</em></button>
-          <a class="li" href="#/settings"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">登录的地方和家人<small>手机、电脑和访客；管理员可以邀请家人</small></span><em>›</em></a>
+          <a class="li" href="#/settings/account"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">登录的地方和家人<small>手机、电脑和访客；管理员可以邀请家人</small></span><em>›</em></a>
         </div>
         <p class="hint">「访客码」给家里来的客人扫：只能遥控这一台，看不到你的订阅；「换码」后扫旧码进来的访客要重新扫。</p>
       </section>
 
-      <!-- 设置 -->
+      <!-- 设置：分成几个标签（#/settings/<标签>），一次只显示一个，标签条由 console.js 的 settingsNav 画 -->
       <section class="page" data-route="settings" aria-label="设置">
         <header class="ph"><h1 class="lt">设置</h1></header>
-        <div class="list">
-          <h3>播放</h3>
-          <div class="li"><span class="ico" data-ic="tv" data-ics="18"></span><span class="tx">「播放到」记住上次的选择<small>关掉以后，每次点播放都先问播到哪里</small></span><button class="sw" role="switch" aria-checked="true" id="rememberSw" aria-label="记住上次的选择"></button></div>
-          <div class="li"><span class="ico" data-ic="moon" data-ics="18"></span><span class="tx">外观<small>深色是默认；浅色还在打磨</small></span>
-            <span class="segc" role="group" aria-label="外观"><button data-theme-pick="dark" aria-pressed="true">深色</button><button data-theme-pick="light" aria-pressed="false">浅色</button></span></div>
+        <nav class="chips ssub" id="setNav" aria-label="设置分类"></nav>
+
+        <div class="spane" data-pane="general">
+          <div class="list">
+            <h3>播放</h3>
+            <div class="li"><span class="ico" data-ic="tv" data-ics="18"></span><span class="tx">记住「播放到」<small>关掉后每次播放先问播到哪</small></span><button class="sw" role="switch" aria-checked="true" id="rememberSw" aria-label="记住「播放到」"></button></div>
+            <div class="li"><span class="ico" data-ic="moon" data-ics="18"></span><span class="tx">外观</span>
+              <span class="segc" role="group" aria-label="外观"><button data-theme-pick="dark" aria-pressed="true">深色</button><button data-theme-pick="light" aria-pressed="false">浅色</button></span></div>
+          </div>
+          <!-- 家人和邀请（管理员）：在「管理 → 用户」里 -->
+          <div class="list" id="adminList" hidden>
+            <h3>家庭</h3>
+            <a class="li" href="#/admin/users"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">家人和邀请</span><em>›</em></a>
+            <a class="li" href="#/admin"><span class="ico" data-ic="shield" data-ics="18"></span><span class="tx">管理<small>用户、设备、频道表、节目单</small></span><em>›</em></a>
+          </div>
+          <div class="list">
+            <h3>关于</h3>
+            <div class="li"><span class="ico" id="aboutIcon" style="background:none"></span><span class="tx" id="aboutText">电脑版<small>这台电脑就是家里的电视服务器</small></span></div>
+            <a class="li" href="/TV/" target="_blank" rel="noreferrer"><span class="ico" data-ic="info" data-ics="18"></span><span class="tx">使用说明</span><em>›</em></a>
+          </div>
         </div>
-        <div class="list noguest" id="historyList"><h3>放过的 <small>最多 50 个，投屏和搜索点开的都在这里</small></h3><div class="rows" id="historyRows"></div></div>
-        <div class="list noguest" id="sessionsList"><h3>登录的地方 <small>手机、电脑，和你设备上的访客</small></h3><div class="rows" id="sessionRows"></div></div>
-        <div class="inline" style="margin-top:-8px;margin-bottom:22px">
-          <button class="ghost noguest" id="logoutOthers">退出其他所有登录</button>
-          <button class="ghost" id="logout2">退出这台电脑</button>
-          <button class="ghost noguest" id="phoneLink2">让手机登录</button>
+
+        <div class="spane" data-pane="account">
+          <div class="list noguest" id="sessionsList"><h3>登录的地方 <small>手机、电脑和访客</small></h3><div class="rows" id="sessionRows"></div></div>
+          <div class="inline">
+            <button class="ghost noguest" id="phoneLink2">让手机登录</button>
+            <button class="ghost noguest" id="logoutOthers">退出其他所有登录</button>
+            <button class="ghost" id="logout2">退出这台电脑</button>
+          </div>
+          <p class="hint noguest">退出其他登录后，别的手机和电脑要重新扫码；访客不受影响。</p>
         </div>
-        <p class="hint noguest" style="margin:-12px 0 22px">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机再扫一次邀请或小电视的码，或者在这里点「让手机登录」；电脑再扫码）；访客不受影响，可以单独退出。</p>
+
         <!-- B 站账号：家庭服务器和电脑客户端，每个人登录自己的（bililogin.py）；云端没有。 -->
-        <div class="panel" id="biliBlock" hidden>
-          <h3>B 站账号 <small id="biliSum"></small></h3>
-          <div id="biliBox"></div>
-          <!-- 回写（server/relay/accountfeeds.py）：默认关 -->
-          <div class="list fwset" id="writebackRow" hidden>
-            <div class="li"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">把在小鼠电视上看的同步到 B 站历史<small>小电视和这台电脑上看的 B 站视频，看到哪里会记进你的 B 站观看记录（番剧暂不支持）。YouTube 没有可靠的接口，不会同步回去。</small></span><button class="sw" role="switch" aria-checked="false" id="writebackSw" aria-label="把在小鼠电视上看的同步到 B 站历史"></button></div>
-          </div>
-          <p class="hint">登录信息只保存在这台电脑上；这类接口是 B 站网页版接口，正常使用没问题，介意风控可以用小号。</p>
-          <p class="hint">每个家人登录自己的账号，互相看不到、用不到。登录后：电脑上看最高 1080P（大会员 1080P+），小电视还是 720P（屏幕小，再高看不出来）；大会员能放会员剧集；首页多出「B 站推荐」「B 站观看记录」「关注的更新」，「UP 主 → 我的关注」自动列出你关注的 UP 主。</p>
-        </div>
-        <div class="panel" id="ytBlock" hidden><h3>YouTube 节点</h3><p id="ytState"></p></div>
-        <div class="panel" id="ytLocal" hidden>
-          <h3>YouTube <small id="ytRun"></small></h3>
-          <p class="hint" id="ytConfigError" hidden></p>
-          <div class="radios" id="ytModes">
-            <label><input type="radio" name="ytMode" value="off"> 关闭</label>
-            <label><input type="radio" name="ytMode" value="local"> 本机（这台电脑直接取 YouTube）</label>
-            <label><input type="radio" name="ytMode" value="node"> 自己的节点</label>
-          </div>
-          <div id="ytProxyBox">
-            <div class="inline">
-              <input type="text" id="ytProxy" placeholder="代理，例如 http://127.0.0.1:端口 或 socks5://127.0.0.1:端口；不填 = 直连" autocomplete="off" spellcheck="false">
-              <button class="ghost" id="ytDetect">自动检测</button>
+        <div class="spane" data-pane="bili">
+          <div class="panel" id="biliBlock" hidden>
+            <h3>B 站账号 <small id="biliSum"></small></h3>
+            <div id="biliBox"></div>
+            <!-- 回写（server/relay/accountfeeds.py）：默认关 -->
+            <div class="list fwset" id="writebackRow" hidden>
+              <div class="li"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">同步到 B 站观看记录<small>在小鼠电视上看到哪，B 站历史里就记到哪（番剧除外）</small></span><button class="sw" role="switch" aria-checked="false" id="writebackSw" aria-label="同步到 B 站观看记录"></button></div>
             </div>
-            <p class="hint" id="ytDetected"></p>
+            <details class="more-info">
+              <summary>说明</summary>
+              <p>登录后：首页多出「B 站推荐」「观看记录」「关注的更新」，「UP 主 → 我的关注」自动列出你关注的 UP 主；电脑上最高 1080P（大会员 1080P+），小电视 720P；大会员能放会员剧集。</p>
+              <p>每个家人登录自己的账号，互相看不到。登录信息只存在这台电脑上；用的是 B 站网页版接口，介意风控可以用小号。YouTube 不会同步回去。</p>
+            </details>
           </div>
-          <div class="inline"><button class="go" id="ytSave">保存</button><button class="ghost" id="ytTest">测试</button></div>
-          <p id="ytTestResult"></p>
-          <div id="ytParts">
-            <h3 style="margin-top:18px">YouTube 组件 <small>yt-dlp 和 deno，第一次用时下载（约 45 MB）</small></h3>
+        </div>
+
+        <div class="spane" data-pane="youtube">
+          <div class="panel" id="ytBlock" hidden><h3>YouTube 节点</h3><p id="ytState"></p></div>
+          <div class="panel" id="ytLocal" hidden>
+            <h3>YouTube <small id="ytRun"></small></h3>
+            <p class="hint" id="ytConfigError" hidden></p>
+            <div class="radios" id="ytModes">
+              <label><input type="radio" name="ytMode" value="off"> 关闭</label>
+              <label><input type="radio" name="ytMode" value="local"> 本机</label>
+              <label><input type="radio" name="ytMode" value="node"> 自己的节点</label>
+            </div>
+            <div id="ytProxyBox">
+              <div class="inline">
+                <input type="text" id="ytProxy" placeholder="代理，例如 http://127.0.0.1:端口；不填 = 直连" autocomplete="off" spellcheck="false">
+                <button class="ghost" id="ytDetect">自动检测</button>
+              </div>
+              <p class="hint" id="ytDetected"></p>
+            </div>
+            <div class="inline"><button class="go" id="ytSave">保存</button><button class="ghost" id="ytTest">测试</button></div>
+            <p id="ytTestResult"></p>
+            <p class="hint">本项目不提供代理。</p>
+          </div>
+          <div class="panel" id="ytParts" hidden>
+            <h3>组件 <small>yt-dlp 和 deno，约 45 MB</small></h3>
             <p id="ytPartsState"></p>
             <div class="inline">
               <button class="ghost" id="ytInstall">安装</button>
               <button class="ghost" id="ytCheck">检查更新</button>
               <button class="ghost" id="ytUpdate">更新 yt-dlp</button>
             </div>
-            <input type="text" id="ytMirror" placeholder="下载镜像（可不填）：GitHub 加速站的网址前缀，写法见使用说明" autocomplete="off" spellcheck="false">
-            <p class="hint">经上面填的代理下载；填了镜像就从镜像下载。文件的校验值写在程序里，下错了会被拒绝。YouTube 经常改版，放不出来时先点「检查更新」。</p>
+            <details class="more-info">
+              <summary>下载镜像</summary>
+              <input type="text" id="ytMirror" placeholder="GitHub 加速站的网址前缀（可不填）" autocomplete="off" spellcheck="false">
+              <p>经上面的代理下载，填了镜像就从镜像下载；文件有校验，下错会被拒绝。放不出来时先「检查更新」。</p>
+            </details>
           </div>
-          <div id="ytCookiesBox">
-            <h3 style="margin-top:18px">Cookies <small id="ytCookiesState"></small></h3>
+          <div class="panel" id="ytCookiesBox" hidden>
+            <h3>Cookies <small id="ytCookiesState"></small></h3>
             <div class="inline">
               <input type="file" id="ytCookiesFile" accept=".txt,text/plain" hidden>
               <button class="ghost" id="ytCookiesPick">导入 cookies.txt</button>
               <button class="ghost red" id="ytCookiesDelete">删除</button>
             </div>
-            <p class="hint">YouTube 经常要求代理、机房的地址「登录证明不是机器人」，这时要导入 cookies。请用一个<b>小号</b>：在浏览器的无痕（隐私）窗口里登录小号、打开 YouTube，用导出 cookies.txt 的扩展只导出 youtube.com，然后关掉无痕窗口（不要在这个窗口里退出登录，退出会让 cookies 作废）。cookies 等于小号的登录凭据：只存在这台电脑上，不要发给别人。</p>
+            <details class="more-info">
+              <summary>怎么导出（请用小号）</summary>
+              <p>YouTube 常要求代理地址「证明不是机器人」，这时要导入 cookies。在浏览器无痕窗口里登录<b>小号</b>、打开 YouTube，用导出 cookies.txt 的扩展只导出 youtube.com，然后直接关掉窗口（别点退出登录，会让 cookies 作废）。cookies 等于登录凭据，只存在这台电脑上，别发给别人。</p>
+            </details>
             <!-- 从这台电脑的浏览器读取（ytaccount.py）：只在这台电脑上打开电脑版时有，经隧道、局域网打开时服务器回答 404。 -->
             <div id="ytBrowserBox" hidden>
-              <h3 style="margin-top:14px">从浏览器读取 <small>不用装扩展：直接读这台电脑上浏览器里的 YouTube 登录</small></h3>
-              <p class="hint ytwarn"><b>会读取这个浏览器里当前登录的账号，通常是你的主账号。</b>建议专门建一个只登录小号的浏览器配置，再选它。</p>
+              <h3 style="margin-top:14px">从浏览器读取 <small>不用装扩展</small></h3>
+              <p class="hint ytwarn"><b>会读这个浏览器当前登录的账号，通常是主账号</b>，建议选只登录小号的浏览器配置。</p>
               <div class="inline ytbrowse">
                 <span class="segc" role="group" aria-label="从哪个浏览器读取" id="ytBrowsers"></span>
                 <select class="field" id="ytProfile" aria-label="浏览器配置" hidden></select>
@@ -243,18 +276,10 @@
               <p id="ytBrowserState" role="status"></p>
             </div>
           </div>
-          <p class="hint">「本机」：这台电脑经你填的代理访问 YouTube。本项目不提供代理，也不介绍怎么获得代理。</p>
         </div>
-        <!-- 家人和邀请（管理员）：在「管理 → 用户」里 -->
-        <div class="list" id="adminList" hidden>
-          <h3>家庭</h3>
-          <a class="li" href="#/admin/users"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">家人和邀请<small>邀请家人、给登录链接、改名、封禁</small></span><em>›</em></a>
-          <a class="li" href="#/admin"><span class="ico" data-ic="shield" data-ics="18"></span><span class="tx">管理<small>概览、所有用户和设备、频道表、节目单、操作记录、系统</small></span><em>›</em></a>
-        </div>
-        <div class="list">
-          <h3>关于</h3>
-          <div class="li"><span class="ico" id="aboutIcon" style="background:none"></span><span class="tx" id="aboutText">电脑版<small>这台电脑就是家里的电视服务器</small></span></div>
-          <a class="li" href="/TV/" target="_blank" rel="noreferrer"><span class="ico" data-ic="info" data-ics="18"></span><span class="tx">使用说明</span><em>›</em></a>
+
+        <div class="spane" data-pane="history">
+          <div class="list noguest" id="historyList"><h3>放过的 <small>最多 50 个</small></h3><div class="rows" id="historyRows"></div></div>
         </div>
       </section>
 

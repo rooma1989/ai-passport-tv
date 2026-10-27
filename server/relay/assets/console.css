@@ -196,6 +196,20 @@ input[type=text]:focus, input[type=search]:focus, input[type=password]:focus, te
 .panel h3 { margin: 0 0 6px; font: 700 17px var(--sans); display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .panel h3 small { font: 500 13px var(--sans); color: var(--label-3); }
 .panel p { margin: 6px 0; color: var(--label-2); font-size: 14px; }
+/* 设置的标签条和「说明」折叠（长说明默认收起） */
+.ssub { margin: 0 0 24px; }
+.ssub a[aria-current=page] { background: var(--label); color: var(--on-label); }
+.m .ssub { flex-wrap: nowrap; overflow-x: auto; margin: 0 -16px 20px; padding: 4px 16px 6px; scrollbar-width: none; }
+.m .ssub::-webkit-scrollbar { display: none; }
+.m .ssub a { flex: none; }
+.more-info { margin: 12px 0 0; max-width: 900px; }
+.more-info summary { cursor: pointer; color: var(--label-3); font-size: 13px; width: max-content; list-style: none; }
+.more-info summary::-webkit-details-marker { display: none; }
+.more-info summary::after { content: " ›"; display: inline-block; transition: transform .15s; }
+.more-info[open] summary::after { transform: rotate(90deg); }
+.more-info summary:hover, .more-info summary:focus-visible { color: var(--label); outline: none; }
+.more-info p { color: var(--label-3); font-size: 13px; margin: 8px 0 0; }
+.more-info input { width: 100%; margin-top: 8px; }
 .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 22px; align-items: start; }
 .cols .panel { max-width: none; }
 

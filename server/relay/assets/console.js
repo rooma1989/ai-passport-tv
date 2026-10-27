@@ -469,7 +469,7 @@ function showRoute() {
   if (name === "live" && was !== name) loadEpg();
   if (name === "devices") loadDevices();
   if (name === "settings") { if (!isGuest()) loadFeeds(true);
-    if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); }
+    if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); settingsNav(); }
   if (typeof adminRoute === "function") adminRoute(name === "admin" ? routeParts()[1] || "" : null);
   if (name !== "settings") biliCancel();
   if (name === "me") renderMe();
@@ -533,6 +533,36 @@ function renderMe() {
 function renderAbout() {
   $("aboutText").innerHTML = `${esc(BRAND_ZH)} 电脑版<small>${esc(BRAND)} · ${data && data.watch ? "这台电脑就是家里的电视服务器" : "在浏览器里管理和遥控你的小电视"}</small>`;
 }
+
+// 设置分成几个标签（#/settings/<标签>），一次只显示一个。B 站、YouTube 那两个标签跟着各自的块走：
+// biliBlock、ytBlock、ytLocal 的 hidden 由 loadBili、renderYouTube 等管，这里只看结果（下面的 MutationObserver）。
+// 地址里的标签还没出现（比如刚打开、B 站状态还没读到）时先显示「通用」，不改地址，读到了就换过去。
+const SET_TABS = [["general", "通用", "set"], ["account", "账号与登录", "up"], ["bili", "B 站", "tv"],
+                  ["youtube", "YouTube", "play"], ["history", "放过的", "hist"]];
+let setTab = "", setNavHTML = "";
+function setTabOn(id) {
+  if (id === "bili") return !$("biliBlock").hidden;
+  if (id === "youtube") return !$("ytBlock").hidden || !$("ytLocal").hidden;
+  if (id === "history") return !isGuest();
+  return true;
+}
+function settingsNav() {
+  if (!me) return;
+  const want = route === "settings" ? routeParts()[1] || "" : "";
+  const tabs = SET_TABS.filter(([id]) => setTabOn(id));
+  const cur = tabs.some(([id]) => id === want) ? want : "general";
+  const html = tabs.map(([id, t, i]) => `<a href="#/settings/${id}" data-k="set-${id}"${id === cur ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}</a>`).join("");
+  if (html !== setNavHTML) {
+    const k = focusKey();      // 用键盘在标签上按回车：重画后焦点还在那个标签上
+    $("setNav").innerHTML = setNavHTML = html;
+    restoreFocus(k);
+  }
+  for (const pane of qsa("#app .spane")) pane.hidden = pane.dataset.pane !== cur;
+  if (cur !== setTab && route === "settings") $("main").scrollTop = 0;
+  setTab = cur;
+}
+new MutationObserver(() => settingsNav()).observe($("biliBlock"), { attributes: true, attributeFilter: ["hidden"] });
+for (const id of ["ytBlock", "ytLocal"]) new MutationObserver(() => settingsNav()).observe($(id), { attributes: true, attributeFilter: ["hidden"] });
 
 // ======================================================================= 数据
 
@@ -3465,9 +3495,7 @@ function renderYtGate() {
   const [title, text, settings] = YT_GATES[why];
   const admin = me && me.role === "admin";
   box.innerHTML = `<div class="empty ytgate"><div class="eic">${ic("search", 40)}</div><b>${esc(title)}</b><p>${esc(text)}${settings && !admin ? "（这一页要管理员打开）" : ""}</p>`
-    + (settings && admin ? `<a class="btn pri sm" href="#/settings" id="ytGateGo">去「设置 → YouTube」</a>` : "") + `</div>`;
-  const go = $("ytGateGo");
-  if (go) go.onclick = () => { setTimeout(() => { const yt = $("ytLocal"); if (yt && !yt.hidden) yt.scrollIntoView(); }, 300); };
+    + (settings && admin ? `<a class="btn pri sm" href="#/settings/youtube">去「设置 → YouTube」</a>` : "") + `</div>`;
 }
 // 来源切换、种类按钮、输入框的提示跟着「在哪儿搜」走（render() 每次刷新都会调，不变就不动）。
 function renderSearchSource() {
@@ -4241,7 +4269,7 @@ async function openFollow() {
   const b = data && data.bili;
   if (!b || !b.login || b.invalid) {
     toast(b && b.invalid ? "B 站登录已失效：先在「设置 → B 站账号」重新扫码" : "先在「设置 → B 站账号」扫码登录 B 站", true);
-    location.hash = "#/settings";
+    location.hash = "#/settings/bili";
     return;
   }
   follow = { items: null, picked: new Set(), q: "", max: 12, count: 0, total: 0, note: "" };
@@ -4350,7 +4378,6 @@ async function followImport() {
 
 let yt = null, ytEdited = false, ytPoll = 0;
 const YT_MODES = { off: "关闭", local: "本机", node: "自己的节点" };
-$("castYtGo").onclick = () => { setTimeout(() => { const box = $("ytLocal"); if (!box.hidden) box.scrollIntoView(); }, 300); };
 
 async function loadYouTube() {
   if (!me || me.role !== "admin") return;
@@ -4871,8 +4898,8 @@ function feedShelves() {
     if (asked[need]) return "";
     asked[need] = true;
     return need === "bili"
-      ? shelf("你的 B 站", "", noteCard("up", "登录 B 站", message || "登录 B 站后，这里会显示你的推荐和观看记录", "#/settings"))
-      : shelf("你的 YouTube", "", noteCard("search", "导入 YouTube cookies", message || "导入 YouTube cookies 后，这里会显示你的推荐", "#/settings"));
+      ? shelf("你的 B 站", "", noteCard("up", "登录 B 站", message || "登录 B 站后，这里会显示你的推荐和观看记录", "#/settings/bili"))
+      : shelf("你的 YouTube", "", noteCard("search", "导入 YouTube cookies", message || "导入 YouTube cookies 后，这里会显示你的推荐", "#/settings/youtube"));
   };
   for (const r of feedsInfo.rows) {
     if (r.state === "hidden") continue;
@@ -4951,7 +4978,7 @@ function renderFollows() {
   const q = fwQuery.toLowerCase();
   const list = fwSorted().filter((f) => fwMatch(f, fwFilter) && (!q || f.name.toLowerCase().includes(q) || (f.sign || "").toLowerCase().includes(q)));
   if (!fw.items.length) {
-    $("fwList").innerHTML = `<div class="empty" style="grid-column:1/-1;padding:40px 24px"><div class="eic">${ic("up", 36)}</div><b>${fw.syncing ? "正在同步你关注的 UP 主…" : "还没有关注的 UP 主"}</b><p>${esc(fw.message || "在 B 站关注的 UP 主（和 YouTube 订阅的频道）会自动列在这里，不用一个个添加。")}</p>${fw.message ? '<a class="btn pri sm" href="#/settings">去登录</a>' : ""}</div>`;
+    $("fwList").innerHTML = `<div class="empty" style="grid-column:1/-1;padding:40px 24px"><div class="eic">${ic("up", 36)}</div><b>${fw.syncing ? "正在同步你关注的 UP 主…" : "还没有关注的 UP 主"}</b><p>${esc(fw.message || "在 B 站关注的 UP 主（和 YouTube 订阅的频道）会自动列在这里，不用一个个添加。")}</p>${fw.message ? '<a class="btn pri sm" href="#/settings/bili">去登录</a>' : ""}</div>`;
   } else if (!list.length) {
     $("fwList").innerHTML = '<p class="hint" style="grid-column:1/-1">没有找到</p>';
   } else {
