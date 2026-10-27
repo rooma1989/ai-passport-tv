@@ -474,6 +474,7 @@ function showRoute() {
   if (typeof adminRoute === "function") adminRoute(name === "admin" ? routeParts()[1] || "" : null);
   if (name !== "settings") biliCancel();
   if (name === "me") renderMe();
+  if (name === "lib") libNav();
   if (name === "up") { renderUpLatest(); renderFollows(); loadFollows(); }
   if (name === "home") loadFeeds();
   if (name === "up" || name === "series") loadHome();
@@ -757,6 +758,7 @@ function render() {
   renderSubs();
   renderHistory();
   if (route === "search") renderSearchSource();
+  if (route === "lib" && libTab === "history" && (!hist.state || (hist.state === "off" && feedsOn()))) loadHist(false, true);
   followEpisodes();
   renderBiliGate();
   if (route === "settings") renderAbout();
@@ -858,7 +860,7 @@ function pressed(node, promise) {
   if (!node || !promise || typeof promise.then !== "function" || node.classList.contains("opening")) return promise;
   node.classList.add("opening");
   node.setAttribute("aria-busy", "true");
-  const art = node.classList.contains("card") ? node.querySelector(".art") : null;
+  const art = node.classList.contains("card") || node.classList.contains("hrow") ? node.querySelector(".art") : null;
   const spin = art ? art.appendChild(el("span", "opspin")) : null;
   const done = () => { node.classList.remove("opening"); node.removeAttribute("aria-busy"); if (spin) spin.remove(); };
   promise.then(done, done);
@@ -2770,6 +2772,7 @@ function stopWatch() {
   if (document.fullscreenElement === $("pcBox")) document.exitFullscreen().catch(() => {});
   watching = null;
   miniWho = "tv";
+  histAfterPlay();
   watchSay("");
   $("pcResume").hidden = true;
   $("pcwin").hidden = true;
@@ -4937,6 +4940,7 @@ function scheduleFeeds() {
 function applyFeedSettings() {
   const s = (feedsInfo && feedsInfo.settings) || (fw && fw.settings) || {};
   $("writebackSw").setAttribute("aria-checked", String(!!s.writeback));
+  if (s.writeback != null && hist.writeback != null) { hist.writeback = !!s.writeback; $("histSync").setAttribute("aria-checked", String(hist.writeback)); }
   $("autoTvSw").setAttribute("aria-checked", String(!!s.autotv));
   $("writebackRow").hidden = !feedsOn() || !(data.bili && data.bili.login && !data.bili.invalid);
 }
@@ -4948,7 +4952,9 @@ async function setFeedSetting(key, sw) {
   if (!answer.ok) { toast(answer.error, true); return; }
   if (feedsInfo) feedsInfo.settings = answer.settings;
   if (fw) fw.settings = answer.settings;
+  if (hist.writeback != null) hist.writeback = !!answer.settings.writeback;
   applyFeedSettings();
+  $("histSync").setAttribute("aria-checked", String(!!answer.settings.writeback));
   toast(key === "writeback" ? (on ? "已打开：在这里看的 B 站视频会记进你的 B 站历史" : "已关掉同步到 B 站历史")
         : (on ? "已打开：以后同步到新关注，会自动放到小电视（放满为止）" : "已关掉自动放到小电视"));
 }
@@ -5160,6 +5166,144 @@ async function pollCreator(run, n) {
   if (answer.loading && n < 60) setTimeout(() => pollCreator(run, n + 1), 2000);
 }
 
+// ======================================================================= 片库：历史、本地片库
+// 「历史」是自己 B 站的观看记录（GET api/feeds/history，accountfeeds.py 的 history_page）：每次打开都要新的
+// （fresh=1；服务器至少隔 30 秒才真去问 B 站），「加载更多」按 B 站给的游标往下翻。每一行是首页那样的节目
+// （data-play），点了按「播放到」接着看：视频是那一 P，剧集、番剧是那一集，都从看到的地方起。
+const LIB_TABS = [["history", "历史", "hist"], ["local", "本地片库", "lib"]];
+const HIST_KINDS = [["all", "全部"], ["video", "视频"], ["pgc", "剧集·番剧"], ["yt", "YouTube"]];
+const hist = { items: [], more: null, state: "", message: "", busy: false, at: 0, writeback: null, kind: "all", ytAsked: false };
+let libTab = "", libNavHTML = "", histTimer = 0;
+function libNav() {
+  if (!me) return;
+  const want = route === "lib" ? routeParts()[1] || "" : "";
+  const cur = LIB_TABS.some(([id]) => id === want) ? want : "history";
+  const html = LIB_TABS.map(([id, t, i]) => `<a href="#/lib/${id}" data-k="lib-${id}"${id === cur ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}</a>`).join("");
+  if (html !== libNavHTML) {
+    const k = focusKey();
+    $("libNav").innerHTML = libNavHTML = html;
+    restoreFocus(k);
+  }
+  for (const pane of qsa("#app .lpane")) pane.hidden = pane.dataset.pane !== cur;
+  libTab = cur;
+  if (cur === "history") { renderHist(); loadHist(false); }
+}
+// YouTube 观看记录（管理员、YouTube 开着）：就是首页那一排（feedRows.yt_history），在这里多一个标签。
+const histYt = () => !!(feedsInfo && feedsInfo.rows.some((r) => r.id === "yt_history" && r.state !== "hidden"));
+async function loadHist(more, again) {
+  if (!data) return;               // /api/state 还没到：到了以后 render() 再叫
+  if (!feedsOn()) { hist.state = "off"; renderHist(); return; }
+  if (hist.busy || (!more && !again && Date.now() - hist.at < 5000)) return;
+  hist.busy = true;
+  renderHistMore();
+  const c = hist.more;
+  const q = more && c ? "?max=" + c.max + "&view_at=" + c.view_at + (c.business ? "&business=" + encodeURIComponent(c.business) : "") : "?fresh=1";
+  let answer;
+  try { answer = await call("GET", "api/feeds/history" + q); }
+  catch (error) {
+    hist.busy = false;
+    if (error instanceof SignedOut) signedOut(); else { toast("网络不通", true); renderHist(); }
+    return;
+  }
+  hist.busy = false;
+  if (!answer.ok) { toast(answer.error, true); renderHist(); return; }
+  if (!more) hist.at = Date.now();
+  hist.state = answer.state;
+  hist.message = answer.message || "";
+  hist.writeback = answer.writeback;
+  if (more) {
+    const have = new Set(hist.items.map((x) => x.id));
+    hist.items = hist.items.concat(answer.items.filter((x) => !have.has(x.id)));
+  } else if (answer.items.length || answer.state !== "loading") hist.items = answer.items;
+  hist.more = answer.more;
+  // 首页那一排正好在取（后台线程）：等一下再问。
+  clearTimeout(histTimer);
+  if (answer.state === "loading") histTimer = setTimeout(() => { if (route === "lib" && libTab === "history") loadHist(false, true); }, 1500);
+  renderHist();
+}
+// 在这台电脑上看完、关掉窗口以后：中转已经报给 B 站（开着同步时），过一会儿重新取一次。
+function histAfterPlay() {
+  if (route !== "lib" || libTab !== "history") return;
+  clearTimeout(histTimer);
+  histTimer = setTimeout(() => loadHist(false, true), 3000);
+}
+function histGroup(at) {
+  const t = new Date(), start = new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime() / 1000;
+  return at >= start ? "今天" : at >= start - 86400 ? "昨天" : "更早";
+}
+function histRow(x, group) {
+  const id = reg(x);
+  const h = x.hist || { head: x.title, ep: x.subtitle || "" };
+  const p = x.progress || {};
+  const pct = p.duration ? (p.done ? 1 : p.position / p.duration) : 0;
+  const at = x.watched_at || 0, d = new Date(at * 1000);
+  const time = !at ? "" : group !== "更早" ? hm(at)
+    : (d.getFullYear() === new Date().getFullYear() ? "" : d.getFullYear() + "年") + (d.getMonth() + 1) + "月" + d.getDate() + "日";
+  const how = p.done ? "看完了" : p.position ? "看到 " + clock(p.position) + (p.duration ? " / " + clock(p.duration) : "") : "";
+  const resume = x.play && x.play.start ? "，从 " + clock(x.play.start) + " 接着看" : "";
+  return `<button class="hrow" data-play="${esc(id)}" data-k="h-${esc(id)}" aria-label="播放 ${esc(x.title)}${resume}"><span class="art">${itemArt(x, "w")}${pbar(pct)}</span>
+    <span class="htx"><b>${esc(h.head)}</b>${h.ep ? `<small>${esc(h.ep)}</small>` : ""}<small class="hm">${esc([how, time].filter(Boolean).join(" · "))}</small></span></button>`;
+}
+function renderHistMore() {
+  const btn = $("histMore");
+  btn.hidden = hist.kind === "yt" || !hist.more || hist.state === "login";
+  btn.disabled = hist.busy;
+  btn.textContent = hist.busy && hist.items.length ? "正在加载…" : "加载更多";
+}
+function renderHist() {
+  if (route !== "lib" || libTab !== "history") return;
+  const kinds = HIST_KINDS.filter(([id]) => id !== "yt" || histYt());
+  if (!kinds.some(([id]) => id === hist.kind)) hist.kind = "all";
+  const login = hist.state === "login" || hist.state === "off";
+  $("histChips").hidden = login;
+  $("histChips").innerHTML = kinds.map(([id, t]) => `<button data-hk="${id}" aria-pressed="${id === hist.kind}">${t}</button>`).join("");
+  $("histSyncRow").hidden = login || hist.writeback == null;
+  $("histSync").setAttribute("aria-checked", String(!!hist.writeback));
+  renderHistMore();
+  const box = $("histBox");
+  if (hist.state === "off") { box.innerHTML = '<div class="empty sm"><b>这里没有观看记录</b><p>电脑客户端和家庭服务器才有</p></div>'; return; }
+  if (hist.state === "login") {
+    box.innerHTML = `<div class="empty sm"><b>登录 B 站后，这里是你的观看记录</b><a class="btn pri sm" href="#/settings/bili">去登录</a></div>`;
+    return;
+  }
+  let items = hist.items, note = hist.message;
+  if (hist.kind === "yt") {
+    const row = feedRows.yt_history;
+    items = row ? row.items : [];
+    note = row ? row.message : "";
+    // 还没问过就问一次；还在取（yt-dlp 要十几秒）每 3 秒再问。
+    if ((!row && !hist.ytAsked) || (row && feedWaiting("yt_history"))) {
+      hist.ytAsked = true;
+      clearTimeout(histTimer);
+      histTimer = setTimeout(async () => { if (route === "lib" && hist.kind === "yt") { await loadFeedRow("yt_history"); renderHist(); } }, row ? 3000 : 0);
+    }
+  } else if (hist.kind !== "all") items = items.filter((x) => (x.hist && x.hist.type) === hist.kind);
+  const k = focusKey();
+  if (!items.length) {
+    const waiting = hist.kind === "yt" ? !feedRows.yt_history || feedWaiting("yt_history")
+      : hist.busy || hist.state === "loading" || !hist.at;
+    box.innerHTML = `<p class="hint">${esc(waiting ? "正在加载…" : note || (hist.more ? "这一页里没有，点「加载更多」" : "还没有观看记录"))}</p>`;
+    restoreFocus(k);
+    return;
+  }
+  let o = note ? `<p class="hint">${esc(note)}</p>` : "", last = null;
+  for (const x of items) {
+    const g = histGroup(x.watched_at);
+    if (g !== last) { o += (last === null ? "" : "</div>") + `<h3 class="hgrp">${g}</h3><div class="hlist">`; last = g; }
+    o += histRow(x, g);
+  }
+  box.innerHTML = o + "</div>";
+  restoreFocus(k);
+}
+$("histChips").addEventListener("click", (event) => {
+  const b = event.target.closest("[data-hk]");
+  if (!b || b.dataset.hk === hist.kind) return;
+  hist.kind = b.dataset.hk;
+  renderHist();
+});
+$("histMore").onclick = () => loadHist(true);
+$("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarget);
+
 // ======================================================================= 首页（/api/home）
 
 // 页面上的节目：data-play / data-pick 指到这里（id → {title, subtitle, play}）。
@@ -5267,12 +5411,12 @@ function renderHome() {
       o += `<div class="h2"><h2>开始收集你爱看的</h2></div><div class="onb">
         <a href="#/search"><b>${ic("up")}订阅一个 UP 主</b><p>B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。</p></a>
         <a href="#/series"><b>${ic("series")}加一部剧</b><p>番剧、多集视频、合集、播放列表都行，按顺序播，接着上次的地方。</p></a>
-        <a href="#/lib"><b>${ic("lib")}片库（即将推出）</b><p>电脑或 NAS 上的电影、剧集、动画和家庭视频。</p></a></div>`;
+        <a href="#/lib/local"><b>${ic("lib")}本地片库（即将推出）</b><p>电脑或 NAS 上的电影、剧集、动画和家庭视频。</p></a></div>`;
     } else {
       if (homeData.creator_updates.length) o += shelf("UP 主更新", homeData.creator_updates.length + " 个没看的视频", homeData.creator_updates.map(cardVideo).join(""), "#/up");
       if (homeData.series_updates.length) o += shelf("剧集追更", "", homeData.series_updates.map(cardSeries).join(""), "#/series");
     }
-    o += shelf("我的片库", "", `<a class="card soon" href="#/lib"><span class="art"><span>${ic("lib", 30)}片库即将推出</span></span><span class="t">片库</span><span class="s">电脑或 NAS 上的视频，以后在这里</span></a>`);
+    o += shelf("我的片库", "", `<a class="card soon" href="#/lib/local"><span class="art"><span>${ic("lib", 30)}本地片库即将推出</span></span><span class="t">本地片库</span><span class="s">电脑或 NAS 上的视频，以后在这里</span></a>`);
   }
   box.innerHTML = o + "</div>";
   qsa("#homeBody .shelf").forEach((e, i) => { if (scrolls[i] !== undefined) e.scrollLeft = scrolls[i]; });

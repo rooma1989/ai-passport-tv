@@ -324,10 +324,24 @@ What a login changes:
   while they are a TV channel is kept on the TV and marked "unfollowed"; take it
   off yourself if you want. "Put new follows on the TV automatically (until it is
   full)" is off by default. The old one-by-one import is no longer shown.
-- **Sync to Bilibili history** (Settings → Bilibili account, off by default): what
-  you watch on the TV and on this computer is reported to your Bilibili watch
-  history (bangumi episodes not yet). YouTube watch history is not written back:
-  there is no reliable way to do it.
+- **Library → History**: your Bilibili watch history as a list, grouped into
+  Today, Yesterday and Earlier, with **Load more** further back; filter by All,
+  Videos or Dramas & anime (and YouTube for the admin). Each row shows the cover,
+  the title (for a drama the season, then "Episode 3" and the episode title), a
+  thin progress bar and "watched to 12:30 / 45:00" or "finished". Clicking a row
+  resumes the same video part or episode where you stopped, on the current Play
+  to target (a drama or anime season plays on this computer). The list is fetched
+  fresh when the page opens and again after you close the player here. Not logged
+  in: a button to Settings → Bilibili.
+- **Sync to Bilibili** (switch at the top of Library → History, also in Settings →
+  Bilibili account; **on by default**, and once you turn it off it stays off):
+  what you watch on the TV and on this computer is reported to your Bilibili watch
+  history, including drama and anime episodes (through Bilibili's web playback
+  heartbeat). YouTube watch history is not written back: there is no reliable way
+  to do it.
+- **Bilibili search marks what you have watched**: official dramas and anime in
+  the results that appear among your last 100 history entries carry the episode
+  and position you reached (the server reuses the cached history, 2 minutes).
 
 The login stays on this computer: `secrets/bilibili/<user id>.json` in the data
 folder, readable only by your user. Your followings list and these two settings are

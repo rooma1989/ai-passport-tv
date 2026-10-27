@@ -350,7 +350,7 @@ class FeedRowTests(FeedHarness):
         self.assertEqual(rows["bili_rec"]["state"], "login")
         self.assertEqual(rows["bili_rec"]["need"], "bili")
         self.assertEqual(rows["yt_rec"]["state"], "hidden", "YouTube's cookies are the admin's: not for the kid")
-        self.assertEqual(overview["settings"], {"writeback": False, "autotv": False})
+        self.assertEqual(overview["settings"], {"writeback": True, "autotv": False}, "sync is on until turned off")
         answer = self.row("bili_rec", self.kid)
         self.assertEqual((answer["state"], answer["items"]), ("login", []))
         self.assertIn("登录 B 站", answer["message"])
@@ -406,8 +406,9 @@ class FeedRowTests(FeedHarness):
         self.assertEqual([x["play"]["id"] for x in self.row("bili_rec", self.admin)["items"]], ["BV1adminrec1"])
         self.assertEqual([x["play"]["id"] for x in self.row("bili_rec", self.kid)["items"]],
                          ["BV1rcmdaaaa1", "BV1rcmdaaaa2"], "the kid keeps his own")
-        self.request("POST", "/tv/api/feeds/settings", {"writeback": True}, self.kid)
-        self.assertFalse(self.request("GET", "/tv/api/feeds", user=self.admin)[1]["settings"]["writeback"])
+        self.request("POST", "/tv/api/feeds/settings", {"writeback": False}, self.kid)
+        self.assertTrue(self.request("GET", "/tv/api/feeds", user=self.admin)[1]["settings"]["writeback"])
+        self.assertFalse(self.request("GET", "/tv/api/feeds", user=self.kid)[1]["settings"]["writeback"])
         path = self.root / "feeds" / f"{self.kid}.json"
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
@@ -659,13 +660,27 @@ class WriteBackTests(FeedHarness):
     def reports(self):
         return [c for c in self.fake.calls if "/history/report" in c[0]]
 
-    def test_off_by_default(self):
+    def test_on_by_default_and_off_once_turned_off(self):
         self.sign_in(self.kid)
-        self.assertFalse(self.feeds.report(self.kid, "bilibili", "BV1hist00001", 300, final=True))
+        self.assertTrue(self.feeds.report(self.kid, "bilibili", "BV1hist00001", 300, final=True))
+        self.assertEqual(len(self.reports()), 1)
+        self.request("POST", "/tv/api/feeds/settings", {"writeback": False}, self.kid)
+        self.assertFalse(self.feeds.report(self.kid, "bilibili", "BV1hist00001", 400, final=True))
         dev = {"id": "d1", "owner": self.kid}
         self.relay._report_history(dev, Video(bvid="BV1hist00001", title="t", duration=600, pubdate=0), 100,
                                    "client_gone", 20)
-        self.assertEqual(self.reports(), [])
+        self.assertEqual(len(self.reports()), 1)
+        # changing another setting later does not turn it back on
+        self.request("POST", "/tv/api/feeds/settings", {"autotv": True}, self.kid)
+        self.assertFalse(self.feeds.store.settings(self.kid)["writeback"])
+
+    def test_a_writeback_false_saved_only_as_the_old_default_is_not_a_choice(self):
+        # before the default changed, turning on "auto TV" saved writeback: false with it
+        path = self.root / "feeds" / f"{self.kid}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"user": self.kid, "settings": {"writeback": False, "autotv": True},
+                                    "follows": {}}), encoding="utf-8")
+        self.assertEqual(self.feeds.store.settings(self.kid), {"writeback": True, "autotv": True})
 
     def test_payload_when_on_and_throttled(self):
         self.sign_in(self.kid)
@@ -683,14 +698,14 @@ class WriteBackTests(FeedHarness):
         self.assertTrue(self.feeds.report(self.kid, "bilibili", "BV1hist00001", 190))
         self.assertTrue(self.feeds.report(self.kid, "bilibili", "BV1hist00001", 200, final=True))
         self.assertEqual(self.fake.count("/web-interface/view"), 1, "aid and cid are looked up once")
-        # a part (BV/cid) reports that cid; bangumi episodes and YouTube are never reported
+        # a part (BV/cid) reports that cid; a whole season and YouTube are never reported
         self.feeds.report(self.kid, "bilibili", "BV1hist00003/53", 50, final=True)
         self.assertEqual(self.reports()[-1][2]["cid"], 53)
         before = len(self.reports())
-        self.assertFalse(self.feeds.report(self.kid, "bilibili", "ep33/12", 50, final=True))
+        self.assertFalse(self.feeds.report(self.kid, "bilibili", "ss28", 50, final=True))
         self.assertFalse(self.feeds.report(self.kid, "youtube", "recrecrec01", 50, final=True))
         self.assertFalse(self.feeds.report(self.admin, "bilibili", "BV1hist00001", 50, final=True),
-                         "the admin did not turn it on (and has no login)")
+                         "the admin has no Bilibili login")
         self.assertEqual(len(self.reports()), before)
         self.assert_no_leak()
 
