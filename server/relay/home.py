@@ -500,8 +500,12 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                 play = {"kind": "episode" if series else "video", "channel": key,
                         ("episode" if series else "index"): index}
                 subtitle = f"第 {index} 集" if series else found[0]
+            title = rec.get("title") or ""
+            if key.startswith("v:") and title.strip().isdigit() and rec.get("name"):
+                # 番剧、电视剧的集名常常只是「1」：标题用剧名，下面写第几集。
+                title, subtitle = rec["name"], f"第 {title.strip()} 集"
             rows.append({"id": f"pc:{key}", "kind": "episode" if key[:2] == "sr" else "video",
-                         "title": rec.get("title") or "", "subtitle": subtitle, "source": site,
+                         "title": title, "subtitle": subtitle, "source": site,
                          "art": {"url": _cover(relay, site, rec.get("bvid") or ""), "ratio": "wide"},
                          "progress": {"position": int(position), "duration": int(duration), "device": PC_NAME,
                                       "updated_at": rec.get("at") or 0},

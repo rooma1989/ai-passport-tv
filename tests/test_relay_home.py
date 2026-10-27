@@ -36,6 +36,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -672,3 +673,31 @@ class PcProgressTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContinueTitleTests(unittest.TestCase):
+    """A drama episode watched on the PC whose title is only its number shows the series name instead."""
+
+    def rows(self, rec):
+        import threading
+        from server.relay import home
+
+        class Store:
+            def rows(self, user):
+                return [("v:bilibili:ss41282", rec)]
+
+        class Account:
+            lock = threading.Lock()
+            creators = []
+
+        relay = types.SimpleNamespace(pc_progress=Store(), clients={})
+        return home._continue_rows(relay, web.Caller(user=1, role="user"), Account())
+
+    def test_numbered_episode(self):
+        row = self.rows({"title": "1", "name": "Doctor X 第七季", "part": 1, "total": 10, "position": 48, "duration": 3468})[0]
+        self.assertEqual((row["title"], row["subtitle"]), ("Doctor X 第七季", "第 1 集"))
+
+    def test_named_episode_keeps_its_title(self):
+        row = self.rows({"title": "大门未知子归来", "name": "Doctor X 第七季", "part": 1, "total": 10,
+                         "position": 48, "duration": 3468})[0]
+        self.assertEqual((row["title"], row["subtitle"]), ("大门未知子归来", "Doctor X 第七季 · 第 1 集"))
