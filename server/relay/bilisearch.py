@@ -5,7 +5,10 @@
   ft（影视）、bangumi（番剧）是正版的整季（kind "pgc"）；「视频」第一页另给 pgc：最像的几部影视、番剧
   （bilibili.Bilibili.pgc_top），页面放在最前面，「在电脑上看」按番剧链接放。搜索照旧不带个人的 cookies（结果大家共用缓存），
   要不要大会员在放的时候按看的人的登录定。
-- GET /api/bili/thumb?u=<封面地址>&s=v|f|p：封面缩略图。电脑版的 CSP 只许本站的图片（img-src 'self'），
+- GET /api/bili/space?mid=…&page=N：一个 UP 主的投稿（新的在前，每页 SPACE_SIZE 个，带封面），搜索里点开一个
+  UP 主时用（不用先订阅）；同一页 SPACE_CACHE_S 秒内用缓存，和搜索一样限次数。
+- GET /api/bili/thumb?u=<封面地址>&s=v|f|p|h：封面缩略图。h 是首页大图用的：只限宽、不裁、图床不会放大，
+  页面按拿到的真实尺寸决定铺满还是放成一张海报。电脑版的 CSP 只许本站的图片（img-src 'self'），
   B 站图床也拦外站的 Referer，所以由中转去取：只认 *.hdslb.com 的 /bfs/ 图片（bilibili.cover_url），
   不跟随跳转，限大小，结果在内存里缓存一会儿，浏览器也缓存一天。
   YouTube 的缩略图（首页、搜索的封面）也走这里：只认 https://i.ytimg.com/vi/<11 位 id>/<几种固定文件名>.jpg
@@ -35,7 +38,7 @@ from collections import OrderedDict, deque
 from . import bilibili
 from .bilibili import SourceError
 
-PATHS = frozenset({"/api/bili/search", "/api/bili/thumb"})
+PATHS = frozenset({"/api/bili/search", "/api/bili/space", "/api/bili/thumb"})
 QUERY_MAX = 40
 # 搜索结果缓存多久、最多几条；每个人两次真去搜之间至少隔多久；全站每分钟最多搜几次。
 SEARCH_CACHE_S = 600
@@ -52,7 +55,15 @@ THUMB_PER_MINUTE = 240
 THUMB_DOWN_S = 30
 THUMB_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"})
 # 让图床缩好再给（B 站图床的「@宽w_高h_1c.webp」后缀）：视频封面、头像、番剧竖版海报。
-THUMB_SIZES = {"v": "@320w_200h_1c.webp", "f": "@96w_96h_1c.webp", "p": "@180w_240h_1c.webp"}
+# h：首页大图（只限宽，不裁；原图比这小时图床给原大小，不放大，页面据此判断够不够铺满）。
+THUMB_SIZES = {"v": "@320w_200h_1c.webp", "f": "@96w_96h_1c.webp", "p": "@180w_240h_1c.webp",
+               "h": "@1920w_90q.webp"}
+# 一个 UP 主的投稿（搜索里点开）：每页几个、最多翻几页、缓存多久、最多缓存几页、全站每分钟最多取几次。
+SPACE_SIZE = 30
+SPACE_PAGES = 40
+SPACE_CACHE_S = 600
+SPACE_CACHE_SIZE = 64
+SPACE_PER_MINUTE = 30
 
 # YouTube 缩略图：只认这一个主机、这几种文件名（不带查询串）。
 YOUTUBE_THUMB_HOST = "i.ytimg.com"
@@ -60,6 +71,7 @@ _YOUTUBE_THUMB = re.compile(r"^/vi/[A-Za-z0-9_-]{11}/(?:default|mqdefault|hqdefa
 
 UNREACHABLE = "B 站连不上：检查路由器或代理"
 REFUSED = "B 站拒绝了这次搜索（可能是搜得太频繁），请过几分钟再试"
+REFUSED_SPACE = "B 站说这个 UP 主的投稿看不了"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -145,6 +157,8 @@ class BiliSearch:
         self._results: OrderedDict[tuple, tuple[float, dict]] = OrderedDict()
         self._last: dict[tuple, float] = {}
         self._searches = _Window(SEARCH_PER_MINUTE)
+        self._spaces: OrderedDict[tuple, tuple[float, dict]] = OrderedDict()
+        self._space_window = _Window(SPACE_PER_MINUTE)
         self._thumbs: OrderedDict[str, tuple[str, bytes]] = OrderedDict()
         self._thumb_bytes = 0
         self._thumb_window = _Window(THUMB_PER_MINUTE)
@@ -192,6 +206,45 @@ class BiliSearch:
             self._results[key] = (now, answer)
             while len(self._results) > SEARCH_CACHE_SIZE:
                 self._results.popitem(last=False)
+        return answer
+
+    # ---- 一个 UP 主的投稿 ----
+
+    def space(self, client, mid, page) -> dict:
+        mid = str(mid or "")
+        try:
+            page = 1 if page is None or page == "" else int(page)
+        except (TypeError, ValueError):
+            page = 0
+        if not mid.isdigit() or len(mid) > 20 or not 1 <= page <= SPACE_PAGES:
+            return {"ok": False, "error": "请求格式不对"}
+        if client is None or not hasattr(client, "uploads_page"):
+            return {"ok": False, "error": "B 站还没配置好"}
+        key = (mid, page)
+        now = self.clock()
+        with self.lock:
+            cached = self._spaces.get(key)
+            if cached is not None and now - cached[0] < SPACE_CACHE_S:
+                self._spaces.move_to_end(key)
+                return cached[1]
+            if not self._space_window.take(now):
+                return {"ok": False, "error": "取得太频繁了，请过一分钟再试", "retry": 5}
+        try:
+            videos, total = client.uploads_page(mid, page, SPACE_SIZE)
+        except SourceError as error:
+            self.log(f"取 UP 主 {mid} 的投稿失败：{error}")
+            return {"ok": False, "error": REFUSED_SPACE if error.permanent else
+                    (bilibili.BLOCKED_HINT if bilibili.blocked(error) else UNREACHABLE)}
+        total = max(total, (page - 1) * SPACE_SIZE + len(videos))
+        pages = min(SPACE_PAGES, -(-total // SPACE_SIZE)) if total else page
+        answer = {"ok": True, "mid": mid, "page": page, "pages": pages, "total": total,
+                  "face": client.face(mid) if hasattr(client, "face") else "",
+                  "items": [{"id": v.bvid, "title": v.title, "duration": v.duration, "pubdate": v.pubdate,
+                             "cover": client.cover(v.bvid) if hasattr(client, "cover") else ""} for v in videos]}
+        with self.lock:
+            self._spaces[key] = (now, answer)
+            while len(self._spaces) > SPACE_CACHE_SIZE:
+                self._spaces.popitem(last=False)
         return answer
 
     # ---- 缩略图 ----
@@ -261,6 +314,9 @@ def get(handler, relay, caller, path: str) -> None:
             from .accountfeeds import SEASON_WAIT_S, annotate_search
             answer = annotate_search(answer, feeds.watched(caller, SEASON_WAIT_S))
         handler._json(answer)
+        return
+    if path == "/api/bili/space":
+        handler._json(relay.bili_search.space(relay.clients.get("bilibili"), query.get("mid"), query.get("page")))
         return
     code, kind, body = relay.bili_search.thumb(query.get("u"), query.get("s"))
     if code != 200:

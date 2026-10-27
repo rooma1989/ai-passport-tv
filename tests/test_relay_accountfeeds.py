@@ -197,6 +197,10 @@ class ShapingTests(unittest.TestCase):
         items = accountfeeds.bili_dynamic(DYNAMIC["data"])
         self.assertEqual([(e["id"], e["author_id"], e["duration"], e["date"]) for e in items],
                          [("BV1dyna00001", "1000", 754, 1760000500), ("BV1dyna00002", "1002", 3723, 1760000100)])
+        # The page filters "关注的更新" by creator: the item carries the creator's id, not only the name.
+        shaped = accountfeeds.media("updates", items[0])
+        self.assertEqual((shaped["creator"]["id"], shaped["source"]), ("1000", "bilibili"))
+        self.assertTrue(shaped["creator"]["face"].startswith("api/bili/thumb?s=f&"))
 
     def test_play_urls_are_built_from_ids_only(self):
         self.assertEqual(accountfeeds.play_url({"site": "bilibili", "id": "BV1hist00003", "part": 3}),

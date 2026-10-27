@@ -281,7 +281,7 @@ let fetchedAt = 0;
 let dragging = false;
 let dialBusy = "";
 let listenPending = null;
-let homeData = null, homeAt = 0;
+let homeData = null, homeAt = 0, coverTries = 0;
 let targetsData = null, targetsAt = 0;
 let targetPref = "";      // 「播放到」记住的地方：设备 id、"pc"；空 = 服务器的自动
 let remember = true;
@@ -617,6 +617,9 @@ async function loadHome(force) {
   catch (error) { if (error instanceof SignedOut) signedOut(); return; }
   if (!answer || !answer.ok) return;
   homeData = answer;
+  // 中转正在后台补 B 站的封面（重启以后内存里没有了）：过几秒再要一次，最多连着三次。
+  coverTries = answer.covers_pending ? coverTries + 1 : 0;
+  if (answer.covers_pending && coverTries <= 3) setTimeout(() => loadHome(true), 5000);
   if (route === "home") { renderHome(); $("view").classList.toggle("bleed", !!homeData.hero.length); updateTop(); }
   if (route === "up") renderUpLatest();
   if (route === "series" && data) renderSeriesGrid();
@@ -989,7 +992,7 @@ $("rememberSw").onclick = () => setRemember(!remember);
 // ======================================================================= 抽屉、弹窗
 
 let lastFocus = null;
-const SHEETS = ["sheet", "rsheet", "drawer", "csheet"];
+const SHEETS = ["sheet", "rsheet", "drawer", "csheet", "allsheet"];
 function anyOverlay() { return SHEETS.some((id) => !$(id).hidden) || !$("modal").hidden; }
 function openSheet(node) {
   if (!anyOverlay()) lastFocus = document.activeElement;
@@ -1011,6 +1014,7 @@ function closeSheets(quiet) {
   if (follow) follow = null;
   if (ysub) { ysub = null; clearTimeout(ysubPoll); }
   cs = null;
+  al = null;
   if (!quiet && lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
   lastFocus = null;
 }
@@ -3852,6 +3856,16 @@ function addButton(text, kind, source, work) {
   };
   return b;
 }
+// 搜索结果里 UP 主的头像、名字：点了看他的投稿（openSpace）。头像那个不进 Tab 顺序（名字已经是一个按钮）。
+function spaceLink(node, who, quiet) {
+  const b = el("button", "spacelink");
+  b.type = "button";
+  b.append(node);
+  b.setAttribute("aria-label", "看「" + (who.name || "") + "」的投稿");
+  if (quiet) b.tabIndex = -1;
+  b.onclick = () => openSpace(who);
+  return b;
+}
 function subscribeUp(mid, name) {
   return addButton("订阅 UP 主", "user", mid, async () => {
     toast("正在订阅" + (name ? "「" + name + "」" : "") + "…");
@@ -3875,7 +3889,7 @@ function addAsSeries(item) {
 }
 // 已经订阅过的：按钮变灰，写「已订阅」「已添加」（每次刷新订阅列表后都对一遍）。
 function markSubscribed() {
-  for (const b of qsa("#bsHits button[data-kind]")) {
+  for (const b of qsa("#bsHits button[data-kind], #alActs button[data-kind]")) {
     const done = subscribed(b.dataset.kind, b.dataset.source);
     b.classList.toggle("done", done);
     b.textContent = done ? (b.dataset.kind === "user" || b.dataset.kind === "ytchannel" ? "已订阅" : "已添加") : b.dataset.text;
@@ -3910,7 +3924,7 @@ function renderSearch() {
       const cover = thumb(item, "v");
       if (item.duration) cover.appendChild(el("span", "dur", clock(item.duration)));
       const meta = el("div", "m");
-      meta.append(el("b", "", item.author || "—"));
+      meta.append(item.mid ? spaceLink(el("b", "", item.author || "—"), { mid: item.mid, name: item.author }) : el("b", "", item.author || "—"));
       meta.append(" · 播放 " + bigNumber(item.play) + (item.pubdate ? " · " + day(item.pubdate) : ""));
       body.append(el("div", "t", item.title), meta, el("div", "d", item.desc || ""));
       if (/\/video\//.test(item.link || "")) {
@@ -3922,10 +3936,12 @@ function renderSearch() {
       if (item.series) acts.appendChild(addAsSeries(item));
       row.append(cover, body, acts);
     } else if (item.kind === "user") {
-      body.append(el("div", "t", item.name), el("div", "m", "粉丝 " + bigNumber(item.fans) + " · 视频 " + bigNumber(item.videos) + " 个"),
+      const who = { mid: item.id, name: item.name, face: item.cover, fans: item.fans, videos: item.videos };
+      body.append(spaceLink(el("div", "t", item.name), who), el("div", "m", "粉丝 " + bigNumber(item.fans) + " · 视频 " + bigNumber(item.videos) + " 个"),
                   el("div", "d", item.desc || ""));
       acts.appendChild(subscribeUp(item.id, item.name));
-      row.append(thumb(item, "f", "face"), body, acts);
+      row.classList.add("user");
+      row.append(spaceLink(thumb(item, "f", "face"), who, true), body, acts);
     } else {
       box.appendChild(pgcHit(item));
       continue;
@@ -5123,7 +5139,16 @@ function feedShelves() {
       continue;
     }
     const sub = a.loading ? "正在更新…" : a.message ? a.message : FEED_SUB[r.id] || "";
-    o += shelf(r.title, sub, a.items.map(cardFeed).join(""), r.id === "updates" ? "#/up" : "", r.id === "updates" ? "我的关注" : "");
+    if (r.id === "updates") {
+      // 关注的更新：上面一排头像，点一个只看他的（cfKey），再点一次或「全部」回来。
+      const who = cfPeople(a.items), on = who.find((c) => c.key === cfKey);
+      if (!on) cfKey = "";
+      SHELF.updates = { title: r.title, items: () => (feedRows.updates || a).items, card: cardFeed, link: ["#/up", "我的关注"], filter: true };
+      o += shelf(r.title, on ? "只看「" + on.name + "」" : sub, cfItems(a.items).map(cardFeed).join(""), "", "", "updates", cfHTML(who));
+      continue;
+    }
+    SHELF[r.id] = { title: r.title, items: () => (feedRows[r.id] || a).items, card: cardFeed, paged: r.id === "bili_history" ? "hist" : "" };
+    o += shelf(r.title, sub, a.items.map(cardFeed).join(""), "", "", r.id);
   }
   return o;
 }
@@ -5466,8 +5491,49 @@ function cardSeries(x) {
   return `<button class="card p" data-series="${esc(s.id)}" data-k="s-${esc(id)}" aria-label="${esc(x.title)}，选集"><span class="art">${art(x.title, "p", { title: x.title, kick: siteTag(x.source) })}${imgTag(x.art && x.art.url)}${badge}${s.watched && !s.done && s.total ? pbar(s.watched / s.total) : ""}</span>
     <span class="t">${esc(x.title)}</span><span class="s">${esc(x.subtitle || "")}</span></button>`;
 }
-const shelf = (title, sub, inner, more, moreT) => `<section aria-label="${esc(title)}"><div class="h2"><h2>${esc(title)}</h2>${sub ? `<small>${esc(sub)}</small>` : ""}${more ? `<a class="more" href="${more}">${esc(moreT || "全部")} ›</a>` : ""}</div><div class="shelf">${inner}</div></section>`;
+// 一排货架。all：「全部 ›」打开的弹窗（SHELF 里的键）；没有 all 时 more 是跳到别的页的链接。pre：标题和货架之间的一行
+// （「关注的更新」的头像筛选）。货架两头的箭头只给鼠标（不能聚焦，键盘照旧用方向键），滚到头的那一边藏起来。
+const shelf = (title, sub, inner, more, moreT, all, pre) => `<section aria-label="${esc(title)}"><div class="h2"><h2>${esc(title)}</h2>${sub ? `<small>${esc(sub)}</small>` : ""}${all ? `<button class="more" data-all="${esc(all)}" data-k="all-${esc(all)}" aria-label="${esc(title)}：全部">全部 ›</button>` : more ? `<a class="more" href="${more}">${esc(moreT || "全部")} ›</a>` : ""}</div>${pre || ""}<div class="sbox"><div class="shelf">${inner}</div><span class="sarr l" data-sarr="-1" aria-hidden="true">${ic("back", 22)}</span><span class="sarr r" data-sarr="1" aria-hidden="true">${ic("fwd", 22)}</span></div></section>`;
 const banner = (kind, t, p, btn, href) => `<div class="banner ${kind}" role="note"><span class="ico">${ic(kind === "warn" ? "warn" : "info", 22)}</span><div><b>${esc(t)}</b><p>${esc(p)}</p></div>${btn ? `<a class="btn sm" href="${href}">${esc(btn)}</a>` : ""}</div>`;
+
+// ---- 大图的图：先按真实尺寸量一下（B 站图床要 s=h：只限宽、不放大；YouTube 要最大的 maxresdefault），
+// 够铺满这块大图（宽图、宽度至少是大图的 85%，高分屏是 100%）就铺满；不够就把同一张图放大、模糊、调暗当底色，
+// 清楚的原图作为一张海报（竖图按原比例，横图 16:9）放在右边，标题和按钮在左边。量好以前只有深色底，不闪占位图。
+const heroImgs = {};       // art.url → {state: "loading" | "ok" | "bad", src, w, h, shown}
+function heroProbe(url) {
+  if (heroImgs[url]) return heroImgs[url];
+  const rec = heroImgs[url] = { state: "loading" };
+  const big = heroSrc(url, location.href), list = big !== url ? [big, url] : [url];
+  const next = () => {
+    const src = list.shift(), img = new Image();
+    img.decoding = "async";
+    img.onload = () => { Object.assign(rec, { state: "ok", src, w: img.naturalWidth, h: img.naturalHeight }); heroLoaded(); };
+    img.onerror = () => { if (list.length) next(); else { rec.state = "bad"; heroLoaded(); } };
+    img.src = src;
+  };
+  next();
+  return rec;
+}
+function heroLoaded() { if (route === "home" && homeData) renderHome(); }
+function heroFill(rec) {
+  return heroFits(rec.w, rec.h, (qs("#homeBody .hero") || {}).clientWidth || innerWidth, devicePixelRatio);
+}
+function heroLook(url) {
+  const none = { cls: "", bg: "", poster: "" };
+  if (!url) return none;
+  const rec = heroProbe(url);
+  if (rec.state === "loading") return { cls: " wait", bg: "", poster: "" };
+  if (rec.state !== "ok") return none;
+  const fresh = !rec.shown ? " in" : "";
+  rec.shown = true;
+  const src = esc(rec.src);
+  if (heroFill(rec)) return { cls: fresh, bg: `<img class="fill" src="${src}" alt="" decoding="async">`, poster: "" };
+  const tall = rec.h > rec.w;
+  // 海报最多放大到原图的 1.6 倍（再大就糊了），也不超过右边那块地方。
+  const hmax = Math.round((tall ? rec.h : rec.w * 9 / 16) * 1.6);
+  return { cls: " soft" + fresh, bg: `<img class="blur" src="${src}" alt="" decoding="async">`,
+           poster: `<div class="hposter" aria-hidden="true"><img class="${tall ? "p" : "w"}" src="${src}" alt="" decoding="async" style="height:min(100%, ${hmax}px);aspect-ratio:${tall ? rec.w + " / " + rec.h : "16 / 9"}"></div>` };
+}
 
 function heroHTML(list) {
   if (!list.length) return "";
@@ -5492,8 +5558,8 @@ function heroHTML(list) {
   const L = [...title].length;
   const second = h.kind === "series" ? `<button class="btn" data-series="${esc(h.series.id)}">选集</button>`
     : live ? `<a class="btn" href="#/live">全部直播</a>` : `<a class="btn" href="#/up">UP 主</a>`;
-  const bg = (h.art && h.art.url ? imgTag(h.art.url) : "") || "";
-  return `<section class="hero dk" aria-label="推荐"><div class="bg">${art(title, "w", { motif: live ? 2 : h.kind === "series" ? 1 : 0 })}${bg}</div><div class="shade"></div>
+  const look = heroLook(h.art && h.art.url);
+  return `<section class="hero dk${look.cls}" aria-label="推荐"><div class="bg">${art(title, "w", { motif: live ? 2 : h.kind === "series" ? 1 : 0 })}${look.bg}</div><div class="shade"></div>${look.poster}
     <div class="copy"><div class="kicker">${live ? '<span class="badge live">直播</span>' : ""}${esc(h.kicker || "")}</div>
       <div class="tart${L > 12 ? " xs" : L > 6 ? " sm" : ""}" style="--h:${hsh(title) % 360}" role="heading" aria-level="2">${esc(title)}</div>
       <div class="meta">${meta.filter(Boolean).map(esc).join('<span aria-hidden="true">·</span>')}</div>${syn ? `<p class="syn">${esc(syn)}</p>` : ""}
@@ -5515,8 +5581,12 @@ function renderHome() {
   }
   if (data && data.youtube && data.youtube.state === "unreachable") o += banner("warn", "YouTube 暂时不可用", $("noticeText").textContent || "", "", "");
   if (!isGuest()) o += `<div class="chips qchips" aria-label="分类"><a href="#/series">${ic("series", 16)}剧集与番剧</a><a href="#/up">${ic("up", 16)}UP 主</a><a href="#/lib">${ic("lib", 16)}片库</a><a href="#/live">${ic("live", 16)}直播</a></div>`;
-  if (homeData.continue.length) o += shelf("继续观看", "在哪台上看的都算；电脑上的进度另记", homeData.continue.map(cardContinue).join(""));
-  if (homeData.live_now.length) o += shelf("直播 · 正在播", homeData.epg ? "节目信息来自节目单（EPG）" : "", homeData.live_now.map(cardLive).join(""), "#/live", "全部直播");
+  SHELF.continue = { title: "继续观看", items: () => homeData.continue, card: cardContinue };
+  SHELF.live = { title: "直播 · 正在播", items: () => homeData.live_now, card: cardLive, link: ["#/live", "直播页"] };
+  SHELF.creators = { title: "UP 主更新", items: () => homeData.creator_updates, card: cardVideo, link: ["#/up", "UP 主"] };
+  SHELF.series = { title: "剧集追更", items: () => homeData.series_updates, card: cardSeries, link: ["#/series", "剧集"], poster: true };
+  if (homeData.continue.length) o += shelf("继续观看", "在哪台上看的都算；电脑上的进度另记", homeData.continue.map(cardContinue).join(""), "", "", "continue");
+  if (homeData.live_now.length) o += shelf("直播 · 正在播", homeData.epg ? "节目信息来自节目单（EPG）" : "", homeData.live_now.map(cardLive).join(""), "", "", "live");
   o += feedShelves();
   if (!homeData.guest) {
     const none = !homeData.creator_updates.length && !homeData.series_updates.length && data && !data.creators.length && !(data.series || []).length;
@@ -5526,15 +5596,280 @@ function renderHome() {
         <a href="#/series"><b>${ic("series")}加一部剧</b><p>番剧、多集视频、合集、播放列表都行，按顺序播，接着上次的地方。</p></a>
         <a href="#/lib/local"><b>${ic("lib")}本地片库（即将推出）</b><p>电脑或 NAS 上的电影、剧集、动画和家庭视频。</p></a></div>`;
     } else {
-      if (homeData.creator_updates.length) o += shelf("UP 主更新", homeData.creator_updates.length + " 个没看的视频", homeData.creator_updates.map(cardVideo).join(""), "#/up");
-      if (homeData.series_updates.length) o += shelf("剧集追更", "", homeData.series_updates.map(cardSeries).join(""), "#/series");
+      if (homeData.creator_updates.length) o += shelf("UP 主更新", homeData.creator_updates.length + " 个没看的视频", homeData.creator_updates.map(cardVideo).join(""), "", "", "creators");
+      if (homeData.series_updates.length) o += shelf("剧集追更", "", homeData.series_updates.map(cardSeries).join(""), "", "", "series");
     }
     o += shelf("我的片库", "", `<a class="card soon" href="#/lib/local"><span class="art"><span>${ic("lib", 30)}本地片库即将推出</span></span><span class="t">本地片库</span><span class="s">电脑或 NAS 上的视频，以后在这里</span></a>`);
   }
   box.innerHTML = o + "</div>";
-  qsa("#homeBody .shelf").forEach((e, i) => { if (scrolls[i] !== undefined) e.scrollLeft = scrolls[i]; });
+  qsa("#homeBody .shelf").forEach((e, i) => { if (scrolls[i] !== undefined) e.scrollLeft = scrolls[i]; shelfEdges(e); });
   restoreFocus(fk);
   ytPrefetchView();
+  if (al && SHELF[al.key] && !al.paged) renderAll();
+}
+
+// ======================================================================= 货架：鼠标翻页、「全部」弹窗、按 UP 主筛选
+
+// ---- 货架和大图的几个纯函数（tests/console_shelves_test.mjs 把这一段单独拿出来测） ----
+// 首页大图：图够不够铺满。要是横图（宽高比至少 1.3），宽度至少是大图宽度的 85%（高分屏按 2 倍算时是 100%）。
+function heroFits(w, h, heroW, dpr) {
+  return w > 0 && h > 0 && w / h >= 1.3 && w >= heroW * Math.max(0.85, Math.min(dpr || 1, 2) * 0.5);
+}
+// 大图要的那张：本站缩略图代理的 B 站图换成 s=h（只限宽、图床不放大），YouTube 换成最大的 maxresdefault。
+function heroSrc(url, base) {
+  try {
+    const u = new URL(url, base);
+    if (!/\/api\/bili\/thumb$/.test(u.pathname)) return url;
+    const raw = u.searchParams.get("u") || "";
+    if (/^https:\/\/i\.ytimg\.com\/vi\/[\w-]{11}\/\w+\.jpg$/.test(raw)) u.searchParams.set("u", raw.replace(/\w+\.jpg$/, "maxresdefault.jpg"));
+    else u.searchParams.set("s", "h");
+    return "api/bili/thumb?" + u.searchParams;
+  } catch (error) { return url; }
+}
+// 真的鼠标滚轮（不是触摸板）：按行滚的（deltaMode 1），或一格一格的整数大步、没有横向分量。触摸板的小步、
+// 带横向的、按着 Shift 的都照浏览器自己的来。
+function mouseWheel(e) {
+  if (e.deltaX || !e.deltaY || e.shiftKey || e.ctrlKey || e.metaKey) return false;
+  if (e.deltaMode === 1) return true;
+  if (e.deltaMode !== 0) return false;
+  const w = Math.abs(e.wheelDeltaY || 0);
+  return (w >= 120 && w % 120 === 0) || (Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 50);
+}
+// 滚轮这一下算几格（一格走一张卡片）。
+function wheelNotches(e) {
+  return Math.max(1, Math.round(Math.abs(e.deltaY) / (e.deltaMode === 1 ? 3 : 100)));
+}
+// 货架还能不能往 dir（1 右、-1 左）那边走（留 4px 的余量，滚到头时的小数像素不算）。
+function shelfCan(left, scrollW, clientW, dir) {
+  return dir > 0 ? left < scrollW - clientW - 4 : dir < 0 ? left > 4 : false;
+}
+// 「关注的更新」里一项是谁发的（网站 + UP 主 id；没有 id 时用名字）；按这个排出头像（新发的在前）、筛选。
+const cfOf = (x) => (x.source || "bilibili") + ":" + ((x.creator && (x.creator.id || x.creator.name)) || x.subtitle || "");
+function cfPeople(items) {
+  const seen = new Map();
+  for (const x of items || []) {
+    const key = cfOf(x), cr = x.creator || {};
+    if (!seen.has(key)) seen.set(key, { key, name: cr.name || x.subtitle || "?", face: cr.face || "", site: x.source || "bilibili" });
+    else if (!seen.get(key).face && cr.face) seen.get(key).face = cr.face;
+  }
+  return [...seen.values()];
+}
+function cfFilter(items, key) { return key ? (items || []).filter((x) => cfOf(x) === key) : items || []; }
+// ---- 货架和大图的纯函数到此
+
+// ---- 「关注的更新」按 UP 主筛选：头像排成一行（新发视频的在前），点一个只看他的，再点一次或「全部」回来 ----
+let cfKey = "";
+const cfItems = (items) => cfFilter(items, cfKey);
+function cfHTML(who) {
+  if (who.length < 2) return "";
+  return `<div class="cfil" role="group" aria-label="按 UP 主筛选"><button class="cfall" data-cf="" data-k="cf-" aria-pressed="${!cfKey}">全部</button>${who.slice(0, 40).map((c) =>
+    `<button class="cav" data-cf="${esc(c.key)}" data-k="cf-${esc(c.key)}" aria-pressed="${cfKey === c.key}" title="${esc(c.name)}" aria-label="只看「${esc(c.name)}」（${siteTag(c.site)}）"><span class="face">${avatarSVG(c.name, 44)}${c.face ? `<img src="${esc(c.face)}" alt="" loading="lazy" decoding="async">` : ""}</span><i class="${c.site === "youtube" ? "yt" : "bl"}" aria-hidden="true"></i></button>`).join("")}</div>`;
+}
+function cfPick(key) {
+  cfKey = cfKey === key ? "" : key;
+  if (route === "home") renderHome();
+  if (al && al.key === "updates") renderAll(true);
+}
+
+// ---- 横向货架：两头的箭头（鼠标移上去才出来，滚到头的那边不出），鼠标滚轮在货架上横着翻 ----
+function shelfEdges(sh) {
+  const box = sh.parentElement;
+  if (!box || !box.classList.contains("sbox")) return;
+  box.classList.toggle("can-l", shelfCan(sh.scrollLeft, sh.scrollWidth, sh.clientWidth, -1));
+  box.classList.toggle("can-r", shelfCan(sh.scrollLeft, sh.scrollWidth, sh.clientWidth, 1));
+  const art = sh.querySelector(".card .art");
+  if (art) box.style.setProperty("--ay", Math.round(art.getBoundingClientRect().top - box.getBoundingClientRect().top + art.offsetHeight / 2) + "px");
+}
+// 一步走几张卡片：正好落在卡片的开头（货架有 scroll-snap，走半张会被弹回去）。
+function shelfStep(sh) {
+  const c = sh.querySelector(".card");
+  const gap = parseFloat(getComputedStyle(sh).columnGap) || 24;
+  return c ? c.offsetWidth + gap : 320;
+}
+function shelfGo(sh, delta) {
+  const max = sh.scrollWidth - sh.clientWidth, now = performance.now();
+  const from = sh._goAt && now - sh._goAt < 600 ? sh._goTo : sh.scrollLeft;
+  sh._goTo = Math.max(0, Math.min(max, from + delta));
+  sh._goAt = now;
+  sh.scrollTo({ left: sh._goTo, behavior: RM.matches ? "auto" : "smooth" });
+}
+function shelfPage(sh, dir) {
+  const step = shelfStep(sh);
+  shelfGo(sh, dir * Math.max(step, Math.floor(sh.clientWidth * 0.8 / step) * step));
+}
+let edgeRaf = 0;
+document.addEventListener("scroll", (event) => {
+  const t = event.target;
+  if (!t.classList || !t.classList.contains("shelf") || edgeRaf) return;
+  edgeRaf = requestAnimationFrame(() => { edgeRaf = 0; shelfEdges(t); });
+}, true);
+addEventListener("resize", () => { for (const sh of qsa("#homeBody .shelf")) shelfEdges(sh); });
+$("homeBody").addEventListener("click", (event) => {
+  const a = event.target.closest("[data-sarr]");
+  if (a) { const sh = a.parentElement.querySelector(".shelf"); if (sh) shelfPage(sh, Number(a.dataset.sarr)); return; }
+  const all = event.target.closest("[data-all]");
+  if (all) { openAll(all.dataset.all); return; }
+  const cf = event.target.closest("[data-cf]");
+  if (cf) cfPick(cf.dataset.cf);
+});
+$("alFil").addEventListener("click", (event) => {
+  const cf = event.target.closest("[data-cf]");
+  if (!cf) return;
+  const key = cf.dataset.cf, again = qs(`[data-cf="${CSS.escape(key)}"]`, $("alFil"));
+  cfPick(key);
+  const now = qs(`[data-cf="${CSS.escape(key)}"]`, $("alFil"));      // 重画过了：焦点放回点的那个
+  if (now && now !== again) now.focus({ preventScroll: true });
+});
+// 一串滚轮（中间停不到 WHEEL_GAP_MS）归同一个：开始时指针在一排还能往那边走的货架上，这一串就横着翻它；
+// 开始时是在滚页面，这一串就一直滚页面（页面往下滚时货架滑到指针底下，不会突然改成横着走）。货架走到头，
+// 后面的滚轮还给页面。
+const WHEEL_GAP_MS = 300;
+let wheelAt = 0, wheelOwner = null;
+$("view").addEventListener("wheel", (e) => {
+  const now = performance.now(), going = now - wheelAt < WHEEL_GAP_MS;
+  wheelAt = now;
+  const dir = Math.sign(e.deltaY);
+  const can = (sh) => sh && sh.isConnected && shelfCan(sh.scrollLeft, sh.scrollWidth, sh.clientWidth, dir);
+  if (!going) {
+    const sh = e.target.closest && e.target.closest("#homeBody .shelf");
+    wheelOwner = sh && mouseWheel(e) && can(sh) ? sh : null;
+  }
+  if (!wheelOwner) return;
+  if (!mouseWheel(e) || !can(wheelOwner)) { wheelOwner = null; return; }
+  e.preventDefault();
+  shelfGo(wheelOwner, dir * wheelNotches(e) * shelfStep(wheelOwner));
+}, { passive: false });
+
+// ---- 「全部 ›」：一个大弹窗，这一排的全部节目排成网格；观看记录、UP 主的投稿滚到底自动接着取 ----
+// SHELF[键] = {title, items(), card, link: [地址, 字], poster, filter, paged}；renderHome 每次重画时登记。
+const SHELF = {};
+let al = null;   // 开着的弹窗：{key, run, items, more, page, busy, done, error, paged, sig, space}
+function allSay(text) { $("alMore").textContent = text || ""; }
+function openAll(key) {
+  const sh = SHELF[key];
+  if (!sh) return;
+  // 能往下翻的（观看记录）：先摆出首页这一排已有的，再从第一页起按游标接着取。
+  al = { key, run: (al ? al.run : 0) + 1, paged: sh.paged || "", items: sh.paged ? (sh.items() || []).slice() : [], more: null, busy: false, done: !sh.paged, sig: "" };
+  $("alName").textContent = sh.title;
+  $("alFace").hidden = true;
+  $("alActs").replaceChildren();
+  if (sh.link) { const a = el("a", "btn sm", sh.link[1] + " ›"); a.href = sh.link[0]; a.dataset.close = ""; $("alActs").append(a); }
+  $("alBody").scrollTop = 0;
+  renderAll(true);
+  openSheet($("allsheet"));
+  if (al.paged) allMore();
+}
+function allList() {
+  if (!al) return [];
+  if (al.space || al.paged) return al.items;
+  const sh = SHELF[al.key];
+  return sh ? sh.items() || [] : [];
+}
+function renderAll(force) {
+  if (!al) return;
+  const sh = SHELF[al.key] || {}, card = al.space ? cardPlain : sh.card || cardFeed;
+  let list = allList();
+  const filter = !!sh.filter && !al.space;
+  if (filter) {
+    const who = cfPeople(list);
+    if (!who.some((c) => c.key === cfKey)) cfKey = "";
+    $("alFil").innerHTML = cfHTML(who);
+    list = cfItems(list);
+  }
+  $("alFil").hidden = !filter || !$("alFil").innerHTML;
+  const sig = list.map((x) => x.id).join("|") + "#" + cfKey + "#" + al.busy + al.done;
+  if (!force && sig === al.sig) return;
+  al.sig = sig;
+  if (!al.space) {
+    const on = filter && cfKey ? cfPeople(allList()).find((c) => c.key === cfKey) : null;
+    $("alSum").textContent = (on ? "只看「" + on.name + "」 · " : "") + (list.length ? list.length + " 个" : "");
+  }
+  $("alGrid").className = sh.poster && !al.space ? "pgrid" : "wgrid";
+  $("alGrid").innerHTML = list.length ? list.map(card).join("") : !al.done ? skelCards(6) : "";
+  allSay(al.busy && list.length ? "正在加载…" : al.error || (!list.length && al.done ? "这里还没有内容" : ""));
+  allFill();
+}
+// 内容还撑不满一屏、或滚到离底不到 600px：接着取下一页。
+function allFill() {
+  const b = $("alBody");
+  if (al && !al.done && !al.busy && !al.error && b.scrollHeight - b.scrollTop - b.clientHeight < 600) allMore();
+}
+$("alBody").addEventListener("scroll", allFill, { passive: true });
+async function allMore() {
+  if (!al || al.busy || al.done) return;
+  const run = al.run;
+  al.busy = true;
+  allSay("正在加载…");
+  let answer;
+  try {
+    if (al.space) answer = await call("GET", "api/bili/space?" + new URLSearchParams({ mid: al.space.mid, page: String((al.page || 0) + 1) }));
+    else {
+      const c = al.more;
+      answer = await call("GET", "api/feeds/history" + (c ? "?" + new URLSearchParams({ max: c.max, view_at: c.view_at, ...(c.business ? { business: c.business } : {}) }) : ""));
+    }
+  } catch (error) {
+    if (error instanceof SignedOut) { signedOut(); return; }
+    if (al && al.run === run) { al.busy = false; allSay("网络不通"); }
+    return;
+  }
+  if (!al || al.run !== run) return;
+  al.busy = false;
+  if (!answer.ok) {
+    al.error = answer.error || "取不到";
+    if (answer.retry) setTimeout(() => { if (al && al.run === run) { al.error = ""; allMore(); } }, answer.retry * 1000);
+    else al.done = true;
+    renderAll(true);
+    return;
+  }
+  const have = new Set(al.items.map((x) => x.id));
+  if (al.space) {
+    const u = al.space;
+    al.page = answer.page;
+    const items = answer.items.map((v) => ({ id: "sp:" + u.mid + ":" + v.id, kind: "video", title: v.title, subtitle: u.name, source: "bilibili",
+      duration: v.duration, pubdate: v.pubdate, art: { url: v.cover ? "api/bili/thumb?" + new URLSearchParams({ s: "v", u: v.cover }) : "", ratio: "wide" },
+      play: { kind: "cast", url: "https://www.bilibili.com/video/" + v.id, title: v.title } }));
+    al.items = al.items.concat(items.filter((x) => !have.has(x.id)));
+    al.done = answer.page >= answer.pages || !answer.items.length;
+    if ((answer.face && !u.face) || (answer.total && answer.total !== u.total)) { u.face = u.face || answer.face; u.total = answer.total || u.total; spaceHead(); }
+  } else {
+    if (answer.state === "loading" && !answer.items.length) { setTimeout(() => { if (al && al.run === run) allMore(); }, 1500); return; }
+    al.items = al.items.concat(answer.items.filter((x) => !have.has(x.id)));
+    al.more = answer.more;
+    al.done = !answer.more;
+    if (answer.state !== "ready" && answer.message && !al.items.length) al.error = answer.message;
+  }
+  renderAll(true);
+}
+// 没有 UP 主名字、头像的卡片（弹窗里都是同一个人的）：封面、标题、几天前。
+function cardPlain(x) {
+  const id = reg(x);
+  return `<button class="card" data-play="${esc(id)}" data-k="sp-${esc(id)}" aria-label="播放 ${esc(x.title)}"><span class="art">${itemArt(x, "w")}${x.duration ? `<span class="badge r b num">${clock(x.duration)}</span>` : ""}</span>
+    <span class="t">${esc(x.title)}</span><span class="s">${esc(x.pubdate ? ago(x.pubdate) : "")}</span></button>`;
+}
+
+// ---- 搜索里点一个 UP 主（头像、名字）：同一个弹窗，他的投稿新的在前，滚到底接着取；右上角「订阅 UP 主」 ----
+function spaceHead() {
+  if (!al || !al.space) return;
+  const u = al.space;
+  $("alFace").innerHTML = avatarSVG(u.name, 48) + (u.face ? `<img src="${esc("api/bili/thumb?" + new URLSearchParams({ s: "f", u: u.face }))}" alt="" decoding="async">` : "");
+  $("alFace").hidden = false;
+  const parts = [];
+  if (u.fans) parts.push("粉丝 " + bigNumber(u.fans));
+  if (u.total || u.videos) parts.push(bigNumber(u.total || u.videos) + " 个视频");
+  $("alSum").textContent = parts.join(" · ");
+}
+function openSpace(u) {
+  if (!u || !u.mid) return;
+  al = { key: "space", run: (al ? al.run : 0) + 1, items: [], page: 0, busy: false, done: false, sig: "", space: { ...u } };
+  $("alName").textContent = u.name;
+  $("alActs").replaceChildren(subscribeUp(u.mid, u.name));
+  $("alFil").hidden = true;
+  $("alBody").scrollTop = 0;
+  spaceHead();
+  openSheet($("allsheet"));
+  markSubscribed();
+  renderAll(true);
+  allMore();
 }
 
 // ---- YouTube 预取（server/relay/ytvod.py）：看得见的前几个、鼠标停住或焦点到的那个，先让中转取好地址 ----
@@ -5608,7 +5943,7 @@ document.addEventListener("click", (event) => {
   if (ds.play) {
     event.preventDefault();
     const x = ITEMS[ds.play];
-    if (t.closest("#csheet")) closeSheets(true);
+    if (t.closest("#csheet, #allsheet")) closeSheets(true);
     if (x) pressed(t, play(x.play, null, x.title, x.art && x.art.url));
     return;
   }
@@ -5712,7 +6047,7 @@ function spatial(key) {
   // 先在同一块里找（内容区、顶栏、播放器、播放条、底栏、面板各是一块），找不到再跨块：走到边上才进标签栏。
   const zone = (n) => n.closest("#view, #top, #pcwin, #mini, #tabs, .sheet, #modal"), z = zone(cur);
   // 同一排货架里左右移动只在这一排里找，排尾不会跳到别的排。
-  const row = h && cur.closest(".shelf, .chips, .rdevs, .seg, .segc, .petgrid, .grow");
+  const row = h && cur.closest(".shelf, .cfil, .chips, .rdevs, .seg, .segc, .petgrid, .grow");
   return (row && pick2(qsa(FOC, row).filter(vis))) || (!row && pick2(all.filter((n) => zone(n) === z))) || (!row && pick2(all)) || false;
   function pick2(list) {
     let best = null, bs2 = Infinity;

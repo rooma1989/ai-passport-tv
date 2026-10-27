@@ -194,6 +194,28 @@ class ClientTests(unittest.TestCase):
         self.assertIsNone(client.creator_id("https://example.com/"))
 
 
+    def test_uploads_page_keeps_covers_and_the_creators_face(self):
+        listing = {"code": 0, "data": {"page": {"count": 681, "pn": 2, "ps": 30}, "archives": [
+            {"bvid": "BV1aZpw6DEKJ", "title": "第一次去美国", "duration": 689, "pubdate": 1759700000,
+             "pic": "http://i2.hdslb.com/bfs/archive/e858b616.jpg",
+             "author": {"mid": 546195, "name": "老番茄", "face": "http://i0.hdslb.com/bfs/face/bc5ca101.jpg"}},
+            {"bvid": "BV1feaH63Epk", "title": "合作", "duration": 727, "pubdate": 1759200000,
+             "pic": "https://evil.example/x.jpg", "author": {"mid": 9, "face": "http://i0.hdslb.com/bfs/face/other.jpg"}},
+        ]}}
+        client = self.client(**{"space/arc/list": listing})
+        videos, total = client.uploads_page("546195", 2, 30)
+        self.assertEqual(([v.bvid for v in videos], total), (["BV1aZpw6DEKJ", "BV1feaH63Epk"], 681))
+        self.assertIn("pn=2", self.fetch.calls[-1][0])
+        self.assertIn("ps=30", self.fetch.calls[-1][0])
+        self.assertEqual(client.cover("BV1aZpw6DEKJ"), "https://i2.hdslb.com/bfs/archive/e858b616.jpg",
+                         "http:// cover from the list is kept as https")
+        self.assertEqual(client.cover("BV1feaH63Epk"), "", "only Bilibili's image host")
+        self.assertEqual(client.face("546195"), "https://i0.hdslb.com/bfs/face/bc5ca101.jpg",
+                         "the uploader's own face, not a co-author's")
+        self.assertEqual(client.upload_total("546195"), 681)
+        self.assertEqual([v.bvid for v in client.uploads("546195")], ["BV1aZpw6DEKJ", "BV1feaH63Epk"])
+        self.assertIn("pn=1", self.fetch.calls[-1][0])
+
     def test_video_lookup(self):
         client = self.client()
         video = client.video("BV1aZpw6DEKJ")

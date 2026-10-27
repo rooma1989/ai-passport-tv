@@ -16,6 +16,11 @@
 电脑上看的进度（PcProgress）：设计的 Q4——电脑上看到哪儿另记，「继续观看」里显示，但从不往后推小电视的
 剧集进度、不标看过。web.Relay 在内存里跟着每一路（_pc_cursor），这里把它存进数据目录的 pc-progress.json，
 按用户分开，重启后电脑上接着看也从这里起。
+
+B 站的封面、头像（CoverWarm）：图床地址只记在客户端内存里（bilibili.Bilibili.cover/face），是取投稿列表、
+剧集时 B 站顺带给的；订阅的列表本身存在状态文件和共享缓存里，半小时内、没在小电视上放过的台不会重新去取。
+所以重启以后「UP 主更新」「剧集追更」全是占位图。首页发现某个 B 站的台缺封面时，在后台一个一个重新取一次
+它的列表（只为封面，列表照旧），同一个台 COVER_WARM_AGAIN_S 秒内不再取。
 """
 
 from __future__ import annotations
@@ -82,6 +87,78 @@ def _face(relay, site: str, source: str) -> str:
     except Exception:  # noqa: BLE001
         return ""
     return thumb(url, "f") if isinstance(url, str) else ""
+
+
+# 缺封面时补取：两次之间隔几秒、同一个台多久内不再取、排队最多几个。
+COVER_WARM_GAP_S = 1.0
+COVER_WARM_AGAIN_S = 30 * 60
+COVER_WARM_QUEUE = 64
+
+
+class CoverWarm:
+    """B 站的台缺封面（重启后内存里的图床地址没了）：后台重新取一次它的列表，B 站客户端顺带记下封面和头像。
+    start：怎么开后台线程（测试换成先记下来、自己叫）。"""
+
+    def __init__(self, relay, start=None, gap_s: float = COVER_WARM_GAP_S,
+                 again_s: float = COVER_WARM_AGAIN_S, clock=time.monotonic, sleep=time.sleep):
+        self.relay = relay
+        self.start = start or (lambda work: threading.Thread(target=work, daemon=True, name="cover-warm").start())
+        self.gap_s, self.again_s = gap_s, again_s
+        self.clock, self.sleep = clock, sleep
+        self.lock = threading.Lock()
+        self._asked: dict[tuple, float] = {}
+        self._queue: list[tuple] = []
+        self._running = False
+
+    def want(self, kind: str, source: str) -> None:
+        """kind 是 "up"（投稿列表）或 "series"（剧集）；source 是 UP 主的 mid、剧集的 ss…/BV 号。"""
+        key = (kind, str(source))
+        now = self.clock()
+        with self.lock:
+            at = self._asked.get(key)
+            if (at is not None and now - at < self.again_s) or len(self._queue) >= COVER_WARM_QUEUE:
+                return
+            self._asked[key] = now
+            if len(self._asked) > 1000:
+                self._asked = {k: v for k, v in self._asked.items() if now - v < self.again_s}
+            self._queue.append(key)
+            if self._running:
+                return
+            self._running = True
+        self.start(self._work)
+
+    def pending(self) -> bool:
+        with self.lock:
+            return self._running or bool(self._queue)
+
+    def _work(self) -> None:
+        first = True
+        while True:
+            with self.lock:
+                if not self._queue:
+                    self._running = False
+                    return
+                kind, source = self._queue.pop(0)
+            if not first:
+                self.sleep(self.gap_s)
+            first = False
+            client = self.relay.clients.get("bilibili")
+            try:
+                if kind == "series":
+                    client.series(source)
+                else:
+                    client.uploads(source)
+            except Exception as error:  # noqa: BLE001 —— 后台线程：取不到下次再说，页面照旧用占位图
+                self.relay.log(f"补取 {source} 的封面失败：{type(error).__name__}")
+
+
+def _warm(relay, kind: str, site: str, source: str) -> None:
+    if site != "bilibili" or not source:
+        return
+    warm = getattr(relay, "_cover_warm", None)
+    if warm is None:
+        warm = relay._cover_warm = CoverWarm(relay)
+    warm.want(kind, source)
 
 
 # ---------------------------------------------------------------- 电脑上的进度
@@ -462,10 +539,13 @@ def _creator_rows(relay, account) -> list[dict]:
     found.sort(key=lambda row: -row[0])
     rows = []
     for pubdate, cid, name, site, source, n, video in found[:ROW_MAX]:
+        art, face = _cover(relay, site, video.bvid), _face(relay, site, source)
+        if not art or not face:
+            _warm(relay, "up", site, source)
         rows.append({"id": f"v:{cid}:{video.bvid}", "kind": "video", "title": video.title, "subtitle": name,
                      "source": site, "new": True, "duration": video.duration, "pubdate": pubdate,
-                     "creator": {"id": cid, "name": name, "face": _face(relay, site, source)},
-                     "art": {"url": _cover(relay, site, video.bvid), "ratio": "wide"},
+                     "creator": {"id": cid, "name": name, "face": face},
+                     "art": {"url": art, "ratio": "wide"},
                      "play": {"kind": "video", "channel": cid, "index": n}})
     return rows
 
@@ -486,6 +566,8 @@ def _series_rows(relay, account) -> list[dict]:
                                     "done": done, "fresh": watched == 0},
                          "art": {"url": _cover(relay, c.site, c.source, "p"), "ratio": "poster"},
                          "play": {"kind": "episode", "channel": c.id, "episode": upcoming or 1}})
+            if not rows[-1]["art"]["url"]:
+                _warm(relay, "series", c.site, c.source)
     rows.sort(key=lambda r: (r["series"]["done"], r["series"]["fresh"]))
     return rows[:ROW_MAX]
 
@@ -531,6 +613,10 @@ def home(relay, caller: Caller) -> dict:
                          not relay.tenant else [],
                          "creator_updates": creators, "series_updates": series,
                          "hero": _hero(series, live, creators)})
+        warm = getattr(relay, "_cover_warm", None)
+        if warm is not None and warm.pending():
+            # 正在后台补封面：页面过几秒再问一次（console.js 的 loadHome）。
+            answer["covers_pending"] = True
     else:
         answer["hero"] = _hero([], live, [])[:1]
     with relay._home_lock:

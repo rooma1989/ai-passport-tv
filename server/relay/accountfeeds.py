@@ -387,7 +387,8 @@ def media(row: str, e: dict) -> dict:
     item = {"id": f"{row}:{site}:{vid}", "kind": "video", "title": e["title"], "subtitle": e.get("author") or "",
             "source": site, "duration": e.get("duration") or 0, "pubdate": e.get("date") or 0,
             "art": {"url": art, "ratio": "wide"},
-            "creator": {"name": e.get("author") or "", "face": home.thumb(e.get("face") or "", "f")},
+            "creator": {"id": e.get("author_id") or "", "name": e.get("author") or "",
+                        "face": home.thumb(e.get("face") or "", "f")},
             "play": {"kind": "feed", "site": site, "id": vid, "title": e["title"]}}
     if e.get("reason"):
         item["reason"] = e["reason"]

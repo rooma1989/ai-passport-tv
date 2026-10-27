@@ -154,6 +154,7 @@
 | 手机遥控、登录、分组、设备频道列表的两级 | `server/relay/web.py` 与 `assets/remote.html`、`server/channel_groups.py`、`main/ui_menu.c` |
 | 用户、邀请、设备绑定、访客、谁能遥控哪台设备 | `server/tenancy/`、`server/relay/tenants.py`、`assets/join.html`、`docs/superpowers/specs/2026-10-12-multi-tenant-design.zh_CN.md` |
 | 电脑版、扫码登录、让手机登录、登录列表 | `server/relay/console.py`、`server/relay/home.py`、`server/relay/logos.py`、`assets/console.html`、`assets/console.css`、`assets/console.js`、`assets/login.html`、`assets/scan.js`、`assets/phone.html`、`server/tenancy/phonelinks.py`、`server/tenancy/tickets.py`（及 `tests/test_relay_console.py`、`tests/test_relay_home.py`） |
+| 电脑版首页的货架（两头箭头、鼠标滚轮、「全部 ›」弹窗、按 UP 主筛选）、大图按尺寸铺满还是放海报、搜索里看一个 UP 主的投稿、重启后 B 站封面 | `assets/console.js`（`shelf`、`heroLook`、`openAll`、`openSpace`，纯函数那一段由 `tests/console_shelves_test.mjs` 测）、`server/relay/home.py`（`CoverWarm`）、`server/relay/bilisearch.py`（`/api/bili/space`、缩略图尺寸 `h`）、`server/relay/bilibili.py`（`uploads_page`）（+ `tests/test_relay_home.py`） |
 | 总后台：用户、设备、流量、主机负载、操作记录、全局频道表 | `server/relay/admin.py`、`assets/console-admin.js` 和 `console-admin.css`、`server/relay/channeltable.py`、`server/relay/hoststats.py`、`server/tenancy/manage.py`（+ `tests/test_relay_admin.py`） |
 | 没有登录时怎么进来：扫未绑定设备自己注册、设备恢复登录、管理员登录链接 | `server/tenancy/signup.py`、`server/tenancy/recover.py`、`server/tenancy/phonelinks.py`、`server/tenancy/admin.py`、`assets/join.html`、`assets/phone.html`、`main/av_recover.c`（及 `tests/test_account_recovery.py`、`tests/test_av_recover.c`） |
 | 线协议/包格式改动 | `main/av_protocol.h`、`server/protocol.py`、`server/frames.py`，见上文第 5 节 |

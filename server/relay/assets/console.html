@@ -442,6 +442,13 @@
     <div class="shb"><div class="actions" id="csActs" style="margin:0 0 14px"></div><div class="cslist" id="csList"></div></div>
   </div>
 
+  <!-- 首页一排的「全部 ›」、搜索里点开的 UP 主：大弹窗，网格排开，滚到底接着取 -->
+  <div id="allsheet" class="sheet big" role="dialog" aria-modal="true" aria-labelledby="alName" hidden>
+    <div class="shh"><span class="alface" id="alFace" hidden></span><div style="flex:1;min-width:0"><h2 id="alName"></h2><p class="hint" id="alSum"></p></div><span class="actions" id="alActs"></span><button class="iconbtn" data-close aria-label="关闭" data-ic="x" data-ics="18"></button></div>
+    <div id="alFil" hidden></div>
+    <div class="shb" id="alBody"><div class="wgrid" id="alGrid"></div><p class="hint almore" id="alMore" aria-live="polite"></p></div>
+  </div>
+
   <div id="modal" role="dialog" aria-modal="true" hidden></div>
   <div id="toast" role="status" aria-live="polite"></div>
 </div>

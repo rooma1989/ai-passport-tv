@@ -713,7 +713,12 @@ class Bilibili:
 
     def uploads(self, mid: str) -> list[Video]:
         """最新的 LIST_SIZE 个投稿（只取第一页）。UP 主一共有多少个投稿顺带记下（upload_total）。"""
-        data = self._call("/x/space/arc/list", mid=mid, ps=LIST_SIZE, pn=1)
+        return self.uploads_page(mid, 1, LIST_SIZE)[0]
+
+    def uploads_page(self, mid: str, page: int, size: int = LIST_SIZE) -> tuple[list[Video], int]:
+        """第 page 页投稿（新的在前，每页 size 个）和一共有多少个（不知道为 0）。封面和 UP 主头像顺带记下
+        （cover()、face()：首页「UP 主更新」、搜索里点开一个 UP 主都用）。"""
+        data = self._call("/x/space/arc/list", mid=mid, ps=size, pn=page)
         try:
             videos = [Video(bvid=a["bvid"], title=str(a.get("title", "")),
                             duration=int(a.get("duration", 0)), pubdate=int(a.get("pubdate", 0)))
@@ -726,7 +731,10 @@ class Bilibili:
         for a in data.get("archives") or []:
             if isinstance(a, dict) and a.get("bvid"):
                 self._keep(self._covers, str(a["bvid"]), a.get("pic"))
-        return videos
+                author = a.get("author")
+                if isinstance(author, dict) and str(author.get("mid") or "") == str(mid):
+                    self._keep(self._faces, str(mid), author.get("face"))
+        return videos, total
 
     def creator(self, mid: str) -> tuple[str, list[Video]]:
         card = self._call("/x/web-interface/card", mid=mid)

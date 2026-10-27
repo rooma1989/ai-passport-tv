@@ -17,6 +17,11 @@ What is checked, over real sockets like the other relay tests:
   private addresses, remembers failures; the thumbnail proxy accepts only i.ytimg.com's fixed names.
 - The console page, its stylesheet and script are served with a CSP that allows the stylesheet; the
   classic console's old addresses redirect to /tv/console.
+- Bilibili covers missing after a restart (they live only in the client's memory) are fetched again in
+  the background, once per channel, and /api/home says so (covers_pending) until they are back.
+- The hero's thumbnail size "h" asks the image host for a big uncropped picture; GET /api/bili/space
+  pages one creator's uploads (validated, cached, account only); the page's hero, shelf and creator
+  filter helpers are tested as pure JS (console_shelves_test.mjs).
 """
 
 from __future__ import annotations
@@ -24,7 +29,9 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -35,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from server import now_playing
-from server.relay import bilisearch, console, events, home, logos, setup, web
+from server.relay import bilibili, bilisearch, console, events, home, logos, setup, web
 from server.tenancy import files as device_files
 from server.tenancy.accounts import Accounts
 
@@ -278,6 +285,69 @@ class HomeTests(unittest.TestCase):
         self.call("POST", "/api/play", body={"target": ALICE_DEVICE, "item": {"kind": "live", "channel": "ch001"}})
         self.assertIsNot(home.home(self.relay, web.Caller(user=self.alice, role="user")), first)
 
+    def test_missing_bilibili_covers_are_fetched_again_in_the_background(self):
+        # The cover and face addresses live only in the Bilibili client's memory (the lists themselves are
+        # saved), so after a restart "UP 主更新" and "剧集追更" were placeholders until each channel was
+        # played. Home now asks for the list once more in the background and says covers are coming.
+        class CoverClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.covers, self.faces, self.asked = {}, {}, []
+
+            def cover(self, key):
+                return self.covers.get(key, "")
+
+            def face(self, mid):
+                return self.faces.get(mid, "")
+
+            def uploads(self, mid):
+                self.asked.append(("up", mid))
+                found = super().creator(mid)[1]          # the same newest uploads the channel was saved with
+                for v in found:
+                    self.covers[v.bvid] = f"https://i0.hdslb.com/bfs/archive/{v.bvid}.jpg"
+                self.faces[mid] = "https://i0.hdslb.com/bfs/face/f.jpg"
+                return found
+
+            def series(self, source):
+                self.asked.append(("series", source))
+                self.covers[source] = "https://i0.hdslb.com/bfs/bangumi/p.jpg"
+                return super().series(source)
+
+        as_alice = web.Caller(user=self.alice, role="user")
+        self.relay.add_creator("https://space.bilibili.com/42", as_alice)
+        self.relay.add_series("https://www.bilibili.com/bangumi/play/ss1", "", as_alice)
+        client = self.relay.clients["bilibili"] = CoverClient()       # a restarted relay: nothing in memory
+        held = []
+        self.relay._cover_warm = home.CoverWarm(self.relay, start=held.append, clock=lambda: self.now,
+                                                sleep=lambda _s: None)
+        first = self.call("GET", "/api/home")[1]
+        self.assertEqual([x["art"]["url"] for x in first["creator_updates"]], ["", "", ""])
+        self.assertEqual(first["series_updates"][0]["art"]["url"], "")
+        self.assertTrue(first["covers_pending"], "the page is told to ask again in a few seconds")
+        self.assertEqual(len(held), 1, "one worker for the queue")
+        held[0]()
+        self.assertEqual(client.asked, [("up", "42"), ("series", "ss1")])
+        self.relay._home_cache.clear()
+        again = self.call("GET", "/api/home")[1]
+        self.assertNotIn("covers_pending", again)
+        for x in again["creator_updates"]:
+            self.assertEqual(x["art"]["url"], home.thumb(f"https://i0.hdslb.com/bfs/archive/{x['id'].split(':')[2]}.jpg"))
+            self.assertEqual(x["creator"]["face"], home.thumb("https://i0.hdslb.com/bfs/face/f.jpg", "f"))
+        self.assertEqual(again["series_updates"][0]["art"]["url"], home.thumb("https://i0.hdslb.com/bfs/bangumi/p.jpg", "p"))
+        # A creator whose covers still do not come back is not asked again for half an hour.
+        client.covers.clear()
+        self.relay._home_cache.clear()
+        self.call("GET", "/api/home")
+        self.assertEqual(len(client.asked), 2)
+
+    def test_creator_uploads_from_search_need_an_account(self):
+        self.relay.clients["bilibili"] = SpaceTests.Client()
+        status, answer = self.call("GET", "/api/bili/space?mid=546195&page=2")
+        self.assertEqual(status, 200)
+        self.assertEqual((answer["page"], len(answer["items"])), (2, 30))
+        self.assertEqual(self.call("GET", "/api/bili/space?mid=546195", "guest")[0], 404)
+        self.assertEqual(self.request("GET", "/tv/api/bili/space?mid=546195")[0], 404, "signed out")
+
     # ---- the PC's own progress ----
 
     def test_pc_progress_is_per_user_persisted_and_leaves_the_tv_alone(self):
@@ -499,6 +569,77 @@ class ThumbAllowlistTests(unittest.TestCase):
         self.assertEqual(search.thumb("https://i.ytimg.com/vi/bbbbbbbbbbb/mqdefault.jpg", "v")[0], 502)
         self.assertEqual(sum(1 for c in calls if c[0] == "yt"), 2, "YouTube backs off after a network error")
         self.assertEqual(search.thumb("https://i0.hdslb.com/bfs/archive/a.jpg", "v")[0], 200, "Bilibili is not held back")
+
+
+class HeroThumbTests(unittest.TestCase):
+    def test_hero_size_asks_bilibili_for_a_big_uncropped_image(self):
+        asked = []
+
+        def bili(url, timeout):
+            asked.append(url)
+            return "image/webp", b"RIFFwebp"
+        search = bilisearch.BiliSearch(fetch=bili)
+        self.assertEqual(search.thumb("http://i0.hdslb.com/bfs/bangumi/p.jpg", "h")[0], 200)
+        self.assertEqual(asked[-1], "https://i0.hdslb.com/bfs/bangumi/p.jpg@1920w_90q.webp",
+                         "width only, no crop: the image host never enlarges, so the page sees the real size")
+        self.assertEqual(search.thumb("https://i0.hdslb.com/bfs/bangumi/p.jpg", "x")[0], 404, "unknown sizes refused")
+
+
+class SpaceTests(unittest.TestCase):
+    """GET /api/bili/space: one creator's uploads, paged, for Search → UP 主 (no subscription needed)."""
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+            self.fail = None
+
+        def uploads_page(self, mid, page, size):
+            self.calls.append((mid, page, size))
+            if self.fail is not None:
+                raise self.fail
+            from server.relay.state import Video
+            n = min(size, 65 - (page - 1) * size)
+            return [Video(bvid=f"BV1{page:02d}{i:07d}", title=f"t{page}-{i}", duration=60, pubdate=1000 - i)
+                    for i in range(n)], 65
+
+        def cover(self, bvid):
+            return f"https://i0.hdslb.com/bfs/archive/{bvid}.jpg"
+
+        def face(self, mid):
+            return "https://i0.hdslb.com/bfs/face/f.jpg"
+
+    def test_pages_cache_and_errors(self):
+        now = [0.0]
+        search = bilisearch.BiliSearch(clock=lambda: now[0])
+        client = self.Client()
+        first = search.space(client, "546195", "1")
+        self.assertTrue(first["ok"])
+        self.assertEqual((first["page"], first["pages"], first["total"], len(first["items"])), (1, 3, 65, 30))
+        self.assertEqual(first["items"][0]["cover"], "https://i0.hdslb.com/bfs/archive/BV1010000000.jpg")
+        self.assertEqual(first["face"], "https://i0.hdslb.com/bfs/face/f.jpg")
+        self.assertIs(search.space(client, "546195", 1), first, "cached")
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(len(search.space(client, "546195", 3)["items"]), 5)
+        for mid, page in (("abc", 1), ("1" * 21, 1), ("546195", 0), ("546195", bilisearch.SPACE_PAGES + 1), ("", 1)):
+            self.assertFalse(search.space(client, mid, page)["ok"], (mid, page))
+        client.fail = bilibili.BilibiliError("x", permanent=True)
+        self.assertEqual(search.space(client, "7", 1)["error"], bilisearch.REFUSED_SPACE)
+        client.fail = bilibili.BilibiliError("timed out")
+        self.assertEqual(search.space(client, "8", 1)["error"], bilisearch.UNREACHABLE)
+        now[0] = bilisearch.SPACE_CACHE_S + 1
+        client.fail = None
+        search.space(client, "546195", 1)
+        self.assertEqual(client.calls[-1], ("546195", 1, bilisearch.SPACE_SIZE), "fetched again after the cache time")
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class ShelvesJsTests(unittest.TestCase):
+    """The home page's hero size choice, mouse-wheel shelves and creator filter as pure JS functions."""
+
+    def test_pure_functions(self):
+        result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_shelves_test.mjs")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class PcProgressTests(unittest.TestCase):
