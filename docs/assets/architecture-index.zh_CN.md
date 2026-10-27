@@ -73,7 +73,7 @@
 | --- | --- |
 | [`server/tv_server.py`](../../server/tv_server.py) | 入口；`live`/`run`/`prepare`/`import-video` 子命令；单连接会话循环。 |
 | [`server/live.py`](../../server/live.py) | 直播频道的 ffmpeg 管线、`CHANNELS` 表（从 `channels.txt` 加载）、调色板处理。 |
-| [`server/routes.py`](../../server/routes.py) | 直播台的备用线路（存在 `channels.txt.meta.json` 里）、试线路的顺序（`RouteCycle`）、上次好用的线路、出错的大白话；轻量的线路检测在 [`server/relay/routecheck.py`](../../server/relay/routecheck.py)。 |
+| [`server/routes.py`](../../server/routes.py) | 直播台的备用线路（存在 `channels.txt.meta.json` 里）、试线路的顺序（`preferred`：上次好用的先试，除非另一条快 40% 以上，再按量到的用时；`RouteCycle`）、上次好用的线路、检测和起播的用时、出错的大白话；轻量的线路检测在 [`server/relay/routecheck.py`](../../server/relay/routecheck.py)。 |
 | [`server/protocol.py`](../../server/protocol.py) | `main/av_protocol.h` 线协议的 Python 镜像。两边要保持一致；有测试交叉核对共用常量。 |
 | [`server/frames.py`](../../server/frames.py) | 索引图的条带切割/压缩——是 `av_expand_indexed`/`push_stripe` 的服务端对应物。 |
 | [`server/timeline.py`](../../server/timeline.py) | 内容时间 vs 到达时间、`SessionClock`。**任何音画同步或时序问题先读这里**；本区域当前"已修/未修/已测"的状态见 `docs/development/state-20260916.md`。 |
@@ -141,7 +141,7 @@
 | 新需求提到... | 从这里开始 |
 | --- | --- |
 | 频道列表，增删/排序频道 | `channels.txt`、`tools/channel_config.py`、`server/live.py`（`CHANNELS`、`reload_channels_if_changed`）、`main/av_channel_policy.c` |
-| 直播台的备用线路、自动换线路、「线路被拒绝 / 源站超时」这类提示 | `server/routes.py`、`server/relay/watch.py`（`WatchStream._run`）、`server/tv_server.py`（`route_*`）、`server/reconnect.py`、`server/relay/routecheck.py`（及 `tests/test_live_routes.py`） |
+| 直播台的备用线路、自动换线路、最快的线路、电脑播放器里换线路、「线路被拒绝 / 源站超时」这类提示 | `server/routes.py`、`server/relay/watch.py`（`WatchStream._run`）、`server/tv_server.py`（`route_*`）、`server/reconnect.py`、`server/relay/routecheck.py`（及 `tests/test_live_routes.py`） |
 | UP 主频道、视频网站、手机网页 | `server/relay/`、`packaging/systemd/tv-relay.service`、`packaging/nginx/tv-relay.conf` |
 | 产品网站（静态页、屏幕图） | `packaging/site/`、`tools/render_ui/site_shots.py`、`packaging/nginx/tv-site.conf`、[`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md#产品网站) |
 | 生产主机：systemd unit 和 drop-in、安装顺序、备份 | [`docs/development/host-setup.zh_CN.md`](../development/host-setup.zh_CN.md)、`packaging/systemd/` |

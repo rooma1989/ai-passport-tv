@@ -87,7 +87,7 @@ Supporting modules, each already host-testable and already covered by
 | --- | --- |
 | [`server/tv_server.py`](../../server/tv_server.py) | Entry point; `live`/`run`/`prepare`/`import-video` subcommands; per-connection session loop. |
 | [`server/live.py`](../../server/live.py) | Live-channel ffmpeg pipelines, `CHANNELS` table (loaded from `channels.txt`), palette handling. |
-| [`server/routes.py`](../../server/routes.py) | Backup lines of a live channel (in the `channels.txt.meta.json` sidecar), the order they are tried in (`RouteCycle`), the line that last worked, and failures said in plain Chinese; the light line check is [`server/relay/routecheck.py`](../../server/relay/routecheck.py). |
+| [`server/routes.py`](../../server/routes.py) | Backup lines of a live channel (in the `channels.txt.meta.json` sidecar), the order they are tried in (`preferred`: last good unless another is 40 % faster, then by measured time; `RouteCycle`), the line that last worked, check and play times, and failures said in plain Chinese; the light line check is [`server/relay/routecheck.py`](../../server/relay/routecheck.py). |
 | [`server/protocol.py`](../../server/protocol.py) | Python mirror of `main/av_protocol.h`'s wire framing. Keep the two in sync; a test cross-checks the shared constants. |
 | [`server/frames.py`](../../server/frames.py) | Indexed-picture stripe cutting/compression -- the server-side counterpart of `av_expand_indexed`/`push_stripe`. |
 | [`server/timeline.py`](../../server/timeline.py) | Content-time vs. arrival-time, `SessionClock`. **Read first** for any A/V sync or timing bug; see `docs/development/state-20260916.md` for the current known-good/known-broken state of this area. |
@@ -156,7 +156,7 @@ first, since it is what a flashed device cannot renegotiate):
 | New requirement mentions... | Start at |
 | --- | --- |
 | Channel list, adding/removing/reordering channels | `channels.txt`, `tools/channel_config.py`, `server/live.py` (`CHANNELS`, `reload_channels_if_changed`), `main/av_channel_policy.c` |
-| A live channel's backup lines, failover, "line refused / timed out" messages | `server/routes.py`, `server/relay/watch.py` (`WatchStream._run`), `server/tv_server.py` (`route_*`), `server/reconnect.py`, `server/relay/routecheck.py` (+ `tests/test_live_routes.py`) |
+| A live channel's backup lines, failover, fastest line, switching lines in the PC player, "line refused / timed out" messages | `server/routes.py`, `server/relay/watch.py` (`WatchStream._run`), `server/tv_server.py` (`route_*`), `server/reconnect.py`, `server/relay/routecheck.py` (+ `tests/test_live_routes.py`) |
 | Creator channels, video sites, the phone page | `server/relay/`, `packaging/systemd/tv-relay.service`, `packaging/nginx/tv-relay.conf` |
 | Product website (static page, screen pictures) | `packaging/site/`, `tools/render_ui/site_shots.py`, `packaging/nginx/tv-site.conf`, [`docs/development/host-setup.md`](../development/host-setup.md#product-website) |
 | Production host: systemd units and drop-ins, install order, backups | [`docs/development/host-setup.md`](../development/host-setup.md), `packaging/systemd/` |

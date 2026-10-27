@@ -7,8 +7,8 @@ SEGMENT_BYTES 字节（Range 请求）。地址不是列表（直接是 TS、FLV
 
 同时至多 CONCURRENCY 个台在测（页面的「检测全部」也只开两个并发），每条线路的每一步 TIMEOUT_S 秒、
 整条至多 TOTAL_S 秒。只测频道表里已经保存的线路（按台 id），不接受页面给的任意地址：云端的中转也有这个
-接口，管理员能让中转去连的地址和电视服务本来就会去连的一样。结果存进 meta 的 checks（routes.py），
-页面再打开时还看得到。
+接口，管理员能让中转去连的地址和电视服务本来就会去连的一样。结果（能不能连上、用了多少毫秒）存进 meta 的
+checks（routes.py），页面再打开时还看得到；用时也用来排线路的顺序（routes.speeds_of）。
 """
 
 from __future__ import annotations
@@ -162,10 +162,24 @@ def check_channel(path: Path, cid: str, opener=urllib.request.urlopen, clock=tim
     def change(data: dict) -> None:
         entry = data.setdefault(cid, {})
         checks = {k: v for k, v in (entry.get("checks") or {}).items() if k in marks}
+        starts = entry.get("starts") if isinstance(entry.get("starts"), dict) else {}
         for item in results:
-            checks[routes.fingerprint(item["url"])] = {"ok": item["ok"], "why": item["why"][:routes.WHY_MAX],
-                                                       "at": item["at"]}
+            mark = routes.fingerprint(item["url"])
+            checks[mark] = {"ok": item["ok"], "why": item["why"][:routes.WHY_MAX], "at": item["at"]}
+            if item["ok"]:
+                # 用时（毫秒）：从开始取列表到拿到片段的头 SEGMENT_BYTES 字节，排线路顺序用（routes.speeds_of）。
+                checks[mark]["ms"] = max(1, int(item["ms"]))
+            else:
+                # 现在连不上了：以前真放起来的用时不再算数（不然排序时它还显得快）。
+                for played in starts.values():
+                    if isinstance(played, dict):
+                        played.pop(mark, None)
         entry["checks"] = checks
+        starts = {k: v for k, v in starts.items() if isinstance(v, dict) and v}
+        if starts:
+            entry["starts"] = starts
+        else:
+            entry.pop("starts", None)
 
     routes.update_meta(path, change)
     return {"ok": True, "id": cid, "results": results}

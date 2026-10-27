@@ -1441,6 +1441,7 @@ class WatchPlayer {
   constructor(video, base, opts) {
     this.video = video; this.base = base; this.say = opts.say; this.live = !!opts.live; this.gap = opts.gap || (() => {});
     this.notice = opts.notice || this.say; this.reopen = opts.reopen || (() => false);
+    this.line = opts.line || (() => {});
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
     this.t0 = performance.now(); this.playedAt = 0;
     this.onWaiting = () => this.kick();
@@ -1494,7 +1495,12 @@ class WatchPlayer {
     for (let round = 0; ; round++) {
       if (!this.alive) throw new Error("");
       const response = await fetch(this.base + name, { credentials: "same-origin", cache: "no-store" });
-      if (response.ok) return response[kind]();
+      if (response.ok) {
+        // 几条线路的直播台：列表的 X-RTV-Route 是现在放第几条（从 1 数），自动换了线路以后头上的「线路 n/N」跟着变。
+        const line = Number(response.headers.get("X-RTV-Route"));
+        if (line > 0) this.line(line - 1);
+        return response[kind]();
+      }
       const notice = response.status === 503 && response.headers.get("X-RTV-Notice");
       if (notice && round < 120) { const text = await response.text(); if (this.alive) this.notice(text); await sleep(1000); continue; }
       if (response.status === 503 && round < 8) { await sleep(1000); continue; }
@@ -1940,6 +1946,7 @@ function playerFor(answer) {
     say: watchSay, ended: watchEnded, live,
     notice: (text) => { if (watching && watching.player !== player) return; routeNotice(answer.name || answer.title || answer.channel, text); },
     reopen: (text) => (!watching || watching.player === player) && routeReopen(answer, text),
+    line: (i) => { if (watching && watching.player === player && watching.route !== i) { watching.route = i; renderLine(); } },
     playing: (ms) => {
       if (!watching || watching.player !== player) return;
       switched();
@@ -2449,16 +2456,39 @@ function pickQuality(q) {
   if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: at }), { group: watching.group, seek: true, again: true });
   else startWatch(false, true, at);
 }
-// 速度、清晰度的小菜单。
+// ---- 直播台的线路（server/routes.py）：头上「线路 2/3」，点开选一条，马上从那条重起；起不来中转照常换别的 ----
+// 只在直接看（不是跟着小电视）、有几条线路时有。每条后面是上次量到的用时（真放起来的，没有时是检测的）或「打不开」。
+function canPickLine() { return !!watching && watching.mode === "direct" && watching.kind === "live" && watching.routes > 1; }
+function renderLine() {
+  const b = $("watchLine");
+  b.hidden = !canPickLine();
+  if (b.hidden) { if ($("pcMenu").dataset.kind === "line") closeMenu(); return; }
+  b.textContent = "线路 " + (watching.route + 1) + "/" + watching.routes;
+  b.setAttribute("aria-label", "线路 " + (watching.route + 1) + "，共 " + watching.routes + " 条：换线路");
+}
+function lineNote(x) {
+  if (!x) return "—";
+  if (x.bad) return "✗ 打不开";
+  return x.ms ? "✓ " + (x.ms / 1000).toFixed(1) + " 秒" : "—";
+}
+function pickLine(i) {
+  if (!canPickLine() || watching.busy || i === watching.route) return;
+  switching(watching.name || watching.channel, "正在换线路 " + (i + 1) + "…");
+  startDirect(Object.assign({}, watching.again, { route: i }), { group: watching.group, again: true });
+}
+// 速度、清晰度、线路的小菜单。
 const QUALITY_NOTES = { "720p": "秒开，拖到哪里都快", "1080p": "要转一下，拖动时稍等" };
+function menuAnchor(kind) { return kind === "rate" ? $("pcRate") : kind === "line" ? $("watchLine") : $("pcQuality"); }
 function openMenu(kind) {
-  const menu = $("pcMenu"), anchor = kind === "rate" ? $("pcRate") : $("pcQuality");
+  const menu = $("pcMenu"), anchor = menuAnchor(kind);
   if (!menu.hidden && menu.dataset.kind === kind) { closeMenu(); return; }
   menu.dataset.kind = kind;
-  menu.setAttribute("aria-label", kind === "rate" ? "播放速度" : "清晰度");
+  menu.setAttribute("aria-label", kind === "rate" ? "播放速度" : kind === "line" ? "线路" : "清晰度");
   menu.replaceChildren();
   const items = kind === "rate"
     ? RATES.map((r) => ({ value: r, label: rateLabel(r) + (r === 1 ? " 正常" : ""), on: r === savedRate() }))
+    : kind === "line"
+    ? Array.from({ length: watching.routes }, (_, i) => ({ value: i, label: "线路 " + (i + 1), note: lineNote(watching.lines[i]), on: i === watching.route }))
     : (watching.quality.choices || ["720p", "1080p"]).map((v) => ({
         value: v, label: v.toUpperCase(), note: watching.quality.site === "youtube" ? "" : (QUALITY_NOTES[v] || ""),
         on: watching.quality.current === v }));
@@ -2467,25 +2497,28 @@ function openMenu(kind) {
     b.setAttribute("role", "menuitemradio");
     b.setAttribute("aria-checked", String(item.on));
     b.innerHTML = ic("check", 16) + `<span><b>${esc(item.label)}</b>${item.note ? `<small>${esc(item.note)}</small>` : ""}</span>`;
-    b.onclick = () => { closeMenu(); if (kind === "rate") setRate(item.value); else pickQuality(item.value); };
+    b.onclick = () => { closeMenu(); if (kind === "rate") setRate(item.value); else if (kind === "line") pickLine(item.value); else pickQuality(item.value); };
     menu.appendChild(b);
   }
   menu.hidden = false;
   const box = $("pcBox").getBoundingClientRect(), r = anchor.getBoundingClientRect();
   menu.style.right = Math.max(6, box.right - r.right) + "px";
+  // 线路的按钮在画面上面的标题栏里：菜单从画面顶上往下开；别的在控制条上，往上开。
+  menu.style.top = kind === "line" ? "6px" : "";
+  menu.style.bottom = kind === "line" ? "auto" : "";
   (menu.querySelector('[aria-checked="true"]') || menu.firstChild).focus({ preventScroll: true });
   pcActive();
 }
 function closeMenu() {
   const menu = $("pcMenu");
   if (menu.hidden) return;
-  const back = menu.dataset.kind === "rate" ? $("pcRate") : $("pcQuality");
+  const back = menuAnchor(menu.dataset.kind);
   menu.hidden = true;
   if (menu.contains(document.activeElement)) back.focus({ preventScroll: true });
 }
 document.addEventListener("pointerdown", (event) => {
   const menu = $("pcMenu");
-  if (!menu.hidden && !menu.contains(event.target) && event.target !== $("pcRate") && event.target !== $("pcQuality")) closeMenu();
+  if (!menu.hidden && !menu.contains(event.target) && ![$("pcRate"), $("pcQuality"), $("watchLine")].includes(event.target)) closeMenu();
 }, true);
 // YouTube 的 DASH 还没放起来就出错（浏览器放不了、取不到索引）：改要合体的 360p 文件（没有时中转给 HLS）。
 function dashFallback(why) {
@@ -2594,6 +2627,7 @@ $("pcFull").onclick = pcToggleFull;
 $("pcPip").onclick = pcTogglePip;
 $("pcRate").onclick = () => openMenu("rate");
 $("pcQuality").onclick = () => openMenu("quality");
+$("watchLine").onclick = () => { if (canPickLine()) openMenu("line"); };
 $("pcMenu").addEventListener("keydown", (event) => {
   const items = [...$("pcMenu").querySelectorAll("button")], at = items.indexOf(document.activeElement);
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -2727,7 +2761,8 @@ function openDirect(answer, ctx) {
                index: answer.index || 0, total: answer.total || 0, series: !!answer.series, again,
                start: answer.start || 0, duration: answer.duration || 0, seekable: !!answer.seekable, seeking: null,
                parts: answer.parts || null, part: answer.part || answer.index || 0, video: answer.video || null,
-               quality: answer.quality || null };
+               quality: answer.quality || null,
+               routes: answer.routes || 1, route: answer.route || 0, lines: answer.lines || [] };
   miniWho = "pc";
   $("watchFollow").checked = false;
   const parts = answer.parts;
@@ -2827,6 +2862,7 @@ function renderWatch() {
   if (!watching) return;
   const direct = watching.mode === "direct";
   $("watchPrevCh").hidden = $("watchNextCh").hidden = !direct || watching.channel === "cast";
+  renderLine();
   const video = direct && watching.kind === "video" && /^(up|sr)\d\d$/.test(watching.channel);
   $("watchFollowBox").hidden = !online;
   const d = data.now.device;
