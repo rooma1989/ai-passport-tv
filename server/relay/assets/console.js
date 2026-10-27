@@ -1676,7 +1676,11 @@ class VodPlayer {
 // YouTube 的点播（server/relay/ytvod.py）：画面、声音各一条轨，清单里每条轨有 t（n + 1 个时间边界，秒）和
 // o（n + 1 个字节边界）：第 i 段从 t[i] 放到 t[i + 1]，字节是 o[i] 到 o[i + 1] − 1。
 // 缓冲：当前位置往后 AHEAD 秒，往前留 BEHIND 秒；跳回来以后远处（AHEAD_MAX 秒以外）的清掉；NEAR：算「接得上」的缝。
-const DASH = { AHEAD: 30, BEHIND: 30, AHEAD_MAX: 120, NEAR: 0.3 };
+// 一个请求取几段：相邻的段合成一个 Range，至多 MERGE_S 秒、MERGE_BYTES 字节（经代理时每个请求要等 0.2–0.3 秒才有
+// 第一个字节，小请求还跑不满带宽：量过 8 个 512 KB 一个一个取 3.5 秒，一个 4 MB 0.9 秒）。
+// 边收边接：起播前每攒够 FIRST_CHUNK 字节、之后每 CHUNK 字节就交给 SourceBuffer，收到第一个关键帧就出画面。
+const DASH = { AHEAD: 60, BEHIND: 30, AHEAD_MAX: 150, NEAR: 0.3, MERGE_S: 20, MERGE_BYTES: 4 * 1024 * 1024,
+               FIRST_CHUNK: 48 * 1024, CHUNK: 256 * 1024 };
 // 包含 t 秒的是第几段（t 在第一段之前算第 0 段，在最后之后算最后一段）。
 function dashIndex(times, t) {
   let lo = 0, hi = times.length - 2;
@@ -1685,18 +1689,37 @@ function dashIndex(times, t) {
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (times[mid] <= t) lo = mid; else hi = mid - 1; }
   return lo;
 }
-// 第 i 段的 Range 头。
-function dashRange(offsets, i) { return "bytes=" + offsets[i] + "-" + (offsets[i + 1] - 1); }
+// 第 i 段（给了 j 就是第 i 到 j − 1 段）的 Range 头。
+function dashRange(offsets, i, j) { return "bytes=" + offsets[i] + "-" + (offsets[j === undefined ? i + 1 : j] - 1); }
+// 从第 next 段起一个请求取到第几段为止（不含）：至少一段；后面的段在 now + AHEAD 秒以内、合起来不超过 MERGE_S 秒
+// 和 MERGE_BYTES 字节的都带上。
+function dashSpan(times, offsets, next, now) {
+  const last = times.length - 1;
+  let end = next + 1;
+  while (end < last && times[end] < now + DASH.AHEAD && times[end + 1] - times[next] <= DASH.MERGE_S
+         && offsets[end + 1] - offsets[next] <= DASH.MERGE_BYTES) end++;
+  return end;
+}
+// 几块收到的字节拼成一块。
+function dashJoin(parts, size) {
+  if (parts.length === 1) return parts[0];
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.byteLength; }
+  return out;
+}
 // 缓冲（[[起, 止], …]）里包含 t 的那一截（往前容 NEAR 秒的缝），没有时 null。
 function dashCovering(ranges, t) {
   for (const r of ranges) if (t >= r[0] - DASH.NEAR && t <= r[1]) return r;
   return null;
 }
-// 跳到 t 以后从第几段接着取：t 已经在缓冲里时从那一截末尾的下一段，否则从包含 t 的那一段。
+// 跳到 t 以后从第几段接着取：t 已经在缓冲里时从那一截末尾接着取——末尾正好是一段的结尾就是下一段，停在一段中间
+// （边收边接时掐断了）就是那一段（重取一遍，重叠的部分浏览器替换掉），否则从包含 t 的那一段。
 function dashResume(times, ranges, t) {
   const r = dashCovering(ranges, t);
   if (!r) return dashIndex(times, t);
-  return Math.min(times.length - 1, dashIndex(times, Math.max(t, r[1] - 0.2)) + 1);
+  const i = dashIndex(times, Math.max(t, r[1] - 0.2));
+  return Math.min(times.length - 1, Math.abs(r[1] - times[i + 1]) <= DASH.NEAR ? i + 1 : i);
 }
 // 第 next 段要不要现在取：还没取完，而且它在 now + AHEAD 秒以内。
 function dashWant(times, next, now) { return next >= 0 && next < times.length - 1 && times[next] < now + DASH.AHEAD; }
@@ -1784,7 +1807,8 @@ class DashPlayer {
     try {
       this.ms.duration = m.duration;
       this.tracks = kinds.map((k) => ({ k, t: m.tracks[k].t, o: m.tracks[k].o, init: m.tracks[k].init, sb: this.ms.addSourceBuffer(m.tracks[k].mime),
-                                        ib: m.tracks[k].ib, next: 0, busy: false, gen: 0, ctl: null, q: Promise.resolve() }));
+                                        ib: m.tracks[k].ib, next: 0, busy: false, gen: 0, ctl: null, q: Promise.resolve(),
+                                        partial: false, errors: 0 }));
       pcStage("缓冲中…");
       // 初始化段：清单里带着就直接用（中转取索引时已经读到了），省掉经代理再取一次。
       await Promise.all(this.tracks.map(async (t) => this.append(t, dashBytes(t.ib) || await this.get(t, "bytes=" + t.init[0] + "-" + t.init[1]))));
@@ -1799,19 +1823,57 @@ class DashPlayer {
     v.play().catch((error) => { if (this.alive && error && error.name === "NotAllowedError") this.say("点一下画面开始播放"); });
   }
   // 取一段字节（中转按 Range 转发）：网络断了、中转说片源连不上（502）时再试两次；404 是这一路已经停了。
-  async get(t, range) {
+  // 回答是 fetch 的 Response（读正文的是调用的人）；whole 为真时直接给字节。
+  async get(t, range, whole = true) {
     for (let round = 0; ; round++) {
       if (!this.alive) throw new Error("");
       t.ctl = new AbortController();
       let r;
       try { r = await fetch(this.base + t.k, { credentials: "same-origin", cache: "no-store", headers: { Range: range }, signal: t.ctl.signal }); }
       catch (error) { if (error.name === "AbortError" || round >= 2) throw error; await sleep(600); continue; }
-      if (r.ok) return r.arrayBuffer();
+      if (r.ok) return whole ? r.arrayBuffer() : r;
       if (r.status === 404 || r.status === 410) throw Object.assign(new Error("这一路已经停了"), { gone: true });
       const text = await r.text();
       if (round >= 2) throw new Error(text || "片源连不上");
       await sleep(600);
     }
+  }
+  // 把回答的正文边收边接给 SourceBuffer（攒够 FIRST_CHUNK / CHUNK 字节交一次）；跳走了（gen 变了）就不再接。
+  // 接了一半的段由 resetParser 收拾。
+  async pour(t, r, gen) {
+    if (!r.body || typeof r.body.getReader !== "function") {
+      const data = await r.arrayBuffer();
+      if (this.alive && gen === t.gen) await this.append(t, data);
+      return;
+    }
+    const reader = r.body.getReader();
+    let parts = [], size = 0;
+    const flush = async () => {
+      if (!size) return;
+      const data = dashJoin(parts, size);
+      parts = []; size = 0;
+      t.partial = true;
+      await this.append(t, data);
+      this.kick();
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (!this.alive || gen !== t.gen) { reader.cancel().catch(() => {}); return; }
+      if (done) break;
+      parts.push(value); size += value.byteLength;
+      if (size >= (this.started ? DASH.CHUNK : DASH.FIRST_CHUNK)) await flush();
+      if (!this.alive || gen !== t.gen) { reader.cancel().catch(() => {}); return; }
+    }
+    await flush();
+    t.partial = false;
+  }
+  // 接了半段就不接了（跳走了、断了）：让 SourceBuffer 丢掉那半段的解析状态，下一段从头解析。排在这条轨的队里。
+  resetParser(t) {
+    t.q = t.q.then(() => {
+      if (!t.partial) return;
+      t.partial = false;
+      try { if (this.ms && this.ms.readyState === "open" && !t.sb.updating) t.sb.abort(); } catch (error) { /* 已经拆掉了 */ }
+    });
   }
   // SourceBuffer 一次只能做一件事：每条轨的追加、清除排成一队。
   op(t, fn) {
@@ -1819,7 +1881,7 @@ class DashPlayer {
       if (!this.alive) { ok(); return; }
       const sb = t.sb;
       const done = () => { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); ok(); };
-      const fail = () => { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); bad(new Error("浏览器解不了这一段")); };
+      const fail = () => { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); bad(Object.assign(new Error("浏览器解不了这一段"), { decode: true })); };
       sb.addEventListener("updateend", done);
       sb.addEventListener("error", fail);
       try { fn(sb); } catch (error) { sb.removeEventListener("updateend", done); sb.removeEventListener("error", fail); bad(error); }
@@ -1846,19 +1908,28 @@ class DashPlayer {
     for (const t of this.tracks) if (!t.busy && dashWant(t.t, t.next, now)) this.fill(t);
     this.maybeEnd();
   }
+  // 取从第 next 段起的几段（dashSpan），边收边接。半路断了（不是跳走）：已经接上的留着，从缓冲的末尾接着取，
+  // 连着断 3 次才算坏了。
   async fill(t) {
     t.busy = true;
-    const gen = t.gen, i = t.next;
+    const gen = t.gen, i = t.next, j = dashSpan(t.t, t.o, i, this.video.currentTime);
     try {
-      const data = await this.get(t, dashRange(t.o, i));
+      const r = await this.get(t, dashRange(t.o, i, j), false);
       if (!this.alive || gen !== t.gen) return;
       await this.evict(t);
-      await this.append(t, data);
-      if (gen !== t.gen) return;
-      t.next = i + 1;
+      try { await this.pour(t, r, gen); } catch (error) { if (error && typeof error === "object") error.midway = true; throw error; }
+      if (!this.alive || gen !== t.gen) return;
+      t.next = j; t.errors = 0;
       this.kick();
     } catch (error) {
       if (!this.alive || gen !== t.gen || (error && error.name === "AbortError")) return;
+      if (error && error.midway && !error.decode && error.name !== "QuotaExceededError" && (t.errors = (t.errors || 0) + 1) < 3) {
+        this.resetParser(t);
+        t.next = dashResume(t.t, rangesOf(t.sb.buffered), this.video.currentTime);
+        if (gen === t.gen) t.busy = false;
+        setTimeout(() => this.pump(), 600);
+        return;
+      }
       this.fail(error.message || "片源断了", error.gone);
       return;
     } finally { if (gen === t.gen) t.busy = false; }
@@ -1872,6 +1943,7 @@ class DashPlayer {
       if (t.busy && next === t.next) continue;
       t.gen++;
       if (t.ctl) t.ctl.abort();
+      if (t.busy) this.resetParser(t);
       t.busy = false; t.next = next;
     }
     this.pump();

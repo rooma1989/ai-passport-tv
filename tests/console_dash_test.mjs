@@ -13,8 +13,8 @@ const source = readFileSync(join(ROOT, 'server/relay/assets/console.js'), 'utf8'
 const begin = source.indexOf('// ---- DASH 的几个纯函数');
 const end = source.indexOf('// ---- DASH 的纯函数到此');
 assert.ok(begin > 0 && end > begin, 'the pure block is marked in console.js');
-const { DASH, dashIndex, dashRange, dashCovering, dashResume, dashWant, dashEvict, dashBytes } = new Function(
-  source.slice(begin, end) + '\nreturn { DASH, dashIndex, dashRange, dashCovering, dashResume, dashWant, dashEvict, dashBytes };')();
+const { DASH, dashIndex, dashRange, dashSpan, dashJoin, dashCovering, dashResume, dashWant, dashEvict, dashBytes } = new Function(
+  source.slice(begin, end) + '\nreturn { DASH, dashIndex, dashRange, dashSpan, dashJoin, dashCovering, dashResume, dashWant, dashEvict, dashBytes };')();
 
 // Five-second segments starting at 0.067 s (an H.264 file with B-frames), the last one shorter.
 const t = [0.067, 5.067, 10.067, 15.067, 20.067, 22.5];
@@ -35,6 +35,30 @@ for (const x of [0, 4.99, 5, 3599.5, 7199.9, 7200]) assert.equal(dashIndex(many,
 assert.equal(dashRange(o, 0), 'bytes=1000-2999');
 assert.equal(dashRange(o, 4), 'bytes=10000-10999');
 
+// Several adjacent segments make one range.
+assert.equal(dashRange(o, 1, 4), 'bytes=3000-9999');
+assert.equal(dashRange(o, 2, 3), dashRange(o, 2));
+
+// One request covers the segments starting within AHEAD seconds, at most MERGE_S seconds and MERGE_BYTES bytes.
+const five = Array.from({ length: 101 }, (_, i) => i * 5);           // 100 five-second segments
+const small = five.map((_, i) => i * 100_000);                       // 100 KB each
+assert.equal(dashSpan(five, small, 0, 0), DASH.MERGE_S / 5, 'merged up to MERGE_S seconds');
+assert.equal(dashSpan(five, small, 99, 495), 100, 'the last segment alone');
+assert.equal(dashSpan(five, small, 40, 0), 41, 'beyond the window: still one segment');
+const fat = five.map((_, i) => i * 3_000_000);                       // 3 MB each: one per request
+assert.equal(dashSpan(five, fat, 3, 15), 4);
+const near = five.map((_, i) => i * 1_000_000);                      // 1 MB each: limited by MERGE_BYTES
+assert.equal(dashSpan(five, near, 0, 0), Math.min(DASH.MERGE_S / 5, Math.floor(DASH.MERGE_BYTES / 1_000_000)));
+for (let next = 0; next < 100; next += 7) {
+  const end = dashSpan(five, small, next, five[next]);
+  assert.ok(end > next && end <= 100, 'at least one, never past the end');
+}
+
+// Received chunks are joined in order.
+assert.deepEqual([...dashJoin([new Uint8Array([1, 2]), new Uint8Array([3]), new Uint8Array([4, 5])], 5)], [1, 2, 3, 4, 5]);
+const one = new Uint8Array([9]);
+assert.equal(dashJoin([one], 1), one, 'a single chunk is passed through');
+
 // Buffered ranges: a small gap before the range still counts as inside it.
 assert.deepEqual(dashCovering([[0, 10], [30, 40]], 5), [0, 10]);
 assert.deepEqual(dashCovering([[0, 10], [30, 40]], 30 - DASH.NEAR / 2), [30, 40]);
@@ -46,6 +70,8 @@ assert.equal(dashResume(t, [[0.067, 10.1]], 3), 2, 'audio frames overrunning a b
 assert.equal(dashResume(t, [[0.067, 10.06]], 16), 3, 'beyond the buffer');
 assert.equal(dashResume(t, [], 0), 0);
 assert.equal(dashResume(t, [[0.067, 22.5]], 21), 5, 'everything buffered: nothing more to fetch');
+assert.equal(dashResume(t, [[0.067, 7.4]], 3), 1, 'cut off inside segment 1 (streamed append): fetch it again');
+assert.equal(dashResume(t, [[5.067, 13]], 6), 2, 'resume inside the segment that was cut off');
 
 // Fetch while the next segment starts within AHEAD seconds of the playhead, and not past the last one.
 assert.equal(dashWant(t, 0, 0), true);
