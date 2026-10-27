@@ -20,6 +20,11 @@ SERIES = "动画影视"
 # AV_CONTROL_MAX、AV_CHANNEL_MAX 一致。中转加台前也按这个算，免得列表超长、设备一个台都收不到。
 CONFIG_MAX = 7168
 CHANNEL_MAX = 128
+# CONFIG 里除了频道列表还有格式、会话、遥控地址、正在播的集等：按频道列表算字节时给它们留这么多。
+CONFIG_SPARE_BYTES = 512
+# 全局频道表（总后台的频道表、channels.txt）最多这么多个台。电脑上看不受设备上限约束，全表都能看；
+# 每台设备只收得下前面一部分（device_list），按顺序截断。
+TABLE_MAX = 1000
 # 中转的台（UP 主 up…、剧集 sr…）在设备列表里的名字后面带上网站：「王志安(油管)」「熊出没(B站)」。
 # 设备只拿到名字，只能这样标；括号是半角的（JSON 里各占 1 字节），整个标记 9 / 14 字节。
 # 括号里的说明匹配台名时本来就不算（server/voice/match.strip_parens），unmark() 再把它拆回网站。
@@ -107,6 +112,47 @@ def config_bytes(names) -> int:
     return len(json.dumps({"groups": list(GROUPS),
                            "channel_list": [{"id": k, "name": v, "g": 0} for k, v in names]},
                           ensure_ascii=True, separators=(",", ":")).encode("ascii"))
+
+
+# 空列表的 config_bytes；每多一个台加上它那一项和一个逗号（第一个台没有逗号）。
+_EMPTY_BYTES = config_bytes([])
+
+
+def _entry_bytes(channel_id: str, name: str) -> int:
+    return len(json.dumps({"id": channel_id, "name": name, "g": 0}, ensure_ascii=True, separators=(",", ":")))
+
+
+def _prefix(sizes: list[int], budget: int, limit: int) -> int:
+    """sizes 从头取几项，config_bytes 不超过 budget、个数不超过 limit。"""
+    total, count = _EMPTY_BYTES, 0
+    for size in sizes:
+        total += size + (1 if count else 0)
+        if count >= limit or total > budget:
+            break
+        count += 1
+    return count
+
+
+DEVICE_BUDGET = CONFIG_MAX - CONFIG_SPARE_BYTES
+
+
+def device_list(names, keep: str = "", budget: int = DEVICE_BUDGET,
+                limit: int = CHANNEL_MAX) -> list[tuple[str, str]]:
+    """设备收得下的那部分频道列表：按顺序取，取到再多一个台就超过 limit 个或 config_bytes 超过 budget 为止。
+
+    names 已经是优先的顺序（投屏台、自己的 UP 主和剧集在前，再是全局表）。keep：正在播的台，排在截断处
+    之后时也留着，接在最后（占掉前面最后一两个台的位子），设备上的「正在播」和换台序号才对得上；
+    它一个都放不下时不管它。同样的输入总是同样的结果。"""
+    names = list(names)
+    sizes = [_entry_bytes(k, v) for k, v in names]
+    count = _prefix(sizes, budget, limit)
+    at = next((i for i, (k, _) in enumerate(names) if k == keep), -1) if keep else -1
+    if at < count:
+        return names[:count]
+    extra = sizes[at] + 1
+    if count == 0 or _EMPTY_BYTES + sizes[at] > budget:
+        return names[:count]
+    return names[:_prefix(sizes, budget - extra, limit - 1)] + [names[at]]
 
 
 def read_table(path: Path) -> list[tuple[str, str]]:

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -472,14 +473,21 @@ class WebTests(unittest.TestCase):
         offline = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss8"})
         self.assertIn("稍后", offline["error"])
 
-    def test_series_refused_when_the_device_list_is_full(self):
-        # A live table already past the device's CONFIG packet: no room for another channel.
-        rows = [f"ch{n:03d} | 很长很长很长的频道名字{n} | https://x/{n}.m3u8" for n in range(90)]
+    def test_series_refused_only_when_its_own_channels_are_full(self):
+        # A live table past the device's CONFIG packet does not count: the device just shows less of it.
+        rows = [f"ch{n:03d} | 很长很长很长的频道名字{n} | https://x/{n}.m3u8" for n in range(300)]
         self.main.write_text("\n".join(rows) + "\n", encoding="utf-8")
-        self.assertFalse(self.relay.room()["fits"])
+        self.assertTrue(self.relay.room()["fits"])
+        self.assertEqual(len(self.relay.channel_rows()), 301)       # the phone and the PC see the whole table
+        # The user's own channels (cast, creators, series) must still fit as a whole.
+        with unittest.mock.patch.object(channel_groups, "CONFIG_MAX", channel_groups.config_bytes(
+                [("cast", "我的投屏")]) + web.CONFIG_SPARE_BYTES + 10):
+            self.assertFalse(self.relay.room("海尔兄弟(B站)")["fits"])
+            answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7"})
+            self.assertIn("满了", answer["error"])
+            self.assertIsNone(self.state.get("sr01"))
         answer = self.call("POST", "/api/series", {"url": "https://www.bilibili.com/bangumi/play/ss7"})
-        self.assertIn("满了", answer["error"])
-        self.assertIsNone(self.state.get("sr01"))
+        self.assertTrue(answer["ok"], answer)
 
     def test_series_episode_list_and_choice(self):
         self.relay.add_series("https://www.bilibili.com/bangumi/play/ss7")

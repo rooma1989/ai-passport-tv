@@ -420,10 +420,10 @@ class ConfigContractTests(unittest.TestCase):
 
     def test_channel_ids_fit_the_device_buffer(self):
         """Ids must be short, printable and unique; the device skips anything else."""
-        from server.live import channel_list
+        from server.live import TV_CHANNEL_MAX, channel_config, channel_list
         entries = channel_list()
-        from server.live import TV_CHANNEL_MAX
-        self.assertLessEqual(len(entries), TV_CHANNEL_MAX)
+        # The table may be longer than a device holds; what the device is sent never is.
+        self.assertLessEqual(len(channel_config()["channel_list"]), TV_CHANNEL_MAX)
         seen = set()
         for entry in entries:
             cid = entry["id"]
@@ -474,25 +474,49 @@ class ConfigContractTests(unittest.TestCase):
             live.CHANNELS, live.CHANNEL_LABELS, live.DEFAULT_CHANNEL = saved
 
     def test_oversized_channel_file_is_rejected_not_truncated(self):
-        """A file too large for the device is an error, never a partial table."""
+        """A file too large for a channel table is an error, never a partial table."""
         import server.live as live
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "channels.txt"
-            # One byte past the ceiling, built from legal lines so only the
-            # total size can be what fails.
-            line = "ch%03d | n | http://x/" % 0
-            path.write_text(line * (live.TV_CHANNEL_MAX *
-                                    live.MAX_CHANNEL_LINE_BYTES // len(line) + 2),
-                            encoding="utf-8")
-            with self.assertRaises(ValueError):
+            # Past the ceiling, built from legal lines (padded with comments so
+            # the parser would accept every one) so only the total size can be
+            # what fails.
+            pad = "#" + "x" * (live.MAX_CHANNEL_LINE_BYTES - 2) + "\n"
+            text = "ch000 | n | http://x/\n" + pad * (live.TV_TABLE_MAX + 1)
+            path.write_text(text, encoding="utf-8")
+            self.assertGreater(len(text), live.TV_TABLE_MAX * live.MAX_CHANNEL_LINE_BYTES)
+            with self.assertRaises(ValueError) as caught:
                 live.load_channels(path)
+            self.assertIn("larger than", str(caught.exception))
+
+    def test_table_longer_than_a_device_is_read_whole(self):
+        """The PC plays the whole table; the device list is cut later, per device."""
+        import server.live as live
+        tables = (live.CHANNELS, live.CHANNEL_LABELS, live.CHANNEL_AGENTS)
+        saved = [dict(t) for t in tables], live.DEFAULT_CHANNEL, dict(live._LOADED)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "channels.txt"
+                path.write_text("".join(f"ch{n:03d} | 台{n} | http://x/{n}\n" for n in range(600)),
+                                encoding="utf-8")
+                live.load_channels(path)
+                self.assertEqual(len(live.CHANNELS), 600)
+                self.assertLessEqual(len(live.channel_config()["channel_list"]), live.TV_CHANNEL_MAX)
+        finally:
+            # In place: tv_server imported these dicts by name.
+            for table, before in zip(tables, saved[0]):
+                table.clear()
+                table.update(before)
+            live.DEFAULT_CHANNEL = saved[1]
+            live._LOADED.clear()
+            live._LOADED.update(saved[2])
 
     def test_read_limit_leaves_room_for_a_real_table(self):
         """The read ceiling must exceed any table the device would accept."""
         import server.live as live
         source = Path(live.__file__).resolve().parent.parent / live.CHANNELS_FILE
         size = source.stat().st_size
-        ceiling = live.TV_CHANNEL_MAX * live.MAX_CHANNEL_LINE_BYTES
+        ceiling = live.TV_TABLE_MAX * live.MAX_CHANNEL_LINE_BYTES
         self.assertGreater(ceiling, size,
                            f"read ceiling {ceiling} is below the {size}-byte table")
 

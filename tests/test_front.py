@@ -240,6 +240,15 @@ class FrontServerTests(unittest.TestCase):
     def test_body_limits(self):
         response, _ = self.call(self.lan, "POST", "/tv/api/x", {"Content-Length": str(front.BODY_MAX + 1)}, b"")
         self.assertEqual(response.status, 413)
+        # Saving the channel table may carry hundreds of new channels: it gets the relay's own larger limit.
+        from server.relay import admin
+        self.assertEqual(front.CHANNELS_BODY_MAX, admin.SELFHOST_CHANNELS_BODY_MAX)
+        body = b"x" * (front.BODY_MAX + 1)
+        response, _ = self.call(self.lan, "POST", "/tv/api/admin/channels", {"Content-Length": str(len(body))}, body)
+        self.assertNotEqual(response.status, 413)
+        response, _ = self.call(self.lan, "POST", "/tv/api/admin/channels",
+                                {"Content-Length": str(front.CHANNELS_BODY_MAX + 1)}, b"")
+        self.assertEqual(response.status, 413)
 
     def test_health(self):
         response, raw = self.call(self.lan, "GET", "/healthz")

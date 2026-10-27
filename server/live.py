@@ -27,9 +27,12 @@ from .timeline import (BASIS_COMMON_DECODE, ContentTimeline,
 from .media import AUDIO_CHUNK_MS, FPS, default_palette
 from .protocol import AUDIO_BYTES, AUDIO_PCM_BYTES, HEADER
 # 控制包（CONFIG）字节上限与频道数上限，与固件 main/av_protocol.h 同步修改（定义在 channel_groups，
-# 中转加台时也要用）；设备会拒绝更长的列表，须在服务端先行限制。
+# 中转加台时也要用）；设备会拒绝更长的列表，所以 channel_config() 只发设备收得下的前一部分。
 TV_CONTROL_MAX = channel_groups.CONFIG_MAX
 TV_CHANNEL_MAX = channel_groups.CHANNEL_MAX
+# 一次读进来的台最多这么多：全局表 TABLE_MAX 个，加上中转的台（投屏、UP 主、剧集，远少于 CHANNEL_MAX）。
+# 电脑上看、手机换台用的是整张表；设备的列表另外截断。
+TV_TABLE_MAX = channel_groups.TABLE_MAX + channel_groups.CHANNEL_MAX
 # 频道 id 长度上限，与固件同步。
 TV_CHANNEL_ID_MAX = 16
 # 频道表单行的字节上限，仅用于限定 channels.txt 的读取量；留足余量以容纳四字段形式。
@@ -106,8 +109,9 @@ DEFAULT_CHANNEL = ""
 def parse_channels(text: str, allow_empty: bool = False) -> tuple[dict[str, str], dict[str, str]]:
     """解析频道表，拒绝设备会丢弃的条目。
 
-    固件跳过空、不可打印或超长的 id，并只读取有限个频道（TV_CHANNEL_ID_MAX、TV_CHANNEL_MAX）；
-    在此报错，避免频道在设备端悄悄消失。allow_empty：自建模式，一个台都没有不算错。
+    固件跳过空、不可打印或超长的 id（TV_CHANNEL_ID_MAX），在此报错，避免频道在设备端悄悄消失。
+    台数只按 TV_TABLE_MAX 限制：设备收得下多少由 channel_config() 截断，不在这里拒绝。
+    allow_empty：自建模式，一个台都没有不算错。
     """
     channels: dict[str, str] = {}
     labels: dict[str, str] = {}
@@ -134,8 +138,8 @@ def parse_channels(text: str, allow_empty: bool = False) -> tuple[dict[str, str]
             raise ValueError(f"line {number}: id must be printable ASCII")
         if key in channels:
             raise ValueError(f"line {number}: duplicate id {key!r}")
-        # 超出设备上限的频道只忽略并在末尾告警，不当作致命错误。
-        if len(channels) >= TV_CHANNEL_MAX:
+        # 超出表的上限的频道只忽略并在末尾告警，不当作致命错误。
+        if len(channels) >= TV_TABLE_MAX:
             dropped += 1
             continue
         if not label:
@@ -150,37 +154,22 @@ def parse_channels(text: str, allow_empty: bool = False) -> tuple[dict[str, str]
             agents[key] = frames.DEFAULT_USER_AGENT
     if not channels and not allow_empty:
         raise ValueError("channel table contains no channels")
-    # 数量合规但列表超过 CONFIG 包上限时，设备收不到任何频道（JSON 转义后每个汉字占 6 字节）；
-    # 与数量超限一样只告警，不拒绝启动。
-    packet = channel_groups.config_bytes((k, labels[k]) for k in channels)
-    if packet > TV_CONTROL_MAX or dropped:
-        total = len(channels) + dropped
-        # 数量超限与名称过长分别提示，避免误导操作者。
-        if dropped:
-            print(f"警告：channels.txt 有 {total} 个频道，设备最多接收 "
-                  f"{TV_CHANNEL_MAX} 个。", flush=True)
-            print(f"      超出的 {dropped} 个已被忽略，设备只会显示前 "
-                  f"{len(channels)} 个。", flush=True)
-        if packet > TV_CONTROL_MAX:
-            if not dropped:
-                print(f"警告：{total} 个频道，数量没有超，但频道名太长。", flush=True)
-            print(f"      下发给设备的列表有 {packet} 字节，超过设备的 "
-                  f"{TV_CONTROL_MAX} 字节上限，设备可能一个频道都收不到。", flush=True)
-            print(f"      每个频道名平均 {packet // max(1, len(channels))} 字节，"
-                  f"缩短频道名（尤其是中文名）是有效的办法。", flush=True)
-        print("      请编辑 channels.txt。", flush=True)
+    # 台多于设备收得下的不告警：每台设备只拿前一部分（channel_config），电视服务第一次截断时会记一行日志。
+    if dropped:
+        print(f"警告：channels.txt 有 {len(channels) + dropped} 个频道，最多读 {TV_TABLE_MAX} 个；"
+              f"超出的 {dropped} 个已被忽略。请编辑 channels.txt。", flush=True)
     return channels, labels, agents
 
 
 def _channel_text(source: Path) -> str:
-    # 读取上限由频道数和单行上限决定，不用 TV_CONTROL_MAX 或 VIDEO_MAX（那是单包线路上限）：
+    # 读取上限由表的台数上限和单行上限决定，不用 TV_CONTROL_MAX 或 VIDEO_MAX（那是单包线路上限）：
     # 合法文件不会被截断，超大文件在已知大小处停止。
-    limit = TV_CHANNEL_MAX * MAX_CHANNEL_LINE_BYTES
+    limit = TV_TABLE_MAX * MAX_CHANNEL_LINE_BYTES
     with source.open(encoding="utf-8", errors="strict") as handle:
         text = handle.read(limit + 1)
     if len(text) > limit:
-        raise ValueError(f"{source} is larger than {limit} bytes; the device "
-                         f"cannot hold more than {TV_CHANNEL_MAX} channels")
+        raise ValueError(f"{source} is larger than {limit} bytes; a channel table "
+                         f"holds at most {TV_TABLE_MAX} channels")
     return text
 
 
@@ -295,14 +284,18 @@ def channel_list() -> list[dict]:
     return [{"id": key, "name": CHANNEL_LABELS.get(key, key)} for key in CHANNELS]
 
 
-def channel_config() -> dict:
+def channel_config(keep: str = "", budget: int = channel_groups.DEVICE_BUDGET) -> dict:
     """下发给设备的频道列表：分组名只发一次（空组不发），每个台带分组编号 g。
 
     每个台都带分组名会让列表超过 TV_CONTROL_MAX；编号只多几个字节。不认识 g 的旧固件会忽略它。
+    表比设备收得下的长时只发前面一部分（channel_groups.device_list：中转的台在前，再按全局表的顺序，
+    至多 TV_CHANNEL_MAX 个、config_bytes 不超过 budget）；keep 是正在播的台，截在外面也留着。
+    分组只列截下来的台用到的。
     """
     path = os.environ.get(GROUPS_ENV)
     overrides = channel_groups.load_overrides(Path(path) if path else None)
-    entries = [(key, CHANNEL_LABELS.get(key, key)) for key in CHANNELS]
+    entries = channel_groups.device_list([(key, CHANNEL_LABELS.get(key, key)) for key in CHANNELS],
+                                         keep, budget)
     of = {key: channel_groups.group_of(key, name, overrides) for key, name in entries}
     used = [g for g in channel_groups.GROUPS if g in of.values()]
     index = {g: n for n, g in enumerate(used)}

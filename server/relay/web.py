@@ -79,8 +79,8 @@ SEEK_BRIDGE_S = 15.0
 PAUSE_MAX_S = 30 * 60
 # 最多每分钟问一次 YouTube 节点的健康状态。
 YOUTUBE_HEALTH_S = 60
-# CONFIG 包里除频道列表外还有会话号、遥控地址等，加台时给它们留的字节数。
-CONFIG_SPARE_BYTES = 512
+# CONFIG 包里除频道列表外还有会话号、遥控地址等，加台时给它们留的字节数（和电视服务截断设备列表时一样）。
+CONFIG_SPARE_BYTES = channel_groups.CONFIG_SPARE_BYTES
 # 剧集台的名字最多这么多个字符；手机上可以自己起名。
 SERIES_NAME_MAX = 20
 # 在电脑上看（直接看一个台）时的页面编号：页面自己随机生成，同一个页面换台只占一路。
@@ -1129,12 +1129,17 @@ class Relay:
         own = state.group_overrides if state is not None else {}
         return {k: v for k, v in {**admin.global_groups(self), **own}.items() if v in channel_groups.GROUPS}
 
-    def _rows_of(self, state: State, marked: bool = True) -> list[tuple[str, str]]:
-        """marked：名字和设备列表里一样带网站标记（算 CONFIG 字节用）；手机网页另有网站标签，不带。"""
+    def _own_rows(self, state: State, marked: bool = True) -> list[tuple[str, str]]:
+        """自己的台：投屏台、UP 主、剧集。设备列表里它们排在全局表前面，一定收得下（room_of 管着）。"""
         label = table.label if marked else table.plain_label
         with state.lock:
-            rows = [(table.CAST_ID, table.CAST_LABEL)]
-            rows += [(c.id, label(c)) for c in state.creators]
+            return [(table.CAST_ID, table.CAST_LABEL)] + [(c.id, label(c)) for c in state.creators]
+
+    def _rows_of(self, state: State, marked: bool = True) -> list[tuple[str, str]]:
+        """marked：名字和设备列表里一样带网站标记（算 CONFIG 字节用）；手机网页另有网站标签，不带。
+
+        这是整张表（电脑上看、手机换台都用它）；设备只收得下前一部分，见 channel_groups.device_list。"""
+        rows = self._own_rows(state, marked)
         if self.main_channels is not None:
             rows += channel_groups.read_table(self.main_channels)
         return rows
@@ -2216,8 +2221,11 @@ class Relay:
         return self.room_of(self._account(caller), extra)
 
     def room_of(self, state: State, extra: str = "") -> dict:
-        """同 room()，按一份状态算（语音订阅按设备主人的状态，见 voice.py）。"""
-        rows = self._rows_of(state) + ([("sr00", extra)] if extra else [])
+        """同 room()，按一份状态算（语音订阅按设备主人的状态，见 voice.py）。
+
+        只算自己的台：它们在设备列表的最前面，必须整份收得下；全局表再长也只是在后面少显示几个台
+        （电视服务截断），不挡加 UP 主、剧集。"""
+        rows = self._own_rows(state) + ([("sr00", extra)] if extra else [])
         used = channel_groups.config_bytes(rows) + CONFIG_SPARE_BYTES
         return {"bytes": max(0, channel_groups.CONFIG_MAX - used),
                 "channels": max(0, channel_groups.CHANNEL_MAX - len(rows)),
