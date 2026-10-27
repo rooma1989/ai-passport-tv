@@ -48,6 +48,19 @@ Without `--dev-core`, a checkout runs the real core
 A checkout never registers a login item (only an installed copy does), and
 `--smoke-test` and `--tray-check` take no sleep assertion.
 
+### Trying a change on a Mac without packaging
+
+`tools/dev_desktop.sh start` quits the installed RooTV.app, backs up the
+database (`<data>/backups/dev-*.db`, the five newest kept) and runs the core
+from this checkout against the app's real data folder
+(`~/Library/Application Support/RooTV`), so channels, devices and sign-ins
+are all there. After pulling or merging, `tools/dev_desktop.sh restart` picks up
+the new code in a few seconds. `status` and `log` show what it is doing; `stop`
+ends it, after which RooTV.app can be opened again. It needs Python 3.11 or
+newer and ffmpeg on the PATH (`ROOTV_DEV_PYTHON`, `ROOTV_DEV_FFMPEG`,
+`ROOTV_DEV_DATA` override them), and starts the core without the proxy
+variables of the shell.
+
 ## Building
 
 ```bash
