@@ -2807,13 +2807,10 @@ function renderWatch() {
   const video = direct && watching.kind === "video" && /^(up|sr)\d\d$/.test(watching.channel);
   $("watchFollowBox").hidden = !online;
   const d = data.now.device;
-  $("watchNote").textContent = direct
-    ? "直接在电脑上看，不动小电视。" + (watching.kind === "video" ? "电脑上看的进度另记（「继续观看」里有），" + (video ? "不会把小电视那边标成看过。" : "") : "")
-      + "只在开着这个画面时才转，关掉后马上停。"
-    : "电脑上的画面和小电视不同步：两边各自从片源取，电脑上通常晚几秒到十几秒。"
-      + (watching.seekable ? "在电脑上拖进度只动电脑，小电视照常播。" : "")
-      + (d && d.audio_only === 1 ? "小电视现在「只听」，电脑上照样有画面。" : "")
-      + "关掉约 20 秒后自动停。";
+  // 只在跟着小电视看时说一句（两边不同步）；直接在电脑上看不用解释。
+  $("watchNote").textContent = direct ? ""
+    : "和小电视各放各的，电脑上会晚几秒" + (watching.seekable ? "；拖进度只动电脑" : "") + (d && d.audio_only === 1 ? "；小电视现在「只听」" : "");
+  $("watchNote").hidden = direct;
   // 跟随：小电视换了台（或下一个视频）、电脑版换了设备，就重新要一次地址；还是同一个片源时不打断。
   if (!direct && $("watchFollow").checked && online && !watching.busy &&
       (watchKey(data.now) !== watching.key || watching.device !== deviceId())) startWatch(true);
@@ -3047,8 +3044,8 @@ function renderGuide(force) {
   if (!data.epg) {
     guideSig = "";
     box.innerHTML = `<div class="empty"><div class="eic">${ic("guide", 40)}</div><b>还没有节目单</b><p>${me && me.role === "admin"
-      ? "在总后台的「频道表 → 节目单」里打开一个来源（网上公开的节目单，或者自己填的地址），这里就有每个台现在和接下来播什么。"
-      : "请管理员在总后台的「频道表 → 节目单」里打开节目单。没有节目单时，直播台照样能看。"}</p>${me && me.role === "admin" ? `<a class="btn sm" href="admin">打开总后台</a>` : ""}</div>`;
+      ? "在「管理 → 频道表 → 节目单」里选一个来源就有了。"
+      : "请管理员在「管理 → 频道表 → 节目单」里打开。"}</p>${me && me.role === "admin" ? `<a class="btn sm" href="#/admin/channels">去打开</a>` : ""}</div>`;
     return;
   }
   const nowS = Date.now() / 1000;
@@ -3396,6 +3393,7 @@ $("addSeries").onclick = () => busy($("addSeries"), async () => {
 
 // pgc：「视频」第一页顺带的正版影视、番剧（bilibili.py 的 pgc_top），放在视频前面。
 const bs = { kind: "video", q: "", page: 0, pages: 0, items: [], pgc: [], run: 0, timer: 0, retried: false };
+const BS_HELLO = "输入关键词，或粘贴视频链接直接播放";
 const BS_WHAT = { video: "的视频", user: "的 UP 主（有投稿的）", bangumi: "的番剧", ft: "的影视剧" };
 // 在哪儿搜（bili / yt），每个浏览器记住；YouTube 的结果另放，切回来还在。
 let searchSrc = lsGet("console.search.src", "bili") === "yt" ? "yt" : "bili";
@@ -3452,7 +3450,7 @@ async function bsSearch(fresh) {
   if (isGuest()) { bsSay("访客只能粘贴视频链接播放。"); return; }
   if (searchSrc === "yt") return ytSearch(false);
   const q = $("bsQuery").value.trim().replace(/\s+/g, " ");
-  if (!q) { bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。粘贴 B 站或 YouTube 视频链接可以直接播放。"); return; }
+  if (!q) { bsSay(BS_HELLO); return; }
   if (q.length > 40) { bsSay("关键词太长了（最多 40 个字）", "bad"); return; }
   clearTimeout(bs.timer);
   const run = ++bs.run, kind = bs.kind, page = fresh ? 1 : bs.page + 1;
@@ -3482,9 +3480,7 @@ async function bsSearch(fresh) {
   bs.items = fresh ? answer.items : bs.items.concat(answer.items.filter((x) => !bs.items.some((y) => y.id === x.id)));
   if (fresh) bs.pgc = answer.pgc || [];
   if (!bs.items.length && !bs.pgc.length) bsSay("没有搜到「" + q + "」" + BS_WHAT[kind]);
-  else bsSay((answer.total ? "B 站说有 " + bigNumber(answer.total) + " 个结果，" : "") + "这里列出 " + bs.items.length + " 个"
-             + (bs.pgc.length ? "，前面是 " + bs.pgc.length + " 部正版影视、番剧" : "")
-             + (kind === "ft" || kind === "bangumi" ? "：" + (canPc() ? "「在电脑上看」能选集，" : "") + "「加为剧集」后小电视按集播" : ""));
+  else bsSay(answer.total ? bigNumber(answer.total) + " 个结果" : "");
   renderSearch();
 }
 $("bsQuery").addEventListener("input", () => {
@@ -3504,13 +3500,13 @@ function bsKind(kind) {
   bs.items = []; bs.pgc = []; bs.page = 0; bs.q = "";
   renderSearch();
   if ($("bsQuery").value.trim()) bsSearch(true);
-  else bsSay("输入关键词，停手一会儿就会搜；按回车马上搜。");
+  else bsSay(BS_HELLO);
 }
 for (const b of qsa("#bsKinds button")) b.onclick = () => bsKind(b.dataset.kind);
 
 // ---------- YouTube 搜索 ----------
 
-const YT_HELLO = "输入关键词按回车（停手一会儿也会搜）。YouTube 每次搜索要跑一次 yt-dlp，要几秒到十几秒。粘贴 YouTube 视频链接可以直接播放。";
+const YT_HELLO = "输入关键词按回车（每次要几秒），或粘贴 YouTube 链接直接播放";
 // YouTube 能不能搜：off（没开）、cloudoff（服务器没配）、login（cookies 过期）、ok。
 function ytAvail() {
   if (!data) return "ok";
@@ -3573,7 +3569,7 @@ function setSource(src) {
     else if (yts.items.length) bsSay("YouTube 上「" + yts.q + "」的 " + yts.items.length + " 个结果");
     else ytHello();
   } else if (q && q !== bs.q) bsSearch(true);
-  else bsSay(bs.items.length ? "这里列出 " + bs.items.length + " 个" : "输入关键词，停手一会儿就会搜；按回车马上搜。粘贴 B 站或 YouTube 视频链接可以直接播放。");
+  else bsSay(bs.items.length ? "" : BS_HELLO);
 }
 for (const b of qsa("#srcSwitch button")) b.onclick = () => setSource(b.dataset.src);
 for (const b of qsa("#ytKinds button")) {

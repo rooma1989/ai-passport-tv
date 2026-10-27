@@ -296,13 +296,13 @@ def friendly(text: str) -> str:
     return REASONS[classify(text)]
 
 
-ALL_FAILED = "这个台的线路都打不开了：去「总后台 → 频道表」检测线路或重新导入"
+ALL_FAILED = "这个台的线路都打不开了：去「管理 → 频道表」检测线路或重新导入"
 
 
 def all_failed(last: str, count: int) -> str:
     """所有线路都不行时说的话：几条线路时带上最后一条的原因。"""
     if count <= 1:
-        return f"{friendly(last)}。去「总后台 → 频道表」检测线路或重新导入"
+        return f"{friendly(last)}。去「管理 → 频道表」检测线路或重新导入"
     return f"{ALL_FAILED}（{count} 条线路，最后一条：{friendly(last)}）"
 
 
