@@ -1873,16 +1873,17 @@ class Relay:
         elif duration and offset >= duration - 5:
             offset = 0.0
         episodes = library.episodes_of(found)
-        show = found.get("show") or ""
-        name = show if episodes else found["title"]
+        # 剧名 / 片名：对上豆瓣的用豆瓣的（library.shown）。
+        show = name = library.shown(found)["name"] or found["title"]
+        label = found["title"] if found.get("kind") == "episode" else name
         if decision["how"] == "direct":
             self.watch.close(slot)
             play = _LibraryPlay(secrets.token_hex(8))
-            answer = {"ok": True, "sid": play.sid, "title": found["title"], "kind": "video", "mode": "vod",
+            answer = {"ok": True, "sid": play.sid, "title": label, "kind": "video", "mode": "vod",
                       "url": f"api/library/file/{found['id']}", "start": round(offset, 1), "duration": int(duration),
                       "seekable": True}
         else:
-            source = library.watch_source(found, media, decision, offset, found["title"])
+            source = library.watch_source(found, media, decision, offset, label)
             try:
                 # 每次都重起一路（跳转、从头放、换一集）：从 offset 那一秒起，时间轴照原样。
                 play = self.watch.open(slot, source, user=caller.user, restart=True)
@@ -1891,7 +1892,7 @@ class Relay:
             answer = self._watch_answer(play, duration)
         self.log(f"在电脑上放片库的「{found['title']}」：{decision['note']}")
         self._pc_cursor[(caller.user, key)] = {"bvid": found["id"], "offset": offset, "stream": play,
-                                               "title": found["title"], "name": name, "duration": duration,
+                                               "title": label, "name": name, "duration": duration,
                                                "site": "library"}
         if start is not None:
             self._pc_cursor[(caller.user, key)]["position"] = offset

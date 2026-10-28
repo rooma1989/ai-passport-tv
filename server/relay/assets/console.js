@@ -5925,7 +5925,8 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 // 上面一排是来源（管理员能扫描、删除、添加），下面是海报墙：电影、剧集（点进去是各集）、其他视频，搜索框按片名筛。
 // 只在这台电脑上放：浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；只有里面没有画面也没有
 // 声音的标「放不了」。家里人都能看，访客没有这一页。
-const lib = { data: null, busy: false, at: 0, q: "", show: "", kind: "webdav", form: false, timer: 0, failed: false };
+const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", kind: "webdav", form: false, timer: 0, failed: false,
+              match: null, more: false };
 async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
   lib.busy = true;
@@ -5941,24 +5942,81 @@ async function loadLib(force, poll) {
   lib.failed = false;
   if (answer.ok) lib.data = answer;
   // 正在填「添加来源」时不重画（扫描时每 3 秒问一次，重画会打断输入）。
-  const form = qs("#libAdd"), panel = qs("#libBox .ldrive");
-  if (!(poll && ((form && form.contains(document.activeElement)) || (panel && panel.contains(document.activeElement))))) renderLib();
+  const form = qs("#libAdd"), panel = qs("#libBox .ldrive"), box = qs("#libMatch");
+  if (!(poll && [form, panel, box].some((f) => f && f.contains(document.activeElement)))) renderLib();
   // 正在扫描：过几秒再问一次，扫完了墙上就有了。
   clearTimeout(lib.timer);
   if (answer.ok && (answer.scan.running || answer.scan.queued)) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 3000);
+  // 后台还在查豆瓣（pending）：隔一会儿再问，查到的海报和片名就换上了。
+  else if (answer.ok && answer.pending) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 20000);
 }
 const libKind = (k) => k === "webdav" ? "网盘" : "本机文件夹";
+// 电影、其他视频的卡片：点开是资料页（libInfoHTML），在那里放；豆瓣的评分跟在年份后面。
 function libCard(c, wide) {
-  const id = reg({ id: "lib:" + c.id, title: c.title, subtitle: c.year ? String(c.year) : "", art: { url: c.art, ratio: wide ? "wide" : "poster" },
-                   play: { kind: "library", id: c.id, playable: c.playable } });
   const no = c.playable ? "" : '<span class="badge">放不了</span>';
-  const sub = [c.year, wide ? c.source : ""].filter(Boolean).join(" · ") || (c.ext || "").toUpperCase();
-  return `<button class="card${wide ? "" : " p"}${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="lc-${esc(c.id)}" aria-label="播放 ${esc(c.title)}${c.playable ? "" : "（放不了）"}" title="${esc(c.plot || c.title)}"><span class="art">${art(c.title, wide ? "w" : "p", wide ? {} : { title: c.title, kick: "片库" })}${imgTag(c.art)}${no}</span>
+  const m = c.meta && c.meta.state === "matched" ? c.meta : null;
+  const sub = [c.year, m && m.rating ? "★ " + m.rating : "", wide ? c.source : ""].filter(Boolean).join(" · ") || (c.ext || "").toUpperCase();
+  return `<button class="card${wide ? "" : " p"}${c.playable ? "" : " dead"}" data-libitem="${esc(c.id)}" data-k="lc-${esc(c.id)}" aria-label="${esc(c.title)}${c.playable ? "" : "（放不了）"}，详情" title="${esc(c.plot || c.title)}"><span class="art">${art(c.title, wide ? "w" : "p", wide ? {} : { title: c.title, kick: "片库" })}${imgTag(c.art)}${no}</span>
     <span class="t">${esc(c.title)}</span><span class="s">${esc(sub)}</span></button>`;
 }
 function libShowCard(s) {
+  const m = s.meta && s.meta.state === "matched" ? s.meta : null;
+  const sub = [s.year, m && m.rating ? "★ " + m.rating : "", (s.seasons > 1 ? s.seasons + " 季 · " : "") + s.count + " 集"].filter(Boolean).join(" · ");
   return `<button class="card p${s.playable ? "" : " dead"}" data-libshow="${esc(s.id)}" data-k="ls-${esc(s.id)}" aria-label="${esc(s.title)}，${s.count} 集，选集"><span class="art">${art(s.title, "p", { title: s.title, kick: "剧集" })}${imgTag(s.art)}</span>
-    <span class="t">${esc(s.title)}</span><span class="s">${s.seasons > 1 ? s.seasons + " 季 · " : ""}${s.count} 集</span></button>`;
+    <span class="t">${esc(s.title)}</span><span class="s">${esc(sub)}</span></button>`;
+}
+// ---- 片库的资料页（剧的选集页上面、电影点开）：海报、片名和原名、年份、评分、类型、导演、主演、简介（长的折起来）。
+// 资料来自豆瓣（library.py、libmeta.py，后台慢慢查；本地 .nfo 和海报优先）。管理员能「匹配豆瓣 / 改匹配」：
+// 小框里按片名搜豆瓣（GET api/admin/library/douban），选一个存下；「不匹配」不用豆瓣的资料。
+const libD = () => lib.data || {};
+function libInfoHTML(o, playHTML) {
+  const m = o.meta && o.meta.state === "matched" ? o.meta : null, admin = isAdmin(), online = !!libD().online;
+  const facts = m ? [o.year || m.year, m.rating ? `<b class="lrate">豆瓣 ${esc(m.rating)}</b>` : "", (m.genres || []).join(" / "),
+    m.type === "tv" && m.episodes ? m.episodes + " 集" : "", (m.countries || []).slice(0, 2).join(" / ")].filter(Boolean)
+    : [o.year, o.sub].filter(Boolean);
+  const people = (label, list) => list && list.length ? `<p class="lppl"><span>${label}</span>${esc(list.join(" / "))}</p>` : "";
+  let state = "";
+  if (!m && admin) state = o.meta && o.meta.state === "none" ? "设成了不用豆瓣的资料" : !online ? "在线资料关着" : o.meta ? "豆瓣上没找到有把握的条目，可以手动匹配"
+    : o.kind === "video" ? "其他视频不自动查豆瓣（名字不往外发），需要时手动匹配" : "还没查豆瓣（后台慢慢查）";
+  else if (m && m.partial) state = "豆瓣的详细资料还没取全，过一会儿再补";
+  const acts = admin && online ? (m
+    ? `<button class="ghost sm" data-libmatch="${esc(o.key)}">改匹配</button><button class="ghost sm" data-librefresh="${esc(o.key)}">重新取资料</button><button class="ghost sm red" data-libunmatch="${esc(o.key)}">不匹配</button>`
+    : `<button class="ghost sm" data-libmatch="${esc(o.key)}">匹配豆瓣</button><button class="ghost sm" data-librefresh="${esc(o.key)}">自动找一次</button>`) : "";
+  const plot = m && m.plot ? m.plot : o.plot || "";
+  const box = lib.match && lib.match.key === o.key ? libMatchHTML() : "";
+  return `<div class="linfo"><span class="lpost">${art(o.title, "p", { title: o.title })}${imgTag(o.art)}</span>
+    <div class="linx"><h2>${esc(o.title)}</h2>${m && m.original && m.original !== o.title ? `<p class="lorig">${esc(m.original)}</p>` : ""}
+    ${facts.length ? `<p class="lfacts">${facts.map((f) => String(f).startsWith("<b") ? f : esc(f)).join('<i aria-hidden="true">·</i>')}</p>` : ""}
+    ${m ? people("导演", m.directors) + people("主演", (m.actors || []).slice(0, 5)) : ""}
+    ${plot ? `<p class="lplot${lib.more ? " open" : ""}">${esc(plot)}</p>${plot.length > 24 ? `<button class="lmore" data-libmore="1" aria-expanded="${lib.more}">${lib.more ? "收起" : "展开"}</button>` : ""}` : ""}
+    ${state ? `<p class="hint lstate">${esc(state)}</p>` : ""}
+    ${playHTML || acts ? `<div class="inline lacts">${playHTML || ""}${acts}</div>` : ""}${box}</div></div>`;
+}
+function libMatchHTML() {
+  const M = lib.match;
+  const rows = (M.list || []).map((c) => `<button class="lcand" type="button" data-libpick="${esc(c.id)}"${M.busy ? " disabled" : ""}><span class="lthumb">${art(c.title, "p")}${imgTag(c.thumb)}</span>
+    <span class="lctx"><b>${esc(c.title)}</b><small>${esc([c.year, c.type === "tv" ? "电视剧" + (c.episodes ? " · " + c.episodes + " 集" : "") : "电影", c.sub_title].filter(Boolean).join(" · "))}</small></span></button>`).join("");
+  return `<form class="lmatch" id="libMatch" autocomplete="off"><div class="inline"><input type="search" name="q" value="${esc(M.q)}" placeholder="豆瓣上的片名" aria-label="在豆瓣上搜片名"><button class="btn pri sm" type="submit"${M.busy ? " disabled" : ""}>${M.busy ? "正在查…" : "搜索"}</button><button class="ghost sm" type="button" data-libmatchx="1">取消</button></div>
+    ${M.error ? `<p class="hint bad">${esc(M.error)}</p>` : M.list && !M.list.length ? '<p class="hint">豆瓣上没搜到，换个写法试试（中文名、英文名、去掉季数）</p>' : ""}
+    ${rows ? `<div class="lcands">${rows}</div>` : ""}</form>`;
+}
+async function libSearch(q) {
+  const M = lib.match;
+  if (!M || !q.trim()) return;
+  M.q = q; M.busy = true; M.error = ""; renderLib();
+  let answer;
+  try { answer = await call("GET", "api/admin/library/douban?q=" + encodeURIComponent(q.trim())); }
+  catch (error) { answer = { ok: false, error: error instanceof SignedOut ? "登录已失效" : "网络不通" }; }
+  if (lib.match !== M) return;
+  M.busy = false;
+  if (answer.ok) M.list = answer.candidates; else { M.list = null; M.error = answer.error || "没查成"; }
+  renderLib();
+  const f = qs("#libMatch input"); if (f && !answer.ok) f.focus();
+}
+async function libMetaCall(path, body, btn) {
+  const answer = await libAdmin(path, body, btn);
+  if (answer && answer.ok) { lib.match = null; lib.at = 0; await loadLib(true); loadHome(true); }
+  return answer;
 }
 function libEpisode(c) {
   const id = reg({ id: "lib:" + c.id, title: c.show + " " + c.title, subtitle: c.show, art: { url: c.art, ratio: "wide" },
@@ -6186,20 +6244,30 @@ function renderLib() {
   if (!d.sources.length) {
     o = `<div class="empty sm lempty"><div class="eic">${ic("lib", 40)}</div><b>还没有片库</b><p>${admin ? "加百度网盘、夸克（网盘组件），或电脑上的文件夹。" : "请管理员在这里添加网盘或文件夹。"}</p>${driveBtn}${drivePanel}${admin ? libFormHTML() : ""}</div>`;
   } else {
-    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}</div>`;
+    // 在线资料（豆瓣）的开关：关了一个请求也不往豆瓣发，已经取到的照旧显示。
+    const onlineBtn = admin ? `<button class="ghost sm" data-libonline="${d.online ? "0" : "1"}" aria-pressed="${!!d.online}" title="从豆瓣取片名、海报、评分和简介（不登录，只发片名）">在线资料：${d.online ? "开" : "关"}</button>` : "";
+    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}${onlineBtn}</div>`;
     o += drivePanel;
     if (admin && lib.form) o += `<div class="lformbox">${libFormHTML()}</div>`;
     if (d.scan.error && !d.scan.running) o += `<p class="hint bad">${esc(d.scan.error)}</p>`;
     const q = lib.q.trim().toLowerCase();
     const hit = (t) => !q || String(t || "").toLowerCase().includes(q);
     const show = lib.show && d.shows.find((s) => s.id === lib.show);
+    const item = !show && lib.item && (d.movies.find((c) => c.id === lib.item) || d.videos.find((c) => c.id === lib.item));
     if (show) {
-      o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button><h2>${esc(show.title)}</h2><small>${show.count} 集</small></div>`;
-      o += `<div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
+      o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
+      o += libInfoHTML(Object.assign({}, show, { sub: (show.seasons > 1 ? show.seasons + " 季 · " : "") + show.count + " 集" }));
+      o += `<div class="h2 leps"><h2>选集</h2><small>${show.count} 集</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
+    } else if (item) {
+      const id = reg({ id: "lib:" + item.id, title: item.title, subtitle: item.year ? String(item.year) : "", art: { url: item.art, ratio: "poster" },
+                       play: { kind: "library", id: item.id, playable: item.playable } });
+      const play = item.playable ? `<button class="btn pri" data-play="${esc(id)}" data-k="li-play">${ic("play", 17)}在这台电脑上放</button>` : '<span class="hint">这个文件放不了</span>';
+      o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
+      o += libInfoHTML(Object.assign({}, item, { sub: [(item.ext || "").toUpperCase(), item.source].filter(Boolean).join(" · ") }), play);
     } else {
-      lib.show = "";
+      lib.show = ""; lib.item = "";
       o += `<div class="lbar"><input type="search" id="libQ" placeholder="搜片名" aria-label="搜片名" value="${esc(lib.q)}"><small>${d.total} 个视频</small></div>`;
-      const movies = d.movies.filter((c) => hit(c.title)), shows = d.shows.filter((s) => hit(s.title) || s.episodes.some((e) => hit(e.title))),
+      const movies = d.movies.filter((c) => hit(c.title) || hit(c.guess)), shows = d.shows.filter((s) => hit(s.title) || hit(s.guess) || s.episodes.some((e) => hit(e.title))),
         videos = d.videos.filter((c) => hit(c.title));
       if (movies.length) o += `<section aria-label="电影"><div class="h2"><h2>电影</h2><small>${movies.length}</small></div><div class="pgrid">${movies.map((c) => libCard(c)).join("")}</div></section>`;
       if (shows.length) o += `<section aria-label="剧集"><div class="h2"><h2>剧集</h2><small>${shows.length}</small></div><div class="pgrid">${shows.map(libShowCard).join("")}</div></section>`;
@@ -6213,6 +6281,9 @@ function renderLib() {
   const focusQ = document.activeElement && document.activeElement.id === "libQ";
   const caret = focusQ ? document.activeElement.selectionStart : 0;
   box.innerHTML = o;
+  // 简介没被折起来（三行放得下）就不要「展开」。
+  const plotP = qs("#libBox .lplot"), plotB = qs("#libBox [data-libmore]");
+  if (plotP && plotB && !lib.more && plotP.scrollHeight <= plotP.clientHeight + 1) plotB.hidden = true;
   if (keep && qs("#libAdd")) for (const [name, value] of Object.entries(keep)) { const f = qs(`#libAdd [name="${name}"]`); if (f) f.value = value; }
   if (focusQ && $("libQ")) { $("libQ").focus(); $("libQ").setSelectionRange(caret, caret); }
   else restoreFocus(k);
@@ -6243,8 +6314,46 @@ $("libBox").addEventListener("click", async (event) => {
   const t = event.target.closest("button");
   if (!t) return;
   const ds = t.dataset;
-  if (ds.libshow) { lib.show = ds.libshow; renderLib(); $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return; }
-  if (ds.libback) { const was = lib.show; lib.show = ""; renderLib(); const c = qs(`#libBox [data-libshow="${CSS.escape(was)}"]`); if (c) c.focus(); return; }
+  if (ds.libshow || ds.libitem) {
+    lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; renderLib();
+    $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return;
+  }
+  if (ds.libback) {
+    const was = lib.show ? `[data-libshow="${CSS.escape(lib.show)}"]` : `[data-libitem="${CSS.escape(lib.item)}"]`;
+    lib.show = ""; lib.item = ""; lib.match = null; renderLib(); const c = qs("#libBox " + was); if (c) c.focus(); return;
+  }
+  if (ds.libmore) { lib.more = !lib.more; renderLib(); return; }
+  if (ds.libmatch) {
+    const d = lib.data, o = d.shows.find((s) => s.key === ds.libmatch) || d.movies.concat(d.videos).find((c) => c.key === ds.libmatch);
+    lib.match = { key: ds.libmatch, q: o ? (o.guess || o.title) : "", list: null, busy: false, error: "" };
+    renderLib();
+    const f = qs("#libMatch input"); if (f) f.focus();
+    if (lib.match.q) libSearch(lib.match.q);
+    return;
+  }
+  if (ds.libmatchx) { lib.match = null; renderLib(); return; }
+  if (ds.libpick) {
+    const answer = await libMetaCall("api/admin/library/match", { key: lib.match.key, id: ds.libpick }, t);
+    if (answer && answer.ok) toast("对上了豆瓣的「" + (answer.meta.title || "") + "」");
+    return;
+  }
+  if (ds.libunmatch) {
+    const answer = await libMetaCall("api/admin/library/match", { key: ds.libunmatch, none: true }, t);
+    if (answer && answer.ok) toast("不用豆瓣的资料了");
+    return;
+  }
+  if (ds.librefresh) {
+    t.textContent = "正在查…";
+    const answer = await libMetaCall("api/admin/library/meta/refresh", { key: ds.librefresh }, t);
+    if (answer && answer.ok) toast(answer.meta && answer.meta.state === "matched" ? "取到了「" + answer.meta.title + "」的资料" : "豆瓣上没找到有把握的条目，可以手动匹配");
+    else renderLib();
+    return;
+  }
+  if (ds.libonline) {
+    const answer = await libAdmin("api/admin/library/settings", { online: ds.libonline === "1" }, t);
+    if (answer && answer.ok) { toast(answer.online ? "在线资料开了：后台慢慢从豆瓣取" : "在线资料关了：不再往豆瓣发请求"); loadLib(true); }
+    return;
+  }
   if (ds.libkind) { lib.kind = ds.libkind; renderLib(); return; }
   if (ds.libdrive) { drive.open = !drive.open; renderLib(); if (drive.open) loadDrive(); return; }
   if (ds.drivecopy) { copyText(ds.drivecopy === "pw" ? drive.pw : drive.data.user); return; }
@@ -6314,6 +6423,7 @@ $("libBox").addEventListener("click", async (event) => {
 });
 $("libBox").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (event.target.id === "libMatch") { libSearch(new FormData(event.target).get("q") || ""); return; }
   const form = event.target, btn = qs("button[type=submit]", form);
   const body = Object.assign({ kind: lib.kind }, Object.fromEntries(new FormData(form)));
   btn.textContent = lib.kind === "webdav" ? "正在连网盘…" : "正在添加…";
@@ -6329,6 +6439,7 @@ $("libBox").addEventListener("submit", async (event) => {
 $("libBox").addEventListener("input", (event) => {
   if (event.target.id === "driveMirror") { drive.mirror = event.target.value; return; }
   if (event.target.id === "driveBaiduTok") { drive.tok = event.target.value; return; }
+  if (lib.match && event.target.closest("#libMatch")) { lib.match.q = event.target.value; return; }
   if (event.target.id !== "libQ") return;
   lib.q = event.target.value;
   renderLib();
