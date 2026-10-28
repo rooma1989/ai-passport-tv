@@ -79,6 +79,36 @@ def clean_meta(item) -> dict:
     return found
 
 
+def fill_meta(entry: dict, item) -> list[str]:
+    """导入或订阅把一个重复的台并进表里已有的台时：已有的台空着的 tvg-id、tvg-name、台标用进来的那一条补上，
+    有的从不换（原地改 entry，也就是 meta 里这个台的那一项）。返回补了哪几项。"""
+    found = clean_meta(item)
+    filled = [field for field in META_FIELDS if field in found and not entry.get(field)]
+    for field in filled:
+        entry[field] = found[field]
+    return filled
+
+
+def meta_problems(items: list, rows: list[dict]) -> list[str]:
+    """页面在频道表里改的台标、节目单编号的问题（中文，带行号）。空串是清掉，不算问题。"""
+    found = []
+    for n, (item, row) in enumerate(zip(items, rows), start=1):
+        if not isinstance(item, dict):
+            continue
+        label = f"第 {n} 行（{row['name'] or row['id']}）"
+        for field in META_FIELDS:
+            if field not in item:
+                continue
+            value = item[field]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            if field not in clean_meta({field: value}):
+                found.append(f"{label}：台标地址不对（要以 http:// 或 https:// 开头，最多 {LOGO_MAX} 个字符，不能有空格和引号）"
+                             if field == "logo" else
+                             f"{label}：{'节目单编号' if field == 'tvg_id' else '节目单里的台名'}不对（最多 {TVG_MAX} 个字符）")
+    return found
+
+
 def meta_of(path: Path) -> dict[str, dict]:
     """{台 id: {tvg_id?, tvg_name?, logo?}}；文件没有或坏了是 {}。"""
     try:
@@ -142,7 +172,8 @@ def routes_view(path: Path, rows: list[dict]) -> dict[str, dict]:
 
 def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
     """保存频道表时整理 meta（原地改 data，见 routes.update_meta）：
-    - tvg-id / 台标：新台用页面带来的（从播放列表导入的才有），留下的台照旧，删掉的台跟着删；
+    - tvg-id / tvg-name / 台标：新台用页面带来的（从播放列表导入的才有）；留下的台页面给了哪一项就用页面的
+      （频道表里改台标和节目单编号，空串是清掉），没给的照旧；删掉的台跟着删；
     - 备用线路：页面给了 routes 的用页面的，没给的照旧；和主线路一样的去掉；
     - 上次好的线路、检测结果、真放起来的用时、要放宽检查的线路（lenient）、量到的质量（quality）：只留还在这个台的线路里的；备用线路换成了主线路时不留上次好的。"""
     old = dict(data)
@@ -150,7 +181,15 @@ def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
     for item, row in zip(items, rows):
         kept = isinstance(item, str) or (isinstance(item, dict) and item.get("id") is not None)
         prev = old.get(row["id"], {}) if kept else {}
-        entry = dict(clean_meta(item) or clean_meta(prev))
+        if kept and isinstance(item, dict):
+            given_meta, before = clean_meta(item), clean_meta(prev)
+            entry = {}
+            for field in META_FIELDS:
+                source = given_meta if field in item else before
+                if field in source:
+                    entry[field] = source[field]
+        else:
+            entry = dict(clean_meta(item) or clean_meta(prev))
         given = item.get("routes") if isinstance(item, dict) and "routes" in item else prev.get("routes")
         backups = routes.clean_routes(given, row["url"])
         if backups:

@@ -353,7 +353,10 @@ def channels(relay) -> dict:
     current = channeltable.read(path)
     groups = global_groups(relay)
     lines = channeltable.routes_view(path, current["rows"])
+    # 台标、节目单编号（tvg-id）、节目单里的台名（tvg-name）：频道表里能直接改，没有时是空串。
+    meta = channeltable.meta_of(path)
     rows = [dict(row, group=groups.get(row["id"], ""), auto=channel_groups.classify(row["id"], row["name"]),
+                 **{field: meta.get(row["id"], {}).get(field, "") for field in channeltable.META_FIELDS},
                  **lines[row["id"]])
             for row in current["rows"]]
     backups = sorted(p.name for p in path.parent.glob(path.name + ".bak-*"))
@@ -371,7 +374,8 @@ def channels(relay) -> dict:
 
 
 def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
-    """检查（dry）或保存频道表。body: {version, rows: [id 或 {id?, name, url, agent, group}], dry}。"""
+    """检查（dry）或保存频道表。body: {version, rows: [id 或 {id?, name, url, agent, group, logo?, tvg_id?, tvg_name?}], dry}。
+    留下的台给了 logo / tvg_id / tvg_name 就改成给的（空串是清掉），没给的照旧（channeltable.merge_meta）。"""
     path = relay.main_channels
     if path is None:
         return {"ok": False, "error": "中转没有配置 --main-channels，没有全局频道表"}
@@ -397,6 +401,7 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
         problems = channeltable.problems(rows)
         route_problems, routes_changed = _route_problems(body["rows"], rows)
         problems += route_problems
+        problems += channeltable.meta_problems(body["rows"], rows)
         # 设备收不下整张表不再挡保存：每台设备只收前一部分（电视服务截断），这里只提醒。
         fit = _fit(relay, [(r["id"], r["name"]) for r in rows])
         if problems:
@@ -413,9 +418,10 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
         moved = [r["id"] for r in rows if r["id"] in before] != [r["id"] for r in current["rows"]
                                                                   if r["id"] in {x["id"] for x in rows}]
         kept = {r["id"] for r in rows}
+        old_meta = channeltable.meta_of(path)
         summary = {"added": len(added), "removed": len(removed), "changed": len(changed), "moved": moved,
                    "groups": groups != {k: v for k, v in old_groups.items() if k in kept}, "total": len(rows),
-                   "routes": routes_changed}
+                   "routes": routes_changed, "meta": _meta_changes(body["rows"], rows, old_meta)}
         warnings = _fit_warnings(fit, len(rows)) + (checked.get("warnings") or [])
         if body.get("dry") is True:
             return {"ok": True, "dry": True, "summary": summary, "warnings": warnings, "fit": fit}
@@ -431,6 +437,36 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
     relay.sync_devices(force=True)
     return {"ok": True, "version": channeltable.version_of(text), "backup": backup, "summary": summary,
             "warnings": warnings, "fit": fit}
+
+
+def _meta_changes(items: list, rows: list[dict], old: dict) -> int:
+    """留下的台里改了台标或节目单编号的有几个（页面给了、和原来的不一样）。"""
+    changed = 0
+    for item, row in zip(items, rows):
+        if not isinstance(item, dict) or item.get("id") is None:
+            continue
+        given = channeltable.clean_meta(item)
+        before = old.get(row["id"], {})
+        if any(field in item and given.get(field, "") != before.get(field, "") for field in channeltable.META_FIELDS):
+            changed += 1
+    return changed
+
+
+def logo_preview(relay, body: dict) -> dict:
+    """{url} → {ok, image: data: 地址} 或 {ok: False, error}：频道表里改台标时先看一眼。和电脑版首页的台标一样由
+    中转去取（logos.LogoCache.preview：只取公网的 http(s)、只收 PNG / JPEG / GIF / WebP），取到的顺便存进台标缓存，
+    保存以后首页马上有。页面的 CSP 许 data: 图片，所以直接给图片的内容。"""
+    url = body.get("url")
+    cache = getattr(relay, "logos", None)
+    if not isinstance(url, str) or not url.strip():
+        return {"ok": False, "error": "请填台标的地址"}
+    if cache is None:
+        return {"ok": False, "error": "这个中转没有台标缓存，看不了"}
+    found, error = cache.preview(url.strip())
+    if found is None:
+        return {"ok": False, "error": error}
+    kind, data = found
+    return {"ok": True, "image": f"data:{kind};base64," + base64.b64encode(data).decode("ascii")}
 
 
 def _save_meta(path: Path, items: list, rows: list[dict]) -> None:
@@ -527,6 +563,14 @@ def post(handler, relay, path: str) -> bool:
     if path == "/api/admin/epg/refresh":
         handler._json(epg.admin_refresh(relay, caller, ip))
         return True
+    if path == "/api/admin/epg/dismiss":
+        # 「推荐的节目单来源」（导入的播放列表文件头写的 x-tvg-url）里不要的一个：不再列出。
+        handler._json(epg.admin_dismiss(relay, body, caller, ip))
+        return True
+    if path == "/api/admin/channels/logo":
+        # 频道表里改台标：先看一眼这个地址的图片（logo_preview）。云端和自建都有，只给管理员。
+        handler._json(logo_preview(relay, body))
+        return True
     if selfhost and path == IMPORT_PATH:
         # 自建：读一份 M3U（地址、上传的内容或一个公开列表），列出里面的台给页面勾选；不存地址、不改频道表。
         answer = playlist.read(body)
@@ -534,6 +578,10 @@ def post(handler, relay, path: str) -> bool:
             current = channeltable.read(relay.main_channels)["rows"] if relay.main_channels is not None else []
             playlist.mark(answer["entries"], current)
             preset = body.get("preset") if isinstance(body.get("preset"), str) else ""
+            # 列表推荐的节目单（x-tvg-url）：只记成「推荐的节目单来源」，管理员在「节目单」里点一下才加上。
+            origin = next((p["name"] for p in presets.PRESETS if p["id"] == preset), "") if preset else \
+                subscriptions.label_of(body["url"]) if isinstance(body.get("url"), str) else "上传的文件"
+            epg.suggest(relay, answer.get("epg_urls") or [], origin)
             relay.accounts.audit("channels.import", caller.user, ip, "channels", preset[:40],
                                  f"{len(answer['entries'])} 个台")
         handler._json(answer)

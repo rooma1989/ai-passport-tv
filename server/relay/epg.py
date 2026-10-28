@@ -21,6 +21,10 @@ now / next（title、start、end，Unix 秒）。加上 from / to（Unix 秒）�
 24 小时），一次最多 RANGE_CHANNELS_MAX 个台、每台最多 RANGE_PER_CHANNEL_MAX 条（max 可以再少）。
 总后台：GET/POST /api/admin/epg（admin.py 转过来）。
 
+推荐的节目单来源：导入或订阅的播放列表文件头写着 x-tvg-url（url-tvg）时，记下地址和是哪份列表推荐的
+（SUGGEST_KEY，至多 SUGGEST_MAX 个，新的在前），总后台「节目单」里列出来，管理员点一下才加进来源；不会自己打开。
+点了「不要」的记着（dismissed），同一个地址以后再被推荐也不再列。
+
 标题：央视的节目单在标题后面带一串「-2026-248」（年份和期数）或日期，页面上没用，读的时候去掉（tidy_title）。
 
 实测（2026-10，见 docs/selfhost/README.md「节目单」）：fanmingming 的 7 MB 文件读一遍约 1 秒 CPU，
@@ -49,6 +53,11 @@ from . import channeltable, presets
 # 账号库 meta 表里的设置：打开的来源，JSON 列表 ["https://…", …]；没有或空列表就是关着。
 META_KEY = "epg.sources"
 SOURCES_MAX = 3
+# 推荐的节目单来源（播放列表文件头的 x-tvg-url）：JSON 列表 [{url, from, at, dismissed?}]。
+SUGGEST_KEY = "epg.suggested"
+SUGGEST_MAX = 6
+# 不要了的至多记这么多个（只为了不再列出）。
+DISMISSED_MAX = 30
 URL_MAX = 2000
 REFRESH_S = 8 * 3600
 RETRY_S = 30 * 60
@@ -667,6 +676,37 @@ def load_sources(accounts) -> list[str]:
     return [url for url in data if valid_url(url)][:SOURCES_MAX]
 
 
+def load_suggested(accounts) -> list[dict]:
+    try:
+        data = json.loads(accounts.meta(SUGGEST_KEY, "[]") or "[]")
+    except ValueError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict) and valid_url(item.get("url"))]
+
+
+def suggest(relay, urls, origin: str) -> int:
+    """播放列表推荐的节目单地址记下来（只记，不打开）：已经记着的挪到前面、更新是谁推荐的；不要了的不再记。
+    返回新记了几个。没有账号库（单用户）时什么都不做。"""
+    accounts = getattr(relay, "accounts", None)
+    urls = [url for url in dict.fromkeys(urls or []) if valid_url(url)]
+    if accounts is None or not urls:
+        return 0
+    origin = " ".join(str(origin or "").split())[:40]
+    current = load_suggested(accounts)
+    dismissed = [item for item in current if item.get("dismissed")]
+    kept = [item for item in current if not item.get("dismissed")]
+    skip = {item["url"] for item in dismissed}
+    known = {item["url"] for item in kept}
+    fresh = [{"url": url, "from": origin, "at": int(relay.clock())} for url in urls if url not in skip]
+    added = sum(1 for item in fresh if item["url"] not in known)
+    again = {item["url"] for item in fresh}
+    kept = (fresh + [item for item in kept if item["url"] not in again])[:SUGGEST_MAX]
+    accounts.set_meta(SUGGEST_KEY, json.dumps(kept + dismissed[-DISMISSED_MAX:], ensure_ascii=False))
+    return added
+
+
 def attach(relay, folder: Path) -> Guide:
     """中转启动时（多用户）：建一个 Guide，按库里的设置打开或不打开。"""
     guide = Guide(folder, relay.main_channels, log=lambda message: relay.log(message), clock=relay.clock)
@@ -728,7 +768,11 @@ def admin_view(relay) -> dict:
     sources = guide.sources if guide is not None else []
     known = {p["url"]: p for p in presets.EPG_PRESETS}
     view = {"ok": True, "available": guide is not None, "sources": sources, "presets": presets.epg_public(),
-            "max": SOURCES_MAX, "refresh_hours": REFRESH_S // 3600}
+            "max": SOURCES_MAX, "refresh_hours": REFRESH_S // 3600,
+            # 播放列表推荐的、还没加上也没说不要的（suggest）；和预设的节目单是同一个地址的也不列。
+            "suggested": [{k: item.get(k) for k in ("url", "from", "at")}
+                          for item in (load_suggested(relay.accounts) if getattr(relay, "accounts", None) else [])
+                          if not item.get("dismissed") and item["url"] not in sources and item["url"] not in known]}
     if guide is not None:
         status = guide.status()
         for item in status["sources"]:
@@ -759,6 +803,20 @@ def admin_save(relay, body: dict, caller, ip: str) -> dict:
     relay.accounts.audit("epg.save", caller.user, ip, "epg", "", f"{len(sources)} 个来源" if sources else "关闭")
     relay.log(f"总后台：节目单{'打开，' + str(len(sources)) + ' 个来源' if sources else '关闭'}")
     return {"ok": True, "sources": sources}
+
+
+def admin_dismiss(relay, body: dict, caller, ip: str) -> dict:
+    """POST /api/admin/epg/dismiss {url}：推荐的节目单来源里不要的一个，不再列出。"""
+    url = body.get("url")
+    current = load_suggested(relay.accounts)
+    found = next((item for item in current if item["url"] == url and not item.get("dismissed")), None)
+    if found is None:
+        return {"ok": False, "error": "没有这个推荐的来源（页面可能是旧的，请刷新）"}
+    kept = [item for item in current if not item.get("dismissed") and item is not found]
+    dismissed = [item for item in current if item.get("dismissed")] + [dict(found, dismissed=True)]
+    relay.accounts.set_meta(SUGGEST_KEY, json.dumps(kept + dismissed[-DISMISSED_MAX:], ensure_ascii=False))
+    relay.accounts.audit("epg.dismiss", caller.user, ip, "epg", "", found.get("from") or "")
+    return {"ok": True}
 
 
 def admin_refresh(relay, caller, ip: str) -> dict:

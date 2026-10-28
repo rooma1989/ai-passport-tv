@@ -29,7 +29,7 @@ const ADM_ACTIONS = {
   "session.revoke": "退出一个登录", "session.revoke_others": "退出别处的登录",
   "admin.session.revoke": "管理员退出他的一个登录", "admin.session.revoke_all": "管理员退出他的全部登录",
   "legacy_token.on": "打开共享配对令牌", "legacy_token.off": "关闭共享配对令牌", "channels.save": "保存频道表",
-  "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "library.add": "加片库来源", "library.delete": "删片库来源", "library.scan": "扫描片库", "clouddrive.install": "安装网盘组件", "clouddrive.update": "更新网盘组件", "clouddrive.enable": "启用网盘组件", "clouddrive.disable": "停用网盘组件", "clouddrive.repair": "重设网盘管理密码", "clouddrive.reveal": "查看网盘管理密码", "clouddrive.drive_qr": "出网盘登录二维码", "clouddrive.drive_add": "添加网盘", "clouddrive.drive_delete": "删除网盘", "clouddrive.rescan": "重新扫描网盘", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
+  "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "library.add": "加片库来源", "library.delete": "删片库来源", "library.scan": "扫描片库", "clouddrive.install": "安装网盘组件", "clouddrive.update": "更新网盘组件", "clouddrive.enable": "启用网盘组件", "clouddrive.disable": "停用网盘组件", "clouddrive.repair": "重设网盘管理密码", "clouddrive.reveal": "查看网盘管理密码", "clouddrive.drive_qr": "出网盘登录二维码", "clouddrive.drive_add": "添加网盘", "clouddrive.drive_delete": "删除网盘", "clouddrive.rescan": "重新扫描网盘", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "epg.dismiss": "不要推荐的节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
   "wifi.add": "给设备加 Wi-Fi", "wifi.remove": "删设备的 Wi-Fi", "wifi.up": "调 Wi-Fi 顺序", "wifi.switch": "让设备换 Wi-Fi",
   "login.pc.confirm": "手机确认电脑登录", "login.pc.deny": "手机拒绝电脑登录", "migrate": "从单用户迁移",
 };
@@ -846,12 +846,14 @@ async function admSystem() {
 // ======================================================================= 频道表
 // 在页面里改一份副本，保存时整张发过去：没改的台只发 id，改了的发改了的字段，新台没有 id（admin.py 的 save_channels）。
 
-// ach.rows：{id?, name, url, agent, group, routes: [{url, ua?}]（备用线路）, checks: {地址: {ok, why, at}}, good, orig?}
+// ach.rows：{id?, name, url, agent, group, logo, tvg_id, tvg_name（台标、节目单编号，存在频道表旁边的 meta 里）,
+//            routes: [{url, ua?}]（备用线路）, checks: {地址: {ok, why, at}}, good, orig?}
 const ach = { data: null, rows: [], imp: [], impKind: "", impSource: "", epg: null, epgSources: [], filter: "", impFilter: "", problems: null,
               checking: false, probing: false, tab: "list" };
 const ACH_DUP = { url: "已在表里", name: "表里有同名", list: "列表里重复" };
 function achRoutesKey(routes) { return JSON.stringify((routes || []).map((x) => [x.url, x.ua || ""])); }
-function achKey(r) { return [r.name, r.url, r.agent, r.group, achRoutesKey(r.routes)].join("\u0001"); }
+const ACH_META = ["logo", "tvg_id", "tvg_name"];
+function achKey(r) { return [r.name, r.url, r.agent, r.group, achRoutesKey(r.routes)].concat(ACH_META.map((f) => r[f] || "")).join("\u0001"); }
 function achDirty() {
   if (!ach.data || !ach.data.configured) return false;
   if (ach.rows.length !== ach.data.rows.length) return true;
@@ -870,6 +872,7 @@ async function achLoad(keepMessage) {
     return;
   }
   ach.rows = data.rows.map((r) => ({ id: r.id, name: r.name, url: r.url, agent: r.agent, group: r.group,
+                                     logo: r.logo || "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "",
                                      routes: (r.routes || []).map((x) => ({ ...x })), checks: { ...(r.checks || {}) }, good: r.good || "",
                                      quality: { ...(r.quality || {}) }, orig: r }));
   if (!keepMessage) ach.problems = null;
@@ -908,7 +911,7 @@ function achShell() {
       <p class="hint" id="achFitLine"></p>
       <details class="more-info">
         <summary>说明</summary>
-        <p>名字、分组直接在表里改，改完点下面的「保存」；顺序就是设备上换台的顺序。一个台可以有几条线路（主线路 + 备用），放不起来时自动换下一条。「检测」只连一下，不解码，很轻；能连上不等于一定能放。</p>
+        <p>名字、分组、节目单编号（tvg-id，节目单按它对台，空着就按台名对）直接在表里改，点台标换台标地址，改完点下面的「保存」；顺序就是设备上换台的顺序。一个台可以有几条线路（主线路 + 备用），放不起来时自动换下一条。「检测」只连一下，不解码，很轻；能连上不等于一定能放。</p>
         <p id="achBackups"></p>
         <div class="tbl" id="achFit"></div>
       </details>
@@ -950,6 +953,11 @@ function achShell() {
     </div>
     <div class="achpane" data-pane="epg" id="achEpg" hidden>
       <p class="disclaimer">下面是网上公开的第三方节目单，内容由维护者负责；请只添加你有权使用的内容。</p>
+      <div class="subsbox" id="achEpgSuggest" hidden>
+        <b>推荐的节目单来源</b>
+        <p class="hint">导入或订阅的播放列表在文件头里写着它配套的节目单（x-tvg-url）。不会自动加：点「加上」才用。</p>
+        <div id="achEpgSuggestList"></div>
+      </div>
       <div class="presets" id="achEpgPresets"></div>
       <div class="improw">
         <input type="text" id="achEpgUrl" placeholder="或者填节目单地址（XMLTV，.xml / .xml.gz）" autocomplete="off" spellcheck="false">
@@ -1061,26 +1069,114 @@ function achRender() {
     const ua = el("input", "ua");
     ua.type = "text"; ua.value = r.agent; ua.placeholder = "默认"; ua.spellcheck = false; ua.setAttribute("aria-label", "User-Agent");
     ua.oninput = () => { ua.title = ua.value; r.agent = ua.value.trim(); achState(); tr.className = achRowCls(r); };
-    const cells = [admTd("no", String(i + 1)), admTd("id", r.id || "新"), admTd(""), admTd(""), admTd(""), admTd(""), admTd("ln"), admTd("a")];
-    cells[2].appendChild(name); cells[2].style.minWidth = "150px";
-    cells[3].appendChild(achGroupSelect(r));
-    cells[4].appendChild(url); cells[4].style.minWidth = "240px";
-    cells[5].appendChild(ua); cells[5].style.width = "140px";
+    const tvg = el("input", "tvg");
+    tvg.type = "text"; tvg.value = r.tvg_id || ""; tvg.maxLength = 64; tvg.placeholder = "按台名"; tvg.spellcheck = false;
+    tvg.title = "节目单编号（tvg-id）" + (r.tvg_name ? "；节目单里的台名：" + r.tvg_name : "");
+    tvg.setAttribute("aria-label", "「" + r.name + "」的节目单编号");
+    tvg.oninput = () => { r.tvg_id = tvg.value.trim(); achState(); tr.className = achRowCls(r); };
     const key = r.id || "new" + i;
-    cells[6].appendChild(achLineSummary(r, key));
+    const cells = [admTd("no", String(i + 1)), admTd("id", r.id || "新"), admTd("logo"), admTd(""), admTd(""), admTd(""), admTd(""), admTd(""), admTd("ln"), admTd("a")];
+    cells[2].appendChild(achLogoButton(r, key));
+    cells[3].appendChild(name); cells[3].style.minWidth = "150px";
+    cells[4].appendChild(achGroupSelect(r));
+    cells[5].appendChild(tvg);
+    cells[6].appendChild(url); cells[6].style.minWidth = "240px";
+    cells[7].appendChild(ua); cells[7].style.width = "140px";
+    cells[8].appendChild(achLineSummary(r, key));
     const up = admBtn("↑", "", "ch-" + key + "-up", () => achMove(i, -1));
     up.setAttribute("aria-label", "上移"); up.disabled = i === 0;
     const down = admBtn("↓", "", "ch-" + key + "-down", () => achMove(i, 1));
     down.setAttribute("aria-label", "下移"); down.disabled = i === ach.rows.length - 1;
-    cells[7].append(up, down, admBtn("删除", "linkbtn red", "ch-" + key + "-del", () => { ach.rows.splice(i, 1); achRender(); if (ach.imp.length) { achImpMark(); achRenderImport(); } }));
+    cells[9].append(up, down, admBtn("删除", "linkbtn red", "ch-" + key + "-del", () => { ach.rows.splice(i, 1); achRender(); if (ach.imp.length) { achImpMark(); achRenderImport(); } }));
     tr.append(...cells);
     rows.push(tr);
   });
-  if (!rows.length) { const tr = el("tr"); const td = admTd("empty-t", filter ? "没有名字里带「" + filter + "」的台" : "表是空的"); td.colSpan = 8; tr.appendChild(td); rows.push(tr); }
-  const table = admTable("", "", ["#", "id", "名字", "分组", "地址（主线路）", "User-Agent", "线路", ""], rows);
+  if (!rows.length) { const tr = el("tr"); const td = admTd("empty-t", filter ? "没有名字里带「" + filter + "」的台" : "表是空的"); td.colSpan = 10; tr.appendChild(td); rows.push(tr); }
+  const table = admTable("", "", ["#", "id", "台标", "名字", "分组", "节目单编号", "地址（主线路）", "User-Agent", "线路", ""], rows);
   box.replaceChildren(...table.childNodes);
   restoreFocus(k);
   achState();
+}
+// ---------- 台标（server/relay/logos.py）和节目单编号 ----------
+// 表里的小图：保存过的台标从本站取（api/art/logo/<id>，页面不能直接显示别的网站的图片）；改过还没保存的用「看一眼」
+// 取回来的图（r.logoPreview，data: 地址）；图片盖在台名的第一个字上面，取不到时（console.js 的全局 error 处理
+// 会把坏图删掉）露出下面的字。点它改台标地址、节目单编号和节目单里的台名。
+function achLogoSrc(r) {
+  const saved = r.id && r.logo && r.orig && r.logo === r.orig.logo;
+  return r.logo && r.logoPreview && r.logoPreview.url === r.logo ? r.logoPreview.image : saved ? "api/art/logo/" + encodeURIComponent(r.id) : "";
+}
+function achLetter(r) { return el("span", "", (r.name || "?").trim().slice(0, 1) || "?"); }
+function achLogoButton(r, key) {
+  const b = admBtn("", "logo", "ch-" + key + "-logo", () => achLogoEditor(r));
+  b.title = r.logo ? "台标：" + r.logo : "没有台标：点一下填地址";
+  b.setAttribute("aria-label", "「" + r.name + "」的台标");
+  const src = achLogoSrc(r);
+  b.appendChild(achLetter(r));
+  if (src) {
+    const img = el("img");
+    img.alt = ""; img.loading = "lazy"; img.src = src;
+    img.onload = () => img.classList.add("ok");
+    b.appendChild(img);
+  }
+  return b;
+}
+function achLogoEditor(r) {
+  const form = el("div", "logoedit");
+  const pic = el("div", "logopic");
+  const say = el("small", "hint", "");
+  const show = (image, text) => {
+    pic.replaceChildren(achLetter(r));
+    if (image) {
+      const img = el("img");
+      img.alt = "台标预览"; img.src = image;
+      img.onload = () => img.classList.add("ok");
+      img.onerror = () => { say.textContent = "台标还没取到（保存后服务器会再试）"; };
+      pic.appendChild(img);
+    }
+    say.textContent = text;
+  };
+  const field = (label, value, holder, max) => {
+    const wrap = el("label", "fld");
+    const input = el("input");
+    input.type = "text"; input.value = value || ""; input.placeholder = holder; input.maxLength = max;
+    input.autocomplete = "off"; input.spellcheck = false;
+    wrap.append(el("span", "", label), input);
+    return [wrap, input];
+  };
+  const [logoBox, logo] = field("台标地址", r.logo, "https://…/logo.png（空着就是不要台标）", 400);
+  const [idBox, tvgId] = field("节目单编号（tvg-id）", r.tvg_id, "空着就按台名对", 64);
+  const [nameBox, tvgName] = field("节目单里的台名（tvg-name）", r.tvg_name, "可不填", 64);
+  const look = async () => {
+    const url = logo.value.trim();
+    if (!url) { show("", "没有台标：电脑上显示台名的第一个字"); return; }
+    if (!/^https?:\/\/\S+$/.test(url)) { show("", "地址要以 http:// 或 https:// 开头"); return; }
+    if (r.logoPreview && r.logoPreview.url === url) { show(r.logoPreview.image, ""); return; }
+    say.textContent = "正在取…";
+    let answer;
+    try { answer = await admCall("POST", "api/admin/channels/logo", { url }); } catch (error) { show("", "没取成"); return; }
+    if (logo.value.trim() !== url) return;
+    if (!answer.ok) { show("", answer.error || "看不了"); return; }
+    r.logoPreview = { url, image: answer.image };
+    show(answer.image, "");
+  };
+  const preview = button("看一眼", "ghost", () => admBusy(preview, look));
+  logo.onkeydown = (event) => { if (event.key === "Enter") preview.click(); };
+  const logoRow = el("div", "inline");
+  logoRow.append(logoBox, preview);
+  show(achLogoSrc(r), r.logo ? "" : "还没有台标");
+  const done = button("好", "go", () => {
+    const url = logo.value.trim();
+    if (url && (!/^https?:\/\/\S+$/.test(url) || /["'<>]/.test(url))) { toast("台标地址要以 http:// 或 https:// 开头，不能有空格和引号", true); return; }
+    r.logo = url; r.tvg_id = tvgId.value.trim(); r.tvg_name = tvgName.value.trim();
+    closeOverlays();
+    achRender();
+  });
+  const row = el("div", "row");
+  row.append(button("取消", "ghost", closeOverlays), done);
+  form.append(pic, say, logoRow, idBox, nameBox,
+              el("p", "hint", "台标在电脑版的直播页和首页显示；节目单编号是节目单（XMLTV）里这个台的 id，填了就按它对台。改完点频道表下面的「保存」。"), row);
+  modal((r.name || "新台") + " 的台标和节目单编号", form);
+  logo.focus({ preventScroll: true });
 }
 function achMove(i, step) {
   const j = i + step;
@@ -1120,6 +1216,8 @@ function achPayload(dry) {
     if (r.group !== o.group) item.group = r.group;
     // 备用线路只在改过时发（云端的请求体只有 8 KB）。
     if (achRoutesKey(r.routes) !== achRoutesKey(o.routes)) item.routes = r.routes || [];
+    // 台标、节目单编号也只在改过时发；空串是清掉。
+    for (const f of ACH_META) if ((r[f] || "") !== (o[f] || "")) item[f] = r[f] || "";
     return Object.keys(item).length === 1 ? r.id : item;
   });
   return { version: ach.data.version, rows, dry };
@@ -1132,6 +1230,7 @@ function achDescribe(s) {
   if (s.moved) parts.push("调了顺序");
   if (s.groups) parts.push("改了分组");
   if (s.routes) parts.push(s.routes + " 个台的线路有改动");
+  if (s.meta) parts.push(s.meta + " 个台改了台标或节目单编号");
   return (parts.join("，") || "没有实质改动") + "；保存后一共 " + s.total + " 个台";
 }
 async function achSubmit(dry) {
@@ -1402,7 +1501,9 @@ function achImpPlan(r) {
     .filter((x) => !have.has(x.url));
   return { add: false, target, fresh };
 }
-function achImpUseful(r) { const plan = achImpPlan(r); return plan.add || plan.fresh.length > 0; }
+// 地址都已经有了、但能给那个台补上空着的台标或节目单编号的，也算有用。
+function achImpFills(r, plan) { return !!plan.target && ACH_META.some((f) => !plan.target[f] && r[f]); }
+function achImpUseful(r) { const plan = achImpPlan(r); return plan.add || plan.fresh.length > 0 || achImpFills(r, plan); }
 
 // ---------- 节目单（server/relay/epg.py） ----------
 // 来源是地址的列表（最多 max 个，排前面的优先）；预设只是一点就加上的地址。改了要点「保存」。
@@ -1422,8 +1523,33 @@ async function achLoadEpg() {
   achRenderEpg();
 }
 function achEpgDirty() { return !!ach.epg && ach.epgSources.join("\n") !== ach.epg.sources.join("\n"); }
+// 播放列表推荐的节目单（epg.suggest）：「加上」直接保存（和勾选预设、点「保存」一样），「不要」以后不再列。
+function achRenderEpgSuggest() {
+  const e = ach.epg, box = $("achEpgSuggestList");
+  const items = (e.suggested || []).filter((s) => !ach.epgSources.includes(s.url));
+  $("achEpgSuggest").hidden = !items.length;
+  box.replaceChildren();
+  for (const s of items) {
+    const row = el("div", "subrow");
+    const text = el("div", "subtext");
+    text.append(el("b", "", s.url), el("span", "hint", (s.from ? "「" + s.from + "」推荐" : "播放列表推荐") + (s.at ? " · " + ago(s.at) : "")));
+    const actions = el("div", "inline");
+    const add = button("加上", "ghost");
+    add.onclick = () => admBusy(add, async () => {
+      if (ach.epgSources.length >= e.max) { toast("最多 " + e.max + " 个来源：先去掉一个", true); return; }
+      const sources = ach.epgSources.concat([s.url]);
+      if (await admAct("api/admin/epg", { sources }, "已加上：服务器在后台下载节目单，过一会儿刷新看结果")) { await achLoadEpg(); setTimeout(achLoadEpg, 8000); }
+    });
+    const drop = button("不要", "ghost");
+    drop.onclick = () => admBusy(drop, async () => { if (await admAct("api/admin/epg/dismiss", { url: s.url }, "以后不再推荐这个地址")) await achLoadEpg(); });
+    actions.append(add, drop);
+    row.append(text, actions);
+    box.appendChild(row);
+  }
+}
 function achRenderEpg() {
   const e = ach.epg;
+  achRenderEpgSuggest();
   const box = $("achEpgPresets");
   box.replaceChildren();
   for (const p of e.presets) {
@@ -1626,10 +1752,12 @@ async function achImpRead(body, source, onlyNew) {
   ach.impFilter = $("achImpFilter").value = "";
   ach.impSource = source + "：" + total + " 个台" +
     (total > listed ? "（列出前 " + listed + " 个）" : "") +
-    (answer.skipped ? "，" + answer.skipped + " 个地址不合格" : "");
+    (answer.skipped ? "，" + answer.skipped + " 个地址不合格" : "") +
+    ((answer.epg_urls || []).length ? "。这个列表推荐了节目单：在「节目单」里点一下就能加上" : "");
   $("achImpSource").textContent = ach.impSource;
   $("achImpList").hidden = false;
   achRenderImport();
+  if ((answer.epg_urls || []).length) achLoadEpg();
   $("achImpList").scrollIntoView({ block: "start", behavior: "smooth" });
 }
 function achImpVisible() {
@@ -1646,12 +1774,14 @@ function achRenderImport() {
     const plan = achImpPlan(r);
     const check = el("input");
     check.type = "checkbox"; check.checked = r.on; check.setAttribute("aria-label", "选「" + r.name + "」");
-    check.disabled = !r.done && !plan.add && !plan.fresh.length;
+    check.disabled = !r.done && !plan.add && !plan.fresh.length && !achImpFills(r, plan);
     check.onchange = () => { r.on = check.checked; achImpCount(); };
     const st = r.state;
     const dup = r.done || (plan.add ? (r.dup === "list" ? ACH_DUP.list : "")
-      : plan.fresh.length ? "并入「" + plan.target.name + "」当备用" : "已在表里");
-    const cells = [admTd(""), admTd("", r.name), admTd("kind", r.kind), admTd("st", r.url), admTd("kind", (1 + (r.routes || []).length) + " 条"),
+      : plan.fresh.length ? "并入「" + plan.target.name + "」当备用" : achImpFills(r, plan) ? "给「" + plan.target.name + "」补台标 / 编号" : "已在表里");
+    const kind = admTd("kind", r.kind);
+    if (r.group_title) kind.title = "列表里写的分组：" + r.group_title + (r.group ? "" : "（我们没有对应的分组，按台名归类）");
+    const cells = [admTd(""), admTd("", r.name), kind, admTd("st", r.url), admTd("kind", (1 + (r.routes || []).length) + " 条"),
                    admTd("dup", dup),
                    admTd("st " + (st === "能放" || st.startsWith("能放，") ? "ok" : st === "放不了" ? "dead" : ""), st)];
     cells[0].appendChild(check);
@@ -1738,7 +1868,7 @@ async function achImpAdd() {
   const chosen = achImpChosen();
   if (!chosen.length) { toast("先勾选要的台", true); return; }
   let added = 0, lines = 0, full = 0;
-  const touched = new Set();
+  const touched = new Set(), filled = new Set();
   // 按列表的顺序一个个来：同一个台在列表里出现几次时，第一次加成新台，后面的并进它。表最多 limits.table 个台。
   const tableMax = ach.data.limits.table || 1000;
   let over = 0;
@@ -1747,12 +1877,15 @@ async function achImpAdd() {
     if (plan.add && ach.rows.length >= tableMax) { over++; continue; }
     r.on = false;
     if (plan.add) {
-      ach.rows.push({ name: r.name, url: r.url, agent: r.agent, group: "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
+      // 列表写的分组对得上我们的分组时（r.group，playlist._clean），新台就放进那一组。
+      ach.rows.push({ name: r.name, url: r.url, agent: r.agent, group: r.group || "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
                       routes: (r.routes || []).map((x) => ({ ...x })), checks: {}, good: "" });
       r.done = "已加入";
       added++;
       continue;
     }
+    // 并进表里已有的台：它空着的台标、节目单编号用这一项的补上，有的不换；分组不动。
+    for (const f of ACH_META) if (!plan.target[f] && r[f]) { plan.target[f] = r[f]; filled.add(plan.target); }
     const all = achLines(plan.target);
     for (const x of plan.fresh) {
       if (all.length >= achRoutesMax()) { full++; break; }
@@ -1767,7 +1900,8 @@ async function achImpAdd() {
   ach.filter = $("achFilter").value = "";
   achRender();
   achRenderImport();
-  if (!added && !lines) { toast(over ? "表满了：最多 " + tableMax + " 个台" : "这些台的线路已经满了（每台最多 " + achRoutesMax() + " 条）", true); return; }
-  await achSaveNow([added ? "加了 " + added + " 个台" : "", lines ? "给 " + touched.size + " 个台加了 " + lines + " 条备用线路" : ""]
+  if (!added && !lines && !filled.size) { toast(over ? "表满了：最多 " + tableMax + " 个台" : "这些台的线路已经满了（每台最多 " + achRoutesMax() + " 条）", true); return; }
+  await achSaveNow([added ? "加了 " + added + " 个台" : "", lines ? "给 " + touched.size + " 个台加了 " + lines + " 条备用线路" : "",
+                    filled.size ? "给 " + filled.size + " 个台补上了台标或节目单编号" : ""]
     .filter(Boolean).join("，") + (full ? "（有的台线路满了）" : "") + (over ? "（表最多 " + tableMax + " 个台，" + over + " 个没加）" : ""));
 }

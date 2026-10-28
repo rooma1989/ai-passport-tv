@@ -79,6 +79,35 @@ def classify(channel_id: str, name: str) -> str:
     return OTHER
 
 
+# 播放列表自己写的分组名（M3U 的 group-title、TXT 的「分组,#genre#」）→ 我们的分组：只对意思相同的
+# （「央视频道」「CCTV」「📺央视」都是央视）；「体育」「地方台」「4K」这类我们没有对应分组的不对，退回按台名归类。
+# 按顺序比，先比到的算：「港澳台」在「卫视」前面（「香港卫视」那组归港澳台）。比的是去掉符号、表情和空格、
+# 不分大小写以后的分组名里有没有这些字。
+_TITLE_GROUPS = (
+    ("港澳台", ("港澳台", "港澳", "港台", "香港", "澳门", "台湾", "hongkong", "taiwan", "macau")),
+    ("央视", ("央视", "cctv", "中央台", "中央电视")),
+    ("卫视", ("卫视", "satellite")),
+    ("音乐", ("音乐", "mtv", "music")),
+    ("动画影视", ("动画", "动漫", "卡通", "少儿", "儿童", "电影", "影视", "影院", "剧场", "电视剧", "movie", "film",
+                 "cartoon", "anime", "kids", "animation")),
+    ("国际", ("国际", "海外", "境外", "国外", "international", "world")),
+)
+TITLE_MAX = 40
+
+
+def from_title(title) -> str:
+    """播放列表的分组名对到 GROUPS 里的一个（不含投屏和 UP 主）；对不上（或没写）是空串。"""
+    if not isinstance(title, str):
+        return ""
+    plain = "".join(c for c in title[:TITLE_MAX * 2] if c.isalnum()).casefold()
+    if not plain:
+        return ""
+    for group, words in _TITLE_GROUPS:
+        if any(word in plain for word in words):
+            return group
+    return ""
+
+
 def group_of(channel_id: str, name: str, overrides: dict[str, str]) -> str:
     automatic = classify(channel_id, name)
     # 投屏和 UP 主的台固定在自己的组里，手动调整只对直播台生效。

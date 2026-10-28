@@ -6,7 +6,9 @@
   tvg-id 对上频道表里的台：这个台还没有的地址先补进空着的备用线路（routes.BACKUPS_MAX 条），满了只换掉检测
   连不上的备用线路（routes.bad_in）；主线路和能用的线路从不动。新线路排在后面，后台自检（linecheck.py）测过、
   真放起来快的才往前排（routes.preferred）。
+- 对上的台空着的 tvg-id、tvg-name、台标用列表里的补上（channeltable.fill_meta），有的从不换；分组不动。
 - 频道表里没有的台不自动加（频道表会越撑越大）：记下有几个、叫什么，总后台「导入」里点一下列出来勾选。
+- 列表文件头推荐的节目单（x-tvg-url）记成「推荐的节目单来源」（epg.suggest），不会自己打开。
 
 订阅存在频道表旁边的 <频道表>.subs.json：地址只在本机、只给管理员看，日志只写订阅的名字，从不写地址
 （列表地址里常带口令）。至多 SUBS_MAX 个。云端的中转没有这个功能（和「导入」一样）。
@@ -25,7 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from .. import routes
-from . import channeltable, playlist
+from . import channeltable, epg, playlist
 
 SUBS_MAX = 8
 EVERY_S = 12 * 3600.0
@@ -70,8 +72,8 @@ def label_of(url: str) -> str:
 
 def merge_lines(meta: dict, rows: list[dict], entries: list[dict]) -> dict:
     """把读出来的台（playlist.read 的 entries）并进 meta（原地改，routes.update_meta 里调）。
-    回答 {channels: 对上了几个台, added: 补了几条, replaced: 换掉了几条坏的, new: 频道表里没有的台的个数,
-    new_names: 前 NEW_NAMES_MAX 个的名字}。"""
+    回答 {channels: 对上了几个台, added: 补了几条, replaced: 换掉了几条坏的, filled: 补上台标或节目单编号的台数,
+    new: 频道表里没有的台的个数, new_names: 前 NEW_NAMES_MAX 个的名字}。"""
     by_key: dict[str, dict] = {}
     by_tvg: dict[str, dict] = {}
     for row in rows:
@@ -83,6 +85,7 @@ def merge_lines(meta: dict, rows: list[dict], entries: list[dict]) -> dict:
     new_names: list[str] = []
     new_count = 0
     seen_new: set[str] = set()
+    filled: set[str] = set()
     for entry in entries:
         tvg = entry.get("tvg_id") if isinstance(entry.get("tvg_id"), str) else ""
         row = (by_tvg.get(tvg.casefold()) if tvg else None) or by_key.get(channel_key(entry["name"]))
@@ -96,6 +99,11 @@ def merge_lines(meta: dict, rows: list[dict], entries: list[dict]) -> dict:
             continue
         lines = [{"url": entry["url"], "ua": entry.get("agent", "")}] + list(entry.get("routes") or [])
         wanted.setdefault(row["id"], []).extend(lines)
+        # 台标、节目单编号：这个台空着的才补，先对上的那一条先补。
+        if channeltable.clean_meta(entry):
+            target = meta.setdefault(row["id"], {})
+            if channeltable.fill_meta(target, entry):
+                filled.add(row["id"])
     added = replaced = 0
     for row in rows:
         if row["id"] not in wanted:
@@ -122,18 +130,21 @@ def merge_lines(meta: dict, rows: list[dict], entries: list[dict]) -> dict:
                 backups[i] = fresh.pop(0)
                 replaced += 1
         entry["routes"] = backups
-    return {"channels": len(wanted), "added": added, "replaced": replaced, "new": new_count, "new_names": new_names}
+    return {"channels": len(wanted), "added": added, "replaced": replaced, "filled": len(filled), "new": new_count,
+            "new_names": new_names}
 
 
 class Subscriptions:
     """订阅的存取、手动和定时刷新。table() 给频道表的路径（没有时什么都不做）。"""
 
     def __init__(self, table: Callable[[], Path | None], read=playlist.read, clock=time.time,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print, suggest: Callable[[list, str], object] | None = None):
         self.table = table
         self.read = read
         self.clock = clock
         self.log = log
+        # 列表推荐的节目单地址交给谁记（epg.suggest；没有时不记）。
+        self.suggest = suggest
         self._busy: set[str] = set()
 
     # ---- 文件 ----
@@ -227,10 +238,12 @@ class Subscriptions:
             result: dict = {}
             routes.update_meta(table, lambda meta: result.update(merge_lines(meta, rows, answer["entries"])))
             result["total"] = answer.get("total", len(answer["entries"]))
+            if self.suggest is not None and answer.get("epg_urls"):
+                self.suggest(answer["epg_urls"], sub["name"])
             self._update(sid, lambda s: s.update(last_at=now, ok=True, error="", result=result))
-            if result["added"] or result["replaced"]:
+            if result["added"] or result["replaced"] or result["filled"]:
                 self.log(f"直播源订阅「{sub['name']}」：{result['channels']} 个台对上，补了 {result['added']} 条线路，"
-                         f"换掉 {result['replaced']} 条坏的")
+                         f"换掉 {result['replaced']} 条坏的，{result['filled']} 个台补上台标或节目单编号")
             return {"ok": True, "result": result}
         finally:
             with _LOCK:
@@ -258,7 +271,8 @@ def attach(relay, start: bool = True) -> Subscriptions | None:
     """自建 / 电脑客户端：挂在 relay.subscriptions 上，开定时刷新。云端不建。"""
     if relay.selfhost is None or relay.main_channels is None:
         return None
-    subs = Subscriptions(lambda: relay.main_channels, log=lambda message: relay.log(message))
+    subs = Subscriptions(lambda: relay.main_channels, log=lambda message: relay.log(message),
+                         suggest=lambda urls, origin: epg.suggest(relay, urls, origin))
     relay.subscriptions = subs
     if start:
         threading.Thread(target=subs.run_forever, name="subscriptions", daemon=True).start()
