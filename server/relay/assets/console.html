@@ -38,7 +38,7 @@
 <div id="app" class="d" hidden>
   <div id="main">
     <div id="view">
-      <div class="banner warn" id="notice" role="note" hidden><span class="ico" data-ic="warn"></span><div><b>YouTube</b><p id="noticeText"></p></div></div>
+      <div class="banner warn" id="notice" role="note" hidden><span class="ico" data-ic="warn"></span><div><b>YouTube</b><p id="noticeText"></p></div><a class="btn sm" id="noticeGo" href="#/settings/youtube" hidden>去设置</a></div>
 
       <!-- 首页：/api/home 拼出来的几排 -->
       <section class="page" data-route="home" aria-label="首页"><div id="homeBody"></div></section>
@@ -233,6 +233,8 @@
         </div>
 
         <div class="spane" data-pane="youtube">
+          <!-- YouTube 要求登录（cookies 失效、没导入）时一直挂在最上面，说清楚怎么办（console.js 的 renderYouTube） -->
+          <div class="banner warn" id="ytAlert" role="alert" hidden><span class="ico" data-ic="warn"></span><div><b id="ytAlertTitle"></b><p id="ytAlertText"></p></div></div>
           <div class="panel" id="ytBlock" hidden><h3>YouTube 节点</h3><p id="ytState"></p></div>
           <div class="panel" id="ytLocal" hidden>
             <h3>YouTube <small id="ytRun"></small></h3>

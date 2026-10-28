@@ -92,7 +92,11 @@ def settings(relay) -> dict:
               "running": kind or "off", "node_file": layout.youtube_node.is_file(),
               "components": components(relay).snapshot(),
               "cookies": ytlocal.cookies_summary(ytlocal.cookies_path(layout.root, config.youtube_cookies)),
-              "health": None}
+              "health": None, "autoupdate": None}
+    from .ytupdate import updater
+    found = updater(relay)
+    if found is not None:
+        answer["autoupdate"] = found.snapshot()    # yt-dlp 自动更新（ytupdate.py）：开着没有、上次的结果
     if kind and relay.clients.get("youtube") is not None:
         answer["health"] = relay.youtube_state()
     return answer
@@ -217,6 +221,10 @@ def _components(relay, body: dict) -> dict:
     parts = components(relay)
     if not parts.assets:
         return {"ok": False, "error": "这台电脑的系统没有官方的 deno，本机模式用不了"}
+    from .ytupdate import updater
+    found = updater(relay)
+    if found is not None:
+        found.remember_mirror(mirror)      # 自动更新也从这个镜像下载（不填 = 不用镜像）
     if action == "check":
         try:
             found = parts.check_update(config.youtube_proxy, mirror)

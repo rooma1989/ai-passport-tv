@@ -50,7 +50,7 @@ transcode_streams = 2           # 要转码的（HEVC 之类，一路吃一个 C
 
 [maintenance]
 backup_keep_days = 14           # 每晚备份数据库，留几天
-update_check = true             # 以后的「有新版本」提示用，现在不起作用
+update_check = true             # 自动检查更新：现在管 YouTube 本机模式的 yt-dlp（每天一次；false = 只在设置页手动更新）
 """
 
 SIGNUP = ("lan", "anywhere", "off")

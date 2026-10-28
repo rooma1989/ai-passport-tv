@@ -748,6 +748,20 @@ class _Prefetch:
                 pass
 
 
+# 像是 YouTube 改了页面、旧的 yt-dlp 跟不上的错误：中转（ytupdate.py）看到就马上去查有没有新版 yt-dlp。
+# 「Sign in to confirm」也算：它是 cookies 过期的信号，也常常是新版 yt-dlp 换了取视频的办法就好了。
+EXTRACTOR_HINTS = ("Unable to extract", "unable to extract", "Sign in to confirm", "not a bot",
+                   "HTTP Error 403", "nsig extraction failed", "Signature extraction failed",
+                   "Failed to extract any player response", "Requested format is not available",
+                   "Some web client https formats have been skipped", "please report this issue")
+
+
+def looks_broken(stderr: str) -> bool:
+    """yt-dlp 的错误像是它自己跟不上 YouTube 了（新版常常能好）。"""
+    text = stderr or ""
+    return any(hint in text for hint in EXTRACTOR_HINTS)
+
+
 NETWORK_HINTS = ("Unable to download", "Failed to resolve", "Connection refused", "timed out",
                  "Network is unreachable", "getaddrinfo", "Tunnel connection failed", "ProxyError",
                  "Connection reset", "Remote end closed", "Unable to connect to proxy", "SSL",
@@ -790,16 +804,23 @@ class Node:
         self._prefetch: _Prefetch | None = None
         self.clock = time.monotonic
         # 最近一次 YouTube 解析的结果，给中转判断 cookies 是否过期：
-        # unknown（还没解析过）、ok、login（要求登录）、error（其他失败）。
-        self.health = {"state": "unknown", "at": 0.0, "version": ""}
+        # unknown（还没解析过）、ok、login（要求登录）、error（其他失败）；broken：失败像是 yt-dlp 跟不上了
+        # （looks_broken，中转据此提前查新版）。
+        self.health = {"state": "unknown", "at": 0.0, "version": "", "broken": False}
         self.measure = measure
         # 量过的 yt-dlp：(路径, 秒数)；秒数 None = 正在量或量失败。
         self.startup: tuple[str, float | None] | None = None
         self._startup_lock = threading.Lock()
 
-    def _record(self, state: str, version: str = "") -> None:
+    def _record(self, state: str, version: str = "", broken: bool = False) -> None:
         self.health = {"state": state, "at": time.time(),
-                       "version": version or self.health.get("version", "")}
+                       "version": version or self.health.get("version", ""), "broken": bool(broken)}
+
+    def busy(self) -> bool:
+        """这会儿有 yt-dlp 在跑或在排队（起播、预取、列表、搜索）：中转不在这时换 yt-dlp。"""
+        with self._gate:
+            waiting = self._waiting
+        return bool(waiting) or self._play.locked() or self._ytdlp.locked()
 
     def current_tools(self) -> Tools | None:
         """这次调用用的工具。本机模式现找 yt-dlp、deno（还没装好时 None），cookies 文件在才带上。"""
@@ -1053,7 +1074,7 @@ class Node:
             self.last_error = last[0][:200]
             status = error_status(err)
             # 404 是这个视频本身的问题（删了、私享）：YouTube 正常回答了，cookies 没问题。
-            self._record({503: "login", 404: "ok"}.get(status, "error"))
+            self._record({503: "login", 404: "ok"}.get(status, "error"), broken=status != 404 and looks_broken(err))
             return status, last[0][:200]
         try:
             data = json.loads(out)
@@ -1096,6 +1117,8 @@ def _handler(node: Node):
                     health["tools"] = read_components(node.tools_dir) is not None
                     # yt-dlp --version 要几秒（还没量过时 null）。
                     health["startup"] = node.startup_seconds()
+                    # 正在起播、解析：中转的自动更新（ytupdate.py）等它空下来再换 yt-dlp。
+                    health["busy"] = node.busy()
                 self._json(200, health)
                 return
             if parts.path == "/yt/check":

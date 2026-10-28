@@ -524,7 +524,7 @@ function renderTop() {
   const role = me ? (me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人") : "";
   $("top").innerHTML = `<div class="tl"><a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${iconSVG(40, true)}${wordmarkSVG(28, false)}</a></div>
     <nav class="ttabs" aria-label="主导航">${tabs.map(([id, t, i]) => `<a href="#/${id}" ${cr(id)}>${i ? ic(i, 17) : ""}${t}</a>`).join("")}</nav>
-    <div class="tr">${chipHTML()}<div class="tbtns"><a class="iconbtn" id="topSearch" href="#/search" aria-label="搜索" title="搜索（按 / 键）" ${cr("search")}>${ic("search", 20)}</a>${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv", 20)}</a>`}${isAdmin() ? `<a class="iconbtn" href="#/admin" aria-label="管理" title="管理：用户、设备、频道表" ${cr("admin")}>${ic("sliders", 20)}</a>` : ""}<a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set", 20)}</a></div><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
+    <div class="tr">${chipHTML()}<div class="tbtns"><a class="iconbtn" id="topSearch" href="#/search" aria-label="搜索" title="搜索（按 / 键）" ${cr("search")}>${ic("search", 20)}</a>${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv", 20)}</a>`}${isAdmin() ? `<a class="iconbtn" href="#/admin" aria-label="管理" title="管理：用户、设备、频道表" ${cr("admin")}>${ic("sliders", 20)}</a>` : ""}<a class="iconbtn${ytAlert() ? " alert" : ""}" href="#/settings" aria-label="${ytAlert() ? "设置（YouTube 要求重新登录）" : "设置"}" title="${ytAlert() ? "设置：YouTube 要求重新登录" : "设置"}" ${cr("settings")}>${ic("set", 20)}</a></div><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
     <span class="ntitle" aria-hidden="true">${esc(TITLES[route])}</span>`;
   $("top").classList.toggle("home", route === "home");
   // 点放大镜和按 / 一样：进搜索页、光标放进搜索框，可以直接打字。
@@ -559,7 +559,7 @@ function renderMe() {
   const rows = [["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["live", "直播和分组", "live"],
                 ["devices", "设备", "tv"], ["settings", "设置", "set"], ["admin", "管理", "sliders"]]
     .filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && (id !== "admin" || isAdmin()));
-  $("meList").innerHTML = rows.map(([id, t, i]) => `<a class="li" href="#/${id}"><span class="ico">${ic(i, 18)}</span><span class="tx">${t}</span><em>›</em></a>`).join("")
+  $("meList").innerHTML = rows.map(([id, t, i]) => `<a class="li" href="#/${id === "settings" && ytAlert() ? "settings/youtube" : id}"><span class="ico">${ic(i, 18)}</span><span class="tx">${t}</span>${id === "settings" && ytAlert() ? '<i class="adot" title="YouTube 要求重新登录"></i>' : ""}<em>›</em></a>`).join("")
     + `<div class="li"><span class="me">${esc(me ? [...me.name][0] : "?")}</span><span class="tx">${esc(me ? me.name : "")}<small>${me && me.role === "admin" ? "管理员" : isGuest() ? "访客" : "家人"}</small></span></div>`;
 }
 function renderAbout() {
@@ -583,7 +583,7 @@ function settingsNav() {
   const want = route === "settings" ? routeParts()[1] || "" : "";
   const tabs = SET_TABS.filter(([id]) => setTabOn(id));
   const cur = tabs.some(([id]) => id === want) ? want : "general";
-  const html = tabs.map(([id, t, i]) => `<a href="#/settings/${id}" data-k="set-${id}"${id === cur ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}</a>`).join("");
+  const html = tabs.map(([id, t, i]) => `<a href="#/settings/${id}" data-k="set-${id}"${id === cur ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}${id === "youtube" && ytAlert() ? '<i class="adot" aria-label="要处理"></i>' : ""}</a>`).join("");
   if (html !== setNavHTML) {
     const k = focusKey();      // 用键盘在标签上按回车：重画后焦点还在那个标签上
     $("setNav").innerHTML = setNavHTML = html;
@@ -801,14 +801,34 @@ function render() {
   ytPrefetchView();
 }
 
+// YouTube 要求登录（cookies 失效、没导入）：管理员才能去「设置 → YouTube」处理，给他的设置按钮和标签带个小黄点。
+function ytAlert() { return isAdmin() && !!data && !!data.youtube && data.youtube.state === "login"; }
+function ytLoginText() {
+  const local = data && data.youtube && data.youtube.kind === "local";
+  if (!local) return "YouTube 要求登录：海外节点的 cookies 过期了，请管理员用小号重新导出（见使用说明）。B 站不受影响";
+  return isAdmin() ? "YouTube 要求重新登录：cookies 失效了（或还没导入）。去「设置 → YouTube」重新导入小号的 cookies，B 站不受影响"
+    : "YouTube 要求重新登录：请管理员在「设置 → YouTube」重新导入 cookies。B 站不受影响";
+}
+let ytAlertShown = false;
 function renderNotice() {
   const state = data.youtube ? data.youtube.state : "";
   const local = data.youtube && data.youtube.kind === "local";
-  const text = state === "login" ? "YouTube 需要更新 cookies（管理员用小号重新导出，见使用说明），B 站不受影响"
+  const text = state === "login" ? ytLoginText()
     : state === "unreachable" ? (local ? "YouTube 暂时不可用（本机的 YouTube 组件没有响应）" : "YouTube 暂时不可用（连不上海外节点）") : "";
   $("castYt").hidden = !data.youtube_off;
-  $("notice").hidden = !text || route === "home";
+  // 首页有自己的横幅；「设置 → YouTube」里有更详细的那一条（ytAlert）。
+  $("notice").hidden = !text || route === "home" || (route === "settings" && setTab === "youtube" && !$("ytAlert").hidden);
   $("noticeText").textContent = text;
+  $("noticeGo").hidden = !(state === "login" && local && isAdmin()) || route === "settings";
+  if (ytAlert() !== ytAlertShown) {
+    ytAlertShown = ytAlert();
+    const b = qs('#top a[href="#/settings"].iconbtn');
+    if (b) { b.classList.toggle("alert", ytAlertShown); b.title = ytAlertShown ? "设置：YouTube 要求重新登录" : "设置"; b.setAttribute("aria-label", ytAlertShown ? "设置（YouTube 要求重新登录）" : "设置"); }
+    setNavHTML = "";
+    settingsNav();
+    if (route === "me") renderMe();
+    if (route === "settings" && yt) loadYouTube();
+  }
   $("ytBlock").hidden = !data.youtube || !$("ytLocal").hidden;
   if (data.youtube) $("ytState").textContent = { ok: "正常", login: "cookies 过期了，需要重新导出", error: "出错了",
     unreachable: "连不上", unknown: "还不知道" }[state] || state;
@@ -5140,6 +5160,10 @@ function renderYouTube() {
   else if (c.ready) line = "已安装：yt-dlp " + c.ytdlp + "，deno " + c.deno + (c.update ? "。有新版 yt-dlp " + c.latest + "，点「更新 yt-dlp」" : c.latest ? "（已是最新）" : "");
   else line = "还没安装" + (yt.mode === "local" ? "：点「安装」（经上面的代理下载）" : "");
   if (c.state === "failed" && c.error) line += "。上次失败：" + c.error;
+  // yt-dlp 自动更新（server/relay/ytupdate.py）：每天查一次、解析失败像是 yt-dlp 跟不上时马上查。
+  const au = yt.autoupdate;
+  if (au && c.ready) line += au.enabled ? "。自动更新：每天检查一次" + (au.last ? "，上次：" + au.last + (au.last_at ? "（" + when(au.last_at) + "）" : "") : "")
+    : "。自动更新：" + au.reason;
   $("ytPartsState").textContent = line;
   $("ytPartsState").style.color = c.state === "failed" ? "var(--bad)" : "";
   $("ytInstall").hidden = !c.supported || c.ready;
@@ -5148,6 +5172,16 @@ function renderYouTube() {
   for (const b of [$("ytInstall"), $("ytUpdate"), $("ytCheck")]) b.disabled = c.state === "working";
   const k = yt.cookies;
   $("ytCookiesState").textContent = k.present ? "已导入（" + k.count + " 条，YouTube 域名，" + when(k.updated) + "）" : "没有导入";
+  // YouTube 要求登录：最上面一直挂着一条，说清楚怎么办（重新导入 cookies 之后点「测试」，好了它就消失）。
+  const login = yt.running === "local" && yt.health === "login";
+  $("ytAlert").hidden = !login;
+  if (login) {
+    $("ytAlertTitle").textContent = k.present ? "YouTube 要求重新登录：导入的 cookies 失效了" : "YouTube 要求登录才肯回答";
+    $("ytAlertText").textContent = (k.present ? "在浏览器无痕窗口里重新登录小号、打开 YouTube，导出 cookies.txt，在下面点「导入 cookies.txt」（或「从浏览器读取」），再点「测试」。"
+      : "在下面导入一个小号的 cookies.txt（或「从浏览器读取」），再点「测试」。")
+      + "cookies 刚换过还这样，多半是 YouTube 改了：yt-dlp 每天会自动检查更新，也可以点「检查更新」。";
+  }
+  $("notice").hidden = $("notice").hidden || (route === "settings" && setTab === "youtube" && login);
   $("ytCookiesDelete").hidden = !k.present;
   if (mode === "local" && route === "settings" && !ytBrowsers && !ytBrowserLoading) loadBrowsers();
   renderYtImportGate();
@@ -6501,6 +6535,7 @@ function renderHome() {
       : banner("info", "还没有小电视", "绑定以后，点任何节目都能播到它上面；订阅、剧集现在就可以先加。", "绑定小电视", "#/devices");
   }
   if (data && data.youtube && data.youtube.state === "unreachable") o += banner("warn", "YouTube 暂时不可用", $("noticeText").textContent || "", "", "");
+  if (data && data.youtube && data.youtube.state === "login") o += banner("warn", "YouTube 需要重新登录", ytLoginText(), isAdmin() && data.youtube.kind === "local" ? "去设置" : "", "#/settings/youtube");
   if (!isGuest()) o += `<div class="chips qchips" aria-label="分类"><a href="#/series">${ic("series", 16)}剧集与番剧</a><a href="#/up">${ic("up", 16)}UP 主</a><a href="#/lib">${ic("lib", 16)}片库</a><a href="#/live">${ic("live", 16)}直播</a></div>`;
   SHELF.continue = { title: "继续观看", items: () => homeData.continue, card: cardContinue };
   SHELF.live = { title: "直播 · 正在播", items: () => homeData.live_now, card: cardLive, link: ["#/live", "直播页"] };
