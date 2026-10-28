@@ -32,6 +32,7 @@ from . import admin, bilisearch, console, epg, events, home, setup, stream, tabl
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
 from . import accountfeeds, bilidash, bililogin, follows, static, ytsearch, ytsettings, ytvod
 from . import library as library_api
+from . import localsearch
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
     UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -2981,6 +2982,9 @@ def _manage_handler(relay: Relay):
             elif path == "/api/epg":
                 # 节目单（epg.py）：直播台现在和下一个节目；和频道列表一样，登录了的（访客也算）都能看。
                 self._json(epg.api(relay, self._query()))
+            elif path == "/api/search/local":
+                # 搜索页最上面的几段（localsearch.py）：自己的直播台、节目单、片库、订阅；访客只有直播台和节目单。
+                self._json(localsearch.search(relay, caller, self._query().get("q")))
             elif path == "/api/home":
                 # 电脑版首页的几排（home.py）：按调用者，访客只有直播。
                 self._json(home.home(relay, caller))

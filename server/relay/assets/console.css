@@ -493,6 +493,22 @@ a.li:focus-visible, button.li:focus-visible { outline: none; background: var(--f
 .linkhit .tx { flex: 1; min-width: 0; }
 .linkhit .tx b { display: block; font: 600 16px var(--sans); }
 .linkhit .tx small { display: block; color: var(--label-2); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 聚合搜索（console.js renderAgg）：自己的直播台、节目、片库、剧集、UP 主，一段一个小标题，每条一行；
+   图都占同样宽的一格（海报、头像在格子里居中），第一条右边写「回车」 */
+.agg { margin: 0 0 18px; }
+.agg section + section { margin-top: 10px; }
+.agg .bshead { margin: 0 8px 4px; }
+.agg .bshead small { color: var(--label-3); }
+.agg .aggmore { margin-top: 22px; }
+.agglist { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 2px 20px; }
+.agg .hrow { gap: 14px; padding: 6px 8px; }
+.agg .hrow .art { width: 112px; }
+.agg .hrow .art.p { width: 42px; aspect-ratio: 2 / 3; margin: 0 35px; border-radius: 6px; }
+.agg .hrow .art.f { width: 52px; aspect-ratio: 1; margin: 0 30px; border-radius: 50%; }
+.agg .logo-on { left: 50%; top: 50%; bottom: auto; transform: translate(-50%, -50%) scale(.7); }
+.aggon { flex: none; padding: 0 7px; border-radius: 6px; background: var(--brand); color: #fff; font: 600 11px/20px var(--sans); }
+.aggkey { flex: none; padding: 0 7px; border-radius: 6px; border: 1px solid var(--sep); color: var(--label-3); font: 500 11px/20px var(--sans); }
+.m .aggkey { display: none; }
 
 /* ---- 设备 ---- */
 .devs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 20px; }
@@ -943,6 +959,11 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m .hit .cover.face { margin: 0 20px; width: 72px; }
 .m .hit .cover.poster { width: 60px; margin: 0 26px; }
 .m .hit .acts { grid-column: 2; flex-direction: row; flex-wrap: wrap; }
+.m .agglist { grid-template-columns: 1fr; }
+.m .agg .hrow { gap: 12px; padding: 6px 0; }
+.m .agg .hrow .art { width: 88px; }
+.m .agg .hrow .art.p { width: 34px; margin: 0 27px; }
+.m .agg .hrow .art.f { width: 44px; margin: 0 22px; }
 .m .bigsearch { height: 50px; }
 .m .bigsearch input[type=search] { font-size: 18px; }
 .m .devs { grid-template-columns: 1fr; }

@@ -140,7 +140,7 @@
         </div>
       </section>
 
-      <!-- 搜索：B 站或 YouTube 搜索 + 粘贴链接即播 -->
+      <!-- 搜索：自己的直播台、节目单、片库、订阅（聚合搜索），B 站或 YouTube 搜索 + 粘贴链接即播 -->
       <section class="page" data-route="search" aria-label="搜索">
         <header class="ph"><h1 class="lt">搜索</h1>
           <div class="segc noguest" id="srcSwitch" role="group" aria-label="在哪儿搜">
@@ -150,6 +150,7 @@
         <label class="bigsearch"><span data-ic="search" data-ics="22"></span>
           <input type="search" id="bsQuery" placeholder="搜 B 站视频、影视剧、番剧、UP 主，或粘贴视频链接" maxlength="300" autocomplete="off" spellcheck="false" aria-label="搜索或粘贴链接"></label>
         <div id="linkHit" hidden></div>
+        <div class="agg" id="aggHits" hidden></div>
         <div class="chips noguest" id="bsKinds" role="group" aria-label="搜什么">
           <button data-kind="video" aria-pressed="true">视频</button>
           <button data-kind="ft" aria-pressed="false">影视</button>

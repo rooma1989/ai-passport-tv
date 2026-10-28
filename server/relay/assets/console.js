@@ -4076,7 +4076,7 @@ function renderLinkHit() {
 }
 async function bsSearch(fresh) {
   if (renderLinkHit()) return;
-  if (isGuest()) { bsSay("访客只能粘贴视频链接播放。"); return; }
+  if (isGuest()) { bsSay("访客能搜直播台和节目，或粘贴视频链接播放。"); return; }
   if (searchSrc === "yt") return ytSearch(false);
   const q = $("bsQuery").value.trim().replace(/\s+/g, " ");
   if (!q) { bsSay(BS_HELLO); return; }
@@ -4120,7 +4120,14 @@ $("bsQuery").addEventListener("input", () => {
   if (searchSrc === "yt") { if (q.length >= 2 && q !== yts.q && !isGuest() && ytReady()) bs.timer = setTimeout(() => bsSearch(true), 1500); }
   else if (q.length >= 2 && q !== bs.q && !isGuest()) bs.timer = setTimeout(() => bsSearch(true), 900);
 });
-$("bsQuery").addEventListener("keydown", (event) => { if (event.key === "Enter") bsSearch(true); });
+$("bsQuery").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); aggEnter(); return; }
+  // 下箭头：从输入框到第一条结果（再往下用方向键在结果里走）。
+  if (event.key === "ArrowDown") {
+    const first = qs("#aggHits button") || qs("#bsHits button, #bsHits a");
+    if (first) { event.preventDefault(); first.focus(); }
+  }
+});
 $("bsMore").onclick = () => bsSearch(false);
 function bsKind(kind) {
   if (bs.kind === kind) return;
@@ -4132,6 +4139,103 @@ function bsKind(kind) {
   else bsSay(BS_HELLO);
 }
 for (const b of qsa("#bsKinds button")) b.onclick = () => bsKind(b.dataset.kind);
+
+// ---------- 聚合搜索：自己家里的直播台、节目单、片库、订阅的剧集和 UP 主（/api/search/local，localsearch.py）----------
+// 在 B 站 / YouTube 的结果上面，边打字边出（停手 AGG_WAIT_MS 就问，全在中转的内存里比，不上网）；段的顺序中转排好了
+// （最像的那段在前）。回车 = 第一条（播放直播台、打开片子）；没有自己的结果时回车照旧去 B 站 / YouTube 搜。
+// 访客只有直播台和节目单（中转按身份给）。
+const agg = { q: "", run: 0, timer: 0, sections: [] };
+const AGG_WAIT_MS = 120;
+function aggQuery() { return $("bsQuery").value.trim().replace(/\s+/g, " "); }
+function aggSoon() { clearTimeout(agg.timer); agg.timer = setTimeout(aggSearch, AGG_WAIT_MS); }
+async function aggSearch() {
+  clearTimeout(agg.timer);
+  const q = aggQuery();
+  if (!q || q.length > 40 || LINKY.test(q)) {
+    agg.run++;
+    if (agg.q || agg.sections.length) { agg.q = ""; agg.sections = []; renderAgg(); }
+    return;
+  }
+  if (q === agg.q) return;
+  const run = ++agg.run;
+  let answer;
+  try { answer = await call("GET", "api/search/local?" + new URLSearchParams({ q })); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (run !== agg.run) return;           // 又打了字：等新的那次
+  agg.q = q;
+  agg.sections = answer.ok ? answer.sections : [];
+  renderAgg();
+}
+// 节目的时间：今天的只写「19:30–20:00」，别的天前面加「明天」或日期。
+function aggWhen(p) {
+  const day = dayLabel(p.start).split(" · ");
+  return (day.length > 1 ? (day[0] === "今天" ? "" : day[0] + " ") : day[0].replace(/ .*$/, "") + " ") + hm(p.start) + "–" + hm(p.end);
+}
+const AGG_LIB_KIND = { show: "剧集", movie: "电影", video: "视频", episode: "剧集" };
+function aggRow(x, first) {
+  const logo = (url) => `<span class="logo-on ${url ? "img" : ""}">${badgeSVG(x.channel ? x.channel.name : x.title)}${url ? `<img src="${esc(url)}" alt="" loading="lazy">` : ""}</span>`;
+  let attr = "", look = "", sub = "", label = x.title, badge = "";
+  if (x.kind === "live") {
+    attr = `data-play="${esc(reg({ id: "q-" + x.id, title: x.title, play: x.play, art: { url: x.art } }))}"`;
+    look = `<span class="art">${art(x.title, "w", { motif: 2 })}${imgTag(x.art)}${logo(x.logo)}</span>`;
+    sub = epgText(x.now, hm) || [groupOf(x.channel.id), "直播"].filter(Boolean).join(" · ");
+    label = "播放 " + x.title;
+  } else if (x.kind === "programme") {
+    attr = `data-play="${esc(reg({ id: "q-" + x.id, title: x.channel.name, play: x.play, art: { url: "" } }))}"`;
+    look = `<span class="art">${art(x.channel.name, "w", { motif: 2 })}${logo(x.logo)}</span>`;
+    sub = x.channel.name + " · " + aggWhen(x);
+    if (x.on_air) badge = '<span class="aggon">正在播</span>';
+    label = "换到 " + x.channel.name + "，" + (x.on_air ? "正在播 " : aggWhen(x) + " 播 ") + x.title;
+  } else if (x.kind === "series") {
+    attr = `data-series="${esc(x.series.id)}"`;
+    look = `<span class="art p">${art(x.title, "p", { kick: siteTag(x.site) })}${imgTag(x.art)}</span>`;
+    sub = siteTag(x.site) + " · " + (x.episode > 1 ? "下次第 " + x.episode + " 集 · " : "") + "共 " + x.total + " 集";
+    label = x.title + "，选集";
+  } else if (x.kind === "up") {
+    attr = `data-play="${esc(reg({ id: "q-" + x.id, title: x.title, play: x.play, art: { url: "" } }))}"`;
+    look = `<span class="art f">${avatarSVG(x.title, 56)}${imgTag(x.art)}</span>`;
+    sub = siteTag(x.site) + " · UP 主 · 最近 " + x.total + " 个视频";
+    label = "播放 UP 主 " + x.title;
+  } else {
+    // 片库：剧打开选集页，电影和其他视频打开资料页（renderLib 的 lib.show / lib.item）。
+    attr = x.open.show ? `data-aggshow="${esc(x.open.show)}"` : `data-aggitem="${esc(x.open.item)}"`;
+    look = `<span class="art p">${art(x.title, "p", { kick: "片库" })}${imgTag(x.art)}</span>`;
+    sub = [AGG_LIB_KIND[x.kind] || "片库", x.year, x.count ? x.count + " 集" : ""].filter(Boolean).join(" · ");
+    label = x.title + "，打开";
+  }
+  return `<button class="hrow" ${attr} data-k="q-${esc(x.id)}"${first ? " data-aggfirst" : ""} aria-label="${esc(label)}">${look}<span class="htx"><b>${esc(x.title)}</b><small>${esc(sub)}</small></span>${badge}${first ? '<kbd class="aggkey" aria-hidden="true">回车</kbd>' : ""}</button>`;
+}
+function renderAgg() {
+  const box = $("aggHits");
+  const sections = agg.q && agg.q === aggQuery() ? agg.sections.filter((s) => s.items.length) : [];
+  box.hidden = !sections.length;
+  if (!sections.length) { box.replaceChildren(); return; }
+  const k = focusKey();
+  let o = "", first = true;
+  for (const s of sections) {
+    o += `<section aria-label="${esc(s.title)}"><div class="bshead"><b>${esc(s.title)}</b><small>${s.items.length}</small></div><div class="agglist">`;
+    for (const x of s.items) { o += aggRow(x, first); first = false; }
+    o += "</div></section>";
+  }
+  if (!isGuest()) o += `<div class="bshead aggmore"><b>${searchSrc === "yt" ? "YouTube" : "B 站"}上的结果</b></div>`;
+  box.innerHTML = o;
+  restoreFocus(k);
+}
+$("aggHits").addEventListener("click", (event) => {
+  const t = event.target.closest("button");
+  if (!t || !(t.dataset.aggshow || t.dataset.aggitem)) return;
+  lib.show = t.dataset.aggshow || ""; lib.item = t.dataset.aggitem || ""; lib.match = null; lib.more = false;
+  location.hash = "#/lib/local";
+});
+// 回车：先等这个词的结果（打字快、刚停手就按回车时还在路上），有自己的结果就打开第一条，否则照旧搜 B 站 / YouTube。
+async function aggEnter() {
+  const q = aggQuery();
+  if (q && !LINKY.test(q) && agg.q !== q) await aggSearch();
+  const first = q === aggQuery() && agg.q === q ? qs("#aggHits [data-aggfirst]") : null;
+  if (first) { first.click(); return; }
+  bsSearch(true);
+}
+$("bsQuery").addEventListener("input", aggSoon);
 
 // ---------- YouTube 搜索 ----------
 
@@ -4191,6 +4295,7 @@ function setSource(src) {
   if (route === "search" && data) $("castYt").hidden = !data.youtube_off;
   renderSearchSource();
   renderSearch();
+  renderAgg();                           // 「B 站 / YouTube 上的结果」那行跟着换
   const q = $("bsQuery").value.trim();
   if (renderLinkHit()) return;
   if (src === "yt") {

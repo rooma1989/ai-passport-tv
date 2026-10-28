@@ -443,8 +443,8 @@ class Douban:
 class MetaStore:
     """library-meta.json：{"titles": {键: 资料}}。键是 s<剧名的哈希>（剧）或 m<条目 id>（电影、其他视频）。
     资料：state（matched / miss / none）、manual、q（自动查时用的片名，改了就重查）、at、豆瓣的 id、title、
-    original、year、type、rating、votes、genres、directors、actors、countries、plot、episodes、img（豆瓣的海报地址）、
-    poster（library-art/ 里的文件名）、partial（详细资料没取全）。"""
+    original、aka（又名，聚合搜索用，localsearch.py）、year、type、rating、votes、genres、directors、actors、countries、
+    plot、episodes、img（豆瓣的海报地址）、poster（library-art/ 里的文件名）、partial（详细资料没取全）。"""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -496,7 +496,7 @@ class MetaStore:
 
 def entry_of(details: dict, query: str, manual: bool, now: float, partial: bool = False) -> dict:
     """豆瓣的资料 → 存下来的一条（还没有海报文件）。"""
-    keep = ("id", "title", "original", "year", "type", "rating", "votes", "genres", "directors", "actors",
+    keep = ("id", "title", "original", "aka", "year", "type", "rating", "votes", "genres", "directors", "actors",
             "countries", "plot", "episodes", "img")
     entry = {k: details.get(k) for k in keep if details.get(k) not in (None, "", [])}
     entry.update(state="matched", manual=bool(manual), q=query, at=int(now), partial=bool(partial))
