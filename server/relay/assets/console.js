@@ -708,7 +708,7 @@ let epg = {}, epgAt = 0, epgAsked = new Set(), epgBusy = false, epgWin = null;
 function epgIds() {
   const ids = new Set();
   if (route === "live") {
-    const g = data.groups.find((x) => x.name === group);
+    const g = shownGroup();
     if (g) for (const c of g.channels) if (!isRelay(c.id)) ids.add(c.id);
   }
   for (const id of [data.now && data.now.channel, watching && watching.channel]) if (id && !isRelay(id)) ids.add(id);
@@ -2180,7 +2180,7 @@ function warm(ids) {
 // 正在看的台在它那一组里的上一台、下一台。
 function neighbourIds() {
   if (!watching || !data) return { prev: null, next: null };
-  const g = data.groups.find((x) => x.name === watching.group && x.channels.some((c) => c.id === watching.channel))
+  const g = liveGroups().find((x) => x.name === watching.group && x.channels.some((c) => c.id === watching.channel))
     || data.groups.find((x) => x.channels.some((c) => c.id === watching.channel));
   return g ? liveNeighbours(g.channels.map((c) => c.id), watching.channel) : { prev: null, next: null };
 }
@@ -2208,7 +2208,7 @@ function prepareGroupSoon() {
   clearTimeout(prepareTimer);
   prepareTimer = setTimeout(() => {
     if (route !== "live" || document.hidden || !data || !data.watch || isGuest() || currentTarget() !== PC) return;
-    const g = data.groups.find((x) => x.name === group);
+    const g = shownGroup();
     const now = Date.now();
     const want = (g ? g.channels : []).map((c) => c.id)
       .filter((id) => !isRelay(id) && id !== "cast" && !(now - (preparedAt[id] || 0) < PREPARE_AGAIN_MS)).slice(0, 40);
@@ -2977,7 +2977,7 @@ function stopWatch() {
 // 上一台 / 下一台：在点台时的那一组里挨着换。
 function stepChannel(delta) {
   if (!watching || watching.mode !== "direct" || watching.busy || !data) return;
-  const g = data.groups.find((x) => x.name === watching.group && x.channels.some((c) => c.id === watching.channel))
+  const g = liveGroups().find((x) => x.name === watching.group && x.channels.some((c) => c.id === watching.channel))
     || data.groups.find((x) => x.channels.some((c) => c.id === watching.channel));
   if (!g) return;
   const list = g.channels, at = list.findIndex((c) => c.id === watching.channel);
@@ -3255,21 +3255,49 @@ function defaultGroup() {
   return (live || data.groups[0] || {}).name || "";
 }
 let groupsSig = "";
+// 直播页最前面的「常看」：这个人看得最多的台（中转按看了多久算，livetally.py；/api/state 的 frequent）。
+// 只是页面上的一组，不在频道表里：不能在这里调整分组。
+const FREQUENT = "常看";
+let liveFilter = "";
+function frequentGroup() {
+  const channels = ((data && data.frequent) || []).map(channelById).filter(Boolean);
+  return channels.length ? { name: FREQUENT, channels } : null;
+}
+function liveGroups() {
+  const f = frequentGroup();
+  return f ? [f].concat(data.groups) : data.groups;
+}
+const nameKey = (s) => String(s).replace(/[\s\-_]+/g, "").toLowerCase();
+// 直播页现在显示的那一组：「找台」里有字时是所有分组里台名对得上的台，不然是选中的分组（含「常看」）。
+function shownGroup() {
+  if (liveFilter) {
+    const key = nameKey(liveFilter), seen = new Set(), channels = [];
+    for (const g of data.groups) for (const c of g.channels) {
+      if (!seen.has(c.id) && nameKey(c.name).includes(key)) { seen.add(c.id); channels.push(c); }
+    }
+    // 名字一样的在前，再是开头对上的（打「cctv1」时 CCTV1 在 CCTV10 前面），其余照频道表的顺序。
+    const rank = (c) => (nameKey(c.name) === key ? 0 : nameKey(c.name).startsWith(key) ? 1 : 2);
+    channels.sort((a, b) => rank(a) - rank(b));
+    return { name: "", channels, found: true };
+  }
+  return liveGroups().find((g) => g.name === group) || null;
+}
 function renderGroups() {
-  const names = data.groups.map((g) => g.name);
+  const groups = liveGroups();
+  const names = groups.map((g) => g.name);
   if (!names.includes(group)) group = defaultGroup();
   const box = $("groups");
-  const sig = JSON.stringify([group, data.groups.map((g) => [g.name, g.channels.length])]);
+  const sig = JSON.stringify([group, liveFilter, groups.map((g) => [g.name, g.channels.length])]);
   if (sig === groupsSig && box.childElementCount) return;
   groupsSig = sig;
   const fk = focusKey();
   box.replaceChildren();
-  for (const g of data.groups) {
+  for (const g of groups) {
     const b = el("button", "", g.name);
-    b.setAttribute("aria-pressed", String(g.name === group));
+    b.setAttribute("aria-pressed", String(g.name === group && !liveFilter));
     b.appendChild(el("em", "", String(g.channels.length)));
     b.dataset.k = "grp-" + g.name;
-    b.onclick = () => { group = g.name; closeGuidePop(true); renderLive(); loadEpg(); };
+    b.onclick = () => { group = g.name; liveFilter = $("liveFind").value = ""; closeGuidePop(true); renderLive(); loadEpg(); };
     box.appendChild(b);
   }
   restoreFocus(fk);
@@ -3310,17 +3338,21 @@ function renderChannels() {
   if (route !== "live" || liveView !== "grid" || !data) return;
   prepareGroupSoon();
   const grid = $("channels");
-  const current = data.groups.find((g) => g.name === group);
+  const current = shownGroup();
   const shown = current ? current.channels.map((c) => epgNow(c.id)) : [];
-  const sig = JSON.stringify([group, current, data.now.channel, data.now.online, pending, watching && watching.channel, adjusting,
+  const sig = JSON.stringify([group, liveFilter, current, data.now.channel, data.now.online, pending, watching && watching.channel, adjusting,
                               Math.floor(Date.now() / 60000), shown, deviceId(), data.live_status]);
   if (sig === channelsSig && grid.childElementCount) return;
   channelsSig = sig;
   const fk = focusKey();
   grid.replaceChildren();
   if (!current) return;
+  if (current.found && !current.channels.length) {
+    grid.appendChild(el("p", "hint", "没有名字里带「" + liveFilter + "」的台"));
+    return;
+  }
   const sites = relaySites();
-  const movable = !["我的投屏", "UP 主"].includes(group);
+  const movable = !["我的投屏", "UP 主", FREQUENT].includes(group) && !current.found;
   const nowS = Date.now() / 1000;
   current.channels.forEach((c, i) => {
     const air = !pending && c.id === data.now.channel && data.now.online;
@@ -3377,6 +3409,16 @@ function renderChannels() {
   });
   restoreFocus(fk);
 }
+// 找台：边打边筛，所有分组一起找；Esc 清空回到选中的分组。
+$("liveFind").oninput = () => { liveFilter = $("liveFind").value.trim(); renderLive(); loadEpg(); };
+$("liveFind").onkeydown = (event) => {
+  if (event.key === "Escape" && $("liveFind").value) {
+    event.preventDefault();
+    event.stopPropagation();
+    $("liveFind").value = liveFilter = "";
+    renderLive();
+  }
+};
 $("adjust").onclick = () => {
   adjusting = !adjusting;
   $("adjust").textContent = adjusting ? "完成" : "调整分组";
@@ -3389,7 +3431,7 @@ let guideData = null;     // {key, at, from, to, channels: {台 id: [节目…]}
 let guideBusy = "";
 // 节目表要的台：这一组的台（直播台问节目单；UP 主、剧集、投屏台也列出来，写一句它播什么）。
 function guideChannels() {
-  const g = data.groups.find((x) => x.name === group);
+  const g = shownGroup();
   return g ? g.channels.slice(0, GUIDE.ROWS) : [];
 }
 async function loadGuide(force) {

@@ -244,6 +244,8 @@ class Relay:
         self.linecheck = None
         # 直播源订阅（subscriptions.py）：自建 / 电脑客户端由 __main__ 建，云端为 None。
         self.subscriptions = None
+        # 每个人常看的直播台（livetally.py，直播页的「常看」分组）：由 __main__ 建。
+        self.tally = None
         self.starter = starter
         self.pumper = pumper
         self._quick_failures: dict[tuple, int] = {}
@@ -2217,6 +2219,9 @@ class Relay:
         if self.guide is not None and self.guide.enabled:
             # 节目单打开了：遥控页和电脑版据此去问 /api/epg，在台名下面写「正在播：…」。
             summary["epg"] = True
+        if self.tally is not None and not caller.guest:
+            # 直播页最前面的「常看」分组：这个人看得最多的直播台（台 id，从多到少，livetally.py）。
+            summary["frequent"] = self.tally.top(caller.user if self.tenant else None)
         if self.linecheck is not None:
             # 直播页：有真画面封面的台（台 id → 封面的时刻，页面拼 api/art/live/<id>?v=…）和全部线路都不通的台
             # （卡片上标「暂时打不开」）。

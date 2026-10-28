@@ -145,6 +145,11 @@ a.me:focus-visible { outline: 2px solid var(--label); outline-offset: 2px; }
 .split.sm .btn { height: 38px; font-size: 14px; padding: 0 14px; }
 .split.sm .btn.caret { padding: 0 9px; }
 .chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 22px; }
+/* 直播页：分组标签，后面是「找台」（窄的时候换到下一行，占满一行） */
+.lgroups { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 14px; }
+.lgroups .chips { flex: 1 1 auto; min-width: 0; }
+.lgroups .lfind { flex: 0 1 200px; height: 38px; margin: 0 0 22px; border-radius: 999px; padding: 0 16px; }
+.m .lgroups .lfind { flex: 1 1 100%; margin-top: -10px; }
 .chips button, .chips a { height: 38px; padding: 0 16px; border-radius: 999px; background: var(--fill); color: var(--label-2); font: 600 14px var(--sans); display: inline-flex; align-items: center; gap: 6px; text-align: center;
                           transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast); }
 .chips button:hover, .chips a:hover { background: var(--fill-2); color: var(--label); }

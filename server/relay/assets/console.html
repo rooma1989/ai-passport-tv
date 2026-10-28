@@ -48,7 +48,11 @@
         <header class="ph"><h1 class="lt">直播</h1>
           <div class="segc" id="liveSeg" role="group" aria-label="显示方式"><button data-lv="grid" data-k="lv-grid" aria-pressed="true">频道</button><button data-lv="guide" data-k="lv-guide" aria-pressed="false">节目表</button></div>
           <p class="hint" id="liveHint"></p></header>
-        <div class="chips" id="groups" role="group" aria-label="分组"></div>
+        <div class="lgroups">
+          <div class="chips" id="groups" role="group" aria-label="分组"></div>
+          <!-- 按台名找台：跨所有分组，不分大小写、空格和横线（console.js 的 shownGroup） -->
+          <input type="search" class="field lfind" id="liveFind" placeholder="找台" autocomplete="off" spellcheck="false" aria-label="按台名找台">
+        </div>
         <div id="liveGrid">
           <div class="wgrid" id="channels"></div>
           <p class="hint"><span id="tapHint">点一下，在「播放到」选的地方播放。</span>
