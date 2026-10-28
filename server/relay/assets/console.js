@@ -474,6 +474,7 @@ function showRoute() {
   if (name === "settings") { if (!isGuest()) loadFeeds(true);
     if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); settingsNav(); }
   if (typeof adminRoute === "function") adminRoute(name === "admin" ? routeParts()[1] || "" : null);
+  else if (name === "admin") openAdmin();
   if (name !== "settings") biliCancel();
   if (name === "me") renderMe();
   if (name === "lib") libNav();
@@ -481,6 +482,28 @@ function showRoute() {
   if (name === "home") loadFeeds();
   if (name === "up" || name === "series") loadHome();
   if (data) render();
+}
+// 「管理」的脚本（console-admin.js，约 100 KB）只有管理员打开「管理」时才取：别人的首屏不用下载它。地址带内容散列，
+// 写在 console.js 那个 <script> 的 data-admin 上（console.py 填）。普通脚本（不是 module）：和以前一样共用这里的全局名字。
+const ADMIN_JS = (document.currentScript && document.currentScript.dataset.admin) || "console-admin.js";
+let adminLoading = null;
+function loadAdmin() {
+  if (!adminLoading) {
+    adminLoading = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = ADMIN_JS;
+      script.onload = resolve;
+      script.onerror = () => { script.remove(); adminLoading = null; reject(new Error("管理页的脚本没取到")); };
+      document.body.appendChild(script);
+    });
+  }
+  return adminLoading;
+}
+function openAdmin() {
+  const box = $("admBody");
+  if (box && !box.childElementCount) box.innerHTML = `<p class="aload">正在读取…</p>`;
+  loadAdmin().then(() => { if (route === "admin") adminRoute(routeParts()[1] || ""); },
+    (error) => { if (route === "admin" && box) box.innerHTML = `<p class="aload">${esc(error.message)}，刷新一下再试</p>`; });
 }
 // 「管理 → 频道表」有没保存的修改时，离开前先问（console-admin.js 的 adminCanLeave；不离开就把地址改回去）。
 let lastHash = location.hash;

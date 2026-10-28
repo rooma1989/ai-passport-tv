@@ -31,7 +31,7 @@ WatchPlayer，几十行，不用第三方播放器）；没有 MediaSource 的�
   新的编号和令牌；播放器换一个新的 MediaSource，按列表里的 #EXT-X-RTV-ORIGIN 和回答里的 start 把媒体时间
   换算成视频里的位置（Window.origin）。
 - 花费：只在有人看时才有 ffmpeg，每台设备（跟随）或每个浏览器页面（直接看）至多一路，每个用户至多
-  MAX_PER_USER 路，全中转至多 MAX_STREAMS 路；IDLE_S 秒没人取列表或段就停
+  MAX_PER_USER 路，全中转只换封装的（含点播、预热）至多 MAX_COPY 路、转码的至多 MAX_ENCODE 路；IDLE_S 秒没人取列表或段就停
   （和 server/listen.py 一样）。ffmpeg 的输出是到中转的管道：中转没了（崩溃、被杀），ffmpeg 下一次写就失败
   退出，不会留下孤儿进程；也不往磁盘写临时文件。
 - 只在自建 / 电脑客户端（中转带 --selfhost）开：云端那台小主机上行只有 3 Mbps，一路 720p 就占满，所以云端
@@ -71,8 +71,14 @@ from .stream import RECONNECT
 IDLE_S = 20.0
 # 地址里令牌的有效期：看得再久也够了；过期后页面重新要一个地址。
 TOKEN_LIFETIME_S = 4 * 3600
-# 全中转同时最多几路：每路一个 ffmpeg，要转码的源吃一个 CPU 核。
-MAX_STREAMS = 3
+# 全中转同时最多几路，两种分开算（config.toml 的 [pc] copy_streams、transcode_streams 能改，中转的 --pc-copy、--pc-transcode）：
+# - MAX_COPY：只换封装（H.264 -c:v copy）的、点播（vod.py 转发原文件）的、预热的。几乎不吃 CPU（一路百分之几个核），
+#   主要是内存（每路的窗口至多 WINDOW_BYTES）和上行。预热的也算在这里，但真要看的人不够时先停预热的，预热从不挡人看。
+# - MAX_ENCODE：转码画面的（libx264，HEVC、MPEG-2……），一路吃一个核以上（1080p HEVC 转 720p 三四个核）。
+#   先按只换封装起、ffmpeg 报出编码后才改转码的一路，改的那一刻才占转码的名额（同时让出只换封装的名额）；
+#   转码的满了就不改，这一路停下、页面说「同时转码的满了」（WatchStream._claim）。
+MAX_COPY = 6
+MAX_ENCODE = 2
 # 每个用户同时最多几路（两台电脑、或者两个页面）。
 MAX_PER_USER = 2
 # 列表里留几段；按字节再封顶（4K 直播源复制过来一段可能十几 MB）。
@@ -899,7 +905,8 @@ class WatchStream:
     def __init__(self, sid: str, device: str, source: Source, ffmpeg: str, log=print,
                  clock=time.monotonic, popen=subprocess.Popen, user: int | None = None,
                  mode: Mode = FIRST_MODE, memory: LiveMemory | None = None, cheap: bool = False,
-                 route_memory: RouteMemory | None = None, first_route: int | None = None):
+                 route_memory: RouteMemory | None = None, first_route: int | None = None,
+                 claim: Callable[["WatchStream", bool], str] | None = None):
         self.sid = sid
         self.device = device
         self.user = user
@@ -924,6 +931,10 @@ class WatchStream:
         self._given = ""
         # 预热的（没人在看）：要转码（一路吃一个核）就不转了，只记下转法。
         self.cheap = cheap
+        # 占的是转码的名额（True）还是只换封装的（WatchService 数名额用）；每次起 ffmpeg 前问 claim
+        # （WatchService.claim）：要改成转码却占不到名额时它说为什么，这一路停下。没有 claim（测试）时自己记着。
+        self.encoding = False
+        self.claim = claim
         # 预热、刚换走的台：转到这个时刻（WatchService 的单调时钟）为止，没人接上就停。
         self.warm_until = 0.0
         self._proc = None
@@ -1140,7 +1151,13 @@ class WatchStream:
                 self._new_leg()
                 outcome, detail = self._run_leg()
                 self._record_pace()
-                if self.stopped or outcome == "stopped":
+                if outcome == "busy" and not self.stopped:
+                    # 要转码、转码的名额满了：换线路也一样（还是要转码），这一路停下，页面说为什么。
+                    self.error = detail
+                    self.window.ended = bool(self.window.segments)
+                    self.log(f"在电脑上看 {self.device} 停了：{detail}")
+                    return
+                if self.stopped or outcome in ("stopped", "busy"):
                     return
                 if outcome == "ended":
                     self.window.ended = True
@@ -1191,7 +1208,7 @@ class WatchStream:
 
     def _run_leg(self) -> tuple[str, str]:
         """在一条线路（self.leg）上起 ffmpeg，必要时按编码重起、改转码、忘掉失效的地址重来（至多 LEG_TRIES 次）。
-        返回 ("ended", "")、("stopped", "") 或 ("failed", 原因的原话)。"""
+        返回 ("ended", "")、("stopped", "")、("failed", 原因的原话) 或 ("busy", 给人看的话：要转码、转码的名额满了)。"""
         leg = self.leg
         if leg is self.source:
             mode = self.first_mode
@@ -1201,6 +1218,9 @@ class WatchStream:
         for _ in range(LEG_TRIES):
             if self.stopped:
                 return "stopped", ""
+            refused = self._claim(mode)
+            if refused:
+                return "busy", refused
             outcome, detail = self._attempt(mode)
             if outcome == "restart":
                 self.log(f"在电脑上看 {self.device}：片源是 {detail[1]}，"
@@ -1238,6 +1258,14 @@ class WatchStream:
                 return "ended", ""
             return ("stopped", "") if self.stopped else ("failed", str(detail or ""))
         return "failed", str(detail or "片源打不开")
+
+    def _claim(self, mode: Mode) -> str:
+        """这次按 mode 起 ffmpeg 之前：转码画面要占转码的名额（WatchService.claim）。占不到时回答为什么，否则空串。"""
+        encode = mode.video == "encode"
+        if self.claim is None:
+            self.encoding = encode
+            return ""
+        return self.claim(self, encode)
 
     def _leg_line(self) -> tuple[str, str] | None:
         """(台, 频道表里这条线路的地址)：直播台才有。"""
@@ -1521,11 +1549,23 @@ def explain(site: str, reason: str) -> str:
 # ---------------------------------------------------------------- 管所有路
 
 class Busy(Exception):
-    """满了：per_user 为真是这个用户自己的路数到了上限（MAX_PER_USER），否则是全中转的（MAX_STREAMS）。"""
+    """满了：per_user 为真是这个用户自己的路数到了上限（MAX_PER_USER）；否则是全中转的，limit 说是哪一种：
+    "copy" 只换封装 / 点播的（MAX_COPY），"encode" 转码的（MAX_ENCODE）。cap 是那一种的上限（给页面说几路）。"""
 
-    def __init__(self, per_user: bool = False):
-        super().__init__("per user" if per_user else "relay")
+    def __init__(self, per_user: bool = False, limit: str = "copy", cap: int = 0):
+        super().__init__("per user" if per_user else limit)
         self.per_user = per_user
+        self.limit = "user" if per_user else limit
+        self.cap = cap
+
+
+def busy_message(limit: str, cap: int) -> str:
+    """满了时给人看的话（web.py 的 _watch_busy；先只换封装、后来要转码却占不到名额的一路也用它）。"""
+    if limit == "user":
+        return f"你已经在 {cap} 个地方在电脑上看了，先关掉一个"
+    if limit == "encode":
+        return f"这个片源要转码，同时转码的 {cap} 路已经满了（转码很吃 CPU），先关掉一路要转码的"
+    return f"已经有 {cap} 路在电脑上看了，先关掉一路"
 
 
 class WatchService:
@@ -1536,15 +1576,17 @@ class WatchService:
       只换封装的才留（转码的一路吃三四个核）。
     - 预热（warm）：电脑上看直播时，页面让中转先把相邻的台转起来（停在上一台 / 下一台的按钮上、看了几秒以后），
       换过去时同样接上。预热的台要转码时不预热（一路吃一个核），只记下转法。
-    预热的和刚换走的合起来至多 warm_max 路，和正在看的一起算在 max_streams 里：真要看的路数不够时先停预热的，
-    预热从不挡人看。转了 warm_s 秒没人接上就停。
+    预热的和刚换走的合起来至多 warm_max 路，和正在看的只换封装的、点播的一起算在 max_copy 里：真要看的路数不够时
+    先停预热的，预热从不挡人看。转了 warm_s 秒没人接上就停。
+    名额两种分开算（MAX_COPY、MAX_ENCODE）：开一路时按先试的转法（mode_of）数；之后这一路真要转码时
+    （WatchStream._claim → claim）才占转码的名额，占不到这一路就停下、页面说转码的满了。
     每个直播台的转法和跳转以后真正的列表地址记在内存里（LiveMemory）：下次直接按它起，要转码的台不用先起一次
     再重起，经跳转的源少走两三步。"""
 
     def __init__(self, ffmpeg: str, secret: bytes, log=print, clock=time.monotonic, wall=time.time,
-                 popen=subprocess.Popen, idle_s: float = IDLE_S, max_streams: int = MAX_STREAMS,
+                 popen=subprocess.Popen, idle_s: float = IDLE_S, max_copy: int = MAX_COPY,
                  background: bool = True, max_per_user: int = MAX_PER_USER, warm_max: int = 0,
-                 warm_s: float = WARM_S):
+                 warm_s: float = WARM_S, max_encode: int = MAX_ENCODE):
         self.ffmpeg = ffmpeg
         self.secret = secret
         self.log = log
@@ -1552,7 +1594,8 @@ class WatchService:
         self.wall = wall
         self.popen = popen
         self.idle_s = idle_s
-        self.max_streams = max_streams
+        self.max_copy = max_copy
+        self.max_encode = max_encode
         self.max_per_user = max_per_user
         self.warm_max = max(0, int(warm_max))
         self.warm_s = warm_s
@@ -1576,7 +1619,8 @@ class WatchService:
     def open(self, device: str, source: Source, user: int | None = None, restart: bool = False,
              keep_old: bool = False, route: int | None = None) -> WatchStream:
         """device 这个位置（设备 id，或直接看时的「pc<用户>-<页面>」）要看 source：同一个片源还在转就
-        接着用，否则停掉旧的、起新的。满了（全中转 max_streams 路，或这个用户 max_per_user 路）时 Busy。
+        接着用，否则停掉旧的、起新的。满了（全中转只换封装的 max_copy 路或转码的 max_encode 路，或这个用户
+        max_per_user 路）时 Busy。
         restart：跳转（播放器上拖进度条）——同一个片源也重起一个 ffmpeg，从 source.offset / start 起；
         新的一路有新的编号，地址（令牌）跟着换，旧地址马上失效。
         keep_old：电脑上直接看时换台——旧的是直播台就不马上停，再转 warm_s 秒（开了预热时）；
@@ -1597,12 +1641,8 @@ class WatchService:
             if current is not None and current.alive and current.source.key == source.key and not restart:
                 current.touch()
                 return current
-            others = [s.user for d, s in self._by_device.items() if d != device and s.alive]
-            others += [u for d, u in self.also() if d != device]
-            if len(others) >= self.max_streams:
-                raise Busy()
-            if user is not None and others.count(user) >= self.max_per_user:
-                raise Busy(per_user=True)
+            encode = self.mode_of(source).video == "encode"
+            self._check(device, user, encode)
             adopted = None
             if not restart and source.key in self._warm:
                 warm = self._warm[source.key]
@@ -1623,6 +1663,7 @@ class WatchService:
                 stream = adopted
             else:
                 stream = self._new(device, source, user, route=route)
+                stream.encoding = encode
             self._by_device[device] = stream
             evicted += self._fit()
             self._ensure_reaper()
@@ -1633,6 +1674,35 @@ class WatchService:
         self.log(f"在电脑上看 {device}：开始 {source.label or source.key[1]}")
         stream.start()
         return stream
+
+    def _check(self, device: str, user: int | None, encode: bool) -> None:
+        """（持锁）device 这个位置再开一路（encode：先按转码起）放不放得下，放不下 Busy。这个位置上原来的不算
+        （要被换掉）；预热的不算（_fit 先停它们）；点播（also）算只换封装的。"""
+        mine = [s for d, s in self._by_device.items() if d != device and s.alive]
+        vod = [u for d, u in self.also() if d != device]
+        if encode:
+            if sum(1 for s in mine if s.encoding) >= self.max_encode:
+                raise Busy(limit="encode", cap=self.max_encode)
+        elif sum(1 for s in mine if not s.encoding) + len(vod) >= self.max_copy:
+            raise Busy(limit="copy", cap=self.max_copy)
+        if user is not None and ([s.user for s in mine] + vod).count(user) >= self.max_per_user:
+            raise Busy(per_user=True, cap=self.max_per_user)
+
+    def admit(self, device: str, user: int | None) -> None:
+        """点播（vod.py 的 VodService.open）开一路前：按只换封装的名额和这里的一起数，放不下 Busy。"""
+        with self._lock:
+            self._check(device, user, encode=False)
+
+    def claim(self, stream: WatchStream, encode: bool) -> str:
+        """（WatchStream 每次起 ffmpeg 前）这一路这次转不转码画面。要转码、原来不是转码的：占一个转码的名额，
+        满了回答给人看的话（这一路停下）；不转码了就让出来。占到了（或不用占）回答空串。"""
+        with self._lock:
+            if encode and not stream.encoding:
+                running = list(self._by_device.values()) + list(self._warm.values())
+                if sum(1 for s in running if s is not stream and s.alive and s.encoding) >= self.max_encode:
+                    return busy_message("encode", self.max_encode)
+            stream.encoding = encode
+        return ""
 
     def prepare(self, sources: list[Source]) -> dict[str, int]:
         """直播页上看得见的这些台：先把跳转和主列表走一遍，真正的列表地址记进 LiveMemory（resolve_playlist）。
@@ -1702,8 +1772,7 @@ class WatchService:
             else:
                 while len(self._warm) >= self.warm_max:
                     evicted.append(self._pop_oldest_warm())
-                slots = sum(1 for s in self._by_device.values() if s.alive)
-                if slots + len(self._warm) >= self.max_streams:
+                if self._copy_slots() + len(self._warm) >= self.max_copy:
                     result = "full"
                 else:
                     stream = self._new(f"warm{user}-{source.key[1]}", source, user, cheap=True)
@@ -1721,7 +1790,7 @@ class WatchService:
              route: int | None = None) -> WatchStream:
         return WatchStream(secrets.token_hex(8), device, source, self.ffmpeg, log=self.log, clock=self.clock,
                            popen=self.popen, user=user, mode=self.mode_of(source), memory=self.memory,
-                           cheap=cheap, route_memory=self.routes, first_route=route)
+                           cheap=cheap, route_memory=self.routes, first_route=route, claim=self.claim)
 
     def mode_of(self, source: Source) -> Mode:
         """这个片源先按哪种转法起：片库的按探测好的（Source.mode），记住了的直播台按记住的，别的先试只换封装。"""
@@ -1752,11 +1821,15 @@ class WatchService:
         key = min(self._warm, key=lambda k: self._warm[k].warm_until)
         return self._warm.pop(key)
 
+    def _copy_slots(self) -> int:
+        """（持锁）占着只换封装名额的：正在看的不转码的、点播的（预热的另算）。"""
+        return sum(1 for s in self._by_device.values() if s.alive and not s.encoding) + len(self.also())
+
     def _fit(self) -> list[WatchStream]:
-        """（持锁）正在看的加预热的超过 max_streams 时，先停最早到期的预热的。"""
+        """（持锁）只换封装的、点播的加预热的超过 max_copy 时，先停最早到期的预热的。"""
         evicted = []
-        slots = sum(1 for s in self._by_device.values() if s.alive)
-        while self._warm and slots + len(self._warm) > self.max_streams:
+        slots = self._copy_slots()
+        while self._warm and slots + len(self._warm) > self.max_copy:
             evicted.append(self._pop_oldest_warm())
         return evicted
 

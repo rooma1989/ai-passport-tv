@@ -45,6 +45,8 @@ asr_socket = ""                 # 语音识别容器的套接字，例如 "/data
 
 [pc]
 warm_channels = "auto"          # 电脑上看直播换台快一点（预热相邻的台、刚换走的台再转 30 秒，多用一两个 ffmpeg）："auto" 内存 4 GB 以上开，"on"、"off"
+copy_streams = 6                # 电脑上同时看几路不用转码的（H.264 直播、点播，几乎不吃 CPU）
+transcode_streams = 2           # 要转码的（HEVC 之类，一路吃一个 CPU 核以上）另外至多几路；0 = 不转码
 
 [maintenance]
 backup_keep_days = 14           # 每晚备份数据库，留几天
@@ -54,6 +56,8 @@ update_check = true             # 以后的「有新版本」提示用，现在�
 SIGNUP = ("lan", "anywhere", "off")
 YOUTUBE = ("off", "node", "local")
 PC_WARM = ("auto", "on", "off")
+# [pc] copy_streams、transcode_streams 的上限：每路的窗口至多 64 MB 内存（watch.WINDOW_BYTES）。
+PC_STREAMS_MAX = 32
 _HOST = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 _URL = re.compile(r"^https?://[A-Za-z0-9.:\[\]-]+(?::\d+)?/?$")
 
@@ -81,6 +85,9 @@ class Config:
     youtube_cookies: str = "youtube/cookies.txt"
     asr_socket: str = ""
     pc_warm: str = "auto"
+    # 和 server/relay/watch.py 的 MAX_COPY、MAX_ENCODE 一样（测试对过）。
+    pc_copy: int = 6
+    pc_transcode: int = 2
     backup_keep_days: int = 14
     update_check: bool = True
 
@@ -98,6 +105,7 @@ _FIELDS = (
     ("youtube", "cookies", "youtube_cookies", str),
     ("voice", "asr_socket", "asr_socket", str),
     ("pc", "warm_channels", "pc_warm", str),
+    ("pc", "copy_streams", "pc_copy", int), ("pc", "transcode_streams", "pc_transcode", int),
     ("maintenance", "backup_keep_days", "backup_keep_days", int),
     ("maintenance", "update_check", "update_check", bool),
 )
@@ -163,6 +171,9 @@ def _check(config: Config) -> None:
         raise ConfigError(f"config.toml：signup_via_device 只能是 {' / '.join(SIGNUP)}")
     if config.pc_warm not in PC_WARM:
         raise ConfigError(f"config.toml：[pc] warm_channels 只能是 {' / '.join(PC_WARM)}")
+    if not 1 <= config.pc_copy <= PC_STREAMS_MAX or not 0 <= config.pc_transcode <= PC_STREAMS_MAX:
+        raise ConfigError(f"config.toml：[pc] copy_streams 要在 1 到 {PC_STREAMS_MAX} 之间，"
+                          f"transcode_streams 要在 0 到 {PC_STREAMS_MAX} 之间")
     if config.youtube_mode not in YOUTUBE:
         raise ConfigError(f"config.toml：[youtube] mode 只能是 {' / '.join(YOUTUBE)}")
     if config.youtube_proxy:

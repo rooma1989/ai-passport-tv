@@ -180,6 +180,17 @@ def pc_warm_streams(config, desktop: bool, memory: int | None = None) -> int:
     return WARM_MAX if memory >= PC_WARM_MEMORY else 0
 
 
+def pc_stream_caps(config) -> list[str]:
+    """中转的 --pc-copy、--pc-transcode（config.toml 的 [pc] copy_streams、transcode_streams）：和默认值一样时不带。"""
+    from ..relay.watch import MAX_COPY, MAX_ENCODE
+    args = []
+    if config.pc_copy != MAX_COPY:
+        args += ["--pc-copy", str(config.pc_copy)]
+    if config.pc_transcode != MAX_ENCODE:
+        args += ["--pc-transcode", str(config.pc_transcode)]
+    return args
+
+
 def build_children(layout, config, ffmpeg: str, device_address: str, public_url: str, log,
                    in_container: bool = False, firmware: Path | None = None, desktop: bool = False) -> list:
     """firmware：网页刷机用的固件文件夹（bootstrap.firmware_dir），没有时 None。
@@ -209,6 +220,7 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
     warm = pc_warm_streams(config, desktop)
     if warm:
         relay += ["--pc-warm", str(warm)]
+    relay += pc_stream_caps(config)
     local_youtube = config.youtube_mode == "local"
     if config.youtube_mode == "node" and layout.youtube_node.is_file():
         relay += ["--cstone", str(layout.youtube_node)]

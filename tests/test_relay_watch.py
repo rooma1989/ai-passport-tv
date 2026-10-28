@@ -300,7 +300,7 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(any("没人看" in m for m in self.logs))
 
     def test_limit_on_streams(self):
-        self.service.max_streams = 1
+        self.service.max_copy = 1
         self.service.open(ALICE_DEVICE, self.source)
         with self.assertRaises(watch.Busy):
             self.service.open(BOB_DEVICE, self.source)
@@ -330,6 +330,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_per_user_limit_and_close(self):
         self.service.max_per_user = 2
+        self.service.max_copy = 3
         self.service.open("pc5-aaaaaaaa", self.source, user=5)
         self.service.open("pc5-bbbbbbbb", self.source, user=5)
         with self.assertRaises(watch.Busy) as caught:
@@ -682,6 +683,7 @@ class DirectWatchTests(unittest.TestCase):
         self.assertEqual(answer["title"], "tBV1yy411c7mD")
 
     def test_per_user_limit(self):
+        self.relay.watch.max_copy = 3
         self.assertTrue(self.watch(channel="ch000", viewer="aaaaaaaa")[1]["ok"])
         self.assertTrue(self.watch(channel="ch001", viewer="bbbbbbbb")[1]["ok"])
         answer = self.watch(channel="ch000", viewer="cccccccc")[1]

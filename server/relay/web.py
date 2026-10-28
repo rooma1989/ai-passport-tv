@@ -30,7 +30,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import accountfeeds, bilidash, bililogin, follows, ytsearch, ytsettings, ytvod
+from . import accountfeeds, bilidash, bililogin, follows, static, ytsearch, ytsettings, ytvod
 from . import library as library_api
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
     UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
@@ -1373,9 +1373,9 @@ class Relay:
                 "duration": int(duration or 0) if video else 0, "seekable": video, **quality, **extra}
 
     def _watch_busy(self, busy: "watch_pc.Busy") -> str:
-        if busy.per_user:
-            return f"你已经在 {self.watch.max_per_user} 个地方在电脑上看了，先关掉一个"
-        return f"已经有 {self.watch.max_streams} 路在电脑上看了，先关掉一路"
+        """满了说哪一种满了：这个用户自己的、只换封装（含点播）的、转码的（watch.busy_message）。"""
+        caps = {"user": self.watch.max_per_user, "copy": self.watch.max_copy, "encode": self.watch.max_encode}
+        return watch_pc.busy_message(busy.limit, busy.cap or caps.get(busy.limit, 0))
 
     def _tv_video(self, dev: dict, cid: str):
         """(设备在 cid 台上正在播的视频, 此刻的位置)：暂停着的按暂停的地方；还没开始放时视频为 None。"""
@@ -2888,7 +2888,11 @@ def _manage_handler(relay: Relay):
                     # 自建：服务器栏填设备该连的地址（setup.wifi_page），不缓存，地址可能刚记下。
                     self._send(200, setup.wifi_page(relay, data), kind)
                     return
-                self._send(200, data, kind, {"Cache-Control": "public, max-age=86400"})
+                # 启动时压好的那份（PACKED，static.py）：浏览器收 gzip 就给它，ETag 两种各一个。
+                item = PACKED.get(path)
+                if item is None or item.data is not data:
+                    item = static.pack(kind, data)
+                static.send(self, item, {"Cache-Control": "public, max-age=86400"})
                 return
             # 自建模式：第一个管理员（/tv/setup）；还没设置时别的页面都指向它（setup.py）。
             if setup.get(self, relay, path):
@@ -2905,7 +2909,7 @@ def _manage_handler(relay: Relay):
             if relay.tenant:
                 # 扫设备二维码、绑定码、邀请链接：落地页不用登录，页面里的脚本再带着 cookie 问接口。
                 if relay.claim_route(path, _JOIN_SHORT, _JOIN):
-                    self._send(200, JOIN_PAGE.encode(), "text/html; charset=utf-8")
+                    static.send(self, PACKED_PAGES["join"])
                     return
                 match = relay.claim_route(path, _BIND_INFO_SHORT, _BIND_INFO)
                 if match:
@@ -2934,8 +2938,7 @@ def _manage_handler(relay: Relay):
             session = self._query().get("s")
             if path == "/" and self._session_ok(session):
                 # 从桌面图标打开：网址里的会话有效，补上 cookie，后续接口调用就带着它。
-                self._send(200, PAGE.encode(), "text/html; charset=utf-8",
-                           {"Set-Cookie": self._cookie_header(session)})
+                static.send(self, PACKED_PAGES["remote"], {"Set-Cookie": self._cookie_header(session)})
                 return
             caller = self._caller()
             if caller is None:
@@ -2947,7 +2950,7 @@ def _manage_handler(relay: Relay):
                 # 我的片库（library.py）：页面、文件、海报；只给登录的家里人，访客和云端 404。
                 return
             if path == "/":
-                self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+                static.send(self, PACKED_PAGES["remote"])
             elif path == "/api/state":
                 summary = relay.summary(caller, device)
                 if relay.tenant and not caller.guest and caller.user is not None:
@@ -3333,6 +3336,11 @@ ASSETS.update(console.CONSOLE_ASSETS)
 # 宠物图（设计稿导出的 3 倍图），手机遥控页的「我的宠物」用。
 ASSETS.update({f"/pets/{p.name}": ("image/png", p.read_bytes())
                for p in sorted((_ASSET_DIR / "pets").glob("*.png"))})
+# 启动时各压一次 gzip、算好 ETag（static.py）：回答时只挑一份，不再花 CPU。图片不压（本来就压过）。
+PACKED = {path: static.pack(kind, data) for path, (kind, data) in ASSETS.items()}
+# 遥控页和落地页也一样（电脑版的几个页面在 console.PACKED_PAGES）。
+PACKED_PAGES = {"remote": static.pack("text/html; charset=utf-8", PAGE.encode()),
+                "join": static.pack("text/html; charset=utf-8", JOIN_PAGE.encode())}
 NOT_FOUND = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
              "<body style='background:#1c1915;color:#e6dcc8;font:16px/1.6 serif;padding:24px'>"
              "<p>打不开。请用小电视状态页上的二维码重新扫一下。</p>")

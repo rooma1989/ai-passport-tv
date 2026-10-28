@@ -11,7 +11,8 @@
   再加上 Accept-Ranges: bytes。边收边发（每次 64 KB），不落盘；浏览器断开（跳转时它会掐掉旧的请求）就关掉上游。
 - B 站的地址几个小时后过期：上游回 403 / 404 / 410 时重新取一次地址（VodSource.resolve），这一段请求再试一次；
   地址取到超过 URL_REFRESH_S 秒也先换新的。备用地址（backup_url）在主地址连不上时用。
-- 名额和 watch.py 的一起算（每个用户 MAX_PER_USER 路，全中转 MAX_STREAMS 路）：一个页面一路，同一个页面换成
+- 名额和 watch.py 的一起算（每个用户 MAX_PER_USER 路；只转发、不转码，算全中转 MAX_COPY 路的「只换封装」名额，
+  watch.WatchService.admit）：一个页面一路，同一个页面换成
   HLS 时这一路关掉，反过来也一样（web.py）。每一路同时至多 MAX_CONNECTIONS 个请求，再来一个就掐掉最早的
   （浏览器跳转时有时还没关旧的连接）。没有请求、没有进度报告 IDLE_S 秒就收掉；页面关闭时马上收（/api/watch/stop）。
 - 令牌和 watch.py 的一样（位置 + 编号 + 到期时间的 HMAC），密钥派生得不同：两种地址的令牌不能互换。
@@ -301,11 +302,11 @@ def _open(request: urllib.request.Request, timeout: float):
 
 
 class VodService:
-    """所有页面的点播。watch：watch.WatchService（名额一起算：它的 max_streams、max_per_user）。"""
+    """所有页面的点播。watch：watch.WatchService（名额一起算：它的 max_copy、max_per_user）。"""
 
     def __init__(self, secret: bytes, watch=None, log=print, clock=time.monotonic, wall=time.time,
                  opener=_open, idle_s: float = IDLE_S, background: bool = True,
-                 max_streams: int = watch_pc.MAX_STREAMS, max_per_user: int = watch_pc.MAX_PER_USER,
+                 max_copy: int = watch_pc.MAX_COPY, max_per_user: int = watch_pc.MAX_PER_USER,
                  max_connections: int = MAX_CONNECTIONS):
         self.secret = secret
         self.watch = watch
@@ -316,7 +317,7 @@ class VodService:
         self.idle_s = idle_s
         self.background = background
         self.max_connections = max_connections
-        self._max_streams = max_streams
+        self._max_copy = max_copy
         self._max_per_user = max_per_user
         self._by_device: dict[str, VodSession] = {}
         self._lock = threading.Lock()
@@ -325,8 +326,8 @@ class VodService:
             watch.also = self.load
 
     @property
-    def max_streams(self) -> int:
-        return self.watch.max_streams if self.watch is not None else self._max_streams
+    def max_copy(self) -> int:
+        return self.watch.max_copy if self.watch is not None else self._max_copy
 
     @property
     def max_per_user(self) -> int:
@@ -348,13 +349,14 @@ class VodService:
                 return current
             others = [s.user for d, s in self._by_device.items() if d != device and s.alive]
         if self.watch is not None:
-            others += [s.user for s in self.watch.streams() if s.device != device and s.alive]
-        if len(others) >= self.max_streams:
-            raise watch_pc.Busy()
-        if user is not None and others.count(user) >= self.max_per_user:
-            raise watch_pc.Busy(per_user=True)
-        if self.watch is not None:
+            # 和在电脑上看的一起数（转码的那几路不占这里的名额），点播的这几路经 watch.also 也算上。
+            self.watch.admit(device, user)
             self.watch.close(device)
+        else:
+            if len(others) >= self.max_copy:
+                raise watch_pc.Busy(limit="copy", cap=self.max_copy)
+            if user is not None and others.count(user) >= self.max_per_user:
+                raise watch_pc.Busy(per_user=True, cap=self.max_per_user)
         session = VodSession(secrets.token_hex(8), device, source, user, clock=self.clock)
         with self._lock:
             old = self._by_device.pop(device, None)

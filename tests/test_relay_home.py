@@ -418,7 +418,7 @@ class HomeTests(unittest.TestCase):
         self.assertRegex(text, r'src="console\.js\?v=[0-9a-f]{12}"')
         self.assertNotIn("https://", text.replace("http://www.w3.org", ""))
         self.assertRegex(text, r'href="console-admin\.css\?v=[0-9a-f]{12}"')
-        self.assertRegex(text, r'src="console-admin\.js\?v=[0-9a-f]{12}"')
+        self.assertRegex(text, r'data-admin="console-admin\.js\?v=[0-9a-f]{12}"')
         for name, kind in (("console.css", "text/css"), ("console.js", "text/javascript"),
                            ("console-admin.css", "text/css"), ("console-admin.js", "text/javascript")):
             status, headers, body = self.request("GET", "/tv/" + name)

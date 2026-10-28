@@ -22,7 +22,7 @@ from pathlib import Path
 from ..tenancy import db
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.tickets import Limited, describe_agent
-from . import qr
+from . import qr, static
 
 # 和 web.COOKIE 相同（web 引用本模块，这里不反过来引用它）；tests/test_relay_console.py 核对。
 COOKIE = "tvs"
@@ -32,7 +32,7 @@ _PHONE_LINK = re.compile(r"^/(?:p|TV/P)(?:/|/[A-Za-z2-7]{26})?$")
 QR_TEXT_MAX = 300
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
 # 电脑版（媒体中心界面）：页面 + 样式 + 脚本三个文件。样式和脚本当静态文件给（web.ASSETS，浏览器缓存一天），
-# 页面里写的地址带着内容的散列（?v=…），改了文件浏览器就会取新的。
+# 页面里写的地址带着内容的散列（?v=…），改了文件浏览器就会取新的。启动时也顺便各压一份 gzip（static.pack，web.PACKED）。
 # 「管理」（原来的总后台，admin.py 的 /api/admin/*）另放一对文件：console-admin.css / console-admin.js。
 # 名字不以 admin 开头：server/front.py 在公网隧道上拦 /tv/admin…，样式和脚本不能被一起拦掉。
 CONSOLE_CSS = (_ASSET_DIR / "console.css").read_bytes()
@@ -57,6 +57,10 @@ LEGACY_REDIRECTS = {"/console/": "/tv/console", "/console-classic": "/tv/console
                     "/admin": "/tv/console#/admin", "/admin/": "/tv/console#/admin"}
 LOGIN_PAGE = (_ASSET_DIR / "login.html").read_bytes()
 PHONE_PAGE = (_ASSET_DIR / "phone.html").read_bytes()
+# 这几个页面也只压一次（static.py）：浏览器收 gzip 就给压过的。
+_HTML = "text/html; charset=utf-8"
+PACKED_PAGES = {name: static.pack(_HTML, data) for name, data in
+                (("console", CONSOLE_PAGE), ("login", LOGIN_PAGE), ("phone", PHONE_PAGE))}
 # 登录确认页和电脑版都不许被别的网站嵌进框里（防止骗点「确认」）。
 # 脚本只许本站的（'self'：扫码登录时才加载的 /tv/scan.js、/tv/jsqr.js）；相机画面是 srcObject，不受 media-src 管。
 # media-src：电脑版「在电脑上看」的播放器（watch.py）——本站的 HLS，或者 MediaSource 的 blob: 地址。
@@ -130,13 +134,13 @@ def _member_session(relay, handler) -> dict | None:
 
 def get(handler, relay, path: str) -> bool:
     if path == "/console":
-        handler._send(200, CONSOLE_PAGE, "text/html; charset=utf-8", CONSOLE_HEADERS)
+        static.send(handler, PACKED_PAGES["console"], CONSOLE_HEADERS)
         return True
     if path in LEGACY_REDIRECTS:
         handler._send(302, b"", "text/plain", {"Location": LEGACY_REDIRECTS[path]})
         return True
     if path == "/login" or _LOGIN_LINK.match(path):
-        handler._send(200, LOGIN_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
+        static.send(handler, PACKED_PAGES["login"], PAGE_HEADERS)
         return True
     if path == "/api/login/status":
         info = _session(relay, handler)
@@ -151,7 +155,7 @@ def get(handler, relay, path: str) -> bool:
         _login_info(handler, relay)
         return True
     if _PHONE_LINK.match(path):
-        handler._send(200, PHONE_PAGE, "text/html; charset=utf-8", PAGE_HEADERS)
+        static.send(handler, PACKED_PAGES["phone"], PAGE_HEADERS)
         return True
     if path == "/api/phone-link/info":
         _phone_link_info(handler, relay)

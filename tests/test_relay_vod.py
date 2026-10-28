@@ -382,6 +382,7 @@ class ProxyTests(unittest.TestCase):
         self.assertTrue(conn.cancelled)
 
     def test_caps_are_shared_with_hls_streams(self):
+        self.watch.max_copy = 3
         live = watch.Source(("live", "ch000", "https://x/1.m3u8", "UA"), url="https://x/1.m3u8", paced=False)
         self.watch.popen = tw.Popen(data=tw.LIVE_DATA)
         self.service.open("pc1-aa", self.source(key="a"), user=1)

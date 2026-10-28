@@ -72,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device-address", default="", help="自建：设备该连的地址（不带端口）；空的话用设置时记下的")
     parser.add_argument("--pc-warm", type=int, default=0, metavar="路数",
                         help="自建：电脑上看直播时预热相邻的台、刚换走的台再转 30 秒，至多几路（0 = 不开，见 watch.py）")
+    parser.add_argument("--pc-copy", type=int, default=None, metavar="路数",
+                        help="自建：电脑上同时看几路不用转码的（含点播、预热），默认 watch.MAX_COPY")
+    parser.add_argument("--pc-transcode", type=int, default=None, metavar="路数",
+                        help="自建：电脑上同时至多几路要转码的，默认 watch.MAX_ENCODE（0 = 不转码）")
     args = parser.parse_args(argv)
 
     key = args.key_file.read_text(encoding="utf-8").strip()
@@ -174,6 +178,11 @@ def _serve_tenants(args, key: str, youtube) -> int:
     if relay.watch is not None:
         # 换台快一点：预热相邻的直播台（server/selfhost 按 config.toml 的 [pc] warm_channels 和内存给）。
         relay.watch.warm_max = max(0, args.pc_warm)
+        # 同时看几路（config.toml 的 [pc] copy_streams、transcode_streams；没给时用 watch.py 的默认）。
+        if args.pc_copy is not None:
+            relay.watch.max_copy = max(1, args.pc_copy)
+        if args.pc_transcode is not None:
+            relay.watch.max_encode = max(0, args.pc_transcode)
     # 本机模式第一次用：组件还没装好就在后台下载（server/relay/ytsettings.py）。
     from . import ytsettings
     ytsettings.autostart(relay)

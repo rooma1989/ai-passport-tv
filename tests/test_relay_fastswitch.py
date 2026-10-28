@@ -9,7 +9,7 @@ time, forgotten and retried from the table's address when it no longer opens,
 and never remembered when ffmpeg opened several playlists; warm streams (the
 channel just switched away from, neighbours the page asks for) are adopted by
 the next open of the same channel and user, expire after WARM_S, never exceed
-warm_max, are counted in max_streams but stopped before anybody is refused,
+warm_max, are counted in max_copy but stopped before anybody is refused,
 are not kept for transcoding channels, and do not exist when warm_max is 0;
 a live stream's speed over the last PACE_SPAN_S (stalls included), no new warm
 stream while the user's live channel falls behind, and X-RTV-Slow on its playlist;
@@ -332,6 +332,7 @@ class WarmTests(unittest.TestCase):
         self.assertTrue(self.popen.procs[0].killed.is_set())
 
     def test_warm_streams_count_against_the_cap_but_never_refuse_anyone(self):
+        self.service.max_copy = 3
         self.service.open(self.slot, live(), user=5)
         self.service.warm(5, live("ch001", "https://x/1"))
         self.t += 1

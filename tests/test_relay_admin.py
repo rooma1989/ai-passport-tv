@@ -162,7 +162,9 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         page = body.decode("utf-8")
-        self.assertRegex(page, r'src="console-admin\.js\?v=[0-9a-f]{12}"')
+        # The admin script is fetched by console.js when an admin opens the section (perf-07), not by the page.
+        self.assertRegex(page, r'data-admin="console-admin\.js\?v=[0-9a-f]{12}"')
+        self.assertNotIn('src="console-admin.js', page)
         self.assertRegex(page, r'href="console-admin\.css\?v=[0-9a-f]{12}"')
         self.assertIn('data-route="admin"', page)
         self.assertNotIn('href="admin"', page)

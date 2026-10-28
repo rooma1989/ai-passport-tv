@@ -468,7 +468,7 @@
   <div id="modal" role="dialog" aria-modal="true" hidden></div>
   <div id="toast" role="status" aria-live="polite"></div>
 </div>
-<script src="console.js?v=__CONSOLE_JS__"></script>
-<script src="console-admin.js?v=__ADMIN_JS__"></script>
+<!-- 「管理」的脚本（console-admin.js）不在这里加载：管理员第一次打开「管理」时 console.js 才按 data-admin 的地址取（loadAdmin） -->
+<script src="console.js?v=__CONSOLE_JS__" data-admin="console-admin.js?v=__ADMIN_JS__"></script>
 </body>
 </html>
