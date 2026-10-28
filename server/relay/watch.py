@@ -25,8 +25,8 @@ WatchPlayer，几十行，不用第三方播放器）；没有 MediaSource 的�
   按 2 秒切段。
 - 不和小电视同步：视频从设备此刻的位置起播，直播从现在起播，之后各走各的（页面上写明）。
 - 换台快（电脑上直接看直播）：慢的是连片源（跳转、列表、第一段，每一步约 1 秒）。所以：直播源少探测一点
-  （LIVE_PROBE）；记住跳转以后真正的列表地址（LiveMemory，RESOLVED_S）；刚换走的台再转一会儿、相邻的台先转起来
-  （WatchService 的预热，WARM_S、WARM_MAX，只在开了 --pc-warm 时）。
+  （LIVE_PROBE）；记住跳转以后真正的列表地址（LiveMemory，RESOLVED_S；这几样和小电视共用，在 server/hlsopen.py）；
+  刚换走的台再转一会儿、相邻的台先转起来（WatchService 的预热，WARM_S、WARM_MAX，只在开了 --pc-warm 时）。
 - 跳转（电脑版播放器的进度条）：重起一路（WatchService.open 的 restart），ffmpeg 带 -ss 从新的位置起，
   新的编号和令牌；播放器换一个新的 MediaSource，按列表里的 #EXT-X-RTV-ORIGIN 和回答里的 start 把媒体时间
   换算成视频里的位置（Window.origin）。
@@ -62,6 +62,9 @@ from pathlib import Path
 from typing import Callable
 
 from .. import listen as listen_audio, routes as live_routes
+# 直播台起播的共用部分（小电视 server/live.py 也用）：探测、记住的列表地址、多路清晰度挑一路。
+from ..hlsopen import LIVE_PROBE, RESOLVED_S, LiveMemory, resolve_playlist, resolved_playlist  # noqa: F401
+from .. import hlsopen
 from ..frames import DEFAULT_USER_AGENT
 from ..proxyenv import loopback_bypass
 from .bilibili import BLOCKED_HINT as _BILIBILI_BLOCKED_HINT, blocked as _bilibili_blocked
@@ -97,9 +100,7 @@ BOX_MAX = 64 * 1024 * 1024
 NETWORK_PROTOCOLS = "http,https,tls,tcp,crypto,httpproxy"
 PIPE_PROTOCOLS = "pipe"
 DEFAULT_CODECS = "avc1.640028,mp4a.40.2"
-# 直播源（MPEG-TS、HLS）读多少就开始转：默认 5 秒 / 5 MB，直播源的头里就有编码，1 秒、1 MB 够了。
-# 量过（CCTV1，咪咕 6 秒一段）：慢的是连片源（跳转、列表、第一段，每一步约 1 秒），探测只占零点几秒。
-LIVE_PROBE = ("-probesize", "1000000", "-analyzeduration", "1000000")
+# 直播源读多少就开始转（LIVE_PROBE）、跳转以后真正的列表地址记多久（RESOLVED_S）：见 server/hlsopen.py。
 # 电脑上看直播换台时：刚换走的台再转这么久（换回来马上有画面），预热的台（相邻的台）没人看最多转这么久。
 WARM_S = 30.0
 # 预热（含刚换走的）最多几路，不算正在看的；只在自建 / 电脑客户端、内存够时开（中转的 --pc-warm）。
@@ -121,20 +122,16 @@ STALL_MAX_S = 30.0
 SWITCH_SLOW = 0.6
 GUARD_TICK_S = 1.0
 # 记住多少个直播台的转法（只换封装还是转码），下次直接按它起，不用先试一次再重起。
-MODE_CACHE_MAX = 256
-# 直播台跳转以后真正的列表地址记多久（LiveMemory）：咪咕这类源先经两三次跳转、再取主列表，才到真正的列表，
-# 每一步约 1 秒；记住了下次直接从它起，出第一段从六七秒变成三四秒。地址里带会话参数，量过 9 分钟以后还能用；
-# 记的时间短一点，失效了（打不开、一段也没出）就忘掉、从频道表里的地址重来。只在内存里，从不写日志。
-RESOLVED_S = 600.0
-# 预先解析（WatchService.prepare）：直播页上看得见的台，先在后台把跳转和主列表走一遍（几个小请求，不起 ffmpeg），
-# 真正的列表地址记进 LiveMemory；点下去 ffmpeg 直接从它起。量过（咪咕的 CCTV：跳两次、主列表、子列表，每步约 1 秒）：
+MODE_CACHE_MAX = hlsopen.MEMORY_MAX
+# 预先解析（WatchService.prepare）：直播页上看得见的台，先在后台把跳转和主列表走一遍（几个小请求，不起 ffmpeg；
+# 多路清晰度的挑码率合适的一路，hlsopen.pick_variant），真正的列表地址记进 LiveMemory；点下去 ffmpeg 直接从它起。
+# 量过（咪咕的 CCTV：跳两次、主列表、子列表，每步约 1 秒）：
 # 出第一段从约 8 秒变成约 4.5 秒。同时至多 PREPARE_WORKERS 个，一次至多 PREPARE_MAX 个台；记住的地址还不到
 # PREPARE_FRESH_S 秒的不再走（地址带会话参数，RESOLVED_S 内有效）。
 PREPARE_WORKERS = 4
 PREPARE_MAX = 40
 PREPARE_FRESH_S = 300.0
-PREPARE_TIMEOUT_S = 8.0
-PREPARE_BYTES = 256 * 1024
+PREPARE_TIMEOUT_S = hlsopen.RESOLVE_TIMEOUT_S
 # 直播台有几条线路（server/routes.py）时：一条线路起来以后这么久还没出第一段就算它不行（源站超时），换下一条。
 FIRST_SEGMENT_S = 20.0
 # 有备用线路时等 ffmpeg 报出输入流编码最多这么久（只有一条线路时照旧 PROBE_WAIT_S）。
@@ -143,7 +140,6 @@ ROUTE_PROBE_WAIT_S = 20.0
 LEG_TRIES = 4
 # 坏了的线路记多久（这么久内再开这个台时排在最后）。
 BAD_ROUTE_S = 600.0
-_OPENING = re.compile(r"Opening '(https?://[^']+)' for reading")
 _SID = re.compile(r"^[0-9a-f]{16}$")
 # 片库（Source.bounded）：ffmpeg 跑在播放器前面，至多攒这么多段、这么多字节没被取走（4K 20 Mbit/s 一段就是
 # 十几 MB，按字节封顶），取走一段再接着读文件。比 WINDOW_* 小：没取走的段不会被挤出窗口。
@@ -637,59 +633,6 @@ class Window:
 
 # ---------------------------------------------------------------- 记住的直播台
 
-class LiveMemory:
-    """每个直播台（Source.key）记住的两样，让下次起得快：
-    - 转法（Mode）：要转码的台直接按转码起，不用先按只换封装起、看到编码再重起（又一次连片源）。
-    - 跳转以后真正的列表地址（RESOLVED_S 秒内有效）：ffmpeg 不用再走一遍跳转和主列表。"""
-
-    def __init__(self, clock=time.monotonic, resolved_s: float = RESOLVED_S):
-        self.clock = clock
-        self.resolved_s = resolved_s
-        self._modes: collections.OrderedDict[tuple, Mode] = collections.OrderedDict()
-        self._urls: dict[tuple, tuple[str, float]] = {}
-        self._lock = threading.Lock()
-
-    def mode(self, key: tuple) -> Mode | None:
-        with self._lock:
-            return self._modes.get(key)
-
-    def remember_mode(self, key: tuple, mode: Mode) -> None:
-        with self._lock:
-            self._modes[key] = mode
-            self._modes.move_to_end(key)
-            while len(self._modes) > MODE_CACHE_MAX:
-                self._modes.popitem(last=False)
-
-    def url(self, key: tuple) -> str | None:
-        with self._lock:
-            found = self._urls.get(key)
-            if found is None:
-                return None
-            if self.clock() - found[1] > self.resolved_s:
-                del self._urls[key]
-                return None
-            return found[0]
-
-    def remember_url(self, key: tuple, url: str) -> None:
-        with self._lock:
-            self._urls[key] = (url, self.clock())
-            while len(self._urls) > MODE_CACHE_MAX:
-                del self._urls[min(self._urls, key=lambda k: self._urls[k][1])]
-
-    def forget_url(self, key: tuple) -> None:
-        with self._lock:
-            self._urls.pop(key, None)
-
-    def age(self, key: tuple) -> float | None:
-        """记住的列表地址记了多少秒；没有（或已过期）时 None。"""
-        with self._lock:
-            found = self._urls.get(key)
-        if found is None:
-            return None
-        age = self.clock() - found[1]
-        return age if age <= self.resolved_s else None
-
-
 class RouteMemory:
     """每个直播台上次放得起来的线路（先试它）、每条线路真放起来用了多久（快很多的排到前面，routes.preferred）和
     最近坏了的线路（BAD_ROUTE_S 秒内排在最后）。好的线路和用时也记进频道表旁边的 meta（routes.remember_good、
@@ -846,52 +789,6 @@ class RouteMemory:
                 del self._good[cid]
             while len(self._bad) > MODE_CACHE_MAX:
                 del self._bad[min(self._bad, key=self._bad.get)]
-
-
-def resolved_playlist(line: str, given: str) -> str | None:
-    """ffmpeg 的一行输出里打开的列表地址（跳转和主列表之后真正的那个 .m3u8）；不是、或者就是频道表里的地址时 None。"""
-    match = _OPENING.search(line)
-    if match is None:
-        return None
-    url = match.group(1)
-    path = url.split("?", 1)[0].split("#", 1)[0]
-    return url if path.endswith(".m3u8") and url != given else None
-
-
-def resolve_playlist(url: str, user_agent: str = "", timeout: float = PREPARE_TIMEOUT_S,
-                     urlopen=urllib.request.urlopen) -> str | None:
-    """像 ffmpeg 那样打开一个直播地址：跟着跳转，主列表里只有一路（没有单独的声音列表）时进到那一路。返回 ffmpeg
-    会记下的那个列表地址（和 resolved_playlist 一样：.m3u8 结尾、和给的不同）；多路清晰度、不是 HLS、打不开时 None。
-    地址里带会话参数：不写日志。"""
-    if not url.startswith(("http://", "https://")):
-        return None
-    # 频道表里偶尔有中文路径：ffmpeg 原样发，urllib 要先转义。
-    asked = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
-    # 没写 User-Agent 的台：和 ffmpeg 一样报 Lavf（ffmpeg_args 只在台写了时才加 -user_agent）。
-    request = urllib.request.Request(asked, headers={"User-Agent": user_agent or "Lavf/61"})
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            final = response.geturl()
-            text = response.read(PREPARE_BYTES).decode("utf-8", "replace")
-    except Exception:  # noqa: BLE001 —— 解析不了就算了，点下去时 ffmpeg 照常从频道表里的地址起
-        return None
-    if "#EXTM3U" not in text:
-        return None
-    if "#EXT-X-STREAM-INF" in text:
-        if "#EXT-X-MEDIA:" in text and "URI=" in text:
-            return None        # 单独的声音（字幕）列表：ffmpeg 会打开几个列表，LiveMemory 也不记
-        lines = text.splitlines()
-        variants = [lines[i + 1].strip() for i, line in enumerate(lines[:-1])
-                    if line.startswith("#EXT-X-STREAM-INF") and lines[i + 1].strip() and not lines[i + 1].startswith("#")]
-        if len(variants) != 1:
-            return None
-        found = urllib.parse.urljoin(final, variants[0])
-    elif "#EXTINF" in text:
-        found = final
-    else:
-        return None
-    path = found.split("?", 1)[0].split("#", 1)[0]
-    return found if path.endswith(".m3u8") and found not in (url, asked) else None
 
 
 # ---------------------------------------------------------------- 一路

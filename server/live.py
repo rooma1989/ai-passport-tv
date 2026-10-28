@@ -18,9 +18,10 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
-from . import adpcm, channel_groups, degrade, frames, perceptual, pts, routes
+from . import adpcm, channel_groups, degrade, frames, hlsopen, perceptual, pts, routes
 from .timeline import (BASIS_COMMON_DECODE, ContentTimeline,
                        SessionClock, SourceState, VERDICT_IN_HOLE,
                        VERDICT_PLACED)
@@ -68,6 +69,13 @@ from .rate import START_FPS as _START_FPS, start_rate
 PREBUFFER_FRAMES = int(PREBUFFER_SECONDS * _START_FPS)
 # 仅为源始终不出数据时的兜底，正常起播由预缓冲目标决定。
 PREBUFFER_TIMEOUT_S = 60
+# 起播时先不按实时读的内容时长（秒，ffmpeg 的 -readrate_initial_burst）：-re 按实时读，预缓冲的 3 秒就真要等 3 秒；
+# 开头这么多一下读完，预缓冲马上就满，之后照旧按实时读。多 1 秒余量（声音的头几块、帧率低的源）。
+# 读快了的只进服务器这边的两个队列（满了丢最旧的），设备那边由发送端按时间戳调度，不会多收；
+# 所以封顶在队列容量的一半，队列不会因此丢东西。TV_LIVE_BURST_S=0 关掉（和以前一样全程按实时读）。
+LIVE_BURST_S = max(0.0, min(float(os.environ.get("TV_LIVE_BURST_S", str(PREBUFFER_SECONDS + 1))),
+                            PCM_QUEUE_CHUNKS * AUDIO_CHUNK_MS / 1000 / 2,
+                            VIDEO_QUEUE_SECONDS / 2))
 
 # 等待解码器回连两个回环套接字的时限（秒）。ffmpeg 打开源、探测完之后才连接，所以这其实是"源起播"的时限：
 # 本地源一两秒，部分海外/港台源要 15~30 秒。默认 10 秒保持原样；云端部署设 TV_DECODER_CONNECT_TIMEOUT_S=30
@@ -422,17 +430,23 @@ def source_graph(fps: int) -> str:
 
 
 def source_command(url: str, video_port: int, audio_port: int, ffmpeg: str,
-                   user_agent: str = "", fps: int = FPS, lenient: bool = False) -> list[str]:
+                   user_agent: str = "", fps: int = FPS, lenient: bool = False,
+                   burst: float = 0.0) -> list[str]:
     """构造 ffmpeg 命令：读取源一次，画面与音频经两个回环 TCP 端口输出，时间戳由 showinfo 日志给出。
 
     画面量化到 ffmpeg 固定 3-3-2 调色板（与固件 av_palette_rgb565 一致），关闭抖动（见 CLAUDE.md 关键设计决策 1）；
     `-sws_dither none` 须作为输出选项，放在 `-i` 之前会被忽略。
     `-loglevel info` 不可去掉，showinfo 在 INFO 级别输出 pts；`-nostats` 避免进度行混入同一路输出。
     输出走 `tcp://127.0.0.1:<port>` 而非管道（见 CLAUDE.md 关键设计决策 7），ffmpeg 为客户端，调用前父进程须已监听两个端口。
+    网络源只探测 1 秒 / 1 MB（hlsopen.LIVE_PROBE，和电脑上看一样）；burst：开头这么多秒不按实时读（LIVE_BURST_S，
+    ffmpeg 支持时才给，见 burst_supported）。
     """
+    probe = list(hlsopen.LIVE_PROBE) if url.startswith(_NETWORK_SCHEMES) else []
+    fast = ["-readrate_initial_burst", f"{burst:g}"] if burst > 0 else []
     return [
         ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "info", "-nostats",
         *frames.input_options(url, user_agent, paced=True, lenient=lenient),
+        *fast, *probe,
         "-i", url,
         "-filter_complex", source_graph(fps),
         "-map", "[v]", "-pix_fmt", "rgb8", "-sws_dither", "none",
@@ -449,10 +463,50 @@ FPS_PROBE_TIMEOUT_S = float(os.environ.get("TV_FPS_PROBE_TIMEOUT_S", "5"))
 # 探测不出帧率（直播 HLS 常报 "0/0"）或探测失败的源：这么久里不再探，按名义帧率放。以前每次换台都重探一遍，
 # 这类源每次白等最多 FPS_PROBE_TIMEOUT_S 秒；过了这么久再探一次（也许那次只是网络不好）。
 FPS_RETRY_S = 600.0
-# 探测只读这么多（和电脑上看直播的 watch.LIVE_PROBE 一样）：直播源的头里就有帧率，默认的 5 秒 / 5 MB 只是白等。
-FPS_PROBE_ARGS = ("-probesize", "1000000", "-analyzeduration", "1000000")
+# 探测只读这么多（和电脑上看直播共用 hlsopen.LIVE_PROBE）：直播源的头里就有帧率，默认的 5 秒 / 5 MB 只是白等。
+FPS_PROBE_ARGS = hlsopen.LIVE_PROBE
 _FPS_CACHE: dict[str, int] = {}
 _FPS_MISSES: dict[str, float] = {}
+_NETWORK_SCHEMES = ("http://", "https://", "rtmp://", "rtsp://")
+# 跳转、主列表以后真正的列表地址（多路清晰度的挑不比屏幕小的最小一路），按 ("tv", 频道表里的地址, UA) 记，
+# RESOLVED_S 秒内有效；和电脑上看是同一份代码（hlsopen），各记各的（挑的清晰度不同，也不在一个进程里）。
+# 没得解析的（不是 HLS、本来就是子列表、声音在单独的列表里）记下频道表里的地址本身，这段时间里不再白跑一趟。
+TV_MEMORY = hlsopen.LiveMemory()
+# 解析用的函数（测试换掉它，不连网）。
+RESOLVER = hlsopen.resolve_playlist
+# 解析至多等这么久（秒）：它在起播的路上，源站不答时不能比 ffmpeg 自己去连多耽误太久；超时就从频道表里的地址起。
+RESOLVE_TIMEOUT_S = 4.0
+# 中转自己的流（UP 主、剧集、投屏）在本机：不是 HLS，打开一次就是让中转起一路，不去解析。
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+# 各 ffmpeg 支不支持 -readrate_initial_burst（6.1 起才有），按路径记，问一次。
+_BURST_SUPPORT: dict[str, bool] = {}
+
+
+def burst_supported(ffmpeg: str) -> bool:
+    """这个 ffmpeg 有没有 -readrate_initial_burst；没有的（老版本）照旧全程 -re。问一次（-h long，十几 KB）记下。"""
+    known = _BURST_SUPPORT.get(ffmpeg)
+    if known is None:
+        try:
+            done = subprocess.run([ffmpeg, "-hide_banner", "-h", "long"], capture_output=True,
+                                  timeout=FPS_PROBE_TIMEOUT_S)
+            known = b"readrate_initial_burst" in done.stdout + done.stderr
+        except (OSError, subprocess.SubprocessError):
+            known = False
+        _BURST_SUPPORT[ffmpeg] = known
+    return known
+
+
+def open_urls(url: str, user_agent: str = "") -> list[str]:
+    """给解码器的地址，先试的在前：记住的（或刚解析出的）真正的列表地址，然后是频道表里的地址；没得解析的只有后者。"""
+    host = urllib.parse.urlsplit(url).netloc.rsplit("@", 1)[-1]
+    if not url.startswith(("http://", "https://")) or host.rsplit(":", 1)[0] in _LOOPBACK_HOSTS:
+        return [url]
+    key = ("tv", url, user_agent)
+    found = TV_MEMORY.url(key)
+    if found is None:
+        found = RESOLVER(url, user_agent, timeout=RESOLVE_TIMEOUT_S, at_least=(frames.WIDTH, frames.HEIGHT)) or url
+        TV_MEMORY.remember_url(key, found)
+    return [url] if found == url else [found, url]
 
 
 def parse_rate(text: str) -> float | None:
@@ -483,15 +537,16 @@ def choose_fps(avg: float | None, real: float | None) -> int | None:
 
 
 def probe_source_fps(url: str, ffmpeg: str, user_agent: str = "", lenient: bool = False,
-                     clock=time.monotonic) -> int | None:
+                     clock=time.monotonic, target: str = "") -> int | None:
     """探测源的画面帧率，未知返回 None（按名义帧率播放）；结果按 URL 缓存，探不出的 FPS_RETRY_S 秒内不再探。
-    lenient：片段地址不标准的线路（routes.LENIENT_ARGS）。"""
+    lenient：片段地址不标准的线路（routes.LENIENT_ARGS）。target：实际去探的地址（解析好的子列表，open_urls），
+    缓存仍按频道表里的地址 url 记（子列表的地址带会话参数，每次不同）。"""
     if url in _FPS_CACHE:
         return _FPS_CACHE[url]
     missed = _FPS_MISSES.get(url)
     if missed is not None and clock() - missed < FPS_RETRY_S:
         return None
-    fps = _probe_fps(url, ffmpeg, user_agent, lenient)
+    fps = _probe_fps(target or url, ffmpeg, user_agent, lenient)
     if fps is None:
         _FPS_MISSES[url] = clock()
     else:
@@ -544,6 +599,8 @@ class LiveChannel:
         self.user_agent = user_agent
         # 片段地址不标准的线路（电脑上放时发现的、记在 meta 的 lenient 里）：打开时放宽检查。
         self.lenient = routes.is_lenient(_LOADED.get("main"), url)
+        # 解码器实际打开的地址（open_urls：解析好的子列表，或频道表里的地址）；start() 里定。
+        self.open_url = url
         self.stop = threading.Event()
         self.audio = collections.deque(maxlen=PCM_QUEUE_CHUNKS)
         self.video = collections.deque(maxlen=VIDEO_QUEUE_FRAMES)
@@ -622,7 +679,11 @@ class LiveChannel:
     def start(self) -> None:
         if self.palette is None:
             raise LiveError("start() before build_palette()")
+        # 先试记住的（或刚解析出的）真正的列表地址：ffmpeg 不再走跳转和主列表、多路清晰度只开一路。
+        candidates = open_urls(self.url, self.user_agent)
+        self.open_url = candidates[0]
         self.resolve_fps()
+        burst = LIVE_BURST_S if LIVE_BURST_S > 0 and burst_supported(self.ffmpeg) else 0.0
         # 画面与音频来自单个解码器，经两个回环 TCP 连接输出（原因见 source_command）。
         # 父进程先监听两个端口再启动 ffmpeg，由 ffmpeg 作为客户端回连；
         # 失败时须关闭全部资源，否则设备反复重连会耗尽套接字。
@@ -642,24 +703,34 @@ class LiveChannel:
             audio_listener.listen(1)
             audio_port = audio_listener.getsockname()[1]
 
-            # stderr 用管道承载时间戳，由专门线程持续读取：管道无人读时 ffmpeg 会阻塞，与源停供无法区分。
-            self.timestamps = pts.Timestamps()
-            self.decoder = subprocess.Popen(
-                source_command(self.url, video_port, audio_port, self.ffmpeg,
-                               self.user_agent, self.fps, lenient=self.lenient),
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE)
-            self.pts_reader = pts.Reader(self.decoder.stderr, self.timestamps)
-            self.pts_reader.start()
-            self.calibrate_from_source()
+            for target in candidates:
+                self.open_url = target
+                # stderr 用管道承载时间戳，由专门线程持续读取：管道无人读时 ffmpeg 会阻塞，与源停供无法区分。
+                self.timestamps = pts.Timestamps()
+                self.decoder = subprocess.Popen(
+                    source_command(target, video_port, audio_port, self.ffmpeg,
+                                   self.user_agent, self.fps, lenient=self.lenient, burst=burst),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE)
+                self.pts_reader = pts.Reader(self.decoder.stderr, self.timestamps)
+                self.pts_reader.start()
+                self.calibrate_from_source()
 
-            # ffmpeg 在解码任何内容之前就会打开两路输出，此处超时说明解码器没有起来，而非频道慢。
-            try:
-                video_sock = self._accept_decoder(video_listener)
-                audio_sock = self._accept_decoder(audio_listener)
-            except OSError as error:
-                raise LiveError(
-                    f"decoder did not connect: {type(error).__name__}") from None
+                # ffmpeg 在解码任何内容之前就会打开两路输出，此处超时说明解码器没有起来，而非频道慢。
+                try:
+                    video_sock = self._accept_decoder(video_listener)
+                    audio_sock = self._accept_decoder(audio_listener)
+                    break
+                except OSError as error:
+                    if target != self.url:
+                        # 记住的地址打不开了（会话过期之类）：忘掉，从频道表里的地址重来。
+                        TV_MEMORY.forget_url(("tv", self.url, self.user_agent))
+                    if target != candidates[-1] and isinstance(error, ConnectionAbortedError) \
+                            and video_sock is None:
+                        self._reap_decoder()
+                        continue
+                    raise LiveError(
+                        f"decoder did not connect: {type(error).__name__}") from None
             # 监听套接字已完成任务，关闭。
             video_listener.close()
             audio_listener.close()
@@ -706,6 +777,25 @@ class LiveChannel:
                         except OSError:
                             pass
                 self.close()
+
+    def _reap_decoder(self) -> None:
+        """收掉已经退出的解码器（换一个地址再起之前）：等它、关它的 stderr，读日志的线程随之结束。"""
+        proc, self.decoder = self.decoder, None
+        if proc is None:
+            return
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        # 进程已退出，读日志的线程很快读到结尾；等它读完再关管道，不和它抢同一个文件对象。
+        if self.pts_reader is not None:
+            self.pts_reader.join(1.0)
+        if proc.stderr is not None:
+            try:
+                proc.stderr.close()
+            except OSError:
+                pass
 
     def _note(self, error: Exception) -> None:
         with self.lock:
@@ -877,7 +967,8 @@ class LiveChannel:
         if "TV_FPS" in os.environ:
             fps, note = FPS, "TV_FPS"
         else:
-            probed = probe_source_fps(self.url, self.ffmpeg, self.user_agent, getattr(self, "lenient", False))
+            probed = probe_source_fps(self.url, self.ffmpeg, self.user_agent, getattr(self, "lenient", False),
+                                      target=getattr(self, "open_url", self.url))
             fps, note = (probed, "probed") if probed else (FPS, "nominal; source did not say")
         self.fps, self.fps_note = fps, note
         self.timeline = ContentTimeline(video_interval_ms=1000.0 / fps,
