@@ -13,7 +13,9 @@ B 站网页自己的播放器放的是 DASH：画面、声音各一个分片 MP4
 - 清单（…/manifest）、索引缓存是 ytvod.DashIndexes（和 YouTube 共用）；字节照旧经 vod.py 按 Range 转发
   （…/v、…/a），带 B 站要的 Referer 和 User-Agent。
 - 上游（ytvod.Fetcher）连接留着复用：DASH 一段一个请求，不用每次都握手。B 站的地址不经 YouTube 的代理；系统
-  （环境变量）配了代理时和 urllib 一样经它，NO_PROXY 里写了的直连。
+  （环境变量）配了代理时和 urllib 一样经它，NO_PROXY 里写了的直连。平常的 MP4（不是 DASH 的那些）和看 moov
+  的那一下也走这里（opener）：看 moov 的连接留给接着取视频的请求用；池子用空了时后台先备好一条（Fetcher 的
+  spare），拖进度条时浏览器掐掉旧的请求、发新的，新的这个不用现握手（经代理时省几百毫秒）。
 - 地址约两小时过期：过期（403 / 404 / 410）时 vod.py 重新取一次（resolve），换的是同一对格式。
 
 地址里有签名：从不写进日志。只用标准库。
@@ -30,6 +32,12 @@ from .ytnode import parse_proxy
 
 # 认「是不是同一个上游」用的 B 站视频主机（问系统代理设置时用它）。
 CDN_HOST = "upos-sz-mirrorcos.bilivideo.com"
+# 到 B 站视频主机的空闲连接留多久（拿出来用以前先看一眼对方关了没有）。
+POOL_IDLE_S = 60.0
+
+
+def pooled_fetcher(proxy: str = "") -> ytvod.Fetcher:
+    return ytvod.Fetcher(proxy, spare=True, idle_s=POOL_IDLE_S)
 
 
 def system_proxy(host: str = CDN_HOST, getproxies=urllib.request.getproxies, bypass=urllib.request.proxy_bypass) -> str:
@@ -65,7 +73,7 @@ def label(info: dict) -> str:
 class BiliDash(ytvod.DashIndexes):
     """web.py 用的这一套：索引缓存和到 B 站视频主机的连接。fetcher 可换（测试用）。"""
 
-    def __init__(self, log=print, fetcher=ytvod.Fetcher, proxy: Callable[[], str] = system_proxy):
+    def __init__(self, log=print, fetcher=pooled_fetcher, proxy: Callable[[], str] = system_proxy):
         self.log = log
         self.indexes = ytvod._Lru(ytvod.INDEX_CACHE_MAX)
         self._make_fetcher = fetcher
@@ -83,6 +91,19 @@ class BiliDash(ytvod.DashIndexes):
                 self._fetchers = {proxy: self._make_fetcher(proxy)}
                 found = self._fetchers[proxy]
             return found
+
+    def opener(self, fallback: Callable) -> Callable:
+        """平常的 MP4、看 moov 用的上游（签名同 vod.VodService 的 opener）：https 的、没有系统代理时的 http 走连接池；
+        有代理时的 http 地址（少见）交给 fallback（urllib，和以前一样按 http 代理发）。"""
+        fetcher = self.fetcher()
+        direct = not fetcher.proxy_url
+
+        def open_(request, timeout):
+            if direct or request.full_url.startswith("https:"):
+                return fetcher(request, timeout)
+            return fallback(request, timeout)
+
+        return open_
 
     def source(self, key: tuple, video, position: float, info: dict, fetch: Callable[[], dict],
                headers: tuple, hd: bool = False) -> vod.VodSource:

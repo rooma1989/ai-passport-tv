@@ -460,6 +460,8 @@ class RelayVodTests(unittest.TestCase):
     def tearDown(self):
         if self.relay.vod is not None:
             self.relay.vod.stop_all()
+        if self.relay.bilidash is not None:
+            self.relay.bilidash.fetcher().close()
         self.tearDown_relay()
         self.upstream.close()
 

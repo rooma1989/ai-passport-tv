@@ -2287,22 +2287,52 @@ warmOnHover($("watchNextCh"), () => neighbourIds().next);
 
 // ---- 预先解析：直播页上这一组台，让中转先把跳转和主列表走一遍（不起 ffmpeg，watch.WatchService.prepare），
 // 点下去起播少等几秒。只在这台电脑是播放的地方时问；同一个台 PREPARE_AGAIN_MS 内不再问（中转记的地址 10 分钟内有效）。
-const PREPARE_AGAIN_MS = 240000;
-const preparedAt = {};
-let prepareTimer = 0;
-function prepareGroupSoon() {
+// 先后：鼠标停着的台（停 300 毫秒）、窗口里看得见的台、这一组其余的台；中转一轮只解析前 12 个（watch.PREPARE_ROUND），
+// 回答里 ids 是这一轮做了的，later 是排不上的——过 PREPARE_NEXT_MS 再要下一轮；源站慢（slow）时隔久一点。
+const PREPARE_AGAIN_MS = 240000, PREPARE_RETRY_MS = 8000, PREPARE_NEXT_MS = 8000, PREPARE_SLOW_MS = 60000, PREPARE_HOVER_MS = 300;
+const preparedAt = {}, prepareAskedAt = {};
+let prepareTimer = 0, prepareHover = 0;
+// 直播格子里现在看得见的台（按页面上的先后）。
+function visibleChannelIds() {
+  const h = window.innerHeight, w = window.innerWidth, ids = [];
+  for (const node of $("channels").querySelectorAll('[data-k^="ch-"]')) {
+    const r = node.getBoundingClientRect();
+    if (r.bottom <= 0 || r.top >= h || r.right <= 0 || r.left >= w || !r.width) continue;
+    ids.push(node.dataset.k.slice(3));
+  }
+  return ids;
+}
+function prepareGroupSoon(hover, wait) {
   clearTimeout(prepareTimer);
   prepareTimer = setTimeout(() => {
     if (route !== "live" || document.hidden || !data || !data.watch || isGuest() || currentTarget() !== PC) return;
     const g = shownGroup();
     const now = Date.now();
-    const want = (g ? g.channels : []).map((c) => c.id)
-      .filter((id) => !isRelay(id) && id !== "cast" && !(now - (preparedAt[id] || 0) < PREPARE_AGAIN_MS)).slice(0, 40);
+    const todo = (id) => !isRelay(id) && id !== "cast" && !(now - (preparedAt[id] || 0) < PREPARE_AGAIN_MS);
+    const ids = (g ? g.channels : []).map((c) => c.id).filter(todo);
+    // 刚发出去、还没回答做了的（PREPARE_RETRY_MS 内）先不再要；鼠标停着的那个不管这个，排第一个。
+    const first = hover && ids.includes(hover) ? [hover] : [];
+    const group = ids.filter((id) => !(now - (prepareAskedAt[id] || 0) < PREPARE_RETRY_MS));
+    const visible = visibleChannelIds().filter((id) => group.includes(id));
+    const want = [...new Set([...first, ...visible, ...group])].slice(0, 40);
     if (!want.length) return;
-    for (const id of want) preparedAt[id] = now;
-    call("POST", "api/watch/prepare", { channels: want }).catch(() => {});
-  }, 400);
+    for (const id of want) prepareAskedAt[id] = now;
+    call("POST", "api/watch/prepare", { channels: want, visible: visible.slice(0, 40), hover: first[0] || null }).then((answer) => {
+      if (!answer || !answer.ok) return;
+      for (const id of answer.ids || []) preparedAt[id] = Date.now();
+      if (answer.later > 0) prepareGroupSoon(null, answer.slow ? PREPARE_SLOW_MS : PREPARE_NEXT_MS);
+    }).catch(() => {});
+  }, wait || 400);
 }
+// 鼠标停在一个直播台上：它排第一个。滚动停下以后：按新看得见的那些再排一次。
+$("channels").addEventListener("mouseover", (event) => {
+  const card = event.target.closest && event.target.closest('[data-k^="ch-"]');
+  if (!card || isRelay(card.dataset.k.slice(3))) return;
+  clearTimeout(prepareHover);
+  prepareHover = setTimeout(() => prepareGroupSoon(card.dataset.k.slice(3), 1), PREPARE_HOVER_MS);
+});
+$("channels").addEventListener("mouseout", () => clearTimeout(prepareHover));
+addEventListener("scroll", () => { if (route === "live") prepareGroupSoon(); }, { capture: true, passive: true });
 
 // ---- 视频里的位置、跳转 ----
 
@@ -4557,6 +4587,8 @@ function renderSearch() {
         const go = el("button", "go", "播放");
         go.onclick = () => pressed(go, play({ kind: "cast", url: item.link, title: item.title }, null, item.title));
         acts.appendChild(go);
+        const bv = String(item.link).match(/\/video\/(BV[0-9A-Za-z]{10})/);
+        if (bv) row.dataset.bvid = bv[1];   // 鼠标停住、焦点到时先取好地址（biliPrefetchSoon）
       }
       if (item.mid) acts.appendChild(subscribeUp(item.mid, item.author));
       if (item.series) acts.appendChild(addAsSeries(item));
@@ -7094,6 +7126,44 @@ function ytPrefetchSoon(event) {
 }
 document.addEventListener("mouseover", ytPrefetchSoon);
 document.addEventListener("focusin", ytPrefetchSoon);
+
+// ---- B 站预取（server/relay/bilivod.py）：鼠标在一个 B 站视频的卡片上停住 300 毫秒（或焦点到了它），先让中转把
+// 地址取好（只取地址，不取视频）。只在这台电脑是播放的地方时发；中转那边排队、每分钟有上限；同一个 10 分钟内不再问。
+const BILI_PREFETCH = { HOVER_MS: 300, AGAIN_MS: 600000 };
+let biliPrefetchOff = false, biliHoverTimer = 0;
+const biliAsked = {};
+function biliPrefetchOk() {
+  return !biliPrefetchOff && VOD_OK && !!(data && data.watch) && !!me && !isGuest() && currentTarget() === PC;
+}
+const BV_RE = /^BV[0-9A-Za-z]{10}$/;
+// 一个节目是哪个 B 站视频（BV 号）：链接里的、投屏历史的、首页卡片的 id（「v:<台>:<BV>」「pc:v:bilibili:<BV>」）。
+function bvOfCard(x) {
+  if (!x) return "";
+  const p = x.play || {};
+  const m = String(p.url || "").match(/bilibili\.com\/video\/(BV[0-9A-Za-z]{10})/);
+  if (m) return m[1];
+  if (p.video && p.video.site === "bilibili" && BV_RE.test(p.video.id || "")) return p.video.id;
+  if (p.kind === "history" && p.site === "bilibili" && BV_RE.test(p.id || "")) return p.id;
+  if (x.source === "bilibili") { const last = String(x.id || "").split(":").pop(); if (BV_RE.test(last)) return last; }
+  return "";
+}
+function bvAt(node) {
+  const card = node && node.closest && node.closest("[data-play], [data-bvid]");
+  if (!card) return "";
+  return card.dataset.bvid || bvOfCard(ITEMS[card.dataset.play]);
+}
+function biliPrefetchSoon(event) {
+  const id = bvAt(event.target);
+  clearTimeout(biliHoverTimer);
+  if (!id || !biliPrefetchOk() || Date.now() - (biliAsked[id] || 0) < BILI_PREFETCH.AGAIN_MS) return;
+  biliHoverTimer = setTimeout(() => {
+    biliAsked[id] = Date.now();
+    call("POST", "api/bili/prefetch", { ids: [id] })
+      .then((answer) => { if (answer && answer.off) biliPrefetchOff = true; }).catch(() => {});
+  }, BILI_PREFETCH.HOVER_MS);
+}
+document.addEventListener("mouseover", biliPrefetchSoon);
+document.addEventListener("focusin", biliPrefetchSoon);
 
 // ======================================================================= 点击（委托）
 
