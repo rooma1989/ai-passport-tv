@@ -30,6 +30,7 @@ from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
 from . import channeltable, clouddrive, console, epg, events, playlist, presets, qr, routecheck, subscriptions, table
+from . import library as library_api
 from .ytnode import MAX_STREAMS
 
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
@@ -124,6 +125,14 @@ def get(handler, relay, path: str) -> bool:
         # 我的片库的来源（library.py）：路径、地址、用户名；密码从不给页面。
         library = getattr(relay, "library", None)
         handler._json(library.admin_view() if library is not None else {"ok": False, "error": LIBRARY_OFF})
+    elif path == "/api/admin/library/douban":
+        # 片库的在线资料（library.py、libmeta.py）：按片名搜豆瓣的候选，给「匹配豆瓣」的小框。
+        library = getattr(relay, "library", None)
+        handler._json(library.search(query.get("q")) if library is not None else {"ok": False, "error": LIBRARY_OFF},
+                      headers={"Cache-Control": "no-store"})
+    elif library_api._THUMB.match(path) and getattr(relay, "library", None) is not None:
+        # 候选的小图：经中转取（豆瓣的图要 Referer，浏览器从不直接连豆瓣），只认刚搜到的候选。
+        relay.library.serve_thumb(handler, library_api._THUMB.match(path).group(1))
     elif path == "/api/admin/clouddrive":
         # 网盘组件（clouddrive.py、server/selfhost/openlist.py）：装了没有、在不在跑；没有密码。
         handler._json(clouddrive.status(relay, handler), headers={"Cache-Control": "no-store"})
@@ -632,6 +641,30 @@ def post(handler, relay, path: str) -> bool:
             detail = ""
         if answer.get("ok"):
             relay.accounts.audit(action, caller.user, ip, "library", sid[:8], detail[:40])
+        handler._json(answer)
+        return True
+    if path in ("/api/admin/library/match", "/api/admin/library/meta/refresh", "/api/admin/library/settings"):
+        # 片库的在线资料（library.py、libmeta.py）：手动选豆瓣的条目或「不匹配」（手动的从不被自动的盖掉）、
+        # 重新取一部、打开 / 关掉在线资料（关了一个请求也不往豆瓣发）。
+        library = getattr(relay, "library", None)
+        if library is None:
+            handler._json({"ok": False, "error": LIBRARY_OFF})
+            return True
+        key = body.get("key") if isinstance(body.get("key"), str) else ""
+        if path == "/api/admin/library/settings":
+            if not isinstance(body.get("online"), bool):
+                handler._json({"ok": False, "error": "请求格式不对"}, 400)
+                return True
+            answer, action, detail = library.set_online(body["online"]), "library.settings", \
+                "在线资料开" if body["online"] else "在线资料关"
+        elif path == "/api/admin/library/meta/refresh":
+            answer, action, detail = library.refresh(key), "library.meta_refresh", ""
+        elif body.get("none") is True:
+            answer, action, detail = library.unmatch(key), "library.unmatch", ""
+        else:
+            answer, action, detail = library.match(key, body.get("id")), "library.match", str(body.get("id") or "")
+        if answer.get("ok"):
+            relay.accounts.audit(action, caller.user, ip, "library", key[:17], detail[:40])
         handler._json(answer)
         return True
     if path in clouddrive.ROUTES:

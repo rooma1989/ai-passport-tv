@@ -11,9 +11,13 @@
   第几季第几集、大小、修改时间、扩展名、能不能在电脑上放、海报的路径、简介）。重新扫描时大小和修改时间都没变的
   条目照旧用（不再读 .nfo）。每个来源至多走 WALK_MAX 个条目、往下 DEPTH_MAX 层；隐藏的文件和文件夹、群晖的
   @eaDir、回收站这些跳过。
-- 元数据只在本地：.nfo（标题、年份、简介）、视频旁边的海报（poster.jpg、folder.jpg、<名字>-poster.jpg、
+- 本地的元数据：.nfo（标题、年份、简介）、视频旁边的海报（poster.jpg、folder.jpg、<名字>-poster.jpg、
   <名字>.jpg）、文件名（电影「名字 (2019)」「名字.2019.1080p…」；剧集 S01E02、EP03、第3集、E03，按剧名或上一层
-  文件夹归成一部剧）。不上网刮削。网盘上的文件从不截图（网盘会限速）；这一步本机的也不截，没海报的用页面自己画的图。
+  文件夹归成一部剧；文件名只有画质标记的用上层文件夹，「苏.里.南」连起来，英文名留着当第二个查法）。
+  网盘上的文件从不截图（网盘会限速）；这一步本机的也不截，没海报的用页面自己画的图。
+- 在线资料（libmeta.py）：扫描完了后台慢慢从豆瓣查电影和剧的片名、海报、评分、导演演员、简介（不登录、一次一个
+  请求、被拦了歇一个小时），存在 library-meta.json，按剧 / 电影记；本地的 .nfo 片名和海报优先，管理员手动选的、
+  「不匹配」的不被自动的盖掉。片库的设置里能关（关了一个请求也不往豆瓣发）。
 - 网盘上小的 .nfo 扫描时可以取（每个至多 NFO_MAX 字节，一次扫描至多 NFO_PER_SCAN 个）；海报扫描时不取，只记路径，
   页面要时才取一次，存在 library-art/（总共至多 ART_CACHE_MAX 字节，超了删最旧的）。
 - 扫描在后台线程里一个一个来（管理员点「扫描」，另外每 EVERY_S 秒自动一次）；为了不和给小电视推流抢，每列一个
@@ -67,6 +71,7 @@ from pathlib import Path
 from typing import Callable
 
 from .librarycache import IndexCache
+from . import libmeta
 
 SOURCES_MAX = 12
 NAME_MAX = 40
@@ -104,6 +109,14 @@ VIEW_MAX = 6000
 PLOT_MAX = 600
 TITLE_MAX = 120
 RECENT_MAX = 12
+# 在线资料（libmeta.py，豆瓣）：后台每查完一部歇 META_GAP_S（一分钟三部左右）；没事做时每 META_TICK_S 看一眼，
+# 扫描完了马上看；启动后先等 META_START_S。查不成（连不上）的这么久以内不再查同一部。
+META_GAP_S = 20.0
+META_TICK_S = 600.0
+META_START_S = 60.0
+META_FAIL_S = 3600.0
+_META_KEY = re.compile(r"^(?:s[0-9a-f]{12}|m[0-9a-f]{16})$")
+_POSTER_FILE = re.compile(r"^douban-\d{1,12}\.(?:jpg|png|webp)$")
 # 网盘组件（OpenList）的来源：clouddrive.py 维护，页面不能删。
 MANAGED = "openlist"
 MANAGED_NAME = "网盘"
@@ -186,9 +199,29 @@ _SEASON_DIR = re.compile(r"(?i)^(?:season|s)[ ._-]?(\d{1,2})$")
 _DI_JI_SEASON = re.compile(r"第\s*([0-9零〇一二两三四五六七八九十]{1,4})\s*季")
 # 电影的年份：「名字 (2019)」「名字.2019.1080p」；前后不能挨着字母数字（1080p、x2019 不算）。
 _YEAR = re.compile(r"(?i)(?<![0-9a-z])[(\[（【]?((?:19|20)\d{2})[)\]）】]?(?![0-9a-z])")
-# 没有年份时，标题到第一个这类标记为止。
-_JUNK = re.compile(r"(?i)(?<![0-9a-z])(2160p|1080[pi]|720p|480p|4k|uhd|blu-?ray|bdrip|brrip|web-?dl|webrip|hdtv|"
-                   r"dvdrip|x26[45]|h\.?26[45]|hevc|avc|aac|ac3|dts|hdr|10bit|60fps)(?![0-9a-z])")
+# 没有年份时，标题到第一个这类标记为止（分辨率、片源、编码、声音、HDR、发布的网站，还有中文的「高码版」「内封」
+# 「字幕」「收藏版」「片源」这些）。中文的前后不看挨着什么（「NF高码版」「内封精修官译简中字幕」）。
+_JUNK = re.compile(r"(?i)(?<![0-9a-z])(2160p|1080[pi]|720p|480p|4k|8k|uhd|fhd|hq|blu-?ray|bdrip|brrip|bdremux|remux|"
+                   r"web-?dl|webrip|hdtv|dvdrip|x26[45]|h\.?26[45]|hevc|avc|aac|e?ac3|ddp?(?:\d(?:\.\d)?)?|"
+                   r"dd\+|dts(?:-?hd)?|truehd|atmos|flac|hdr(?:10\+?)?|sdr|dovi|10bit|8bit|60fps|120fps|nf|amzn|"
+                   r"dsnp|hmax|atvp|itunes)(?![0-9a-z])|"
+                   r"(高码率|高码版|高码|内封|内嵌|外挂|精修|官译|简中|繁中|简繁|中字|中英|双语|国语|粤语|字幕|收藏版|"
+                   r"片源|蓝光|原盘|无删减|未删减|完整版|修复版|特效|杜比视界|杜比|全景声|60帧|高帧率)")
+# 一段名字里的这些也算「只有标记」：声道（5.1）、单个数字、发布组前的横线。
+_JUNK_REST = re.compile(r"(?i)(?<![0-9a-z])(?:\d(?:\.\d)?|ma|x|h)(?![0-9a-z])")
+_CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+# 「苏.里.南」「苏 里 南」：一个一个隔开的汉字连起来。
+_SPACED_CJK = re.compile(rf"(?<![{_CJK}])[{_CJK}](?:[ ._·・][{_CJK}])+(?![{_CJK}])")
+# 「10J间G敢S死D队2026」：汉字中间夹着单个字母（防搜索的写法）；夹了两处以上才去掉挨着汉字的字母。
+_INTERLEAVED = re.compile(rf"[{_CJK}][A-Za-z][{_CJK}]")
+_BESIDE_CJK = re.compile(rf"[A-Za-z](?=[{_CJK}])|(?<=[{_CJK}])[A-Za-z]")
+# 这些文件夹不是片名（分类、网盘的分享文件夹、下载文件夹）：找片名时跳过。
+GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "分享", "电影", "电视剧", "剧集", "美剧", "韩剧", "日剧",
+                "国产剧", "动画", "动漫", "纪录片", "综艺", "视频", "下载", "我的视频", "影视", "夸克", "百度网盘", "网盘",
+                "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
+                "downloads", "download", "media", "quark", "baidu"}
+# 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
+PARSE_VERSION = 2
 # 文件名开头的字幕组标签：[字幕组]、【xxx】。
 _TAG = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)\s*")
 
@@ -208,6 +241,36 @@ def clean_title(text: str) -> str:
     text = re.sub(r"[\[(（【]\s*[\])）】]", "", text)
     text = " ".join(text.split()).strip(" -–—·._[(（【")
     return text[:TITLE_MAX]
+
+
+def _has_cjk(text: str) -> bool:
+    return re.search(f"[{_CJK}]", text or "") is not None
+
+
+def unmask(name: str) -> str:
+    """「苏.里.南」→「苏里南」；「10J间G敢S死D队2026」→「10间敢死队2026」。别的不动。"""
+    name = _SPACED_CJK.sub(lambda m: re.sub(r"[ ._·・]", "", m.group(0)), name)
+    if len(_INTERLEAVED.findall(name)) >= 2:
+        name = _BESIDE_CJK.sub("", name)
+    return name
+
+
+def junk_only(text: str) -> bool:
+    """名字里只有画质、编码、声音这些标记（「4K HQ SDR 高码率 DDP DTS」），没有片名。"""
+    rest = _JUNK.sub(" ", text)
+    rest = _YEAR.sub(" ", rest)
+    rest = _JUNK_REST.sub(" ", rest)
+    return not re.sub(r"[\s._\-–—+\[\]()（）【】]", "", rest)
+
+
+def _title_folder(folder: str) -> bool:
+    """这个文件夹的名字像片名：不是季的文件夹、不是分类 / 下载这类、不是只有标记。"""
+    if not folder or _season_of(folder) is not None:
+        return False
+    if " ".join(folder.casefold().split()) in GENERIC_DIRS:
+        return False
+    title = _movie_title(folder)[0]
+    return bool(title) and not junk_only(title)
 
 
 def _movie_title(stem: str) -> tuple[str, int | None]:
@@ -230,13 +293,16 @@ def _season_of(folder: str) -> int | None:
 
 
 def parse_name(rel: str) -> dict:
-    """从路径（相对来源的根，用 / 分隔）猜：{kind: movie | episode | video, title, year, show, season, episode}。"""
-    parts = [p for p in rel.split("/") if p]
+    """从路径（相对来源的根，用 / 分隔）猜：{kind: movie | episode | video, title, year, show, season, episode, alt}。
+    文件名只有标记（「4K HQ SDR 高码率 DDP DTS.mp4」）时用最近的像片名的上层文件夹；剧集的文件名里只有英文名
+    （「Narco-Saints.S01E01…」）、上层文件夹是带年份的中文名（「苏.里.南 (2022) 4K…」）时剧名用中文的，英文名留在
+    alt（查豆瓣时第二个查）。剧集的 year 是剧的年份（文件夹或文件名里的）。"""
+    parts = [unmask(p) for p in rel.split("/") if p]
     name = parts[-1] if parts else rel
     stem = os.path.splitext(name)[0]
     parent = parts[-2] if len(parts) >= 2 else ""
     grand = parts[-3] if len(parts) >= 3 else ""
-    found = {"kind": "video", "title": "", "year": None, "show": "", "season": None, "episode": None}
+    found = {"kind": "video", "title": "", "year": None, "show": "", "season": None, "episode": None, "alt": ""}
     episode = season = None
     cut = -1
     for pattern in (_SXXEYY, _DI_JI, _EPISODE):
@@ -253,18 +319,25 @@ def parse_name(rel: str) -> dict:
     if episode is None and re.fullmatch(r"\d{1,3}", stem.strip()):
         episode, cut = int(stem.strip()), 0          # 「01.mp4」这样只有集数的，放在剧的文件夹里
     if episode is not None:
-        show = clean_title(stem[:cut]) if cut > 0 else ""
+        show, year = _movie_title(stem[:cut]) if cut > 0 else ("", None)
         show = re.sub(r"(?i)[ ._-]*(?:s\d{1,2}|第[0-9一二三四五六七八九十]+季)$", "", show).strip(" -._")
+        if junk_only(show):
+            show = ""
         # 剧名：文件名里有就用；没有就用文件夹（季的文件夹再往上一层）。
         folder_season = _season_of(parent) if parent else None
         folder = grand if folder_season is not None and grand else parent
         if season is None:
             season = folder_season
-        if not show and folder:
-            show = _movie_title(folder)[0]
+        folder_title, folder_year = _movie_title(folder) if _title_folder(folder) else ("", None)
+        alt = ""
+        if not show:
+            show, year = folder_title, year or folder_year
+        elif folder_title and folder_year and _has_cjk(folder_title) and not _has_cjk(show) \
+                and (year is None or year == folder_year):
+            show, alt, year = folder_title, show, folder_year
         tail = clean_title(_JUNK.split(stem[cut:], 1)[0])
         found.update(kind="episode", show=show or "未命名的剧", season=season, episode=episode,
-                     title=f"第 {episode} 集")
+                     title=f"第 {episode} 集", year=year, alt=alt)
         # 集数后面跟着的集名（「S01E02 重逢」）。
         rest = re.sub(r"^(?i:s\d{1,2}[ ._-]?e\d{1,4}|第\s*\S{1,6}?\s*[集话話期]|(?:episode|ep|e)[ ._-]?\d{1,4}|\d{1,3})",
                       "", tail).strip(" -._")
@@ -272,7 +345,18 @@ def parse_name(rel: str) -> dict:
             found["title"] = f"第 {episode} 集 · {rest}"[:TITLE_MAX]
         return found
     title, year = _movie_title(stem)
-    found.update(kind="movie" if year else "video", title=title, year=year)
+    alt = ""
+    if junk_only(stem):
+        # 文件名只有标记：用最近的像片名的上层文件夹（至多往上看三层）。
+        folder = next((f for f in reversed(parts[-4:-1]) if _title_folder(f)), "")
+        if folder:
+            title, year = _movie_title(folder)
+    elif parent and not _has_cjk(title) and _title_folder(parent):
+        # 只有英文名、所在的文件夹是带年份的中文名，年份对得上：片名用中文的，英文名留着查。
+        folder_title, folder_year = _movie_title(parent)
+        if folder_year and _has_cjk(folder_title) and (year is None or year == folder_year):
+            title, alt, year = folder_title, title, folder_year
+    found.update(kind="movie" if year else "video", title=title, year=year, alt=alt)
     return found
 
 
@@ -1052,6 +1136,12 @@ class Library:
         self._partial: dict[tuple, dict] = {}
         # 网盘文件的索引区（MP4 的 moov、MKV 的头和 Cues）：只给 ffmpeg 读的 raw 用（librarycache.py）。
         self.cache = IndexCache(self.dir / "library-cache", alive=self._now_of, log=log, clock=clock)
+        # 在线资料（libmeta.py）：存在 library-meta.json；豆瓣一次一个请求，被拦了歇一个小时。
+        self.meta = libmeta.MetaStore(self.dir / "library-meta.json")
+        self.douban = libmeta.Douban(clock=clock, log=log)
+        self._meta_wake = threading.Event()
+        self._meta_failed: dict[str, float] = {}
+        self._meta_lock = threading.Lock()
 
     # ---- 文件 ----
 
@@ -1073,7 +1163,30 @@ class Library:
         os.replace(tmp, path)
 
     def _save_sources(self, sources: list[dict]) -> None:
-        self._write(self.sources_path, {"sources": sources})
+        keep = {k: v for k, v in self._load_config().items() if k == "online"}
+        self._write(self.sources_path, {**keep, "sources": sources})
+
+    def _load_config(self) -> dict:
+        try:
+            data = json.loads(self.sources_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def online(self) -> bool:
+        """在线资料（豆瓣）开着没有：默认开；关了以后一个请求也不往豆瓣发（存下来的照旧显示）。"""
+        return self._load_config().get("online", True) is not False
+
+    def set_online(self, on: bool) -> dict:
+        with _LOCK:
+            config = self._load_config()
+            config["online"] = bool(on)
+            config.setdefault("sources", [])
+            self._write(self.sources_path, config)
+        self.log(f"片库的在线资料{'开了' if on else '关了'}")
+        if on:
+            self._meta_wake.set()
+        return {"ok": True, "online": bool(on)}
 
     def _load_index(self) -> dict[str, dict]:
         try:
@@ -1139,7 +1252,8 @@ class Library:
             else:
                 row.update(url=src.get("url") or "", user=src.get("user") or "", has_password=bool(src.get("password")))
             rows.append(row)
-        return {"ok": True, "max": SOURCES_MAX, "every_h": int(EVERY_S // 3600), "sources": rows, "scan": self.status()}
+        return {"ok": True, "max": SOURCES_MAX, "every_h": int(EVERY_S // 3600), "sources": rows, "scan": self.status(),
+                "online": self.online()}
 
     def item(self, iid: str) -> dict | None:
         if not isinstance(iid, str) or not _ID.match(iid):
@@ -1193,33 +1307,50 @@ class Library:
         more = len(items) > VIEW_MAX
         items = items[:VIEW_MAX]
         movies, videos, shows = [], [], {}
+        entries = self.meta.all()
         for item in items:
             card = self.card(item, names.get(item["source"], ""))
             if item["kind"] == "episode":
                 key = self.show_key(item.get("show") or "")
                 show = shows.setdefault(key, {"id": key, "title": item.get("show") or "", "count": 0, "art": "",
-                                              "seasons": set(), "added": 0, "episodes": []})
+                                              "seasons": set(), "added": 0, "episodes": [], "year": None,
+                                              "guess": item.get("show") or "", "nfo": False})
                 show["episodes"].append(card)
                 show["count"] += 1
                 show["seasons"].add(item.get("season") or 1)
                 show["added"] = max(show["added"], card["added"])
-            elif item["kind"] == "movie":
+                show["year"] = show["year"] or item.get("year")
+                show["nfo"] = show["nfo"] or bool(item.get("nfo_show"))
+                continue
+            entry = self._dress(card, item, entries.get("m" + item["id"]))
+            if item["kind"] == "movie" or (entry or {}).get("state") == "matched":
                 movies.append(card)
             else:
                 videos.append(card)
         show_rows = []
-        for show in shows.values():
+        for key, show in shows.items():
             show["episodes"].sort(key=lambda c: (c["season"] or 0, c["episode"] or 0, c["title"]))
             show["art"] = next((c["art"] for c in show["episodes"] if c["art"]), "")
             show["seasons"] = len(show["seasons"])
             show["playable"] = any(c["playable"] for c in show["episodes"])
+            entry = entries.get("s" + key)
+            show["key"] = "s" + key
+            show["meta"] = libmeta.public(entry)
+            if entry and entry.get("state") == "matched":
+                if not show["nfo"]:
+                    show["title"] = entry.get("title") or show["title"]
+                show["year"] = entry.get("year") or show["year"]
+                if not show["art"] and (entry.get("poster") or entry.get("img")):
+                    show["art"] = self._meta_art_url("s" + key, entry)
+            del show["nfo"]
             show_rows.append(show)
         movies.sort(key=lambda c: c["title"].casefold())
         videos.sort(key=lambda c: c["title"].casefold())
         show_rows.sort(key=lambda s: s["title"].casefold())
         return {"ok": True, "sources": [self._public_source(s, counts.get(s["id"], 0)) for s in sources],
                 "scan": self.status(), "movies": movies, "shows": show_rows, "videos": videos,
-                "total": sum(counts.values()), "more": more}
+                "total": sum(counts.values()), "more": more, "online": self.online(),
+                "pending": len(self.meta_due()) if not self.douban.blocked() else 0}
 
     def recent(self, limit: int = RECENT_MAX) -> list[dict]:
         """首页「我的片库」：最近加进来的（剧只放一张，按剧）。"""
@@ -1234,6 +1365,328 @@ class Library:
             if len(rows) >= limit:
                 break
         return rows
+
+    # ---- 在线资料（libmeta.py，豆瓣） ----
+
+    @staticmethod
+    def _meta_art_url(key: str, entry: dict) -> str:
+        return f"api/library/meta-art/{key}?v={entry.get('id') or ''}"
+
+    def _dress(self, card: dict, item: dict, entry: dict | None) -> dict | None:
+        """电影 / 其他视频的卡片加上豆瓣的资料：片名（.nfo 里写了的不换）、年份、简介和海报（本地有的优先）。"""
+        card["key"] = "m" + item["id"]
+        card["guess"] = item.get("title") or ""
+        card["meta"] = libmeta.public(entry)
+        if not entry or entry.get("state") != "matched":
+            return entry
+        if not item.get("nfo"):
+            card["title"] = entry.get("title") or card["title"]
+            card["year"] = entry.get("year") or card["year"]
+        else:
+            card["year"] = card["year"] or entry.get("year")
+        if not card["plot"]:
+            card["plot"] = (entry.get("plot") or "")[:300]
+        if not card["art"] and (entry.get("poster") or entry.get("img")):
+            card["art"] = self._meta_art_url(card["key"], entry)
+        return entry
+
+    def meta_key(self, item: dict) -> str:
+        """资料按什么记：剧按剧名（s + 剧名的哈希，和页面上剧的 id 一样），电影和其他视频按条目 id（m + id）。"""
+        if item.get("kind") == "episode":
+            return "s" + self.show_key(item.get("show") or "")
+        return "m" + item["id"]
+
+    def shown(self, item: dict) -> dict:
+        """首页、播放器里用的名字（剧名或片名，对上豆瓣的用豆瓣的）和海报。"""
+        episode = item.get("kind") == "episode"
+        key = self.meta_key(item)
+        entry = self.meta.get(key)
+        name = (item.get("show") if episode else item.get("title")) or ""
+        art = f"api/library/art/{item['id']}" if item.get("poster") else ""
+        if entry and entry.get("state") == "matched":
+            if not item.get("nfo_show" if episode else "nfo"):
+                name = entry.get("title") or name
+            if not art and (entry.get("poster") or entry.get("img")):
+                art = self._meta_art_url(key, entry)
+        return {"name": name, "art": art}
+
+    def titles(self) -> dict[str, dict]:
+        """片库里的「片子」：一部剧（各集一起）、一部电影、一个其他视频。{键: {key, kind, title, alt, year, added}}"""
+        found: dict[str, dict] = {}
+        for item in self.items():
+            episode = item["kind"] == "episode"
+            key = self.meta_key(item)
+            row = found.get(key)
+            if row is None:
+                found[key] = {"key": key, "kind": "show" if episode else item["kind"],
+                              "title": (item.get("show") if episode else item.get("title")) or "",
+                              "alt": item.get("alt") or "", "year": item.get("year"), "added": item.get("added") or 0}
+            else:
+                row["alt"] = row["alt"] or item.get("alt") or ""
+                row["year"] = row["year"] or item.get("year")
+                row["added"] = max(row["added"], item.get("added") or 0)
+        return found
+
+    @staticmethod
+    def _query(title: dict) -> str:
+        return f"{title['title']}|{title['alt']}|{title['year'] or ''}|{title['kind']}"
+
+    def meta_due(self, titles: dict[str, dict] | None = None) -> list[str]:
+        """后台要查的（新加的先查）：电影和剧（其他视频多半是自己拍的，名字不自动往外发，要管理员手动匹配）。
+        没查过的、自动查时的片名变了的、没对上又过了 MISS_RETRY_S 的、详细资料没取全又过了 PARTIAL_RETRY_S 的。
+        手动选的、手动「不匹配」的不动（手动选的只补没取全的详细资料）。"""
+        if not self.online():
+            return []
+        titles = self.titles() if titles is None else titles
+        entries = self.meta.all()
+        now = self.clock()
+        due = []
+        for key, title in sorted(titles.items(), key=lambda kv: (-kv[1]["added"], kv[0])):
+            failed = self._meta_failed.get(key)
+            if failed is not None and now - failed < META_FAIL_S:
+                continue
+            auto = title["kind"] in ("show", "movie") and bool(title["title"])
+            entry = entries.get(key)
+            if entry is None:
+                if auto:
+                    due.append(key)
+                continue
+            age = now - (entry.get("at") or 0)
+            if entry.get("state") == "matched" and entry.get("partial"):
+                if age >= libmeta.PARTIAL_RETRY_S:
+                    due.append(key)
+            elif entry.get("manual"):
+                continue
+            elif entry.get("q") != self._query(title):
+                if auto:
+                    due.append(key)
+            elif entry.get("state") == "miss" and age >= libmeta.MISS_RETRY_S:
+                due.append(key)
+        return due
+
+    def meta_step(self) -> bool:
+        """后台查一部（返回 True 时还有要查的，歇一会儿再来）；关着、被拦着、没有要查的 False。"""
+        if not self.online() or self.douban.blocked():
+            return False
+        titles = self.titles()
+        due = self.meta_due(titles)
+        if not due:
+            return False
+        key = due[0]
+        try:
+            self._lookup(key, titles[key])
+        except libmeta.Blocked:
+            return False
+        except libmeta.Failed as error:
+            self._meta_failed[key] = self.clock()
+            self.log(f"片库资料没查成：{error}")
+        return True
+
+    def _lookup(self, key: str, title: dict, force: bool = False) -> dict:
+        """查一部：对上了的（手动的、片名没变的、或者 force）补 / 重新取详细资料，别的按片名自动找。"""
+        with self._meta_lock:
+            entry = self.meta.get(key)
+            if entry and entry.get("state") == "matched" and (entry.get("manual") or force
+                                                               or entry.get("q") == self._query(title)):
+                return self._complete(key, entry)
+            return self._auto(key, title)
+
+    def _auto(self, key: str, title: dict) -> dict:
+        """按片名（再按英文名）找豆瓣的条目，有把握才认（libmeta.pick）；没把握记「没对上」。"""
+        want = {"show": "tv", "movie": "movie"}.get(title["kind"])
+        names = [title["title"], title["alt"]]
+        query = self._query(title)
+        chosen, details = None, None
+        if title["title"]:
+            chosen = libmeta.pick(self.douban.suggest(title["title"]), names, title["year"], want)
+        if chosen is None and title["alt"] and libmeta.norm(title["alt"]) != libmeta.norm(title["title"]):
+            candidates = self.douban.suggest(title["alt"])
+            chosen = libmeta.pick(candidates, names, title["year"], want)
+            near = [c for c in candidates if (not want or c["type"] == want) and c["year"] == title["year"]]
+            if chosen is None and title["year"] and len({c["id"] for c in near}) == 1:
+                # 英文名查出来、年份和种类都对的只有一个：它的又名里有这个英文名才认。
+                found = self.douban.details(near[0]["id"])
+                aka = {libmeta.norm(a) for a in [found.get("title"), found.get("original"), *found.get("aka", [])]}
+                if libmeta.norm(title["alt"]) in aka:
+                    chosen, details = near[0], found
+        if chosen is None:
+            entry = {"state": "miss", "manual": False, "q": query, "at": int(self.clock())}
+            self.meta.put(key, entry)
+            return entry
+        entry = self._save_match(key, chosen, query, manual=False, details=details)
+        self.log(f"片库「{title['title']}」对上了豆瓣的「{entry.get('title')}」")
+        return entry
+
+    def _save_match(self, key: str, chosen: dict, query: str, manual: bool, details: dict | None = None) -> dict:
+        """认定一个条目：取详细资料（被拦、出错时先用搜索结果里的，标 partial，以后补）和海报，存下。"""
+        if details is None:
+            try:
+                details = self.douban.details(chosen["id"])
+            except (libmeta.Blocked, libmeta.Failed):
+                details = None
+        partial = details is None or details.get("id") != chosen["id"]
+        if partial:
+            details = {"id": chosen["id"], "title": chosen.get("title"), "original": chosen.get("sub_title"),
+                       "year": chosen.get("year"), "type": chosen.get("type"), "episodes": chosen.get("episodes"),
+                       "img": libmeta.poster_url(chosen.get("img") or "")}
+        elif not details.get("img") and chosen.get("img"):
+            details = dict(details, img=libmeta.poster_url(chosen["img"]))
+        entry = libmeta.entry_of(details, query, manual, self.clock(), partial)
+        entry["poster"] = self._poster(entry)
+        self.meta.put(key, entry)
+        return entry
+
+    def _complete(self, key: str, entry: dict) -> dict:
+        """补（或重新取）一个对上了的条目的详细资料和海报；手动的、自动的标记照旧。被拦、出错时抛出去，存的不动。"""
+        details = self.douban.details(entry["id"])
+        fresh = libmeta.entry_of(details, entry.get("q") or "", bool(entry.get("manual")), self.clock())
+        if not fresh.get("img") and entry.get("img"):
+            fresh["img"] = entry["img"]
+        fresh["poster"] = self._poster(fresh, entry.get("poster") or "")
+        self.meta.put(key, fresh)
+        return fresh
+
+    def _poster(self, entry: dict, have: str = "") -> str:
+        """豆瓣的海报取一次存进 library-art/（douban-<id>.jpg）；已经有了不再取。取不到 ""（以后要时再取）。"""
+        if have and _POSTER_FILE.match(have) and (self.art_dir / have).is_file():
+            return have
+        url = entry.get("img") or ""
+        if not url or not self.online() or not re.fullmatch(r"\d{1,12}", str(entry.get("id") or "")):
+            return ""
+        for ext in ("jpg", "png", "webp"):
+            name = f"douban-{entry['id']}.{ext}"
+            if (self.art_dir / name).is_file():
+                return name
+        try:
+            kind, data = self.douban.image(url)
+        except (libmeta.Blocked, libmeta.Failed):
+            return ""
+        name = f"douban-{entry['id']}.{kind}"
+        try:
+            self.art_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self.art_dir / (name + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, self.art_dir / name)
+            self._prune_art()
+        except OSError:
+            return ""
+        return name
+
+    def run_meta(self, sleep=time.sleep) -> None:
+        """后台：扫描完了（或每 META_TICK_S）把要查的一部一部查完，每部之间歇 META_GAP_S。"""
+        self._meta_wake.wait(META_START_S)
+        while True:
+            self._meta_wake.clear()
+            try:
+                while self.meta_step():
+                    sleep(META_GAP_S)
+            except Exception as error:  # noqa: BLE001 —— 后台线程不能悄悄死
+                self.log(f"片库资料出错：{type(error).__name__}")
+            self._meta_wake.wait(META_TICK_S)
+
+    # 管理员：搜、选、不匹配、重新取。
+
+    def _title_of(self, key) -> dict | None:
+        if not isinstance(key, str) or not _META_KEY.match(key):
+            return None
+        return self.titles().get(key)
+
+    def search(self, query) -> dict:
+        """GET /api/admin/library/douban?q=：豆瓣的候选（小图经中转取）。"""
+        if not self.online():
+            return {"ok": False, "error": "在线资料关着（在片库上面打开）"}
+        query = " ".join(str(query or "").split())[:libmeta.QUERY_MAX]
+        if not query:
+            return {"ok": False, "error": "写一个片名"}
+        try:
+            found = self.douban.suggest(query)
+        except libmeta.Blocked:
+            return {"ok": False, "error": "豆瓣暂时不让查了，过一个小时再试"}
+        except libmeta.Failed as error:
+            return {"ok": False, "error": str(error)}
+        return {"ok": True, "candidates": [
+            {"id": c["id"], "title": c["title"], "sub_title": c["sub_title"], "year": c["year"], "type": c["type"],
+             "episodes": c["episodes"], "thumb": f"api/admin/library/douban/thumb/{c['id']}" if c["img"] else ""}
+            for c in found]}
+
+    def match(self, key, did) -> dict:
+        """管理员选了一个豆瓣的条目（手动的，自动的从不盖掉它）。"""
+        title = self._title_of(key)
+        if title is None:
+            return {"ok": False, "error": "片库里没有这部片子（刷新一下）"}
+        if not self.online():
+            return {"ok": False, "error": "在线资料关着（在片库上面打开）"}
+        did = str(did or "")
+        if not re.fullmatch(r"\d{1,12}", did):
+            return {"ok": False, "error": "请求格式不对"}
+        chosen = self.douban.seen(did) or {"id": did}
+        with self._meta_lock:
+            try:
+                details = self.douban.details(did)
+            except (libmeta.Blocked, libmeta.Failed) as error:
+                if not chosen.get("title"):
+                    return {"ok": False, "error": str(error) if isinstance(error, libmeta.Failed)
+                            else "豆瓣暂时不让查了，过一个小时再试"}
+                details = None
+            entry = self._save_match(key, chosen, self._query(title), manual=True, details=details)
+        self.log(f"片库「{title['title']}」手动对上了豆瓣的「{entry.get('title')}」")
+        return {"ok": True, "meta": libmeta.public(entry)}
+
+    def unmatch(self, key) -> dict:
+        """「不匹配」：不用豆瓣的资料，自动的也不再查这部。"""
+        title = self._title_of(key)
+        if title is None:
+            return {"ok": False, "error": "片库里没有这部片子（刷新一下）"}
+        self.meta.put(key, {"state": "none", "manual": True, "q": self._query(title), "at": int(self.clock())})
+        return {"ok": True, "meta": libmeta.public(self.meta.get(key))}
+
+    def refresh(self, key) -> dict:
+        """重新取一部：对上了的重新取详细资料和海报；没对上的（包括「不匹配」）按片名重新自动找一次。"""
+        title = self._title_of(key)
+        if title is None:
+            return {"ok": False, "error": "片库里没有这部片子（刷新一下）"}
+        if not self.online():
+            return {"ok": False, "error": "在线资料关着（在片库上面打开）"}
+        entry = self.meta.get(key)
+        if not entry or entry.get("state") != "matched":
+            self.meta.drop(key)
+        self._meta_failed.pop(key, None)
+        try:
+            entry = self._lookup(key, title, force=True)
+        except libmeta.Blocked:
+            return {"ok": False, "error": "豆瓣暂时不让查了，过一个小时再试"}
+        except libmeta.Failed as error:
+            return {"ok": False, "error": str(error)}
+        return {"ok": True, "meta": libmeta.public(entry)}
+
+    def serve_meta_art(self, handler, key: str) -> None:
+        """GET /api/library/meta-art/<键>：存下来的豆瓣海报；文件没了（缓存满了删掉的）在线资料开着时再取一次。"""
+        entry = self.meta.get(key) if _META_KEY.match(key or "") else None
+        if not entry or entry.get("state") != "matched":
+            handler._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "private, max-age=600"})
+            return
+        name = entry.get("poster") or ""
+        if not (_POSTER_FILE.match(name) and (self.art_dir / name).is_file()):
+            name = self._poster(entry)
+            if not name:
+                handler._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "private, max-age=600"})
+                return
+            self.meta.put(key, dict(entry, poster=name))
+        try:
+            data = (self.art_dir / name).read_bytes()
+        except OSError:
+            handler._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "private, max-age=600"})
+            return
+        handler._send(200, data, IMAGE_TYPES["." + name.rsplit(".", 1)[1]], {"Cache-Control": "private, max-age=86400"})
+
+    def serve_thumb(self, handler, did: str) -> None:
+        """GET /api/admin/library/douban/thumb/<豆瓣 id>：搜索结果里候选的小图（只认刚搜到的，内存里缓存）。"""
+        found = self.douban.thumb(did) if self.online() else None
+        if found is None:
+            handler._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "no-store"})
+            return
+        kind, data = found
+        handler._send(200, data, IMAGE_TYPES["." + kind], {"Cache-Control": "private, max-age=3600"})
 
     # ---- 管理员：加、删、扫描 ----
 
@@ -1469,7 +1922,8 @@ class Library:
             poster = self._poster_of(entry, here, above)
             subs = self._sidecars(entry, here)
             previous = old.get(iid)
-            if previous is not None and previous.get("size") == entry.size and previous.get("mtime") == entry.mtime:
+            same = previous is not None and previous.get("size") == entry.size and previous.get("mtime") == entry.mtime
+            if same and previous.get("pv") == PARSE_VERSION:
                 items.append(dict(previous, poster=poster, subs=subs, playable=ext in VIDEO_TYPES))
                 continue
             found = parse_name(entry.rel)
@@ -1491,12 +1945,20 @@ class Library:
                 found["show"] = meta.get("show") or found["show"]
                 found["season"] = meta.get("season") or found["season"]
                 found["episode"] = meta.get("episode") or found["episode"]
-            items.append({"id": iid, "source": sid, "path": entry.rel, "title": found["title"] or stem,
-                          "year": found.get("year"), "kind": found["kind"], "show": found.get("show") or "",
-                          "season": found.get("season"), "episode": found.get("episode"),
-                          "plot": found.get("plot") or "", "size": entry.size, "mtime": entry.mtime, "ext": ext,
-                          "playable": ext in VIDEO_TYPES, "poster": poster, "subs": subs,
-                          "added": (previous or {}).get("added") or now})
+            row = {"id": iid, "source": sid, "path": entry.rel, "title": found["title"] or stem,
+                   "year": found.get("year"), "kind": found["kind"], "show": found.get("show") or "",
+                   "season": found.get("season"), "episode": found.get("episode"), "alt": found.get("alt") or "",
+                   "plot": found.get("plot") or "", "size": entry.size, "mtime": entry.mtime, "ext": ext,
+                   "playable": ext in VIDEO_TYPES, "poster": poster, "subs": subs, "pv": PARSE_VERSION,
+                   "added": (previous or {}).get("added") or now}
+            # .nfo 里写了片名 / 剧名的：本地的比豆瓣的优先（libmeta 的资料只补没有的）。
+            if meta.get("title") and found["kind"] != "episode":
+                row["nfo"] = True
+            if meta.get("show"):
+                row["nfo_show"] = True
+            if same and isinstance(previous.get("media"), dict):
+                row["media"] = previous["media"]          # 只是解析的写法改了：探测的结果照旧用
+            items.append(row)
         return items
 
     @staticmethod
@@ -1546,6 +2008,7 @@ class Library:
         self._update_source(sid, lambda s: s.update(last_scan=int(self.clock()), ok=True, error="", note=note,
                                                     count=len(items)))
         fresh = sum(1 for i in items if i["id"] not in old)
+        self._meta_wake.set()                      # 新加的片子去查在线资料（后台慢慢来）
         self.log(f"片库「{name}」扫完了：{len(items)} 个视频（新的 {fresh} 个）" + (f"，{note}" if note else ""))
         return {"ok": True, "count": len(items), "new": fresh, "note": note}
 
@@ -2111,6 +2574,8 @@ _FILE = re.compile(r"^/api/library/file/([0-9a-f]{16})$")
 _ART = re.compile(r"^/api/library/art/([0-9a-f]{16})$")
 _SUBS = re.compile(r"^/api/library/subs/([0-9a-f]{16})/(\d{1,3})\.vtt$")
 _RAW = re.compile(r"^/api/library/raw/([0-9a-f]{16})$")
+_META_ART = re.compile(r"^/api/library/meta-art/((?:s[0-9a-f]{12}|m[0-9a-f]{16}))$")
+_THUMB = re.compile(r"^/api/admin/library/douban/thumb/(\d{1,12})$")
 
 
 def wired(relay) -> "Library | None":
@@ -2165,6 +2630,10 @@ def get(handler, relay, caller, path: str) -> bool:
     if match:
         library.serve_art(handler, match.group(1))
         return True
+    match = _META_ART.match(path)
+    if match:
+        library.serve_meta_art(handler, match.group(1))
+        return True
     match = _SUBS.match(path)
     if match:
         after = handler._query().get("after")
@@ -2187,10 +2656,11 @@ def home_rows(relay, caller) -> list[dict]:
     rows = []
     for item in library.recent():
         episode = item["kind"] == "episode"
-        rows.append({"id": f"lib:{item['id']}", "kind": "library", "title": item.get("show") if episode else item["title"],
+        shown = library.shown(item)
+        rows.append({"id": f"lib:{item['id']}", "kind": "library", "title": shown["name"],
                      "subtitle": item["title"] if episode else (str(item["year"]) if item.get("year") else "片库"),
                      "source": "library", "playable": Library.playable(item),
-                     "art": {"url": f"api/library/art/{item['id']}" if item.get("poster") else "", "ratio": "poster"},
+                     "art": {"url": shown["art"], "ratio": "poster"},
                      "play": {"kind": "library", "id": item["id"], "playable": Library.playable(item)}})
     return rows
 
@@ -2204,4 +2674,5 @@ def attach(relay, start: bool = True) -> Library | None:
     wired(relay)
     if start:
         threading.Thread(target=library.run_forever, name="library", daemon=True).start()
+        threading.Thread(target=library.run_meta, name="library-meta", daemon=True).start()
     return library

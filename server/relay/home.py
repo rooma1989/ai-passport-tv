@@ -496,10 +496,10 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                 if found is None:
                     continue
                 episode = found["kind"] == "episode"
-                rows.append({"id": f"pc:{key}", "kind": "video", "title": found.get("show") if episode else found["title"],
+                shown = library.shown(found)
+                rows.append({"id": f"pc:{key}", "kind": "video", "title": shown["name"],
                              "subtitle": found["title"] if episode else "片库", "source": "library",
-                             "art": {"url": f"api/library/art/{found['id']}" if found.get("poster") else "",
-                                     "ratio": "wide"},
+                             "art": {"url": shown["art"], "ratio": "wide"},
                              "progress": {"position": int(position), "duration": int(duration), "device": PC_NAME,
                                           "updated_at": rec.get("at") or 0},
                              "play": {"kind": "library", "id": found["id"]}})
