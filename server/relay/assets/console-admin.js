@@ -899,8 +899,10 @@ function achShell() {
         <input type="search" id="achFilter" placeholder="找台" autocomplete="off">
         <button class="ghost" id="achAddToggle">${ic("plus", 16)}加一个台</button>
         <button class="ghost" id="achCheckAll">检测全部线路</button>
+        <button class="ghost" id="achCleanToggle" hidden>清理</button>
         <span class="hint" id="achCheckState"></span>
       </div>
+      <div class="subsbox cleanbox" id="achClean" hidden></div>
       <div class="addrow" id="achAddRow" hidden>
         <input type="text" id="achNewName" placeholder="名字，例如 CCTV13" maxlength="40" autocomplete="off">
         <input type="text" id="achNewUrl" placeholder="地址 http(s)://…" autocomplete="off" spellcheck="false">
@@ -999,6 +1001,8 @@ function achShell() {
   $("achCheck").onclick = () => admBusy($("achCheck"), achCheck);
   $("achSave").onclick = () => admBusy($("achSave"), achSave);
   $("achCheckAll").onclick = achCheckAll;
+  $("achCleanToggle").onclick = achCleanOpen;
+  achCleanButton();
   achAutoLine();
   achWireImport();
   achWireEpg();
@@ -1394,6 +1398,125 @@ async function achCheckAll() {
   say((stopped ? "停了：" : "检测完了：") + done + " 个台" +
       (bad ? "，" + bad + " 个台有线路不通（点「线路」看）" : "，都能连上"));
   achOfferFastest();
+}
+// ---------- 清理：长期打不开的线路和台（服务端 channeltable.stale） ----------
+// 服务端按检测记录列出连续 stale_days 天、每次检测都连不上的线路，和所有线路都这样的台；写着为什么（从哪天起、
+// 连续几次、上次能连上是什么时候）。默认都勾上，只有还有别的好线路的台的主线路不勾。「删掉选中的」先检查、再确认，
+// 走和「保存」一样的路（先备份频道表和线路记录）；从不自动删。
+const ACH_SEP = "\u0001";
+function achCleanButton() {
+  const b = $("achCleanToggle");
+  if (!b) return;
+  const n = ((ach.data && ach.data.stale) || []).length;
+  b.hidden = !n;
+  b.textContent = "清理（" + n + "）";
+  b.title = n + " 个台有连续 " + (ach.data.stale_days || 14) + " 天以上打不开的线路";
+  if (!n && $("achClean")) $("achClean").hidden = true;
+}
+function achCleanOpen() {
+  const box = $("achClean");
+  if (!box.hidden) { box.hidden = true; return; }
+  ach.cleanTick = {};
+  for (const c of ach.data.stale || []) {
+    if (c.kind === "channel") ach.cleanTick[c.id] = true;
+    else for (const x of c.lines) ach.cleanTick[c.id + ACH_SEP + x.url] = !!x.tick;
+  }
+  box.hidden = false;
+  achRenderClean();
+}
+function achCleanWhy(x) {
+  return "从 " + when(x.since) + " 起每次检测都连不上 · 连续 " + x.fails + " 次" + (x.why ? " · " + x.why : "") + " · " +
+    (x.last_ok ? "上次能连上：" + when(x.last_ok) : "没有能连上的记录");
+}
+function achCleanLabel(x) {
+  let host = x.url;
+  try { const u = new URL(x.url); host = u.host + u.pathname; } catch (error) { /* 显示原样 */ }
+  return (x.primary ? "主线路 " : "备用线路 ") + (host.length > 60 ? host.slice(0, 57) + "…" : host);
+}
+function achCleanCheck(key, label) {
+  const check = el("input");
+  check.type = "checkbox"; check.checked = !!ach.cleanTick[key]; check.setAttribute("aria-label", label);
+  check.onchange = () => { ach.cleanTick[key] = check.checked; achCleanCount(); };
+  return check;
+}
+function achCleanCount() {
+  const n = Object.values(ach.cleanTick || {}).filter(Boolean).length, b = $("achCleanGo");
+  if (b) { b.disabled = !n; b.textContent = n ? "删掉选中的（" + n + "）" : "删掉选中的"; }
+}
+function achRenderClean() {
+  const box = $("achClean"), days = ach.data.stale_days || 14, list = ach.data.stale || [];
+  const head = el("b", "", "清理长期打不开的线路");
+  const hint = admHint("下面是连续 " + days + " 天以上、每次检测都连不上的线路，和所有线路都这样的台。默认都勾上；" +
+                       "还有别的好线路的台，主线路不勾（要删就自己勾）。删之前先备份频道表和线路记录，不会自动删。");
+  const rows = list.map((c) => {
+    const row = el("div", "subrow cleanrow");
+    const text = el("div", "subtext");
+    if (c.kind === "channel") {
+      const label = el("label", "cleanline");
+      label.append(achCleanCheck(c.id, "删掉整个台「" + c.name + "」"), el("b", "", c.name));
+      label.append(admTag("整个台删掉", "bad"));
+      text.appendChild(label);
+      text.appendChild(el("p", "hint", c.lines.length + " 条线路全都打不开。"));
+      for (const x of c.lines) text.appendChild(el("p", "hint", achCleanLabel(x) + "：" + achCleanWhy(x)));
+    } else {
+      const title = el("b", "", c.name);
+      text.append(title, el("p", "hint", "还有 " + c.good + " 条能连上的线路" + (c.good ? "" : "（其余的最近才坏，或者还没检测过）")));
+      for (const x of c.lines) {
+        const label = el("label", "cleanline");
+        label.append(achCleanCheck(c.id + ACH_SEP + x.url, "删掉「" + c.name + "」的" + (x.primary ? "主线路" : "一条备用线路")));
+        const words = el("span", "");
+        words.append(el("span", "", achCleanLabel(x)), el("small", "hint", achCleanWhy(x)));
+        label.appendChild(words);
+        text.appendChild(label);
+      }
+    }
+    row.appendChild(text);
+    return row;
+  });
+  const go = button("删掉选中的", "go", () => admBusy(go, achCleanApply));
+  go.id = "achCleanGo";
+  const bar = el("div", "inline");
+  bar.append(go, button("收起", "ghost", () => { box.hidden = true; }));
+  box.replaceChildren(head, hint, ...rows, bar);
+  achCleanCount();
+}
+// 把勾了的从表里拿掉（整个台，或几条线路；主线路删了就让剩下的里检测能连上、最快的那条当主线路），检查、确认、保存；
+// 没保存成就把表还原。
+async function achCleanApply() {
+  if (achDirty()) { toast("表里还有别的没保存的修改：先保存或放弃，再清理", true); return; }
+  const before = ach.rows.slice(), names = [];
+  let lines = 0;
+  for (const c of ach.data.stale || []) {
+    const r = ach.rows.find((x) => x.id === c.id);
+    if (!r) continue;
+    const drop = new Set(c.lines.filter((x) => c.kind === "channel" ? ach.cleanTick[c.id] : ach.cleanTick[c.id + ACH_SEP + x.url]).map((x) => x.url));
+    if (!drop.size) continue;
+    const rest = achLines(r).filter((x) => !drop.has(x.url));
+    if (!rest.length) { ach.rows.splice(ach.rows.indexOf(r), 1); names.push(r.name); continue; }
+    if (drop.has(r.url)) {
+      const ms = (x) => { const k = r.checks && r.checks[x.url]; return k && k.ok ? (k.ms || 1e9) : 2e9; };
+      rest.sort((a, b) => ms(a) - ms(b));
+    }
+    const copy = { ...r, routes: (r.routes || []).map((x) => ({ ...x })) };
+    achSetLines(copy, rest);
+    ach.rows[ach.rows.indexOf(r)] = copy;
+    lines += drop.size;
+  }
+  if (!names.length && !lines) { toast("没有勾选要删的", true); return; }
+  const undo = () => { ach.rows = before; achRender(); };
+  const dry = await achSubmit(true);
+  if (!dry) { undo(); return; }
+  const say = [];
+  if (names.length) say.push("!删掉 " + names.length + " 个台：" + names.slice(0, 12).join("、") + (names.length > 12 ? " 等" : "") + "。正在看它们的设备下次换台时会回到别的台。");
+  if (lines) say.push("删掉 " + lines + " 条线路。");
+  say.push("保存前会先备份频道表和线路记录（和频道表在同一个目录，.bak-日期）。保存后一共 " + dry.summary.total + " 个台。");
+  if (!await admConfirm("清理长期打不开的线路", say.concat(dry.warnings || []), "删掉", null, true)) { undo(); return; }
+  const answer = await achSubmit(false);
+  if (!answer) { undo(); return; }
+  toast("已清理" + (answer.backup ? "，原文件备份为 " + answer.backup : ""));
+  achProblems(["已清理：" + achDescribe(answer.summary) + "。" + (answer.backup ? "原文件备份为 " + answer.backup + "（线路记录也备份了）。" : "")], true);
+  $("achClean").hidden = true;
+  achLoad(true);
 }
 // 检测完了：有台的备用线路比主线路快很多（或主线路不通）时，给一个「把最快的设为主线路」，一下子换好，
 // 和线路编辑里的「设为主线路」一样，要点「保存」才生效。

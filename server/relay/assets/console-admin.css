@@ -235,3 +235,10 @@ label.ghost { cursor: pointer; }
 .logoedit .inline { display: flex; gap: 8px; align-items: flex-end; margin: 0; }
 .logoedit .fld { display: grid; gap: 4px; flex: 1; min-width: 0; font-size: 13px; color: var(--label-2); }
 #modal .logoedit .fld input[type=text] { margin: 0; }
+/* 频道表的「清理」：长期打不开的线路和台，一条一个勾 */
+.cleanbox .cleanrow { padding: 10px 0; }
+.cleanline { display: flex; align-items: flex-start; gap: 10px; padding: 4px 0; cursor: pointer; }
+.cleanline input { margin-top: 3px; flex: none; }
+.cleanline > span { display: grid; gap: 2px; min-width: 0; word-break: break-all; }
+.cleanline .tag { margin-left: 4px; }
+.cleanbox .subtext p.hint { margin: 0; word-break: break-all; }

@@ -65,18 +65,39 @@ def youtube_cover(video_id: str) -> str:
     return thumb(f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg")
 
 
+def raw_cover(relay, site: str, *keys) -> str:
+    """封面的原图地址（B 站图床、i.ytimg.com，还没经缩略图代理）：按顺序试 keys（一集的 id、它所在的视频、
+    剧集的 ss…），给第一个记得的；都不知道时为空串。只查内存，不访问网站。"""
+    getter = None if site == "youtube" else getattr(relay.clients.get("bilibili"), "cover", None)
+    for key in keys:
+        key = str(key or "")
+        head = key.split("/", 1)[0]
+        if not key:
+            continue
+        if site == "youtube":
+            if len(head) == 11:
+                return f"https://i.ytimg.com/vi/{head}/mqdefault.jpg"
+            continue
+        if getter is None:
+            return ""
+        try:
+            url = getter(key) or (getter(head) if head != key else "")
+        except Exception:  # noqa: BLE001 —— 测试替身、旧客户端：没有封面就用占位图
+            return ""
+        if isinstance(url, str) and url:
+            return url
+    return ""
+
+
+def stored_cover(raw) -> str:
+    """记在 pc-progress.json 里的封面地址：只认 B 站图床和 i.ytimg.com 的（和缩略图代理同一条规则）。"""
+    from .bilibili import cover_url
+    from .bilisearch import youtube_thumb_url
+    return cover_url(raw) or youtube_thumb_url(raw) if isinstance(raw, str) and raw else ""
+
+
 def _cover(relay, site: str, key: str, size: str = "v") -> str:
-    if site == "youtube":
-        return youtube_cover(key.split("/", 1)[0]) if len(key.split("/", 1)[0]) == 11 else ""
-    client = relay.clients.get("bilibili")
-    getter = getattr(client, "cover", None)
-    if getter is None:
-        return ""
-    try:
-        url = getter(key) or (getter(key.split("/", 1)[0]) if "/" in key else "")
-    except Exception:  # noqa: BLE001 —— 测试替身、旧客户端：没有封面就用占位图
-        return ""
-    return thumb(url, size) if isinstance(url, str) else ""
+    return thumb(raw_cover(relay, site, key), size)
 
 
 def _face(relay, site: str, source: str) -> str:
@@ -112,7 +133,8 @@ class CoverWarm:
         self._running = False
 
     def want(self, kind: str, source: str) -> None:
-        """kind 是 "up"（投稿列表）或 "series"（剧集）；source 是 UP 主的 mid、剧集的 ss…/BV 号。"""
+        """kind 是 "up"（投稿列表）、"series"（剧集）或 "video"（一个视频）；source 是 UP 主的 mid、剧集的 ss…/BV 号、
+        视频的 BV 号。"""
         key = (kind, str(source))
         now = self.clock()
         with self.lock:
@@ -147,6 +169,8 @@ class CoverWarm:
             try:
                 if kind == "series":
                     client.series(source)
+                elif kind == "video":
+                    client.video(source)          # 电脑上看过的一个视频（继续观看）：视频信息里有封面
                 else:
                     client.uploads(source)
             except Exception as error:  # noqa: BLE001 —— 后台线程：取不到下次再说，页面照旧用占位图
@@ -154,7 +178,7 @@ class CoverWarm:
 
 
 def _warm(relay, kind: str, site: str, source: str) -> None:
-    if site != "bilibili" or not source:
+    if site != "bilibili" or not source or relay.clients.get("bilibili") is None:
         return
     warm = getattr(relay, "_cover_warm", None)
     if warm is None:
@@ -169,7 +193,8 @@ class PcProgress:
     记录：channel、bvid（正在看的那一集 / 那个视频）、site、title、name（台名）、position、duration、index、
     total、series、at；投屏的多集视频（多 P、合集、番剧、YouTube 播放列表）再有 item（投的那个视频的 id）、
     part（第几集）、kind（"pages" 等）、list（YouTube 播放列表）。done 是电脑上看完了的各集的 bvid（选集里的 ✓）。
-    片库的视频键是 lib:<条目 id>，小电视上看的再有 device（那台的名字）。"""
+    片库的视频键是 lib:<条目 id>，小电视上看的再有 device（那台的名字）。cover 是继续观看用的封面原图地址
+    （B 站图床、i.ytimg.com；放的时候知道就记下，旧记录在首页上补，set_cover），页面经缩略图代理取。"""
 
     def __init__(self, path: Path, clock=time.time):
         self.path = Path(path)
@@ -203,10 +228,22 @@ class PcProgress:
             fresh = dict(record, at=self.clock())
             if isinstance(old, dict) and old.get("done") and "done" not in record:
                 fresh["done"] = old["done"]
+            if isinstance(old, dict) and old.get("cover") and not record.get("cover") and \
+                    old.get("bvid") == record.get("bvid"):
+                fresh["cover"] = old["cover"]       # 首页补上的封面：同一集接着记
             mine[key] = fresh
             while len(mine) > PROGRESS_MAX:
                 oldest = min(mine, key=lambda k: float(mine[k].get("at") or 0))
                 mine.pop(oldest)
+            self._save()
+
+    def set_cover(self, user: int, key: str, url: str) -> None:
+        """给还没有封面（或记的不是能用的图床地址）的记录补上（首页上找到了封面的旧记录）；有了就不改，不动 at。"""
+        with self.lock:
+            record = self._data.get(str(user), {}).get(key)
+            if not isinstance(record, dict) or stored_cover(record.get("cover")) or not url:
+                return
+            record["cover"] = url
             self._save()
 
     def mark_done(self, user: int, key: str, bvid: str) -> None:
@@ -488,7 +525,7 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
     with account.lock:
         creators = list(account.creators)
         for c in creators:
-            names[c.id] = (c.name, c.kind, c.site, {v.bvid: n for n, v in enumerate(c.videos, 1)})
+            names[c.id] = (c.name, c.kind, c.site, {v.bvid: n for n, v in enumerate(c.videos, 1)}, c.source)
     if store is not None:
         for key, rec in store.rows(caller.user):
             position, duration = float(rec.get("position") or 0), float(rec.get("duration") or 0)
@@ -515,9 +552,13 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                                           "device": rec.get("device") or PC_NAME, "updated_at": rec.get("at") or 0},
                              "play": {"kind": "library", "id": found["id"]}})
                 continue
+            bvid = str(rec.get("bvid") or "")
             if key.startswith("v:"):
                 # 投到电脑的视频：键里是投的那个视频的 id（多 P、合集、番剧时 bvid 是正在看的那一集）。
                 play = {"kind": "history", "site": site, "id": key.split(":", 2)[2]}
+                whole = str(rec.get("item") or play["id"])
+                # 封面：这一集自己的，没有时用整个视频 / 番剧的；都不知道时后台取一次那个视频（番剧取一季）。
+                covers, warm = (bvid, whole), ("series" if whole.startswith("ss") else "video", whole)
                 subtitle = rec.get("name") or "投屏"
                 if rec.get("part") and rec.get("total"):
                     n = int(rec["part"])
@@ -533,13 +574,24 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                 play = {"kind": "episode" if series else "video", "channel": key,
                         ("episode" if series else "index"): index}
                 subtitle = f"第 {index} 集" if series else found[0]
+                # 剧集：这一集的，没有时用订阅的剧集封面（番剧的 ss…、多集视频的 BV 号）；UP 主的就是那个视频的。
+                covers = (bvid, found[4]) if series else (bvid,)
+                warm = ("series", found[4]) if series else ("video", bvid)
             title = rec.get("title") or ""
             if key.startswith("v:") and title.strip().isdigit() and rec.get("name"):
                 # 番剧、电视剧的集名常常只是「1」：标题用剧名，下面写第几集。
                 title, subtitle = rec["name"], f"第 {title.strip()} 集"
+            # 放的时候记下的封面（rec 的 cover）；旧记录没有：内存里知道就补进去，不知道就后台取一次（CoverWarm）。
+            art = stored_cover(rec.get("cover"))
+            if not art:
+                art = raw_cover(relay, site, *covers)
+                if art and hasattr(store, "set_cover"):
+                    store.set_cover(caller.user, key, art)
+                elif not art:
+                    _warm(relay, warm[0], site, warm[1])
             rows.append({"id": f"pc:{key}", "kind": "episode" if key[:2] == "sr" else "video",
                          "title": title, "subtitle": subtitle, "source": site,
-                         "art": {"url": _cover(relay, site, rec.get("bvid") or ""), "ratio": "wide"},
+                         "art": {"url": thumb(art), "ratio": "wide"},
                          "progress": {"position": int(position), "duration": int(duration), "device": PC_NAME,
                                       "updated_at": rec.get("at") or 0},
                          "play": play})
@@ -555,7 +607,9 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                 series = c.kind == "series"
                 rows.append({"id": f"tv:{c.id}:{n}", "kind": "episode" if series else "video",
                              "title": video.title, "subtitle": f"{c.name} · 第 {n} 集" if series else c.name,
-                             "source": c.site, "art": {"url": _cover(relay, c.site, video.bvid), "ratio": "wide"},
+                             "source": c.site,
+                             "art": {"url": thumb(raw_cover(relay, c.site, video.bvid,
+                                                            c.source if series else "")), "ratio": "wide"},
                              "progress": {"position": int(position), "duration": int(video.duration or 0),
                                           "device": "小电视", "updated_at": 0},
                              "play": {"kind": "episode", "channel": c.id, "episode": n} if series

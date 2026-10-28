@@ -382,6 +382,8 @@ def channels(relay) -> dict:
             "subs_every_h": int(subscriptions.EVERY_S // 3600),
             # 后台在自动检测线路（linecheck.py，自建 / 电脑客户端）：上次测的时刻、全部线路不通的台。
             "auto": relay.linecheck.status() if getattr(relay, "linecheck", None) is not None else None,
+            # 「清理」：连续 STALE_DAYS 天每次检测都连不上的线路和台（channeltable.stale），管理员勾了再走保存。
+            "stale": channeltable.stale(path, current["rows"], relay.clock()), "stale_days": channeltable.STALE_DAYS,
             # 网上公开的第三方播放列表（只有列表地址）：和导入一样只在自建 / 电脑客户端里有。
             "presets": presets.public() if relay.selfhost is not None else []}
 
