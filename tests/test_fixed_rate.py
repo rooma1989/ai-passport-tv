@@ -154,6 +154,15 @@ class TheRateReachesEverythingThatUsesIt(unittest.TestCase):
         command = L.source_command("x.ts", 1, 2, "ffmpeg", "", 30)
         self.assertIn("fps=30,", command[command.index("-filter_complex") + 1])
 
+    def test_frames_are_dropped_to_the_rate_before_they_are_scaled(self):
+        # A 50 fps source is decoded at 50, but only the frames that will be sent are
+        # scaled, quantised and piped to the server: the fps filter sits ahead of the
+        # scaling chain. Measured on a local 1080p50 source (perf-09, 25 s): 5.9 s of
+        # ffmpeg CPU and 1.0 s of Python with it there, 7.1 s and 2.1 s without it.
+        video = L.source_graph(12).split(";")[0]
+        self.assertLess(video.index("fps=12,"), video.index(frames.FIT))
+        self.assertLess(video.index(frames.FIT), video.index("format=rgb8"))
+
     def test_without_a_rate_the_nominal_one_is_used(self):
         command = L.source_command("x.ts", 1, 2, "ffmpeg", "")
         self.assertIn(f"fps={FPS},", command[command.index("-filter_complex") + 1])
