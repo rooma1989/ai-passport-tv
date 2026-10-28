@@ -176,6 +176,11 @@ label.ghost { cursor: pointer; }
 .routes td.s { white-space: nowrap; font-size: 13px; }
 .routes td.s .ok { color: var(--ok); }
 .routes td.s .bad { color: var(--bad); }
+.routes td.s .warn { color: var(--warn); }
+.peek { display: grid; gap: 4px; margin-top: 10px; }
+.peek img { width: 100%; max-width: 480px; border-radius: 10px; }
+.peek small { color: var(--label-2); }
+.routes td.s small { display: block; margin-top: 2px; max-width: 240px; white-space: normal; font-size: 12px; }
 .routes td.a { white-space: nowrap; text-align: right; }
 .routes td.a .linkbtn { margin: 0 -2px; padding: 6px 8px; }
 .routeadd { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; gap: 8px; margin-top: 10px; }

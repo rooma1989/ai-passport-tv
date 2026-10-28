@@ -2604,7 +2604,9 @@ function renderLine() {
 }
 function lineNote(x) {
   if (!x) return "—";
+  if (x.suspect) return "⚠ 画面可疑";
   if (x.bad) return "✗ 打不开";
+  if (x.pace !== undefined) return "慢（约 " + x.pace.toFixed(1) + " 倍速）";
   return x.ms ? "✓ " + (x.ms / 1000).toFixed(1) + " 秒" : "—";
 }
 function pickLine(i) {

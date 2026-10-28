@@ -16,6 +16,7 @@ POST 和电脑版一样只收本站页面发的（web.py 的 do_POST 先过 cons
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -446,6 +447,36 @@ def _route_problems(items: list, rows: list[dict]) -> tuple[list[str], int]:
     return found, changed
 
 
+# ---- 看一眼一条线路 ----
+
+_PEEKS = threading.BoundedSemaphore(2)
+
+
+def peek(relay, body: dict) -> dict:
+    """{id, url} → {ok, jpeg: base64} 或 {ok: False, error}：url 要是这个台在频道表里已保存的线路之一。"""
+    path = relay.main_channels
+    cid, url = body.get("id"), body.get("url")
+    if path is None or not isinstance(cid, str) or not isinstance(url, str):
+        return {"ok": False, "error": "请求格式不对"}
+    row = next((r for r in channeltable.read(path)["rows"] if r["id"] == cid), None)
+    if row is None:
+        return {"ok": False, "error": "没有这个台"}
+    lines = routes.table_routes(path, cid, row["url"], row["agent"], playlist.DEFAULT_USER_AGENT)
+    agent = next((a for u, a in lines if u == url), None)
+    if agent is None:
+        return {"ok": False, "error": "这条线路还没保存：先点「保存」"}
+    if not _PEEKS.acquire(blocking=False):
+        return {"ok": False, "error": "正在看别的线路，稍等"}
+    try:
+        from .linecheck import grab_frame
+        frame = grab_frame(relay.ffmpeg, url, agent, lenient=routes.is_lenient(path, url))
+    finally:
+        _PEEKS.release()
+    if frame is None:
+        return {"ok": False, "error": "这条线路现在取不到画面"}
+    return {"ok": True, "jpeg": base64.b64encode(frame).decode("ascii")}
+
+
 # ---- POST ----
 
 def post(handler, relay, path: str) -> bool:
@@ -522,6 +553,11 @@ def post(handler, relay, path: str) -> bool:
         if answer.get("ok"):
             relay.accounts.audit(action, caller.user, ip, "channels", sid[:8], "")
         handler._json(answer)
+        return True
+    if selfhost and path == "/api/admin/channels/peek":
+        # 自建：看一眼频道表里某个台的某条线路现在放的是什么（取一帧 JPEG）。线路质量的检查
+        # （linequality.py）标出画面可疑的线路以后，管理员看一眼再决定删不删。只认表里已经保存的线路。
+        handler._json(peek(relay, body))
         return True
     if selfhost and path == "/api/admin/channels/probe":
         # 自建：试一个地址能不能出画面（用 ffmpeg 取一帧）。

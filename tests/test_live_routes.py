@@ -400,6 +400,13 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(FakeSource.seen[-1][1:], ("UA/9", f"bytes=0-{routecheck.SEGMENT_BYTES - 1}"))
         self.assertTrue(self.probe("/raw.ts")["ok"], "a stream that is not a playlist")
 
+    def test_measure_downloads_the_newest_segment(self):
+        found = routecheck.measure(self.base + "/ok.m3u8", "UA/9", self.opener)
+        self.assertTrue(found["live"])
+        self.assertGreater(found["pace"], 1.0, "a local 30 kB segment of 2 s arrives far faster than realtime")
+        self.assertEqual(routecheck.measure(self.base + "/raw.ts", "", self.opener), {"live": False, "pace": None})
+        self.assertEqual(routecheck.measure(self.base + "/deny.m3u8", "", self.opener), {"live": False, "pace": None})
+
     def test_a_chinese_path_is_quoted(self):
         FakeSource.seen.clear()
         found = self.probe("/湖南/ok.m3u8")
@@ -702,6 +709,24 @@ class GuardTests(unittest.TestCase):
         single = self.play([LINES[0]])
         self.t += 20
         self.assertFalse(single._guard_check(single._proc))
+
+    def test_the_speed_measured_while_playing_is_kept(self):
+        stream = self.play()
+        for _ in range(12):                            # 2 media seconds every 5 s: 0.4x, no guard switch yet
+            self.t += 5
+            stream.window.total_s += 2
+            stream._arrived()
+            stream._paced()
+        with unittest.mock.patch.object(watch, "SWITCH_SLOW", 0.1):
+            self.service.close("pc1-a")
+        self.assertTrue(wait_until(lambda: routes.quality_in(routes.entry_of(self.table, "ch002"))))
+        q = routes.quality_in(routes.entry_of(self.table, "ch002"))[routes.fingerprint(LINES[0][0])]
+        self.assertAlmostEqual(q["pace"], 0.4, delta=0.05)
+        lines = self.service.routes.lines("ch002", LINES)
+        self.assertAlmostEqual(lines[0]["pace"], 0.4, delta=0.05)
+        routes.record_quality(self.table, {"ch002": {routes.fingerprint(LINES[1][0]): {"still": True}}})
+        self.assertEqual(self.service.routes.lines("ch002", LINES)[1], {"suspect": True})
+        self.assertEqual(self.service.routes.order("ch002", LINES), [2, 0, 1], "slow before suspect, both behind")
 
     def test_warm_streams_are_left_alone(self):
         stream = self.play()

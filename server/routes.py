@@ -10,7 +10,10 @@
               "good": "<指纹>",                                   # 上次放得起来的那条（电脑上看和电视服务都写）
               "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000, "ms": 800}},  # 「检测线路」的结果（总后台点的、后台自检的、放的时候明确坏了的）
               "starts": {"pc": {"<指纹>": 4200}, "tv": {"<指纹>": 6100}},  # 真放起来用了多久（毫秒，见 speeds_of）
-              "lenient": ["<指纹>"]}                              # 分片地址不标准、要放宽 ffmpeg 检查的线路（LENIENT_*）
+              "lenient": ["<指纹>"],                              # 分片地址不标准、要放宽 ffmpeg 检查的线路（LENIENT_*）
+              "quality": {"<指纹>": {"pace": 0.6, "pace_at": …,     # 真实速度（几倍实时，remember_pace）
+                                     "live": true, "still": false,  # 画面隔了很久一模一样（循环录像、静止画面）
+                                     "odd": [false, true, true]}}}  # 最近几次和同台其他线路的画面对不上（server/relay/linequality.py）
 
 指纹是地址的 SHA-256 前 12 位：meta 里不重复存地址，地址里常有会话参数，也不进日志。这个文件坏了、没有
 都不要紧：只有主线路，和以前一样。
@@ -203,22 +206,24 @@ def starts_in(entry, kind: str = "pc") -> dict[str, int]:
 
 
 def preferred(routes: list[tuple[str, str]], good: str = "", bad: set[str] | frozenset = frozenset(),
-              speeds: dict[str, int] | None = None) -> list[int]:
+              speeds: dict[str, int] | None = None, weak: set[str] | frozenset = frozenset()) -> list[int]:
     """试线路的顺序（下标）：
-    1. 上次好的那条先试——除非另有一条没坏的线路比它快很多（用时不到它的 FASTER 倍；它的用时不知道时照旧先试它）；
+    1. 上次好的那条先试——除非另有一条没坏的线路比它快很多（用时不到它的 FASTER 倍；它的用时不知道时照旧先试它），
+       或者它实测跟不上实时（weak）；
     2. 别的按用时（speeds，指纹 → 毫秒）从快到慢，不知道用时的在后面，同样快的、都不知道的按频道表的顺序；
-    3. 最近坏过的（bad，指纹）放最后。"""
+    3. 实测跟不上实时的（weak，weak_in）排在这些后面；
+    4. 最近坏过的、画面可疑的（bad，指纹，调用方并上 suspect_in）放最后。"""
     speeds = speeds or {}
     marks = [fingerprint(url) for url, _ in routes]
     order = list(range(len(routes)))
     speed = [speeds.get(m) for m in marks]
-    sticky = good in marks and good not in bad
+    sticky = good in marks and good not in bad and good not in weak
     if sticky:
         mine = speed[marks.index(good)]
         known = [s for i, s in enumerate(speed) if s is not None and marks[i] not in bad and marks[i] != good]
         if mine is not None and known and min(known) <= mine * FASTER:
             sticky = False
-    return sorted(order, key=lambda i: (marks[i] in bad, not (sticky and marks[i] == good),
+    return sorted(order, key=lambda i: (marks[i] in bad, marks[i] in weak, not (sticky and marks[i] == good),
                                         speed[i] is None, speed[i] or 0, i))
 
 
@@ -341,6 +346,94 @@ def mark_ok(path, cid: str, url: str, at: float) -> bool:
     return record_checks(path, cid, [(mark, True, "", 0, at)])
 
 
+# ---------------------------------------------------------------- 线路的质量：真实速度、画面（linequality.py 量）
+# 「检测线路」只量连上要多久；能连上不等于跟得上实时（量过一条连得很快、实际只有 0.2–0.7 倍的 CCTV1），
+# 公开列表里还有台名标错的、只放购物广告的、放旧录像的。这里记的是量到的：
+# - pace：几倍实时（后台每天实拉最新的一段，和电脑上真放时量到的，remember_pace，和以前的各占一半）。
+#   PACE_FRESH_S 内量的、不到 PACE_WEAK 的算慢（weak_in），排在能用的线路后面。
+# - still：同一条线路隔了很久截的画面一模一样（循环的录像、静止的画面）；odd：最近 ODD_SEEN 次里有 ODD_MIN 次（现在是每次都）和同台
+#   其他线路（它们彼此一样）的画面对不上（台名标错、冒充的）。这两种算可疑（suspect_in），排到最后，总后台标出来，
+#   不自动删。
+
+PACE_WEAK = 0.8
+PACE_FRESH_S = 3 * 86400.0
+PACE_CHANGE = 0.1
+ODD_SEEN = 3
+ODD_MIN = 3
+
+
+def quality_in(entry) -> dict[str, dict]:
+    found = entry.get("quality") if isinstance(entry, dict) else None
+    return {k: v for k, v in found.items() if isinstance(v, dict)} if isinstance(found, dict) else {}
+
+
+def _pace(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value < 100 else None
+
+
+def weak_in(entry, now: float | None = None) -> set[str]:
+    """量过（PACE_FRESH_S 内）跟不上实时的线路（指纹）。"""
+    now = time.time() if now is None else now
+    return {mark for mark, q in quality_in(entry).items()
+            if _pace(q.get("pace")) is not None and q["pace"] < PACE_WEAK
+            and isinstance(q.get("pace_at"), (int, float)) and now - q["pace_at"] < PACE_FRESH_S}
+
+
+def odd_count(q: dict) -> int:
+    seen = q.get("odd") if isinstance(q.get("odd"), list) else []
+    return sum(1 for x in seen[-ODD_SEEN:] if x is True)
+
+
+def suspect_in(entry) -> set[str]:
+    """画面可疑的线路（指纹）：隔了很久画面一模一样，或者最近几次和同台其他线路对不上。"""
+    return {mark for mark, q in quality_in(entry).items() if q.get("still") is True or odd_count(q) >= ODD_MIN}
+
+
+def remember_pace(path, cid: str, url: str, pace: float, at: float) -> bool:
+    """记下这条线路量到的速度（几倍实时），和 PACE_FRESH_S 内量过的各占一半；变得不多、量得不久的不写文件。"""
+    pace = _pace(pace)
+    if path is None or not url or pace is None:
+        return False
+    mark = fingerprint(url)
+    old = quality_in(entry_of(path, cid)).get(mark, {})
+    before = _pace(old.get("pace")) if isinstance(old.get("pace_at"), (int, float)) and at - old["pace_at"] < PACE_FRESH_S else None
+    value = round(pace if before is None else (before + pace) / 2, 2)
+    if before is not None and round(abs(value - before), 2) < PACE_CHANGE and at - old["pace_at"] < 6 * 3600:
+        return False
+
+    def change(data: dict) -> None:
+        entry = data.setdefault(cid, {})
+        quality = quality_in(entry)
+        quality.setdefault(mark, {}).update(pace=value, pace_at=int(at))
+        entry["quality"] = quality
+    return update_meta(path, change)
+
+
+def record_quality(path, found: dict) -> bool:
+    """几个台的画面结论一次写进 meta：{台 id: {指纹: {要改的字段}}}（odd 给的是这一次的结果，接在后面、只留最近
+    ODD_SEEN 次；None 表示这次判断不了，不记）。"""
+    if path is None or not found:
+        return False
+
+    def change(data: dict) -> None:
+        for cid, lines in found.items():
+            entry = data.setdefault(cid, {})
+            quality = quality_in(entry)
+            for mark, fields in lines.items():
+                q = quality.setdefault(mark, {})
+                for key, value in fields.items():
+                    if key == "odd":
+                        if value is not None:
+                            seen = q.get("odd") if isinstance(q.get("odd"), list) else []
+                            q["odd"] = (seen + [bool(value)])[-ODD_SEEN:]
+                    elif value is None:
+                        q.pop(key, None)
+                    else:
+                        q[key] = value
+            entry["quality"] = quality
+    return update_meta(path, change)
+
+
 # ---------------------------------------------------------------- 分片地址不标准的线路
 # 有的 HLS 片段地址不带标准扩展名（/api/fhz、.php?id=…，转发站常这样）：ffmpeg 7.1 起默认不打开，报
 # 「…allowed_segment_extensions…」。这样的线路记在 meta 的 lenient 里，打开时加 LENIENT_OPTION；没加
@@ -395,10 +488,10 @@ class RouteCycle:
 
     def __init__(self, routes: list[tuple[str, str]], good: str = "", clock=time.monotonic,
                  early_s: float = EARLY_S, speeds: dict[str, int] | None = None,
-                 bad: set[str] | frozenset = frozenset()):
+                 bad: set[str] | frozenset = frozenset(), weak: set[str] | frozenset = frozenset()):
         self.routes = list(routes) or [("", "")]
-        # bad：上次检测连不上的线路（bad_in），排在最后。
-        self.order = preferred(self.routes, good, bad, speeds=speeds)
+        # bad：上次检测连不上的、画面可疑的线路（bad_in、suspect_in），排在最后；weak：实测跟不上实时的，排在倒数。
+        self.order = preferred(self.routes, good, bad, speeds=speeds, weak=weak)
         self.clock = clock
         self.early_s = early_s
         self.pos = 0

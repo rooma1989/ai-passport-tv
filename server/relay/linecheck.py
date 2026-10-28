@@ -200,6 +200,8 @@ class LineChecker:
         self._seen: set[tuple[str, str]] | None = None
         self._summary: dict = {"on": True, "last": 0, "dead": [], "total": 0, "checked": 0, "paused": False}
         self._last = 0
+        # 线路的真实速度和画面（linequality.py）：attach 时建，和取封面一样只在机器不忙、没人在电脑上看时做。
+        self.quality = None
 
     # ---- 读频道表（没变不重读）----
 
@@ -304,6 +306,8 @@ class LineChecker:
             started += 1
         if not pc and busy < 2:
             self._cover_step(now)
+            if self.quality is not None:
+                self.quality.step(now)
         return started
 
     def _start_next(self) -> bool:
@@ -428,6 +432,8 @@ def attach(relay, folder: Path, start: bool = True) -> LineChecker | None:
     covers = CoverStore(folder)
     checker = LineChecker(lambda: relay.main_channels, covers, relay.ffmpeg, load=lambda: machine_load(relay),
                           log=lambda message: relay.log(message))
+    from .linequality import Sweeper
+    checker.quality = Sweeper(lambda: relay.main_channels, relay.ffmpeg, log=lambda message: relay.log(message))
     relay.linecheck = checker
     relay.watch.routes.checking = True
     if start:

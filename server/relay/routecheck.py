@@ -144,7 +144,67 @@ def probe(url: str, agent: str = "", opener=urllib.request.urlopen, monotonic=ti
         reason = str(failed)
         return {"ok": False, "why": routes.friendly(reason), "code": routes.classify(reason),
                 "ms": int((monotonic() - started) * 1000), "raw": routes.redact(reason)}
-    return {"ok": True, "why": "", "code": "", "ms": int((monotonic() - started) * 1000)}
+    # 至少 1 毫秒：0 在 meta 里表示「没量到」（routes._ms），本机的源站快到取整成 0 时也要记下。
+    return {"ok": True, "why": "", "code": "", "ms": max(1, int((monotonic() - started) * 1000))}
+
+
+# 量真实速度（measure，后台每天一次，server/relay/linequality.py）：完整下载最新的一段，至多这么大、这么久。
+PACE_TOTAL_S = 40.0
+PACE_SEGMENT_MAX = 24 * 1024 * 1024
+
+
+def _timed_segments(text: str) -> list[tuple[float, str]]:
+    """媒体列表里的 [(时长秒, 片段地址)]。"""
+    found, duration = [], None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#EXTINF:"):
+            try:
+                duration = float(line[8:].split(",", 1)[0])
+            except ValueError:
+                duration = None
+        elif line and not line.startswith("#"):
+            if duration and duration > 0:
+                found.append((duration, line))
+            duration = None
+    return found
+
+
+def measure(url: str, agent: str = "", opener=urllib.request.urlopen, monotonic=time.monotonic) -> dict:
+    """一条线路跟不跟得上实时：取列表（主列表进第一路），完整下载最新的一段，按它的时长算几倍实时。
+    回答 {live: 列表还在往下走（没有 #EXT-X-ENDLIST；不是 HLS、取不到时 False）, pace: 几倍（量不出时 None）}。
+    下载到期限还没完的：至多 PACE_TOTAL_S 秒才下到一段，按 时长 / PACE_TOTAL_S 算（够慢了，具体多慢不要紧）。"""
+    deadline = monotonic() + PACE_TOTAL_S
+    current, live = url, False
+    try:
+        for _ in range(MAX_HOPS):
+            final, head = _get(current, agent, opener, deadline, monotonic, PLAYLIST_MAX, sniff=True)
+            text = head.decode("utf-8", "replace").lstrip("\ufeff").lstrip()
+            if not text.startswith("#EXTM3U"):
+                return {"live": False, "pace": None}
+            variants, _segments = _playlist(text)
+            if variants:
+                current = urllib.parse.urljoin(final, variants[0])
+                continue
+            live = "#EXT-X-ENDLIST" not in text
+            timed = _timed_segments(text)
+            if not timed:
+                return {"live": live, "pace": None}
+            duration, segment = timed[-1]
+            started = monotonic()
+            try:
+                _, data = _get(urllib.parse.urljoin(final, segment), agent, opener, deadline, monotonic, PACE_SEGMENT_MAX)
+            except _Failed as failed:
+                if "timed out" in str(failed):
+                    return {"live": live, "pace": round(min(duration / PACE_TOTAL_S, 0.5), 2)}
+                raise
+            took = monotonic() - started
+            if not data or took <= 0:
+                return {"live": live, "pace": None}
+            return {"live": live, "pace": round(min(duration / took, 99.0), 2)}
+    except _Failed:
+        return {"live": False, "pace": None}
+    return {"live": False, "pace": None}
 
 
 def check_channel(path: Path, cid: str, opener=urllib.request.urlopen, clock=time.time, log=print) -> dict:

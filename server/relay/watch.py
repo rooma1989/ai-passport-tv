@@ -636,8 +636,8 @@ class RouteMemory:
         entry = cached[1].get(cid, {})
         return entry if isinstance(entry, dict) else {}
 
-    def _known(self, cid: str) -> tuple[str, set[str], dict[str, int]]:
-        """(上次好的指纹, 最近坏了的指纹, 每条的用时)。"""
+    def _known(self, cid: str) -> tuple[str, set[str], dict[str, int], set[str]]:
+        """(上次好的指纹, 最近坏了的和画面可疑的指纹, 每条的用时, 实测跟不上实时的指纹)。"""
         path = self.path()
         entry = self._entry(cid)
         speeds = live_routes.speeds_of(entry, "pc")
@@ -648,31 +648,39 @@ class RouteMemory:
             # 上次检测（总后台点的、后台自检的）连不上的也排最后；刚在这里放起来的不算。
             bad |= live_routes.bad_in(entry) - {self._good.get(cid, "")}
             speeds.update({mark: ms for (c, mark), ms in self._starts.items() if c == cid})
-        return good, bad, speeds
+        bad |= live_routes.suspect_in(entry)
+        return good, bad, speeds, live_routes.weak_in(entry, self.wall())
 
     def order(self, cid: str, routes: list[tuple[str, str]], first: int | None = None) -> list[int]:
         """试线路的顺序；first（页面上选的第几条，从 0 数）给了就先试它，别的照常。"""
-        good, bad, speeds = self._known(cid)
-        order = live_routes.preferred(routes, good, bad, speeds)
+        good, bad, speeds, weak = self._known(cid)
+        order = live_routes.preferred(routes, good, bad, speeds, weak)
         if first is not None and 0 <= first < len(routes):
             order = [first] + [i for i in order if i != first]
         return order
 
     def lines(self, cid: str, routes: list[tuple[str, str]]) -> list[dict]:
-        """给页面的线路菜单：频道表的顺序，每条 {ms?（起播或检测的用时）, bad?（最近坏过、或上次检测连不上）}。
-        不带地址。"""
-        good, bad, speeds = self._known(cid)
-        checks = self._entry(cid).get("checks")
+        """给页面的线路菜单：频道表的顺序，每条 {ms?（起播或检测的用时）, bad?（最近坏过、或上次检测连不上）,
+        suspect?（画面可疑：隔了很久一模一样、或和同台其他线路对不上）, pace?（量过跟不上实时：几倍）}。不带地址。"""
+        good, bad, speeds, weak = self._known(cid)
+        entry = self._entry(cid)
+        suspect = live_routes.suspect_in(entry)
+        quality = live_routes.quality_in(entry)
+        checks = entry.get("checks")
         checks = checks if isinstance(checks, dict) else {}
         found = []
         for url, _ in routes:
             mark = live_routes.fingerprint(url)
             check = checks.get(mark) if isinstance(checks.get(mark), dict) else {}
             item: dict = {}
-            if mark in bad or (check.get("ok") is False and mark not in speeds):
+            if mark in suspect:
+                item["suspect"] = True
+            elif mark in bad or (check.get("ok") is False and mark not in speeds):
                 item["bad"] = True
             elif speeds.get(mark):
                 item["ms"] = speeds[mark]
+            if mark in weak:
+                item["pace"] = quality[mark]["pace"]
             found.append(item)
         return found
 
@@ -710,6 +718,13 @@ class RouteMemory:
             live_routes.mark_failed(self.path(), cid, url, live_routes.friendly(reason), self.wall())
         except OSError as error:
             self.log(f"在电脑上看：记不下坏了的线路（{type(error).__name__}）")
+
+    def paced(self, cid: str, url: str, pace: float) -> None:
+        """电脑上真放了一阵量到的速度（几倍实时）记进 meta（routes.remember_pace），排线路顺序用。"""
+        try:
+            live_routes.remember_pace(self.path(), cid, url, pace, self.wall())
+        except OSError as error:
+            self.log(f"在电脑上看：记不下线路的速度（{type(error).__name__}）")
 
     def lenient(self, cid: str, url: str) -> bool:
         """这条线路要放宽 ffmpeg 的扩展名检查（meta 的 lenient，或者这次运行里刚发现的）。"""
@@ -912,9 +927,16 @@ class WatchStream:
         line = self._leg_line()
         if self.route_memory is None or line is None:
             return True
-        _good, bad, _speeds = self.route_memory._known(line[0])
+        _good, bad, _speeds, _weak = self.route_memory._known(line[0])
         here = live_routes.fingerprint(line[1])
         return any(live_routes.fingerprint(url) not in bad | {here} for url, _ua in self.source.routes)
+
+    def _record_pace(self) -> None:
+        """这条线路放了 PACE_SPAN_S 秒以上：把量到的速度记下（预热的也算，它也是真拉片源）。"""
+        line = self._leg_line()
+        speed = self.speed()
+        if line is not None and speed is not None and self.route_memory is not None and len(self.source.routes) > 1:
+            self.route_memory.paced(line[0], line[1], speed)
 
     def _guard_check(self, proc) -> bool:
         """（_guard 每秒一次）这条线路卡住了、或者太慢：记下原因，停掉 ffmpeg（_follow 当成这条线路不行，_run 让
@@ -1007,6 +1029,7 @@ class WatchStream:
                 self._leg_segments, self._leg_since, self._leg_began = 0, None, self.clock()
                 self._new_leg()
                 outcome, detail = self._run_leg()
+                self._record_pace()
                 if self.stopped or outcome == "stopped":
                     return
                 if outcome == "ended":

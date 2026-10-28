@@ -257,20 +257,22 @@ def reload_channels_if_changed() -> bool:
     return True
 
 
-def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tuple[str, str]], str, dict, set]:
-    """([(地址, UA)], 上次好用的线路的指纹, {指纹: 用时毫秒}, {上次检测连不上的指纹})：频道表里的主线路（url、agent）
+def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tuple[str, str]], str, dict, set, set]:
+    """([(地址, UA)], 上次好用的线路的指纹, {指纹: 用时毫秒}, {上次检测连不上的、画面可疑的指纹},
+    {实测跟不上实时的指纹})：频道表里的主线路（url、agent）
     在前，再是主表旁边 meta 里的备用线路（server/routes.py，总后台导入时存的）。用时是电视上真放起来的，没有时是
     检测线路的（routes.speeds_of）；检测连不上的（总后台点的、中转的后台自检、电脑上放时明确坏了的）排最后。
     中转的台、内置台、没有 meta 的只有一条。"""
     main = _LOADED.get("main")
     if main is None:
-        return [(url, agent)], "", {}, set()
+        return [(url, agent)], "", {}, set(), set()
     try:
         entry = routes.entry_of(main, channel_id)
         return (routes.table_routes(main, channel_id, url, agent, frames.DEFAULT_USER_AGENT if agent else ""),
-                routes.good_in(entry), routes.speeds_of(entry, "tv"), routes.bad_in(entry))
+                routes.good_in(entry), routes.speeds_of(entry, "tv"),
+                routes.bad_in(entry) | routes.suspect_in(entry), routes.weak_in(entry))
     except (OSError, ValueError):
-        return [(url, agent)], "", {}, set()
+        return [(url, agent)], "", {}, set(), set()
 
 
 def mark_route(channel_id: str, url: str, ok: bool, why: str = "") -> None:

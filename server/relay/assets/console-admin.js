@@ -870,7 +870,8 @@ async function achLoad(keepMessage) {
     return;
   }
   ach.rows = data.rows.map((r) => ({ id: r.id, name: r.name, url: r.url, agent: r.agent, group: r.group,
-                                     routes: (r.routes || []).map((x) => ({ ...x })), checks: { ...(r.checks || {}) }, good: r.good || "", orig: r }));
+                                     routes: (r.routes || []).map((x) => ({ ...x })), checks: { ...(r.checks || {}) }, good: r.good || "",
+                                     quality: { ...(r.quality || {}) }, orig: r }));
   if (!keepMessage) ach.problems = null;
   if (data.bad.length) ach.problems = { ok: false, lines: ["文件里第 " + data.bad.join("、") + " 行看不懂：为了不把它们弄丢，这里不能保存。请先在服务器上改好文件。"] };
   achShell();
@@ -1324,16 +1325,40 @@ function achRouteEditor(r) {
     const c = r.checks && r.checks[x.url];
     const st = admTd("s");
     if (c) st.appendChild(el("span", c.ok ? "ok" : "bad", achCheckText(c))); else st.textContent = "没检测过";
+    // 后台量到的（server/relay/linequality.py）：画面可疑的排到最后，慢的排在能用的后面；不自动删，管理员决定。
+    const q = r.quality && r.quality[x.url];
+    if (q && q.still) st.appendChild(el("small", "bad", "画面一直不变：可能是循环录像或静止画面"));
+    if (q && q.odd) st.appendChild(el("small", "bad", "画面和同台其他线路对不上：台名可能标错了"));
+    if (q && q.pace !== undefined) st.appendChild(el("small", "warn", "实测约 " + q.pace.toFixed(1) + " 倍速，跟不上实时"));
     const a = admTd("a");
     if (k > 0) a.append(button("设为主线路", "linkbtn", () => edit((l) => l.unshift(l.splice(k, 1)[0]))));
     if (k > 0) { const b = button("↑", "linkbtn", () => edit((l) => { [l[k - 1], l[k]] = [l[k], l[k - 1]]; })); b.setAttribute("aria-label", "上移"); a.append(b); }
     if (k < lines.length - 1) { const b = button("↓", "linkbtn", () => edit((l) => { [l[k + 1], l[k]] = [l[k], l[k + 1]]; })); b.setAttribute("aria-label", "下移"); a.append(b); }
+    if (ach.data.import) {
+      // 看一眼这条线路现在放的是什么（只给已保存的线路；画面可疑的先看再决定删不删）。
+      const look = button("看一眼", "linkbtn");
+      look.onclick = () => admBusy(look, async () => {
+        const answer = await admCall("POST", "api/admin/channels/peek", { id: r.id, url: x.url });
+        if (!answer.ok) { toast(answer.error || "没看成", true); return; }
+        const box = $("achPeek");
+        if (!box) return;
+        const img = el("img");
+        img.src = "data:image/jpeg;base64," + answer.jpeg;
+        img.alt = "线路 " + (k + 1) + " 刚截的画面";
+        box.replaceChildren(img, el("small", "", "线路 " + (k + 1) + " · 刚截的画面"));
+        box.hidden = false;
+      });
+      a.append(look);
+    }
     if (lines.length > 1) a.append(button("删除", "linkbtn red", () => edit((l) => l.splice(k, 1))));
     tr.append(u, st, a);
     return tr;
   });
   const table = admTable("", "", ["线路", "检测", ""], rows, "routes");
-  const nodes = [el("p", "", "放不起来时按这个顺序换线路；上次放得起来的那条先试。改了要点频道表下面的「保存」。"), table];
+  const peek = el("div", "peek");
+  peek.id = "achPeek";
+  peek.hidden = true;
+  const nodes = [el("p", "", "放不起来时按这个顺序换线路；上次放得起来的那条先试。改了要点频道表下面的「保存」。"), table, peek];
   if (lines.length < achRoutesMax()) {
     const add = el("div", "routeadd"), url = el("input"), ua = el("input");
     url.type = ua.type = "text"; url.placeholder = "备用线路地址 http(s)://…"; ua.placeholder = "User-Agent（可不填）";

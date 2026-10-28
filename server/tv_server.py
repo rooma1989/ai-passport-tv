@@ -902,9 +902,9 @@ class AVServer:
 
     def _start_routes(self, channel_id: str) -> tuple[str, str]:
         """会话开始：这个台的线路和顺序（上次好用的先试）；返回先用的（地址, UA）。"""
-        lines, good, speeds, bad = live.channel_routes(channel_id, CHANNELS[channel_id],
+        lines, good, speeds, bad, weak = live.channel_routes(channel_id, CHANNELS[channel_id],
                                                        CHANNEL_AGENTS.get(channel_id, ""))
-        self.route_cycle = routes.RouteCycle(lines, good, speeds=speeds, bad=bad)
+        self.route_cycle = routes.RouteCycle(lines, good, speeds=speeds, bad=bad, weak=weak)
         self._route_channel = channel_id
         # 第一条线路从这时开始试：缓冲够了（route_ok）时算起播用了多久。换过线路的不算（中间有重连的等待）。
         self._route_began = time.monotonic()

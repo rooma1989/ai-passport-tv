@@ -108,13 +108,15 @@ def save_meta(path: Path, meta: dict[str, dict]) -> None:
 
 def routes_view(path: Path, rows: list[dict]) -> dict[str, dict]:
     """总后台页面看的每个台的线路（server/routes.py）：{台 id: {routes: [{url, ua?}]（备用线路）,
-    checks: {地址: {ok, why, at, ms?}}（上次检测的结果，ms 是能连上时的用时）, good: 上次放得起来的那条的地址（没有时空串）}}。"""
+    checks: {地址: {ok, why, at, ms?}}（上次检测的结果，ms 是能连上时的用时）, good: 上次放得起来的那条的地址（没有时空串）,
+    quality: {地址: {pace?（量过跟不上实时：几倍）, still?, odd?（画面可疑，linequality.py）}}}}。"""
     meta = routes.read_meta(path)
     view = {}
     for row in rows:
         entry = meta.get(row["id"], {})
         backups = routes.clean_routes(entry.get("routes"), row["url"])
-        checks, good = {}, ""
+        checks, good, quality = {}, "", {}
+        weak, suspect, measured = routes.weak_in(entry), routes.suspect_in(entry), routes.quality_in(entry)
         stored = entry.get("checks") if isinstance(entry.get("checks"), dict) else {}
         for url in [row["url"]] + [b["url"] for b in backups]:
             mark = routes.fingerprint(url)
@@ -126,7 +128,15 @@ def routes_view(path: Path, rows: list[dict]) -> dict[str, dict]:
                     checks[url]["ms"] = found["ms"]
             if entry.get("good") == mark:
                 good = url
-        view[row["id"]] = {"routes": backups, "checks": checks, "good": good}
+            q = measured.get(mark, {})
+            found_q = {}
+            if mark in weak:
+                found_q["pace"] = q["pace"]
+            if mark in suspect:
+                found_q["still" if q.get("still") is True else "odd"] = True
+            if found_q:
+                quality[url] = found_q
+        view[row["id"]] = {"routes": backups, "checks": checks, "good": good, "quality": quality}
     return view
 
 
@@ -134,7 +144,7 @@ def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
     """保存频道表时整理 meta（原地改 data，见 routes.update_meta）：
     - tvg-id / 台标：新台用页面带来的（从播放列表导入的才有），留下的台照旧，删掉的台跟着删；
     - 备用线路：页面给了 routes 的用页面的，没给的照旧；和主线路一样的去掉；
-    - 上次好的线路、检测结果、真放起来的用时、要放宽检查的线路（lenient）：只留还在这个台的线路里的；备用线路换成了主线路时不留上次好的。"""
+    - 上次好的线路、检测结果、真放起来的用时、要放宽检查的线路（lenient）、量到的质量（quality）：只留还在这个台的线路里的；备用线路换成了主线路时不留上次好的。"""
     old = dict(data)
     data.clear()
     for item, row in zip(items, rows):
@@ -165,6 +175,9 @@ def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
         lenient = sorted(routes.lenient_in(prev) & marks)
         if lenient:
             entry["lenient"] = lenient
+        quality = {k: v for k, v in routes.quality_in(prev).items() if k in marks}
+        if quality:
+            entry["quality"] = quality
         if entry:
             data[row["id"]] = entry
 
