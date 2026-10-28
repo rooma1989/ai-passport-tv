@@ -100,6 +100,17 @@ WARM_MAX = 2
 # 量过（CCTV1，一个源站 63 个台）：一路只有 0.2–0.7 倍，几秒卡一次、断续时画面落在声音后面。
 PACE_SPAN_S = 30.0
 PACE_SLOW = 0.9
+# 有备用线路的直播台放着放着卡住或变慢：主动换线路（这一路收尾、播放器重开一次，从别的线路起，WatchStream._guard），
+# 不等 ffmpeg 自己超时重连（rw_timeout 15 秒再加几轮重连，比播放器的缓冲还长，画面早冻住了）。
+# 卡住：STALL_MIN_S 秒、并且至少是这条线路平时两段之间最大间隔的 STALL_GAPS 倍（有的源站一次给一段 6 秒、10 秒的
+# HLS，ffmpeg 一阵一阵地出段，不能当成卡住），至多 STALL_MAX_S 秒没有新的一段。
+# 变慢：最近 PACE_SPAN_S 秒出片不到 SWITCH_SLOW 倍（PACE_SLOW 只让页面说「片源慢」）。
+# 只在还有别的线路、别的线路最近没坏过时换（都坏过就不来回换，页面重开也有次数上限）。
+STALL_MIN_S = 10.0
+STALL_GAPS = 2.5
+STALL_MAX_S = 30.0
+SWITCH_SLOW = 0.6
+GUARD_TICK_S = 1.0
 # 记住多少个直播台的转法（只换封装还是转码），下次直接按它起，不用先试一次再重起。
 MODE_CACHE_MAX = 256
 # 直播台跳转以后真正的列表地址记多久（LiveMemory）：咪咕这类源先经两三次跳转、再取主列表，才到真正的列表，
@@ -838,6 +849,11 @@ class WatchStream:
         self._picky = False
         # 没有 RouteMemory 时（测试、云端以外的少见情形）这一路自己记着放宽了哪条线路。
         self._lenient_here: set[tuple[str, str]] = set()
+        # 这条线路上一段到的时刻、平时两段之间最大的间隔（卡住的时限按它放宽）、主动换线路的原因（_guard）。
+        self._last_segment_at: float | None = None
+        self._usual_gap = 0.0
+        self._leg_count = 0
+        self._switch = ""
 
     # ---- 状态 ----
 
@@ -869,6 +885,65 @@ class WatchStream:
     def slow(self) -> bool:
         speed = self.speed()
         return speed is not None and speed < PACE_SLOW
+
+    # ---- 卡住、变慢时换线路 ----
+
+    def _new_leg(self) -> None:
+        """换到一条新线路：出片的速度、段的间隔从这条线路重新算。"""
+        with self._pace_lock:
+            self._pace.clear()
+        self._last_segment_at, self._usual_gap, self._leg_count, self._switch = None, 0.0, 0, ""
+
+    def _arrived(self) -> None:
+        now = self.clock()
+        last, self._last_segment_at = self._last_segment_at, now
+        self._leg_count += 1
+        # 头几段是 ffmpeg 一下子读进列表里已有的那几段，间隔不算。
+        if last is not None and self._leg_count > 3:
+            self._usual_gap = max(self._usual_gap, now - last)
+
+    def stall_limit(self) -> float:
+        return min(STALL_MAX_S, max(STALL_MIN_S, STALL_GAPS * self._usual_gap))
+
+    def _alternative(self) -> bool:
+        """还有别的线路可换（别的线路最近没坏过）。"""
+        if not is_live(self.source) or len(self.source.routes) < 2:
+            return False
+        line = self._leg_line()
+        if self.route_memory is None or line is None:
+            return True
+        _good, bad, _speeds = self.route_memory._known(line[0])
+        here = live_routes.fingerprint(line[1])
+        return any(live_routes.fingerprint(url) not in bad | {here} for url, _ua in self.source.routes)
+
+    def _guard_check(self, proc) -> bool:
+        """（_guard 每秒一次）这条线路卡住了、或者太慢：记下原因，停掉 ffmpeg（_follow 当成这条线路不行，_run 让
+        播放器重开、从别的线路起）。预热的（没人在看）不管。返回换不换。"""
+        if self.stopped or self.cheap or self._switch or self._last_segment_at is None:
+            return False
+        now = self.clock()
+        quiet = now - self._last_segment_at
+        if quiet > self.stall_limit():
+            reason = f"{int(quiet)} 秒没有新画面"
+        else:
+            speed = self.speed()
+            if speed is None or speed >= SWITCH_SLOW:
+                return False
+            reason = f"片源太慢（约 {speed:.1f} 倍速）"
+        if not self._alternative():
+            return False
+        self._switch = reason
+        self.log(f"在电脑上看 {self.device}：{self.source.label or self.source.key[1]} 线路 {self.route + 1} {reason}，换线路")
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        return True
+
+    def _guard(self, proc, done: threading.Event) -> None:
+        while not done.wait(GUARD_TICK_S):
+            if self._guard_check(proc):
+                return
 
     def touch(self) -> None:
         self.seen = self.clock()
@@ -930,6 +1005,7 @@ class WatchStream:
             for n, (index, leg) in enumerate(legs):
                 self.leg, self.route = leg, index
                 self._leg_segments, self._leg_since, self._leg_began = 0, None, self.clock()
+                self._new_leg()
                 outcome, detail = self._run_leg()
                 if self.stopped or outcome == "stopped":
                     return
@@ -941,7 +1017,8 @@ class WatchStream:
                     self.log(f"在电脑上看 {self.device}：{source.label or source.key[1]} 线路 {index + 1} 不行："
                              f"{live_routes.redact(last)}")
                     early = self._leg_since is None or self.clock() - self._leg_since < live_routes.EARLY_S
-                    if early and self.route_memory is not None:
+                    # 卡住、太慢换的（_guard）：放了多久都记成刚坏过，播放器重开时排到最后。
+                    if (early or self._switch) and self.route_memory is not None:
                         self.route_memory.failed(source.key[1], leg.url)
                 if self.route_memory is not None and isinstance(leg.url, str) and live_routes.definitive(last):
                     # 源站明说 403 / 404：一条线路的台也记下，直播页标「暂时打不开」，后台自检过一阵再测。
@@ -958,7 +1035,9 @@ class WatchStream:
             if self.stopped:
                 return
             if is_live(source):
-                if self._leg_segments:
+                if self._leg_segments and self._switch and self.reopen:
+                    self.error = f"{self._switch}，正在换线路…"
+                elif self._leg_segments:
                     self.error = (f"{live_routes.friendly(last)}，正在换线路…" if self.reopen
                                   else f"直播断了（{live_routes.friendly(last)}）")
                 else:
@@ -1120,14 +1199,20 @@ class WatchStream:
             watchdog = threading.Timer(FIRST_SEGMENT_S, self._no_segments, args=(proc, self._leg_segments))
             watchdog.daemon = True
             watchdog.start()
+        guarded = threading.Event()
+        if is_live(self.source) and len(self.source.routes) > 1:
+            threading.Thread(target=self._guard, args=(proc, guarded), daemon=True).start()
         try:
             produced = self._segment(proc.stdout)
         finally:
+            guarded.set()
             if watchdog is not None:
                 watchdog.cancel()
         code = proc.wait()
         if self.stopped:
             return "failed", ""
+        if self._switch:
+            return "failed", self._switch
         if code == 0 and not self._starved:
             return "ended", None
         reason = ("没有出片段（timed out）" if self._starved else "") or self._reason(lines) or f"ffmpeg 退出码 {code}"
@@ -1187,6 +1272,7 @@ class WatchStream:
                                 fragment_start(pending, tracks))
                 pending = b""
                 produced += 1
+                self._arrived()
                 self._paced()
                 self._leg_segments += 1
                 if self._leg_segments == 1:

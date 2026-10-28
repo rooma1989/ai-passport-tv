@@ -444,7 +444,13 @@ def source_command(url: str, video_port: int, audio_port: int, ffmpeg: str,
 MAX_SOURCE_FPS = 30
 # ffprobe 探测帧率的时限（秒）：位于每次换台首帧之前，超时则按名义帧率播放。
 FPS_PROBE_TIMEOUT_S = float(os.environ.get("TV_FPS_PROBE_TIMEOUT_S", "5"))
+# 探测不出帧率（直播 HLS 常报 "0/0"）或探测失败的源：这么久里不再探，按名义帧率放。以前每次换台都重探一遍，
+# 这类源每次白等最多 FPS_PROBE_TIMEOUT_S 秒；过了这么久再探一次（也许那次只是网络不好）。
+FPS_RETRY_S = 600.0
+# 探测只读这么多（和电脑上看直播的 watch.LIVE_PROBE 一样）：直播源的头里就有帧率，默认的 5 秒 / 5 MB 只是白等。
+FPS_PROBE_ARGS = ("-probesize", "1000000", "-analyzeduration", "1000000")
 _FPS_CACHE: dict[str, int] = {}
+_FPS_MISSES: dict[str, float] = {}
 
 
 def parse_rate(text: str) -> float | None:
@@ -474,10 +480,25 @@ def choose_fps(avg: float | None, real: float | None) -> int | None:
     return max(1, round(rate))
 
 
-def probe_source_fps(url: str, ffmpeg: str, user_agent: str = "") -> int | None:
-    """探测源的画面帧率，未知返回 None（按名义帧率播放）；结果按 URL 缓存。"""
+def probe_source_fps(url: str, ffmpeg: str, user_agent: str = "", lenient: bool = False,
+                     clock=time.monotonic) -> int | None:
+    """探测源的画面帧率，未知返回 None（按名义帧率播放）；结果按 URL 缓存，探不出的 FPS_RETRY_S 秒内不再探。
+    lenient：片段地址不标准的线路（routes.LENIENT_ARGS）。"""
     if url in _FPS_CACHE:
         return _FPS_CACHE[url]
+    missed = _FPS_MISSES.get(url)
+    if missed is not None and clock() - missed < FPS_RETRY_S:
+        return None
+    fps = _probe_fps(url, ffmpeg, user_agent, lenient)
+    if fps is None:
+        _FPS_MISSES[url] = clock()
+    else:
+        _FPS_CACHE[url] = fps
+        _FPS_MISSES.pop(url, None)
+    return fps
+
+
+def _probe_fps(url: str, ffmpeg: str, user_agent: str, lenient: bool) -> int | None:
     probe = os.path.join(os.path.dirname(ffmpeg), "ffprobe")
     if not os.path.exists(probe):
         probe = "ffprobe"
@@ -485,6 +506,9 @@ def probe_source_fps(url: str, ffmpeg: str, user_agent: str = "") -> int | None:
     effective_ua = user_agent or (frames.DEFAULT_USER_AGENT if url.startswith(("http://", "https://")) else "")
     if effective_ua:
         command += ["-user_agent", effective_ua]
+    command += list(FPS_PROBE_ARGS)
+    if lenient and url.startswith(("http://", "https://")):
+        command += list(routes.LENIENT_ARGS)
     command += ["-select_streams", "v:0",
                 "-show_entries", "stream=avg_frame_rate,r_frame_rate",
                 "-of", "json", url]
@@ -498,11 +522,8 @@ def probe_source_fps(url: str, ffmpeg: str, user_agent: str = "") -> int | None:
         return None
     if not streams:
         return None
-    fps = choose_fps(parse_rate(streams[0].get("avg_frame_rate", "")),
-                     parse_rate(streams[0].get("r_frame_rate", "")))
-    if fps is not None:
-        _FPS_CACHE[url] = fps
-    return fps
+    return choose_fps(parse_rate(streams[0].get("avg_frame_rate", "")),
+                      parse_rate(streams[0].get("r_frame_rate", "")))
 
 
 class _QueuedFrame(list):
@@ -854,7 +875,7 @@ class LiveChannel:
         if "TV_FPS" in os.environ:
             fps, note = FPS, "TV_FPS"
         else:
-            probed = probe_source_fps(self.url, self.ffmpeg, self.user_agent)
+            probed = probe_source_fps(self.url, self.ffmpeg, self.user_agent, getattr(self, "lenient", False))
             fps, note = (probed, "probed") if probed else (FPS, "nominal; source did not say")
         self.fps, self.fps_note = fps, note
         self.timeline = ContentTimeline(video_interval_ms=1000.0 / fps,

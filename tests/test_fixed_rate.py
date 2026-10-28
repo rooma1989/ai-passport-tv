@@ -73,11 +73,13 @@ class ReadingFrameRates(unittest.TestCase):
 
 class ProbingASource(unittest.TestCase):
     def setUp(self):
-        L._FPS_CACHE.clear()
-        self.addCleanup(L._FPS_CACHE.clear)
+        for cache in (L._FPS_CACHE, L._FPS_MISSES):
+            cache.clear()
+            self.addCleanup(cache.clear)
+        self.t = 1000.0
 
     def probe(self, url="http://example.invalid/a.m3u8", **kw):
-        return L.probe_source_fps(url, "ffmpeg", "")
+        return L.probe_source_fps(url, "ffmpeg", "", clock=lambda: self.t, **kw)
 
     def test_it_reads_the_average_rate(self):
         with patch.object(L.subprocess, "run", return_value=probe_says("25/1", "50/1")):
@@ -89,11 +91,36 @@ class ProbingASource(unittest.TestCase):
             self.assertEqual(self.probe(), 25)
         self.assertEqual(run.call_count, 1)
 
-    def test_a_failed_probe_is_none_and_is_not_remembered(self):
+    def test_a_failed_probe_is_not_repeated_on_every_switch_but_retried_later(self):
         with patch.object(L.subprocess, "run", return_value=probe_says("25/1", "25/1", 1)):
             self.assertIsNone(self.probe())
-        with patch.object(L.subprocess, "run", return_value=probe_says("30/1", "30/1")):
-            self.assertEqual(self.probe(), 30, "the earlier failure must not stick")
+        with patch.object(L.subprocess, "run", return_value=probe_says("30/1", "30/1")) as run:
+            self.t += L.FPS_RETRY_S - 1
+            self.assertIsNone(self.probe(), "the next switch does not wait for another probe")
+            self.assertEqual(run.call_count, 0)
+            self.t += 2
+            self.assertEqual(self.probe(), 30, "the failure does not stick for good")
+            self.assertEqual(self.probe(), 30)
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_source_that_does_not_say_is_not_probed_again_soon(self):
+        unknown = SimpleNamespace(returncode=0, stdout=json.dumps({"streams": [{"avg_frame_rate": "0/0",
+                                                                                "r_frame_rate": "0/0"}]}), stderr="")
+        with patch.object(L.subprocess, "run", return_value=unknown) as run:
+            self.assertIsNone(self.probe())
+            self.assertIsNone(self.probe())
+        self.assertEqual(run.call_count, 1)
+
+    def test_the_probe_reads_little_and_opens_odd_segment_names_when_told(self):
+        with patch.object(L.subprocess, "run", return_value=probe_says("25/1", "25/1")) as run:
+            self.probe("http://example.invalid/e.m3u8")
+            self.probe("http://example.invalid/f.php", lenient=True)
+        plain, lenient = run.call_args_list[0][0][0], run.call_args_list[1][0][0]
+        self.assertEqual(plain[plain.index("-probesize") + 1], "1000000")
+        self.assertEqual(plain[plain.index("-analyzeduration") + 1], "1000000")
+        self.assertNotIn("-extension_picky", plain)
+        self.assertEqual(lenient[lenient.index("-extension_picky") + 1], "0")
+        self.assertLess(lenient.index("-extension_picky"), lenient.index("http://example.invalid/f.php"))
 
     def test_a_timeout_a_missing_binary_and_junk_are_all_just_none(self):
         for effect in (subprocess.TimeoutExpired("ffprobe", 5), FileNotFoundError(),

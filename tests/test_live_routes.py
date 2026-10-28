@@ -27,7 +27,11 @@ segment URLs have no standard extension: when ffmpeg refuses one
 remembers it in the sidecar (lenient) and opens it that way next time; the TV
 media server and the cover grab add the same option with network-only
 protocols; other lines and other failures are untouched; saving the table keeps
-the marks of lines still there.
+the marks of lines still there. A line that stalls after it started (no new
+segment for STALL_MIN_S, more for a source that arrives in bursts) or crawls
+(below SWITCH_SLOW) is dropped for the next one, recorded as just failed so the
+reopen tries another line first; never when every other line just failed, for
+a single-line channel, or for a warm stream nobody watches.
 """
 
 from __future__ import annotations
@@ -623,6 +627,96 @@ class PlayerFailoverTests(unittest.TestCase):
         self.assertEqual(set(lines[0]) - {"ms"}, set(), "the line playing has its time, if any")
         self.assertEqual(lines[2], {})
         self.assertNotIn("https://", json.dumps(lines))
+
+
+class GuardTests(unittest.TestCase):
+    """A line that stalls or crawls after it started is dropped for the next one (the page reopens once)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.table = Path(self.tmp.name) / "channels.txt"
+        self.table.write_text("ch002 | CCTV2 | https://a/2.m3u8 | UA\n", encoding="utf-8")
+        self.t = 100.0
+        self.logs = []
+        tick = unittest.mock.patch.object(watch, "GUARD_TICK_S", 3600.0)   # the test drives the checks itself
+        tick.start()
+        self.addCleanup(tick.stop)
+        self.service = watch.WatchService("ffmpeg", b"k" * 32, log=self.logs.append, background=False,
+                                          clock=lambda: self.t)
+        self.service.routes_path = lambda: self.table
+        self.service.popen = ByInput(GOOD)
+        self.addCleanup(self.service.stop_all)
+
+    def play(self, lines=LINES):
+        stream = self.service.open("pc1-a", live_source(lines), user=1)
+        self.assertTrue(stream.wait_ready(5))
+        self.assertTrue(wait_until(lambda: stream._last_segment_at is not None))
+        return stream
+
+    def ended(self, stream):
+        self.assertTrue(wait_until(lambda: stream.window.ended), "the stream wraps up")
+
+    def test_a_stall_switches_and_the_line_goes_last(self):
+        stream = self.play()
+        self.t += watch.STALL_MIN_S - 1
+        self.assertFalse(stream._guard_check(stream._proc))
+        self.t += 2
+        self.assertTrue(stream._guard_check(stream._proc))
+        self.ended(stream)
+        self.assertTrue(stream.reopen and stream.window.reopen, "the page reopens on another line")
+        self.assertIn("秒没有新画面，正在换线路", stream.error)
+        self.assertEqual(self.service.routes.order("ch002", LINES)[-1], 0)
+        self.assertTrue(any("换线路" in line for line in self.logs), self.logs)
+        self.assertFalse(any("https://" in line for line in self.logs), self.logs)
+
+    def test_a_source_that_comes_in_bursts_gets_more_time(self):
+        stream = self.play()
+        stream._usual_gap = 6.0                        # e.g. 6 s HLS segments arriving all at once
+        self.assertEqual(stream.stall_limit(), 15.0)
+        self.t += 12
+        self.assertFalse(stream._guard_check(stream._proc))
+        self.t += 4
+        self.assertTrue(stream._guard_check(stream._proc))
+        stream._usual_gap = 60.0
+        self.assertEqual(stream.stall_limit(), watch.STALL_MAX_S)
+
+    def test_a_crawling_source_switches(self):
+        stream = self.play()
+        for _ in range(12):                            # 2 media seconds every 5 s: 0.4x
+            self.t += 5
+            stream.window.total_s += 2
+            stream._arrived()
+            stream._paced()
+        self.assertTrue(stream._guard_check(stream._proc))
+        self.ended(stream)
+        self.assertIn("片源太慢", stream.error)
+
+    def test_no_switch_when_every_other_line_just_failed_or_there_is_none(self):
+        stream = self.play()
+        for url, _ in LINES[1:]:
+            self.service.routes.failed("ch002", url)
+        self.t += 20
+        self.assertFalse(stream._guard_check(stream._proc))
+        self.service.stop_all()
+        single = self.play([LINES[0]])
+        self.t += 20
+        self.assertFalse(single._guard_check(single._proc))
+
+    def test_warm_streams_are_left_alone(self):
+        stream = self.play()
+        stream.cheap = True
+        self.t += 20
+        self.assertFalse(stream._guard_check(stream._proc))
+
+
+def wait_until(predicate, timeout=5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 PICKY = {"lines": ["[hls @ 0x1] URL https://p/api/fhz?s=1 is not in allowed_segment_extensions, consider updating hls.c",
