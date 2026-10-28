@@ -27,7 +27,8 @@
   第一路声音是 AAC / MP3 的直接按 Range 放原文件；别的经 watch.py 封装成分片 MP4（第一路真画面——封面图不算——
   能放就只换封装，HEVC 写成 hvc1，放不了才转成 H.264；声音有 AAC 就直接用，没有就把默认的那一路转成 AAC 立体声；
   字幕和附件从不放进去）。ffmpeg 读的是只给本机的 /api/library/raw/<id>?t=<令牌>（raw）：网盘的地址和密码从不在
-  ffmpeg 的命令行上，本机的文件也不用 file: 协议。
+  ffmpeg 的命令行上，本机的文件也不用 file: 协议。网盘的文件每次起 ffmpeg 都要再读的「目录」（MP4 的 moov、MKV 的头、
+  附件和 Cues）存在 library-cache/（librarycache.py，_serve_cached），只给 raw 用。
 - 字幕（第二步）：内嵌的文字字幕（ass、srt、mov_text、webvtt）和视频旁边的字幕文件（<名字>.srt、<名字>.zh.ass…，
   本机和网盘）按需转成 WebVTT（/api/library/subs/<id>/<n>.vtt，只给家里人，缓存在 library-subs/）。图片字幕（PGS、
   DVD）列出来但放不了。网盘上的内嵌字幕不整个再读一遍文件，而是在放的那一路边转边抽（watch_source 的 subs_out）。
@@ -50,6 +51,7 @@ import os
 import re
 import math
 import secrets
+import select
 import shutil
 import stat
 import subprocess
@@ -63,6 +65,8 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from .librarycache import IndexCache
 
 SOURCES_MAX = 12
 NAME_MAX = 40
@@ -123,6 +127,7 @@ _EXTRA = re.compile(r"(?i)(?:^|[ ._-])(sample|trailer|预告|花絮)$")
 _ID = re.compile(r"^[0-9a-f]{16}$")
 _SOURCE_ID = re.compile(r"^[0-9a-f]{8}$")
 _RANGE = re.compile(r"^bytes=(\d{0,15})-(\d{0,15})$")
+_CONTENT_RANGE = re.compile(r"^bytes (\d{1,15})-(\d{1,15})/(\d{1,15})$")
 _LOCK = threading.RLock()
 DAV = "{DAV:}"
 PROPFIND_BODY = (b'<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop>'
@@ -603,6 +608,23 @@ def _client_gone(sock) -> bool:
     return client_gone(sock)
 
 
+# 从索引缓存给完了还要接着从网盘读以前，先等对方这么久看它挂不挂断：ffmpeg 从开头读几十 KB 就跳去读 moov，
+# 缓存的那一段早就塞进了连接的缓冲区，不等一下每次都白开一个网盘的请求。真要接着读的只多等这一下（网盘的
+# 请求本来就要约 0.2 s 才有第一个字节）。
+CONTINUE_WAIT_S = 0.1
+
+
+def _client_left(sock, wait: float) -> bool:
+    """至多等 wait 秒，看浏览器 / ffmpeg 那头是不是挂断了。"""
+    if sock is None or not hasattr(sock, "fileno") or hasattr(sock, "getpeercert"):
+        return False
+    try:
+        select.select([sock], [], [], wait)
+    except (OSError, ValueError):
+        return False
+    return _client_gone(sock)
+
+
 # ---------------------------------------------------------------- 媒体（第二步）：探测、怎么放、字幕
 
 # 探测的结果存在索引的条目里（media）：格式变了（这里的写法改了）就加一，旧的重新探测。
@@ -1028,6 +1050,8 @@ class Library:
         self._read: dict[str, int] = {}
         self._sub_lock = threading.Lock()
         self._partial: dict[tuple, dict] = {}
+        # 网盘文件的索引区（MP4 的 moov、MKV 的头和 Cues）：只给 ffmpeg 读的 raw 用（librarycache.py）。
+        self.cache = IndexCache(self.dir / "library-cache", alive=self._now_of, log=log, clock=clock)
 
     # ---- 文件 ----
 
@@ -1063,6 +1087,12 @@ class Library:
 
     def _save_index(self) -> None:
         self._write(self.index_path, {"items": list(self._items.values())})
+
+    def _now_of(self, iid: str) -> tuple | None:
+        """索引缓存问的：这个条目现在的 (大小, 修改时间)；不在索引里（删了、扫描后不见了）时 None。"""
+        with _LOCK:
+            item = self._items.get(iid)
+            return (item.get("size") or 0, item.get("mtime") or 0) if item is not None else None
 
     def _update_source(self, sid: str, change: Callable[[dict], None]) -> dict | None:
         with _LOCK:
@@ -1284,6 +1314,7 @@ class Library:
                 cached.unlink()
             except OSError:
                 pass
+        self.cache.prune()
         self.log(f"片库删了来源「{found.get('name')}」（{len(gone)} 个视频）")
         return {"ok": True, "name": found.get("name") or ""}
 
@@ -1554,7 +1585,10 @@ class Library:
         handler.end_headers()
 
     @staticmethod
-    def _pump(handler, read, expected: int | None, tally: Callable[[int], None] | None = None) -> None:
+    def _pump(handler, read, expected: int | None, tally: Callable[[int], None] | None = None,
+              tee=None, close: bool = True) -> int:
+        """边读边发，返回发了多少字节。tee：读到的先存进索引缓存（librarycache._Tee）再发。close：没发够
+        expected 时断开连接（后面还要接着发的不断）。"""
         sock = getattr(handler, "connection", None)
         total = 0
         while expected is None or total < expected:
@@ -1563,12 +1597,15 @@ class Library:
             chunk = read(CHUNK if expected is None else min(CHUNK, expected - total))
             if not chunk:
                 break
+            if tee is not None:
+                tee.write(chunk)
             handler.wfile.write(chunk)
             total += len(chunk)
             if tally is not None:
                 tally(len(chunk))
-        if expected is not None and total < expected:
+        if close and expected is not None and total < expected:
             handler.close_connection = True
+        return total
 
     def serve_file(self, handler, iid: str, raw: bool = False) -> None:
         """GET /api/library/file/<id>：按 Range 给文件的字节（只认 id）。raw：给中转自己的 ffmpeg 的（/api/library/raw），
@@ -1587,7 +1624,7 @@ class Library:
             if src["kind"] == "local":
                 self._serve_local(handler, LocalFolder(src.get("path") or ""), item, kind, tally)
             else:
-                self._serve_dav(handler, self._source(src), item, kind, src.get("name") or "", tally)
+                self._serve_dav(handler, self._source(src), item, kind, src.get("name") or "", tally, cached=raw)
         except (OSError, ValueError):
             handler.close_connection = True        # 浏览器断开（跳转、关窗口）
         finally:
@@ -1613,29 +1650,31 @@ class Library:
             self._send_head(handler, 206, kind, end - start + 1, {"Content-Range": f"bytes {start}-{end}/{size}"})
             self._pump(handler, handle.read, end - start + 1, tally)
 
-    def _serve_dav(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally=None) -> None:
-        wanted = (handler.headers.get("Range") or "").strip()
-        wanted = wanted if _RANGE.match(wanted) and wanted != "bytes=-" else None
+    def _open_dav(self, handler, dav: WebDav, item: dict, name: str, wanted: str | None):
+        """GET 网盘上的这个文件；出错时已经回了浏览器（416 / 502），返回 None。"""
         try:
-            upstream = dav.open(item["path"], wanted)
+            return dav.open(item["path"], wanted)
         except urllib.error.HTTPError as error:
             extra = {"Content-Range": error.headers["Content-Range"]} \
                 if error.code == 416 and error.headers.get("Content-Range") else {}
             error.close()
             if error.code == 416:
                 handler._send(416, b"", "text/plain; charset=utf-8", extra)
-                return
+                return None
             reason = _dav_reason(error)
             if error.code == 403:
                 reason = "网盘拒绝了（在 OpenList 里把这个存储的 WebDAV 策略改成「本地代理」再试）"
             self.log(f"片库「{name}」放不了一个文件：{reason}")
             handler._send(502, reason.encode(), "text/plain; charset=utf-8")
-            return
+            return None
         except (LibraryError, OSError, ValueError) as error:
             reason = str(error) if isinstance(error, LibraryError) else _dav_reason(error)
             self.log(f"片库「{name}」放不了一个文件：{reason}")
             handler._send(502, reason.encode(), "text/plain; charset=utf-8")
-            return
+            return None
+
+    def _relay(self, handler, upstream, kind: str, tally=None, tee=None) -> None:
+        """把网盘的回答原样转给请求的人：状态（206 / 200）、Content-Range、Content-Length，边读边发。"""
         try:
             status = getattr(upstream, "status", None) or upstream.getcode()
             upstream_kind = upstream.headers.get("Content-Type") or ""
@@ -1648,9 +1687,102 @@ class Library:
             expected = int(length) if length and length.isdigit() else None
             self._send_head(handler, 206 if status == 206 else 200, kind, expected, extra)
             read = getattr(upstream, "read1", None) or upstream.read
-            self._pump(handler, read, expected, tally)
+            self._pump(handler, read, expected, tally, tee)
         finally:
             upstream.close()
+
+    def _serve_dav(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally=None,
+                   cached: bool = False) -> None:
+        """网盘的文件：Range 带给上游，上游的状态、Content-Range、Content-Length 原样回。cached：给 ffmpeg 的
+        （raw），先看索引缓存（_serve_cached）。"""
+        wanted = (handler.headers.get("Range") or "").strip()
+        wanted = wanted if _RANGE.match(wanted) and wanted != "bytes=-" else None
+        size = int(item.get("size") or 0)
+        span = parse_range(wanted, size) if cached and wanted and size > 0 else None
+        if isinstance(span, tuple) and self._serve_cached(handler, dav, item, kind, name, tally, *span):
+            return
+        upstream = self._open_dav(handler, dav, item, name, wanted)
+        if upstream is not None:
+            self._relay(handler, upstream, kind, tally)
+
+    @staticmethod
+    def _answer_span(upstream, size: int):
+        """上游的回答给的是文件的哪一段：(起, 止)（含止）。不是带着总长对得上的 Content-Range 的 206（200 时
+        Content-Length 要等于文件大小，就是整个文件）时 None。"""
+        status = getattr(upstream, "status", None) or upstream.getcode()
+        if status == 200:
+            length = upstream.headers.get("Content-Length") or ""
+            return (0, size - 1) if length.isdigit() and int(length) == size else None
+        match = _CONTENT_RANGE.match((upstream.headers.get("Content-Range") or "").strip()) if status == 206 else None
+        if match is None or int(match.group(3)) != size:
+            return None
+        return int(match.group(1)), int(match.group(2))
+
+    def _serve_cached(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally, start: int,
+                      end: int) -> bool:
+        """给 ffmpeg 的 Range 请求先看索引缓存（librarycache.py）。起点在已经存下的一段里：从缓存给，给完了还要
+        更多就在同一个回答里接着从网盘读（顺手把这一段存得更长）。起点正好是能存的地方（文件开头、MP4 的 mdat
+        后面、别的格式的文件尾、一段已经存到的地方）：从网盘读、边放边存。都不是时返回 False（照旧直接转网盘的回答）。
+        网盘回答的总长和索引里的大小对不上时这个文件的缓存整个作废（文件在网盘上变了，还没重新扫描）。"""
+        iid, size, mtime, ext = item["id"], int(item["size"]), int(item.get("mtime") or 0), item.get("ext") or ""
+        hit = self.cache.open(iid, size, mtime, ext, start)
+        if hit is None:
+            tee = self.cache.tee(iid, size, mtime, ext, start)
+            if tee is None:
+                return False
+            try:
+                upstream = self._open_dav(handler, dav, item, name, f"bytes={start}-{end}")
+                if upstream is not None:
+                    span = self._answer_span(upstream, size)
+                    if span is None or span[0] != start:
+                        tee.stopped = True
+                        if span is None:
+                            self.cache.drop(iid)
+                    self._relay(handler, upstream, kind, tally, tee)
+            finally:
+                tee.close()
+            return True
+        handle, have = hit
+        first = min(have, end - start + 1)
+        with handle:
+            self._send_head(handler, 206, kind, end - start + 1, {"Content-Range": f"bytes {start}-{end}/{size}"})
+            if self._pump(handler, handle.read, first, tally, close=False) < first:
+                handler.close_connection = True
+                return True
+        at = start + first
+        if at > end:
+            return True
+        # 缓存的这一段给完了，还要更多：接着从网盘读（同一个回答里接着发，ffmpeg 看不出来）。
+        if _client_left(getattr(handler, "connection", None), CONTINUE_WAIT_S):
+            handler.close_connection = True
+            return True
+        tee = self.cache.tee(iid, size, mtime, ext, at)
+        try:
+            upstream = dav.open(item["path"], f"bytes={at}-{end}")
+        except (urllib.error.HTTPError, LibraryError, OSError, ValueError) as error:
+            if tee is not None:
+                tee.close()
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            reason = str(error) if isinstance(error, LibraryError) else _dav_reason(error)
+            self.log(f"片库「{name}」放不了一个文件：{reason}")
+            handler.close_connection = True
+            return True
+        try:
+            span = self._answer_span(upstream, size)
+            if span is None or span[0] != at:
+                if span is None:
+                    self.cache.drop(iid)
+                    self.log(f"片库「{name}」有个文件在网盘上变了，它的索引缓存不要了（重新扫描一下片库）")
+                handler.close_connection = True
+                return True
+            read = getattr(upstream, "read1", None) or upstream.read
+            self._pump(handler, read, end - at + 1, tally, tee)
+        finally:
+            upstream.close()
+            if tee is not None:
+                tee.close()
+        return True
 
     # ---- 媒体（第二步）：探测、给中转自己的 ffmpeg 的地址、怎么放 ----
 
