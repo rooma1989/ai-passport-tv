@@ -135,6 +135,17 @@ PREPARE_MAX = 40
 PREPARE_FRESH_S = 300.0
 PREPARE_TIMEOUT_S = 8.0
 PREPARE_BYTES = 256 * 1024
+# 预先解析排优先级：页面按「鼠标停着的台 → 窗口里看得见的台 → 这一组其余的台」排好（prepare_order），
+# 一轮至多解析 PREPARE_ROUND 个，剩下的页面过一会儿再要。源站慢的时候不硬撑：一轮里接连 PREPARE_SLOW_RUN 个
+# 都超过 PREPARE_SLOW_S 秒，这一轮剩下的不做了，之后 PREPARE_BACKOFF_S 秒内每轮只解析排在最前面的一个。
+# 有人刚点了一个台、它还没出第一段（起播中，至多 PREPARE_START_S 秒内算）时预解析先停着，不和它抢网络；
+# 等了 PREPARE_HOLD_S 秒还在起播，这一轮剩下的就不做了。
+PREPARE_ROUND = 12
+PREPARE_SLOW_S = 3.0
+PREPARE_SLOW_RUN = 3
+PREPARE_BACKOFF_S = 60.0
+PREPARE_START_S = 20.0
+PREPARE_HOLD_S = 20.0
 # 直播台有几条线路（server/routes.py）时：一条线路起来以后这么久还没出第一段就算它不行（源站超时），换下一条。
 FIRST_SEGMENT_S = 20.0
 # 有备用线路时等 ffmpeg 报出输入流编码最多这么久（只有一条线路时照旧 PROBE_WAIT_S）。
@@ -894,6 +905,24 @@ def resolve_playlist(url: str, user_agent: str = "", timeout: float = PREPARE_TI
     return found if path.endswith(".m3u8") and found not in (url, asked) else None
 
 
+
+def prepare_order(channels: list[str], visible: list[str] | tuple = (), hover: str | None = None) -> list[str]:
+    """预先解析的先后：鼠标停着的台，窗口里看得见的台（页面给的顺序），再是这一组其余的台（channels 的顺序）。
+    只排 channels 里有的（页面只发还没解析过的台），重复的只留第一次。"""
+    wanted = set(channels)
+    head = ([hover] if hover else []) + list(visible)
+    return list(dict.fromkeys([c for c in head if c in wanted] + list(channels)))
+
+
+class _PrepareRound:
+    """一轮预先解析：排好队的线路，几个线程一起从前往后取；接连几个都慢就把剩下的扔掉（WatchService._prepare_run）。"""
+
+    def __init__(self, legs: list):
+        self.legs = collections.deque(legs)
+        self.slow_run = 0
+        self.stopped = False
+        self.lock = threading.Lock()
+
 # ---------------------------------------------------------------- 一路
 
 class WatchStream:
@@ -1615,6 +1644,9 @@ class WatchService:
         self.resolver: Callable[[str, str], str | None] = resolve_playlist
         self._preparing: set[tuple] = set()
         self._prepare_pool: ThreadPoolExecutor | None = None
+        # 源站慢、上一轮停下以后到什么时候为止每轮只解析一个；等起播时睡觉用的函数（测试换掉）。
+        self._prepare_slow_until = 0.0
+        self.sleep = time.sleep
 
     def open(self, device: str, source: Source, user: int | None = None, restart: bool = False,
              keep_old: bool = False, route: int | None = None) -> WatchStream:
@@ -1704,11 +1736,16 @@ class WatchService:
             stream.encoding = encode
         return ""
 
-    def prepare(self, sources: list[Source]) -> dict[str, int]:
-        """直播页上看得见的这些台：先把跳转和主列表走一遍，真正的列表地址记进 LiveMemory（resolve_playlist）。
-        有几条线路的只解析会先试的那条。返回各有几个：started 开始解析、fresh 记住的还新、busy 正在解析、skipped 不用。"""
-        counts = {"started": 0, "fresh": 0, "busy": 0, "skipped": 0}
+    def prepare(self, sources: list[Source]) -> dict:
+        """直播页上的这些台（按先后排好，prepare_order）：先把跳转和主列表走一遍，真正的列表地址记进 LiveMemory
+        （resolve_playlist）。有几条线路的只解析会先试的那条。一轮至多 PREPARE_ROUND 个（源站慢、刚停过一轮时只一个），
+        按给的先后。返回各有几个：started 开始解析、fresh 记住的还新、busy 正在解析、skipped 不用、later 这一轮
+        排不上；ids 是这一轮开始解析的和还新的台（页面记下，不再要）；slow 为真时源站慢（每轮只解析一个）。"""
+        counts: dict = {"started": 0, "fresh": 0, "busy": 0, "skipped": 0, "later": 0}
+        slow = self.clock() < self._prepare_slow_until
+        cap = 1 if slow else PREPARE_ROUND
         jobs = []
+        ids = []
         for source in sources[:PREPARE_MAX]:
             if not is_live(source) or source.opener is not None or not isinstance(source.url, str):
                 counts["skipped"] += 1
@@ -1719,21 +1756,77 @@ class WatchService:
             with self._lock:
                 if age is not None and age < PREPARE_FRESH_S:
                     counts["fresh"] += 1
+                    ids.append(source.key[1])
                     continue
                 if leg.key in self._preparing:
                     counts["busy"] += 1
                     continue
+                if len(jobs) >= cap:
+                    counts["later"] += 1
+                    continue
                 self._preparing.add(leg.key)
             counts["started"] += 1
+            ids.append(source.key[1])
             jobs.append(leg)
-        for leg in jobs:
+        if jobs:
+            run = _PrepareRound(jobs)
             if self.background:
                 if self._prepare_pool is None:
                     self._prepare_pool = ThreadPoolExecutor(PREPARE_WORKERS, thread_name_prefix="watch-prepare")
-                self._prepare_pool.submit(self._prepare_one, leg)
+                for _ in range(min(PREPARE_WORKERS, len(jobs))):
+                    self._prepare_pool.submit(self._prepare_run, run)
             else:
-                self._prepare_one(leg)
+                self._prepare_run(run)
+        counts["ids"] = ids
+        if slow:
+            counts["slow"] = True
         return counts
+
+    def starting(self) -> bool:
+        """有人刚点的台正在起播（还没出第一段，PREPARE_START_S 秒内）：预解析别和它抢。"""
+        now = self.clock()
+        with self._lock:
+            streams = list(self._by_device.values())
+        return any(s.alive and not s.ready() and now - s.created < PREPARE_START_S for s in streams)
+
+    def _prepare_run(self, run: _PrepareRound) -> None:
+        """一个线程做一轮里的活：从队头取一个解析一个；起播中先等；接连几个都慢就停下这一轮。"""
+        while True:
+            with run.lock:
+                if run.stopped or not run.legs:
+                    return
+                leg = run.legs.popleft()
+            waited = 0.0
+            while self.starting() and waited < PREPARE_HOLD_S:
+                self.sleep(0.2)
+                waited += 0.2
+            if waited >= PREPARE_HOLD_S:
+                self._prepare_stop(run, leg, "有台一直在起播")
+                return
+            began = time.monotonic()
+            clock_began = self.clock()
+            self._prepare_one(leg)
+            took = max(time.monotonic() - began, self.clock() - clock_began)
+            with run.lock:
+                run.slow_run = run.slow_run + 1 if took > PREPARE_SLOW_S else 0
+                too_slow = run.slow_run >= PREPARE_SLOW_RUN and not run.stopped
+            if too_slow:
+                self._prepare_slow_until = self.clock() + PREPARE_BACKOFF_S
+                self._prepare_stop(run, None, f"接连 {PREPARE_SLOW_RUN} 个台都超过 {PREPARE_SLOW_S:g} 秒")
+                return
+
+    def _prepare_stop(self, run: _PrepareRound, leg: Source | None, why: str) -> None:
+        """这一轮剩下的不做了（leg：手上这个也不做）：从「正在解析」里拿掉，下一轮还能再要。"""
+        with run.lock:
+            first = not run.stopped
+            run.stopped = True
+            dropped = list(run.legs) + ([leg] if leg is not None else [])
+            run.legs.clear()
+        with self._lock:
+            for item in dropped:
+                self._preparing.discard(item.key)
+        if first and dropped:
+            self.log(f"预先解析：{why}，这一轮剩下的 {len(dropped)} 个台先不解析")
 
     def _prepare_one(self, leg: Source) -> None:
         try:

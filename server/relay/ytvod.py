@@ -35,6 +35,7 @@ import collections
 import http.client
 import io
 import re
+import select
 import socket
 import ssl
 import struct
@@ -403,20 +404,60 @@ class _Answer:
         self.close()
 
 
+def _usable(sock) -> bool:
+    """池子里一条空闲的连接还能不能用：对方没关、也没有多出来的字节（TLS 1.3 连上以后服务器补发的会话票据
+    不算——不阻塞地读一下，ssl 自己吃掉它们）。"""
+    if sock is None:
+        return False
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+    except (OSError, ValueError):
+        return False
+    if not readable:
+        return True
+    timeout = sock.gettimeout()
+    try:
+        sock.setblocking(False)
+        if isinstance(sock, ssl.SSLSocket):
+            sock.recv(1)
+        else:
+            sock.recv(1, socket.MSG_PEEK)
+        return False                    # 读到了东西（或对方关了，b""）：不能再用
+    except (ssl.SSLWantReadError, BlockingIOError):
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            sock.settimeout(timeout)
+        except OSError:
+            pass
+
+
 class Fetcher:
     """到 googlevideo 的 HTTP(S) GET：proxy 是「设置 → YouTube」里的代理（http:// 或 socks5://，空串直连）。
     调用的样子和 vod.VodService 的 opener 一样：fetcher(urllib.request.Request, timeout) → 回答；
-    400 以上抛 urllib.error.HTTPError；跳转（同样经代理）至多 REDIRECTS 次。"""
+    400 以上抛 urllib.error.HTTPError；跳转（同样经代理）至多 REDIRECTS 次。
 
-    def __init__(self, proxy: str = "", clock=time.monotonic):
+    spare：一个主机的池子用空了时，后台先连好一条备着（只握手，不发请求；每个主机同时只连一条）。B 站的 MP4
+    一路一个长请求，拖进度条时浏览器掐掉旧的、发新的 Range——掐掉的那条读了一半，不能再用，新的这个请求要是
+    现连，经代理时 TLS 握手要几百毫秒；有一条备着的就直接用。idle_s：空闲的连接留多久（拿出来用以前还先看一眼
+    对方关了没有，关了的扔掉）。"""
+
+    def __init__(self, proxy: str = "", clock=time.monotonic, spare: bool = False, idle_s: float = POOL_IDLE_S):
         self.proxy_url = proxy or ""
         self.proxy = parse_proxy(proxy) if proxy else None
         self.clock = clock
+        self.spare = spare
+        self.idle_s = idle_s
         self._idle: dict[tuple, list[tuple[float, http.client.HTTPConnection]]] = {}
+        self._sparing: set[tuple] = set()
+        self._closed = False
         self._lock = threading.Lock()
         self._context = ssl.create_default_context()
-        # 新建了几条连接（测试看复用了没有）。
+        # 新建了几条连接、其中几条是备着的（测试、量速度时看复用了没有）。
         self.connects = 0
+        self.spares = 0
 
     def _connect(self, scheme: str, host: str, port: int, timeout: float) -> http.client.HTTPConnection:
         if self.proxy is not None:
@@ -437,25 +478,59 @@ class Fetcher:
 
     def _take(self, key: tuple) -> http.client.HTTPConnection | None:
         now = self.clock()
+        stale = []
+        found = None
         with self._lock:
             idle = self._idle.get(key) or []
             while idle:
                 at, conn = idle.pop()
-                if now - at < POOL_IDLE_S:
-                    return conn
-                conn.close()
-        return None
+                if now - at < self.idle_s and _usable(conn.sock):
+                    found = conn
+                    break
+                stale.append(conn)
+        for conn in stale:
+            conn.close()
+        return found
 
     def _give(self, key: tuple, conn: http.client.HTTPConnection) -> None:
         with self._lock:
-            idle = self._idle.setdefault(key, [])
-            idle.append((self.clock(), conn))
-            while len(idle) > POOL_PER_HOST:
-                idle.pop(0)[1].close()
+            if self._closed:
+                dropped = [conn]
+            else:
+                idle = self._idle.setdefault(key, [])
+                idle.append((self.clock(), conn))
+                dropped = [idle.pop(0)[1] for _ in range(len(idle) - POOL_PER_HOST)]
+        for old in dropped:
+            old.close()
+
+    def _replenish(self, key: tuple, timeout: float) -> None:
+        """（spare 开着时）这个主机的池子空了：后台连好一条放进去，下一个请求（拖进度条）不用现握手。"""
+        if not self.spare:
+            return
+        with self._lock:
+            if self._closed or self._idle.get(key) or key in self._sparing:
+                return
+            self._sparing.add(key)
+
+        def run() -> None:
+            conn = None
+            try:
+                conn = self._connect(*key, timeout)
+                self.spares += 1
+            except (OSError, ValueError):
+                pass                    # 连不上就算了：真正的请求自己再连
+            finally:
+                with self._lock:
+                    self._sparing.discard(key)
+            if conn is not None:
+                self._give(key, conn)
+
+        threading.Thread(target=run, name="vod-spare", daemon=True).start()
 
     def close(self) -> None:
         with self._lock:
             pools, self._idle = self._idle, {}
+            self._closed = True
         for idle in pools.values():
             for _, conn in idle:
                 conn.close()
@@ -477,6 +552,7 @@ class Fetcher:
                     conn = self._connect(scheme, host, port, timeout)
                 else:
                     conn.sock.settimeout(timeout)
+                self._replenish(key, timeout)
                 conn.putrequest("GET", target, skip_host=True, skip_accept_encoding=True)
                 conn.putheader("Host", host if port == (443 if scheme == "https" else 80) else f"{host}:{port}")
                 for name, value in headers.items():
@@ -653,11 +729,14 @@ class _Lru:
 
 class Prefetcher:
     """排队预取（见模块说明）。work(id, 清晰度)：做一个，节点正忙时返回 BUSY（排回队首，过 BUSY_RETRY_S 再试）；
-    busy()：有起播在取地址时为真（先停着）。"""
+    busy()：有起播在取地址时为真（先停着）。accept：认哪些 id（B 站的预取 bilivod.py 也用这一套）；name：日志里叫什么。"""
 
     def __init__(self, work: Callable[[str, str], None], busy: Callable[[], bool] = lambda: False,
                  clock=time.monotonic, log=print, parallel: int = PREFETCH_PARALLEL, queue_max: int = PREFETCH_QUEUE,
-                 per_minute: int = PREFETCH_PER_MINUTE, sleep=time.sleep):
+                 per_minute: int = PREFETCH_PER_MINUTE, sleep=time.sleep,
+                 accept: Callable[[str], object] = _VIDEO_ID.match, name: str = "YouTube"):
+        self.accept = accept
+        self.name = name
         self.work = work
         self.busy = busy
         self.clock = clock
@@ -675,7 +754,7 @@ class Prefetcher:
 
     def want(self, ids: list[str], quality: str = DEFAULT_QUALITY) -> int:
         """排上这些（排在前面的先做；新来的排在旧的前面，太多时丢最旧的）。返回排上了几个。"""
-        ids = [v for v in dict.fromkeys(ids) if isinstance(v, str) and _VIDEO_ID.match(v)][:PREFETCH_IDS_MAX]
+        ids = [v for v in dict.fromkeys(ids) if isinstance(v, str) and self.accept(v)][:PREFETCH_IDS_MAX]
         with self._lock:
             for vid in ids:
                 for item in [x for x in self._queue if x[0] == vid]:
@@ -688,7 +767,7 @@ class Prefetcher:
             if self._workers:
                 self._idle.clear()
         for _ in range(max(0, start)):
-            threading.Thread(target=self._run, name="yt-prefetch", daemon=True).start()
+            threading.Thread(target=self._run, name=f"{self.name}-prefetch", daemon=True).start()
         return len(ids)
 
     def pending(self) -> list[str]:
@@ -726,7 +805,7 @@ class Prefetcher:
             try:
                 outcome = self.work(vid, quality)
             except Exception as error:  # noqa: BLE001 —— 预取只是锦上添花，后台线程不能死
-                self.log(f"YouTube 预取出错：{type(error).__name__}")
+                self.log(f"{self.name} 预取出错：{type(error).__name__}")
                 continue
             if outcome == BUSY and tries + 1 < BUSY_TRIES:
                 with self._lock:

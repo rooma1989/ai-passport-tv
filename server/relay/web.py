@@ -30,7 +30,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import accountfeeds, bilidash, bililogin, follows, static, ytsearch, ytsettings, ytvod
+from . import accountfeeds, bilidash, bililogin, bilivod, follows, static, ytsearch, ytsettings, ytvod
 from . import library as library_api
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
     UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
@@ -234,6 +234,13 @@ class Relay:
                       if self.vod is not None else None)
         # 很长的 B 站视频在电脑上按 DASH 放（bilidash.py）：索引缓存和到 B 站视频主机的连接（复用）。
         self.bilidash = bilidash.BiliDash(log=lambda m: self.log(m)) if self.vod is not None else None
+        # B 站点播起播提速（bilivod.py）：预取到的地址、每个视频走 MP4 还是 DASH 的记忆；鼠标停在卡片上时预取。
+        self.biliplays = bilivod.Plays(log=lambda m: self.log(m)) if self.vod is not None else None
+        self.bili_prefetcher = (ytvod.Prefetcher(self._bili_prefetch_one, self.biliplays.busy, log=lambda m: self.log(m),
+                                                 per_minute=bilivod.PREFETCH_PER_MINUTE,
+                                                 queue_max=bilivod.PREFETCH_QUEUE, accept=bilivod.ID.match,
+                                                 name="B 站")
+                                if self.biliplays is not None else None)
         # 电脑上直接看 UP 主、剧集、投屏视频时各自的进度（和小电视的分开）：键是 (用户, 台) 或
         # (用户, "v:<网站>:<id>")，值是 {"bvid", "offset"（这一路从第几秒起）, "stream"（那一路，估计看到了哪里）,
         # 和存进度用的 title、name、duration、index、total、site}。存进数据目录的 pc-progress.json（home.PcProgress），
@@ -1438,13 +1445,27 @@ class Relay:
         """B 站的这个视频能不能在电脑上直接放原文件（vod.py）：能就是 vod.VodSource（地址已经取好，过期了再取），
         不能（分段的、FLV、HEVC、取地址出错——会员集登录失效之类的原因交给 HLS 那条路照旧说）是 None。
         login：取地址带的 B 站登录（会员剧集）；清晰度最高 720p，登录了的人另有 1080P（hd，走 HLS）。
-        dash：页面能用 MediaSource 放分片 MP4。很长的视频 MP4 的索引（moov）太大时改放 DASH（_bili_dash_source）。"""
+        dash：页面能用 MediaSource 放分片 MP4。很长的视频 MP4 的索引（moov）太大时改放 DASH（_bili_dash_source）。
+        起播提速（bilivod.py）：预取过的地址直接用；看过 moov 的视频记着走哪条路，不再看第二次——moov 太大的
+        直接取 DASH，连 MP4 的地址都不取。上游的连接复用（bilidash.BiliDash.opener）。"""
         getter = getattr(self.clients.get("bilibili"), "vod_media", None)
         if getter is None or self.vod is None:
             return None
         fetch = (lambda: getter(video.bvid, login=login)) if login is not None else (lambda: getter(video.bvid))
+        plays = self.biliplays
+        cache_key = ("mp4", video.bvid, bilivod.who(login))
+        headers = (("Referer", BILIBILI_REFERER), ("User-Agent", BILIBILI_UA))
+        length = float(video.duration or 0)
+        long_dash = dash and self.bilidash is not None
+        known = plays.moov(video.bvid) if plays is not None else None
+        tried_dash = False
+        if long_dash and known is not None and known > vod.MOOV_MAX and length >= vod.MOOV_CHECK_S:
+            tried_dash = True
+            found = self._bili_dash_source(key, video, position, login, headers, known)
+            if found is not None:
+                return found
         try:
-            info = fetch()
+            info, age = plays.get(cache_key, fetch) if plays is not None else (fetch(), 0.0)
         except SourceError as error:
             self.log(f"在电脑上点播 {video.bvid} 取不到原文件（{watch_pc.explain('bilibili', str(error))}），转 HLS")
             return None
@@ -1452,26 +1473,32 @@ class Relay:
         if reason:
             self.log(f"在电脑上点播 {video.bvid}：{reason}，转 HLS")
             return None
-        headers = (("Referer", BILIBILI_REFERER), ("User-Agent", BILIBILI_UA))
+        opener = self.bilidash.opener(lambda request, timeout: self.vod.opener(request, timeout)) \
+            if self.bilidash is not None else None
         length = float(video.duration or info.get("duration") or 0)
-        if dash and self.bilidash is not None and length >= vod.MOOV_CHECK_S:
-            moov = vod.probe_moov(vod.media_of(info), headers, self.vod.opener)
+        if long_dash and not tried_dash and length >= vod.MOOV_CHECK_S:
+            moov = known if known is not None else vod.probe_moov(vod.media_of(info), headers, opener)
+            if known is None and plays is not None:
+                plays.remember_moov(video.bvid, moov)
             if moov > vod.MOOV_MAX:
                 found = self._bili_dash_source(key, video, position, login, headers, moov)
                 if found is not None:
                     return found
 
         def resolve() -> vod.Media:
+            if plays is not None:
+                plays.forget(cache_key)
             again = fetch()
             why = vod.playable(again)
             if why:
                 raise vod.NotPlayable(why)
             return vod.media_of(again)
 
-        return vod.VodSource(key, resolve=resolve, headers=(("Referer", BILIBILI_REFERER), ("User-Agent", BILIBILI_UA)),
+        return vod.VodSource(key, resolve=resolve, headers=headers,
                              label=video.title, site="bilibili", start=position,
                              duration=float(video.duration or info.get("duration") or 0), first=vod.media_of(info),
-                             quality="720p", hd=login is not None)
+                             quality="720p", hd=login is not None, opener=opener,
+                             refresh_s=max(60.0, vod.URL_REFRESH_S - age))
 
     def _bili_dash_source(self, key: tuple, video, position: float, login, headers: tuple, moov: int):
         """很长的 B 站视频按 DASH 放（bilidash.py）：vod.VodSource，取不到 DASH、没有 H.264 时 None（照旧放 MP4）。"""
@@ -1479,8 +1506,10 @@ class Relay:
         if getter is None:
             return None
         fetch = (lambda: getter(video.bvid, login=login)) if login is not None else (lambda: getter(video.bvid))
+        plays = self.biliplays
+        cache_key = ("dash", video.bvid, bilivod.who(login))
         try:
-            info = fetch()
+            info = plays.get(cache_key, fetch)[0] if plays is not None else fetch()
         except SourceError as error:
             self.log(f"在电脑上点播 {video.bvid}：MP4 的索引有 {moov >> 20} MB，DASH 取不到"
                      f"（{watch_pc.explain('bilibili', str(error))}），照旧放 MP4")
@@ -1489,7 +1518,51 @@ class Relay:
             self.log(f"在电脑上点播 {video.bvid}：MP4 的索引有 {moov >> 20} MB，没有能放的 DASH，照旧放 MP4")
             return None
         self.log(f"在电脑上点播 {video.bvid}：MP4 的索引有 {moov >> 20} MB，改放 DASH（{bilidash.label(info)}）")
-        return self.bilidash.source(key, video, position, info, fetch, headers, hd=login is not None)
+
+        def fresh() -> dict:
+            if plays is not None:
+                plays.forget(cache_key)
+            return fetch()
+
+        return self.bilidash.source(key, video, position, info, fresh, headers, hd=login is not None)
+
+    def bili_prefetch(self, caller: Caller, body: dict) -> dict:
+        """POST /api/bili/prefetch {ids: [BV 号, …]}：电脑版鼠标停在 B 站视频的卡片上时，先把地址取好（bilivod.py：
+        只取地址，不取视频的字节；排队、每分钟有上限，不耽误真正的起播）。没开在电脑上看（云端）404。"""
+        if self.watch is None:
+            raise NotFound("watch")
+        ids = body.get("ids")
+        if caller.guest or caller.user is None or not isinstance(ids, list) \
+                or not 0 < len(ids) <= bilivod.PREFETCH_IDS_MAX \
+                or not all(isinstance(v, str) and bilivod.ID.match(v) for v in ids):
+            return {"ok": False, "error": "请求格式不对"}
+        if self.bili_prefetcher is None or getattr(self.clients.get("bilibili"), "vod_media", None) is None:
+            return {"ok": True, "off": True, "queued": 0}
+        # Prefetcher 的第二个参数本来是清晰度，这里放的是谁要的（按他的 B 站登录取，起播时才对得上缓存）。
+        return {"ok": True, "queued": self.bili_prefetcher.want(ids, str(caller.user))}
+
+    def _bili_prefetch_one(self, vid: str, user: str) -> None:
+        """预取一个（bilivod.Plays.prefetch）：记着要放 DASH 的取 DASH，别的取 html5 的 MP4；BV 号顺带取视频信息
+        （投到电脑时的标题、选集也用上）。取不到只记一行（不带地址）。"""
+        client = self.clients.get("bilibili")
+        plays = self.biliplays
+        if client is None or plays is None:
+            return
+        login = self.bili_login(int(user)) if user.isdigit() else None
+        moov = plays.moov(vid)
+        try:
+            if moov is not None and moov > vod.MOOV_MAX and getattr(client, "vod_dash", None) is not None:
+                getter = client.vod_dash
+                kind = "dash"
+            else:
+                getter = client.vod_media
+                kind = "mp4"
+                if vid.startswith("BV") and "/" not in vid and getattr(client, "video", None) is not None:
+                    client.video(vid)
+            plays.prefetch((kind, vid, bilivod.who(login)),
+                           (lambda: getter(vid, login=login)) if login is not None else (lambda: getter(vid)))
+        except SourceError as error:
+            self.log(f"B 站预取 {vid} 没成：{watch_pc.explain('bilibili', str(error))[:120]}")
 
     def _yt_vod_on(self) -> bool:
         """YouTube 能在电脑上点播：本机模式（地址绑的是这台电脑经代理的出口；用 cstone 节点时地址绑的是 cstone，
@@ -1715,21 +1788,28 @@ class Relay:
         return {"ok": True, "warm": done}
 
     def watch_prepare(self, caller: Caller, body: dict) -> dict:
-        """POST /api/watch/prepare {channels: [台 id, …]}：直播页上看得见的那一组台，先在后台把跳转和主列表走一遍
-        （watch.WatchService.prepare，不起 ffmpeg），点下去时起播少等几秒。只认全局频道表里的直播台，至多
-        watch.PREPARE_MAX 个。"""
+        """POST /api/watch/prepare {channels: [台 id, …], visible: [台 id, …], hover: 台 id}：直播页上这一组台，先在
+        后台把跳转和主列表走一遍（watch.WatchService.prepare，不起 ffmpeg），点下去时起播少等几秒。只认全局频道表里
+        的直播台，channels、visible 各至多 watch.PREPARE_MAX 个。先后（watch.prepare_order）：鼠标停着的台（hover），
+        窗口里看得见的（visible），再是 channels 里其余的；一轮至多 watch.PREPARE_ROUND 个，回答里的 ids 是这一轮
+        解析了（或者还新）的台，later 是排不上的（页面过一会儿再要）。"""
         if self.watch is None:
             raise NotFound("watch")
         if caller.guest or caller.user is None:
             return {"ok": False, "error": "请求格式不对"}
         channels = body.get("channels")
+        visible = body.get("visible") or []
+        hover = body.get("hover") or None
         if not isinstance(channels, list) or len(channels) > watch_pc.PREPARE_MAX or \
-                not all(isinstance(c, str) and c for c in channels):
+                not all(isinstance(c, str) and c for c in channels) or \
+                not isinstance(visible, list) or len(visible) > watch_pc.PREPARE_MAX or \
+                not all(isinstance(c, str) and c for c in visible) or \
+                not (hover is None or isinstance(hover, str)):
             return {"ok": False, "error": "请求格式不对"}
         table_ids = {c for c, _ in channel_groups.read_table(self.main_channels)} \
             if self.main_channels is not None else set()
         sources = []
-        for cid in dict.fromkeys(channels):
+        for cid in watch_pc.prepare_order(channels, visible, hover):
             if cid in table_ids and not _relay_channel(cid) and cid != table.CAST_ID:
                 source = self._live_source(cid)
                 if not isinstance(source, str):
@@ -3189,6 +3269,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/yt/prefetch":
                 self._json(relay.yt_prefetch(caller, body))
+                return
+            if path == "/api/bili/prefetch":
+                self._json(relay.bili_prefetch(caller, body))
                 return
             if path == "/api/pet":
                 self._json(relay.set_pet(body.get("pet"), caller, device))

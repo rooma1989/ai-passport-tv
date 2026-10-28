@@ -1073,9 +1073,14 @@ class Bilibili:
         return found
 
     def video(self, bvid: str) -> Video:
-        view = self._call("/x/web-interface/view", bvid=bvid)
+        # 刚取过（电脑版鼠标停在卡片上时预取过，bilivod.py）就不再问一次：投到电脑时起播少等一个来回。
+        kept = self._views.get(bvid)
+        if kept is not None and self._clock() - kept[0] < VIEW_KEEP_S:
+            view = kept[1]
+        else:
+            view = self._call("/x/web-interface/view", bvid=bvid)
+            self._keep_view(bvid, view)
         self._keep(self._covers, bvid, view.get("pic"))
-        self._keep_view(bvid, view)
         try:
             return Video(bvid=bvid, title=str(view.get("title", "")),
                          duration=int(view.get("duration", 0)), pubdate=int(view.get("pubdate", 0)))
