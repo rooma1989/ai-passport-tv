@@ -415,7 +415,8 @@ $("logout2").onclick = logout;
 const TITLES = { home: "首页", live: "直播", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索",
                  devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的", admin: "管理" };
 const GUEST_ROUTES = ["home", "live", "search", "settings", "remote", "me"];
-const TOPT = [["home", "首页"], ["live", "直播"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"], ["search", "搜索", "search"]];
+// 搜索不在中间的标签里：是右上角那组按钮的第一个（放大镜），窗口窄的时候中间的标签也不会被挤掉。
+const TOPT = [["home", "首页"], ["live", "直播"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"]];
 const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search", "搜索", "search"], ["remote", "遥控", "remote"], ["me", "我的", "set"]];
 
 function showApp() {
@@ -500,9 +501,14 @@ function renderTop() {
   const role = me ? (me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人") : "";
   $("top").innerHTML = `<div class="tl"><a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${iconSVG(40, true)}${wordmarkSVG(28, false)}</a></div>
     <nav class="ttabs" aria-label="主导航">${tabs.map(([id, t, i]) => `<a href="#/${id}" ${cr(id)}>${i ? ic(i, 17) : ""}${t}</a>`).join("")}</nav>
-    <div class="tr">${chipHTML()}<div class="tbtns">${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv", 20)}</a>`}${isAdmin() ? `<a class="iconbtn" href="#/admin" aria-label="管理" title="管理：用户、设备、频道表" ${cr("admin")}>${ic("sliders", 20)}</a>` : ""}<a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set", 20)}</a></div><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
+    <div class="tr">${chipHTML()}<div class="tbtns"><a class="iconbtn" id="topSearch" href="#/search" aria-label="搜索" title="搜索（按 / 键）" ${cr("search")}>${ic("search", 20)}</a>${isGuest() ? "" : `<a class="iconbtn" href="#/devices" aria-label="设备与遥控" title="设备与遥控" ${cr("devices")}>${ic("tv", 20)}</a>`}${isAdmin() ? `<a class="iconbtn" href="#/admin" aria-label="管理" title="管理：用户、设备、频道表" ${cr("admin")}>${ic("sliders", 20)}</a>` : ""}<a class="iconbtn" href="#/settings" aria-label="设置" title="设置" ${cr("settings")}>${ic("set", 20)}</a></div><a class="me" href="#/settings" title="${esc((me ? me.name : "") + " · " + role)}" aria-label="当前用户：${esc(me ? me.name : "")}，${role}">${esc(initial)}</a></div>
     <span class="ntitle" aria-hidden="true">${esc(TITLES[route])}</span>`;
   $("top").classList.toggle("home", route === "home");
+  // 点放大镜和按 / 一样：进搜索页、光标放进搜索框，可以直接打字。
+  $("topSearch").onclick = () => {
+    const focus = () => setTimeout(() => $("bsQuery").focus(), 60);
+    if (route === "search") focus(); else addEventListener("hashchange", focus, { once: true });
+  };
 }
 function renderTabs() {
   const cur = ["series", "up", "lib", "devices", "settings", "admin"].includes(route) ? "me" : route;
