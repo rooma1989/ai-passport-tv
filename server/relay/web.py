@@ -33,6 +33,7 @@ from . import admin, bilisearch, console, epg, events, home, setup, stream, tabl
 from . import accountfeeds, bilidash, bililogin, bilivod, follows, static, ytsearch, ytsettings, ytvod
 from . import library as library_api
 from . import localsearch
+from . import detail
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
     UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -53,6 +54,8 @@ _DEVICE_INFO = re.compile(r"^/info/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|
 _CREATOR = re.compile(r"^/api/(?:creators|series)/(up\d\d|sr\d\d)$")
 _EPISODES = re.compile(r"^/api/series/(sr\d\d)/episodes$")
 _EPISODE_PLAY = re.compile(r"^/api/series/(sr\d\d)/play$")
+# 剧集、UP 主的资料页（detail.py）：/api/detail/series/<台 id>、/api/detail/up/<台 id 或关注的键>。
+_DETAIL = re.compile(r"^/api/detail/(series|up)/([0-9A-Za-z:_-]{1,40})$")
 _HISTORY = re.compile(r"^/api/history/(bilibili|youtube)/([A-Za-z0-9_-]{1,32})$")
 _CODE = re.compile(r"^/r/([A-Za-z2-7]{20})$")
 # 多用户：扫设备遥控码、绑定码、邀请链接的落地页（同一个页面，按路径分辨）。
@@ -3107,6 +3110,15 @@ def _manage_handler(relay: Relay):
             elif path == "/api/targets":
                 # 「播放到」：能遥控的小电视，和（家庭服务器、电脑客户端上）这台电脑。
                 self._json(home.targets(relay, caller))
+            elif path == "/api/progress":
+                # 统一的「看到哪儿」（detail.py）：小电视、这台电脑、片库的进度一起读；访客 404。
+                self._json(detail.progress(relay, caller, self._query().get("keys")))
+            elif path == "/api/detail/series":
+                self._json(detail.series_list(relay, caller))
+            elif _DETAIL.match(path):
+                kind, ident = _DETAIL.match(path).groups()
+                self._json(detail.series_detail(relay, caller, ident) if kind == "series"
+                           else detail.up_detail(relay, caller, ident))
             elif _LOGO.match(path):
                 # 直播台的台标（logos.py）：登录了的（访客也算）都能看，和节目单一样。
                 found = relay.logos.get(_LOGO.match(path).group(1)) if relay.logos is not None else None

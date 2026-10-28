@@ -1035,8 +1035,6 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .fwtv { display: grid; justify-items: center; gap: 3px; flex: none; }
 .fwtv small { font-size: 11px; color: var(--label-3); white-space: nowrap; }
 .fwset { margin-top: 18px; }
-.cslist .wgrid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 22px 16px; }
-.cslist .card .t { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .m .fwgrid { grid-template-columns: 1fr; }
 .fsec .h2 h2 { white-space: nowrap; }
 .m .fsec .h2 { flex-wrap: wrap; row-gap: 4px; }
@@ -1218,6 +1216,28 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m .lplot { font-size: 14px; }
 .m .lacts .btn { flex: 1 1 100%; }
 .m .lmatch { padding: 10px; }
+
+/* ---- 剧集、UP 主的资料页（console.js 的 renderDetail，detail.py）：头部和片库的资料页同一套（.linfo），多一条进度线 ---- */
+.dpage { padding-top: 6px; }
+.linfo.round .lpost { aspect-ratio: 1; border-radius: 50%; }
+.dprog { display: flex; align-items: center; gap: 12px; max-width: 560px; margin: 14px 0 0; }
+.dbar { flex: 1; min-width: 80px; height: 4px; border-radius: 2px; background: var(--fill-2); overflow: hidden; }
+.dbar i { display: block; height: 100%; border-radius: 2px; background: var(--brand); }
+.dprog small { color: var(--label-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.dlist .hrow { content-visibility: auto; contain-intrinsic-size: auto 106px; }
+.dlist > .hint { margin: 4px 8px 6px; }
+.hrow.cur { background: var(--fill); }
+.hrow.seen .art > svg, .hrow.seen .art > img, .card.seen .art > svg, .card.seen .art > img { opacity: .55; }
+.hrow.seen .htx b { color: var(--label-2); }
+.htx .hn { display: inline-block; min-width: 2.4em; margin-right: 6px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.htx .dnow { margin-right: 8px; color: var(--brand); font-weight: 700; }
+#seriesChips[hidden] { display: none; }
+.m .linfo.round { grid-template-columns: 88px minmax(0, 1fr); }
+.m .dprog { flex-wrap: wrap; gap: 6px 12px; }
+.m .dprog small { flex: 1 1 100%; }
+.m .lacts .split { flex: 1 1 100%; }
+.m .lacts .split .btn:first-child { flex: 1; }
+.m .lacts .split .caret { flex: none; }
 .hrow.dead .art > svg, .hrow.dead .art > img { opacity: .42; filter: grayscale(.7); }
 .hrow.dead b { color: var(--label-2); }
 .m .lsrc { flex: 1 1 100%; }

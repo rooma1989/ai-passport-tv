@@ -628,6 +628,8 @@ def _count(data, *keys) -> int:
 
 # 内存里最多记多少个封面、头像地址（一个地址约 80 字节）。
 COVERS_MAX = 4000
+# 剧集简介最多留多少个字（资料页折起来显示三行，展开看全）。
+DESC_KEEP = 1200
 
 
 # 视频信息留多久、最多留几个（parts 用，见上）。
@@ -671,6 +673,8 @@ class Bilibili:
         # 视频（BV 号、剧集的「ep…/cid」）和番剧（ss…）→ 封面；UP 主（mid）→ 头像。最多各留 COVERS_MAX 个。
         self._covers: dict[str, str] = {}
         self._faces: dict[str, str] = {}
+        # 剧集的简介（番剧 ss… 的 evaluate、多集视频 BV 号的 desc），剧集资料页（detail.py）用；也只在内存里。
+        self._descs: dict[str, str] = {}
         # 刚取过的视频信息（BV 号 → (时刻, view)）：投到电脑时 video() 和 parts() 只访问一次 B 站。
         self._views: dict[str, tuple[float, dict]] = {}
 
@@ -690,6 +694,19 @@ class Bilibili:
     def face(self, mid: str) -> str:
         """UP 主的头像地址；没记下来时为空串。"""
         return self._faces.get(str(mid), "")
+
+    def desc(self, key: str) -> str:
+        """剧集（ss…、BV 号）的简介；没记下来时为空串。"""
+        return self._descs.get(str(key), "")
+
+    def _keep_desc(self, key: str, raw) -> None:
+        text = raw.strip()[:DESC_KEEP] if isinstance(raw, str) else ""
+        if not text:
+            return
+        self._descs.pop(key, None)
+        self._descs[key] = text
+        while len(self._descs) > COVERS_MAX:
+            self._descs.pop(next(iter(self._descs)))
 
     def _call(self, path: str, _timeout: float | None = None, _login=None, _signed: bool = False,
               **params) -> dict:
@@ -968,6 +985,7 @@ class Bilibili:
         season = self._call("/pgc/view/web/season", season_id=season_id)
         name = str(season.get("season_title") or season.get("title") or "")
         self._keep(self._covers, f"ss{season_id}", season.get("cover"))
+        self._keep_desc(f"ss{season_id}", season.get("evaluate"))
         episodes = []
         for e in season.get("episodes") or []:
             # status 2 是免费；13 是会员专享（大会员登录了才留）；别的（付费、下架）都不要。
@@ -977,8 +995,9 @@ class Bilibili:
             if not member and e.get("status") != 2:
                 continue
             title = str(e.get("show_title") or "") or f"第{e.get('title')}集 {e.get('long_title') or ''}"
+            # pub_time：这一集上线的时间（剧集海报上的「更新」看它）；没有时 0，和以前一样。
             episodes.append(Video(bvid=f"ep{int(e['id'])}/{int(e['cid'])}", title=title.strip(),
-                                  duration=int(e.get("duration") or 0) // 1000, pubdate=0))
+                                  duration=int(e.get("duration") or 0) // 1000, pubdate=_number(e.get("pub_time"))))
             self._keep(self._covers, episodes[-1].bvid, e.get("cover"))
         if not episodes:
             raise BilibiliError(f"ss{season_id}: 没有免费的集（都要会员）", permanent=True)
@@ -987,6 +1006,7 @@ class Bilibili:
     def _multipart(self, bvid: str) -> tuple[str, list[Video]]:
         view = self._call("/x/web-interface/view", bvid=bvid)
         self._keep(self._covers, bvid, view.get("pic"))
+        self._keep_desc(bvid, view.get("desc"))
         found = view_parts(bvid, view)
         if found is None:
             raise BilibiliError(f"{bvid}: 只有一集，不是剧集", permanent=True)

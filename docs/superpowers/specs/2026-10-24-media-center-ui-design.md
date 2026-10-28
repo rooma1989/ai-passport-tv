@@ -744,6 +744,31 @@ removed on 2026-10-26 together with the separate admin page (section 17).
   "-2026-248" (year and issue) or "-2026-10-26" when the guide is read (`epg.tidy_title`). With the TV idle the
   Live page opens on the first group that has live channels instead of the cast group. Not built: the
   selected-programme header and the Lineup segment; "remind me" for future programmes.
+- **M4 Series, creators, detail pages and unified progress** (2026-10-28): `server/relay/detail.py`. One
+  reader, `Marks`, takes the TV's per-account `positions` and `watched` (state.py), the PC's and the library's
+  records in `pc-progress.json` (`home.PcProgress`: position, duration, time, `done` parts, `device` for the
+  library on a TV) and answers per video id `{position, duration, finished, device, at}`; nothing is converted
+  or written. Finished anywhere is finished (also within 30 s or a tenth of the end); the furthest position
+  wins, because TV positions carry no time; a series continues at the last episode with any mark, or the next
+  one when that one is finished, and is finished when its last episode is. `GET /api/progress?keys=` answers
+  `v:<site>:<id>`, `lib:<id>` and `ch:<channel>` (up to 300 keys; guests 404). `GET /api/detail/series` is the
+  poster wall (posters, progress, which of the caller's TVs play it), `/api/detail/series/<sr..>` adds the
+  description (Bilibili's season `evaluate` or video `desc`, kept in the client's memory like covers; bangumi
+  episodes now keep `pub_time` for the "new" badge) and the episodes with marks, `/api/detail/up/<up.. |
+  bilibili:<mid> | youtube:<UC..>>` the creator with recent uploads and marks, linking a TV channel and a
+  followed key both ways (a followed-only creator's uploads come from `follows.videos`). Home's
+  `series_updates` and `creator_updates` use the same marks. Console: the Series page is the poster wall with
+  chips (all, watching, not started, finished); `#/series/<id>` and `#/up/<id>` are detail pages inside the
+  Series and Creators pages (deep-linkable; Back and Esc return to the list at its scroll position), whose
+  header is the library's (`infoHTML`, now shared by `libInfoHTML`) plus a progress line; the primary action
+  is "Continue episode N" through Play to (to a TV it moves that TV's position, as choosing an episode always
+  did; to the PC it resumes the PC's or the TV's position), plus "From episode 1", delete, and per creator
+  "Play what I have not watched" and subscribe / unsubscribe (the TV's creator channel; `POST
+  /api/follows/tv` or `DELETE /api/creators/<id>`). Open detail pages refresh their marks with
+  `/api/progress` every 10 s. The creator sheet of section 18 and the series "manage" list were replaced by
+  these pages; the remote's episode drawer stays. No reordering existed before and none was added. Verified
+  with host tests and in the built-in browser against a local relay with generated subscriptions and
+  progress (desktop and 375 px); not verified with real Bilibili or YouTube lists, and nothing was played.
 - **Not verified**: real playback on the PC in the new player window (the UI check used generated
   data and no network), Safari and Firefox, Windows, screen readers, a real touch device; for the PC
   player, real Bilibili multi-part videos, collections and bangumi, YouTube playlists and fullscreen; YouTube DASH
