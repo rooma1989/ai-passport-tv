@@ -36,6 +36,9 @@
 - 字幕（第二步）：内嵌的文字字幕（ass、srt、mov_text、webvtt）和视频旁边的字幕文件（<名字>.srt、<名字>.zh.ass…，
   本机和网盘）按需转成 WebVTT（/api/library/subs/<id>/<n>.vtt，只给家里人，缓存在 library-subs/）。图片字幕（PGS、
   DVD）列出来但放不了。网盘上的内嵌字幕不整个再读一遍文件，而是在放的那一路边转边抽（watch_source 的 subs_out）。
+- 播到小电视、接着看（第三步）：「播放到」是小电视时条目放进它的投屏位，中转起 ffmpeg 读同一个 raw 地址，缩成
+  电视服务要的画面推过去（tv_args、play_tv）；进度和电脑上的记在一起（pc-progress.json 的 lib:<id>），剧集放完一集
+  接着放下一集。详见「播到小电视」那一节。
 - 谁能看：登录的家里人看到整个片库；访客永远看不到（404）。加 / 删来源、扫描只有管理员（admin.py）。
   云端的中转没有片库（relay.library 为 None）。
 - 网盘组件（server/selfhost/openlist.py 装的 OpenList）开着时，中转（clouddrive.py）在这里维护一个「受管」的来源
@@ -59,6 +62,7 @@ import select
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -72,6 +76,7 @@ from typing import Callable
 
 from .librarycache import IndexCache
 from . import libmeta
+from .table import CAST_ID
 
 SOURCES_MAX = 12
 NAME_MAX = 40
@@ -2572,6 +2577,272 @@ class Library:
                 total -= size
             except OSError:
                 pass
+
+    # ---- 播到小电视（第三步） ----
+
+    def tv_command(self, iid: str, offset: float) -> list[str] | None:
+        """小电视那一路的 ffmpeg 命令（tv_args）：读 raw_url（每次起 ffmpeg 都换新令牌），按探测的结果挑画面和声音；
+        条目没了（重新扫描过）时 None。"""
+        item = self.item(iid)
+        if item is None or not self.ffmpeg or self.secret is None or self.port is None:
+            return None
+        return tv_args(self.ffmpeg, self.raw_url(iid), offset, self.media_of(iid), item.get("ext") or "",
+                       hwaccel=tv_hwaccel(self.ffmpeg))
+
+    def tv_title(self, item: dict) -> str:
+        """小电视上显示的名字：电影是片名（对上豆瓣的用豆瓣的），剧集是「剧名 · 这一集」（这一集只是「第 n 集」时
+        只写剧名，第几集另由 tv_episode 给设备画）。"""
+        name = self.shown(item)["name"] or item.get("title") or ""
+        if item.get("kind") != "episode":
+            return name[:TITLE_MAX]
+        title = item.get("title") or ""
+        return (name if not title or _GENERIC_EPISODE.match(title) else f"{name} · {title}")[:TITLE_MAX]
+
+    def neighbor(self, item: dict, step: int) -> dict | None:
+        """同一部剧里的下一集（step 1）/ 上一集（−1）；不是剧集、已经是头一集 / 最后一集时 None。"""
+        episodes = self.episodes_of(item)
+        here = next((n for n, ep in enumerate(episodes) if ep["id"] == item["id"]), None)
+        if here is None or not 0 <= here + step < len(episodes):
+            return None
+        return episodes[here + step]
+
+
+# ---------------------------------------------------------------- 播到小电视（第三步）
+#
+# 小电视放片库的视频走和投屏一样的路：条目放进那台设备的投屏位（Video 的 site 是 "library"、bvid 是条目 id），
+# 电视服务打开 /ch/<设备>/cast 时中转起 ffmpeg（web.py 的 _start → tv_start），读的仍是只给本机的 raw_url——
+# 网盘的地址和密码从不在命令行上，只认片库里登记了的条目。暂停、跳转、下一个都是投屏那一套（掐断后从存的位置
+# 重起一路）；剧集的「下一个」「上一个」换成同一部剧的下一集 / 上一集，放完一集自动接下一集，最后一集放完才
+# 和投屏一样切回原来的台。不进投屏历史（片库的视频不能当链接重播）。
+#
+# 进度和电脑上的记在一起（pc-progress.json 的 lib:<id>，记在点播放的人名下，重启后是设备主人）：首页「继续观看」
+# 显示它（写着在哪台小电视上看的），电脑上、小电视上都从那里接着放。访客永远放不了。
+#
+# 画面：电视服务按设备的 320×180 再缩一次（server/live.py 的 source_graph），这里给它不超过 640×360、至多 30 帧
+# 的 H.264（ultrafast），4K HEVC Main 10 不整个推过去；H.264 8 位、不超过 1080 行的只换封装。macOS 上有
+# videotoolbox 时用它解码（4K HEVC 的 CPU 从约一个核降到四分之一个核，见 CHANGELOG），没有时 ffmpeg 自己用软解。
+# 声音一律转成 AAC 立体声（DTS、TrueHD、E-AC-3 在 MPEG-TS 里电视服务未必认）；没有声音的补一路静音（电视服务
+# 要画面和声音两路），没有画面的补黑场。
+
+TV_WIDTH, TV_HEIGHT = 640, 360
+TV_FPS_MAX = 30
+TV_COPY_HEIGHT = 1080
+# 放完了（ffmpeg 正常退出）却离结尾还远：多半是网盘半路断了，当作断了从那里接着放，不算看完。
+# 开头这么多秒内就「放完」的照旧算放完（时长报错的文件不能一直在结尾重开）。
+TV_END_SLACK_S = 60.0
+TV_SHORT_S = 15.0
+_GENERIC_EPISODE = re.compile(r"^第 \d+ 集$")
+_HWACCELS: dict[str, frozenset] = {}
+
+
+def hwaccels(ffmpeg: str, run=subprocess.run) -> frozenset:
+    """这个 ffmpeg 支持的硬件解码（ffmpeg -hwaccels），每个 ffmpeg 只问一次；问不了时为空。"""
+    found = _HWACCELS.get(ffmpeg)
+    if found is not None:
+        return found
+    try:
+        out = run([ffmpeg, "-hide_banner", "-hwaccels"], capture_output=True, timeout=10).stdout
+        lines = (out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out)).splitlines()
+        found = frozenset(line.strip() for line in lines[1:] if line.strip())
+    except (OSError, subprocess.SubprocessError):
+        found = frozenset()
+    _HWACCELS[ffmpeg] = found
+    return found
+
+
+def tv_hwaccel(ffmpeg: str, platform: str = sys.platform) -> str:
+    """小电视那一路用的硬件解码：只在 macOS 上、这个 ffmpeg 有 videotoolbox 时（没有时传了 ffmpeg 会起不来）。"""
+    if platform != "darwin" or not ffmpeg:
+        return ""
+    return "videotoolbox" if "videotoolbox" in hwaccels(ffmpeg) else ""
+
+
+def tv_args(ffmpeg: str, url: str, offset: float, media: dict | None, ext: str, hwaccel: str = "") -> list[str]:
+    """片库的视频推给电视服务的 ffmpeg 参数：按实时速度（-re）读 url（只给本机的 raw 地址），从 offset 秒起，
+    写 MPEG-TS 到标准输出（和 stream.py 的一样，由 stream.pump 转给电视服务）。"""
+    video = first_video(media)
+    audio, _ = audio_choice(media, ext)
+    known = bool((media or {}).get("streams"))
+    copy = video is not None and video.get("c") == "h264" and not _deep(video) \
+        and 0 < int(video.get("h") or 0) <= TV_COPY_HEIGHT
+    args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
+    if hwaccel and not copy and (video is not None or not known):
+        args += ["-hwaccel", hwaccel]
+    args += ["-re", "-protocol_whitelist", "http,tcp", "-ss", f"{max(0.0, float(offset)):.3f}", "-i", url]
+    if known and video is None:
+        # 只有声音的文件：补一路黑场。
+        args += ["-f", "lavfi", "-i", f"color=c=black:s={TV_WIDTH}x{TV_HEIGHT}:r=25"]
+    if known and audio is None:
+        # 没有声音：补一路静音。
+        args += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+    if known:
+        args += ["-map", f"0:{video['i']}" if video is not None else "1:v",
+                 "-map", f"0:{audio['i']}" if audio is not None else f"{1 if video is not None else 2}:a"]
+        if video is None or audio is None:
+            args += ["-shortest"]
+    else:
+        args += ["-map", "0:v:0", "-map", "0:a:0?"]
+    if copy:
+        args += ["-c:v", "copy"]
+    else:
+        args += ["-vf", f"scale={TV_WIDTH}:{TV_HEIGHT}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+                        ":flags=bilinear,format=yuv420p",
+                 "-fpsmax", str(TV_FPS_MAX), "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                 "-crf", "23", "-maxrate", "2M", "-bufsize", "4M", "-g", "60", "-threads", "2"]
+    args += ["-c:a", "aac", "-ac", "2", "-ar", "48000", "-b:a", "128k", "-sn", "-dn",
+             "-f", "mpegts", "pipe:1"]
+    return args
+
+
+def start_tv_process(args: list[str]) -> subprocess.Popen:
+    """起小电视那一路的 ffmpeg：参数列表、不经 shell；回环地址不走代理（proxyenv）。"""
+    from ..proxyenv import loopback_bypass
+    return subprocess.Popen(args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env=loopback_bypass(os.environ))
+
+
+def tv_start(relay, iid: str, offset: float):
+    """web.py 的 _start：投屏位里是片库的视频时起 ffmpeg。relay.library_starter（测试换成假的）收参数列表。"""
+    from .bilibili import SourceError
+    library = wired(relay)
+    args = library.tv_command(iid, offset) if library is not None else None
+    if args is None:
+        raise SourceError("片库里没有这个视频了", permanent=True)
+    starter = getattr(relay, "library_starter", None) or start_tv_process
+    return starter(args)
+
+
+def _viewers(relay) -> dict:
+    """每台设备（slot）上片库的视频是谁点的：进度记在他名下；重启后没有记录时记给设备主人。"""
+    return relay.__dict__.setdefault("_library_viewers", {})
+
+
+def _tv_video(library: "Library", item: dict):
+    from .state import Video
+    duration = float((library.media_of(item["id"]) or {}).get("dur") or 0)
+    return Video(bvid=item["id"], title=library.tv_title(item), duration=int(duration), pubdate=0, site="library")
+
+
+def _tv_cast(relay, dev: dict, library: "Library", item: dict, position: float = 0.0):
+    """把 item 放进 dev 的投屏位（从 position 秒接着放）；返回放进去的 Video。"""
+    video = _tv_video(library, item)
+    cast = relay._cast_of(dev)
+    cast.set_cast(video)
+    if position > 0:
+        cast.save_cast_position(video.bvid, position)
+    cast.save()
+    return video
+
+
+def play_tv(relay, caller, dev: dict, iid) -> dict:
+    """POST /api/play 播到小电视（home.play）：放进它的投屏位，从上次看到的地方接着放（电脑上、小电视上看的都算），
+    快放完了的从头放。访客不行。"""
+    library = wired(relay)
+    if library is None or caller.guest or caller.user is None:
+        return {"ok": False, "reason": "failed", "error": "片库只给家里人看"}
+    item = library.item(iid) if isinstance(iid, str) else None
+    if item is None:
+        return {"ok": False, "reason": "failed", "error": "片库里没有这个视频（可能刚重新扫描过，刷新一下）"}
+    if not Library.playable(item):
+        return {"ok": False, "reason": "failed", "error": "这个文件放不了（里面没有画面也没有声音）"}
+    key = "lib:" + item["id"]
+    store = getattr(relay, "pc_progress", None)
+    # 电脑上的游标（_pc_cursor）会被 pc_sync 一直写回去：换到小电视上看了，就不再要它。
+    relay._pc_cursor.pop((caller.user, key), None)
+    saved = store.get(caller.user, key) if store is not None else None
+    position = float((saved or {}).get("position") or 0)
+    video = _tv_video(library, item)
+    if video.duration and position >= video.duration - 5:
+        position = 0.0
+    _viewers(relay)[dev["slot"]] = caller.user
+    _tv_cast(relay, dev, library, item, position)
+    relay.log(f"片库的「{item['title']}」播到{dev['name']}" + (f"，从 {int(position)} 秒接着放" if position else ""))
+    relay._event(dev, "cast")
+    answer = {"ok": True, "title": video.title, "at": relay.clock()}
+    if position:
+        answer["resume"] = round(position, 1)
+    return answer
+
+
+def tv_progress(relay, dev: dict, video, position: float, done: bool = False) -> None:
+    """小电视上看到了 position 秒（done：这一集看完了）：记进 pc-progress.json 的 lib:<id>，「继续观看」里写设备名。"""
+    store, library = getattr(relay, "pc_progress", None), getattr(relay, "library", None)
+    user = _viewers(relay).get(dev.get("slot")) or dev.get("owner")
+    if store is None or library is None or user is None:
+        return
+    item = library.item(video.bvid)
+    if item is None:
+        return
+    key = "lib:" + item["id"]
+    duration = float(video.duration or 0)
+    if done:
+        store.mark_done(user, key, item["id"])
+        position = duration or position
+    shown = library.shown(item)
+    name = shown["name"] or item.get("title") or ""
+    store.put(user, key, {"channel": "cast", "bvid": item["id"], "site": "library",
+                          "title": item.get("title") if item.get("kind") == "episode" else name, "name": name,
+                          "duration": duration, "position": round(max(0.0, float(position)), 1),
+                          "device": dev.get("name") or "小电视"})
+
+
+def tv_finished(relay, dev: dict, video, offset: float, outcome: str, elapsed: float) -> str:
+    """小电视上片库的这一路停了（web.py 的 finish_cast）：记进度；放完一集、有下一集时换成下一集（"next"，电视服务
+    重新打开投屏台就是它，不切回原来的台）。离结尾还远就「放完」的当作断了（"failed"）。返回 finish_cast 接着用的结果。"""
+    position = offset + elapsed
+    if outcome == "ended" and video.duration and position < video.duration - TV_END_SLACK_S and elapsed >= TV_SHORT_S:
+        relay.log(f"片库的一路在 {int(position)} 秒提前结束了（共 {int(video.duration)} 秒），从那里接着放")
+        outcome = "failed"
+    if outcome != "ended":
+        tv_progress(relay, dev, video, position)
+        return outcome
+    tv_progress(relay, dev, video, position, done=True)
+    library = getattr(relay, "library", None)
+    item = library.item(video.bvid) if library is not None else None
+    upcoming = library.neighbor(item, 1) if item is not None else None
+    if upcoming is None:
+        return outcome
+    fresh = _tv_cast(relay, dev, library, upcoming)
+    relay.log(f"片库：接着放下一集「{upcoming['title']}」")
+    relay._loading(dev, CAST_ID, relay._state_of(dev), fresh)
+    return "next"
+
+
+def tv_step(relay, dev: dict, video, step: int, entry: dict | None) -> dict | None:
+    """遥控的「下一个」（step 1）/「上一个」（−1）在片库的剧集上：换成同一部剧的下一集 / 上一集，掐断正在推的那一路
+    （电视服务重新打开投屏台就是它）。没有那一集时 None（「下一个」照投屏的办法收场，「上一个」说已经是第 1 集）。
+    往后换时这一集算看完了。"""
+    library = getattr(relay, "library", None)
+    item = library.item(video.bvid) if library is not None else None
+    target = library.neighbor(item, step) if item is not None else None
+    if target is None:
+        return None
+    if step > 0:
+        tv_progress(relay, dev, video, video.duration, done=True)
+    if entry is not None:
+        # 先标上，免得旧的那一路的 tick 又把进度存回去。
+        entry["abort"] = "换一集"
+    fresh = _tv_cast(relay, dev, library, target)
+    relay._bridge.pop((dev["slot"], CAST_ID), None)
+    relay._loading(dev, CAST_ID, relay._state_of(dev), fresh)
+    if relay._paused_on(dev, CAST_ID) is not None:
+        # 暂停着换集：结束暂停，电视服务重新打开投屏台就是换好的那一集。
+        relay._paused.pop(dev["slot"], None)
+        relay._event(dev, "resume")
+    elif entry is not None:
+        relay._cut(CAST_ID, entry, "换到下一集" if step > 0 else "换到上一集")
+    return {"ok": True, "at": relay.clock(), "title": fresh.title}
+
+
+def tv_episode(relay, video) -> dict:
+    """设备上「正在加载 / 正在播」要画的第几集、共几集（web.py 的 _describe）；不是剧集或只有一集时为空。"""
+    library = getattr(relay, "library", None)
+    item = library.item(video.bvid) if library is not None else None
+    episodes = library.episodes_of(item) if item is not None else []
+    if len(episodes) < 2:
+        return {}
+    n = next((n for n, ep in enumerate(episodes, 1) if ep["id"] == item["id"]), 0)
+    return {"episode": n, "total": len(episodes)} if n else {}
 
 
 # ---------------------------------------------------------------- HTTP

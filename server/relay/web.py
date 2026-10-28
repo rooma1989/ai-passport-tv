@@ -539,7 +539,10 @@ class Relay:
 
     def _start(self, video, offset: float, owner: int | None = None):
         """起播：B 站在本机用 ffmpeg 换封装；YouTube 由 cstone 节点转好码，这里只转发。
-        owner：设备主人；他登录了 B 站（bililogin.py）就带着他的 cookies 取地址（清晰度还是小电视的）。"""
+        owner：设备主人；他登录了 B 站（bililogin.py）就带着他的 cookies 取地址（清晰度还是小电视的）。
+        片库的视频（投屏位里 site 是 "library"）：ffmpeg 读只给本机的 raw 地址，缩成电视服务要的画面（library.tv_start）。"""
+        if video.site == "library":
+            return library_api.tv_start(self, video.bvid, offset)
         if video.site == "youtube":
             return self._client("youtube").open(video.bvid, offset)
         url = self._bili_url(video.bvid, self.bili_login(owner), owner)
@@ -640,6 +643,9 @@ class Relay:
             return None
         info = {"channel": cid, "title": video.title}
         creator = state.get(cid) if cid != table.CAST_ID else None
+        if cid == table.CAST_ID and getattr(video, "site", "") == "library":
+            # 片库的剧集：第几集、共几集（library.tv_episode）。
+            info.update(library_api.tv_episode(self, video))
         if creator is not None and creator.kind == "series":
             n = self._episode_of(state, cid, video)
             if n:
@@ -710,6 +716,11 @@ class Relay:
         dev = self._stream_device(slot)
         cast = self._cast_of(dev or NO_DEVICE)
         self._report_history(dev or NO_DEVICE, video, offset, outcome, elapsed)
+        if video.site == "library":
+            # 片库：记进度；剧集放完一集接着放下一集（"next"），不切回原来的台（library.tv_finished）。
+            outcome = library_api.tv_finished(self, dev or NO_DEVICE, video, offset, outcome, elapsed)
+            if outcome == "next":
+                return
         if outcome == "ended":
             cast.cast_ended(video.bvid)
             cast.save()
@@ -756,6 +767,9 @@ class Relay:
             if is_cast:
                 cast.save_cast_position(video.bvid, offset + elapsed)
                 cast.save()
+                if video.site == "library":
+                    # 片库的进度另记一份给「继续观看」（按屏幕上的位置：推出去的要晚 PLAYBACK_LAG_S 秒才到）。
+                    library_api.tv_progress(self, dev, video, offset + max(0.0, elapsed - PLAYBACK_LAG_S))
             else:
                 state.save_position(cid, video.bvid, offset + elapsed)
                 state.save()
@@ -836,6 +850,8 @@ class Relay:
             cast = self._cast_of(dev)
             cast.save_cast_position(video.bvid, stored)
             cast.save()
+            if video.site == "library":
+                library_api.tv_progress(self, dev, video, target)
         else:
             state = self._state_of(dev)
             state.save_position(cid, video.bvid, stored)
@@ -924,6 +940,11 @@ class Relay:
         cid, video, _, entry = self._current(dev)
         if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
+        if cid == table.CAST_ID and video.site == "library":
+            # 片库的剧集：换成下一集（最后一集时照投屏的办法收场）。
+            stepped = library_api.tv_step(self, dev, video, 1, entry)
+            if stepped is not None:
+                return stepped
         self._bridge.pop((dev["slot"], cid), None)
         if cid == table.CAST_ID:
             self._event(dev, "next")
@@ -1049,6 +1070,10 @@ class Relay:
         video = self._on_air(dev, cid)
         if video is None:
             return {"ok": False, "error": "现在没有在播视频"}
+        if cid == table.CAST_ID and video.site == "library":
+            # 片库的剧集：回到上一集，从头播。
+            stepped = library_api.tv_step(self, dev, video, -1, self._current(dev)[3])
+            return stepped or {"ok": False, "error": "已经是第 1 集"}
         state = self._state_of(dev)
         creator = state.get(cid)
         if creator is None or creator.kind != "series":
@@ -1407,6 +1432,9 @@ class Relay:
         B 站按看的人（viewer）的登录取更高的清晰度，他没登录时按 owner（设备主人）的（bililogin.py）。
         prefer：页面会放点播时的清晰度（_prefer："720p" / "1080p"）。B 站的视频能直接放原文件时给 vod.VodSource
         （_vod_source），否则（和 YouTube、prefer 为 None 时）照旧给 watch.Source（ffmpeg → HLS）。"""
+        if video.site == "library":
+            # 小电视在放片库的视频：在电脑上到「片库」里放（那里按页面的能力定怎么放，访客看不到）。
+            return "小电视在放片库里的视频：在电脑上看请到「片库」里点它"
         if video.site == "youtube":
             client = self.clients.get("youtube")
             if client is None:

@@ -561,14 +561,10 @@ class ApiTests(unittest.TestCase):
         show = self.watch(library=first)
         self.assertEqual([p["id"] for p in show["parts"]["items"]], [first, ids["家庭剧/S01E02.mp4"]])
         self.assertEqual((show["name"], show["parts"]["current"]), ("家庭剧", 1))
-        # An mkv (not probed here: the relay's ffmpeg is fake) goes through watch.py; not on a TV yet.
+        # An mkv (not probed here: the relay's ffmpeg is fake) goes through watch.py (on a TV: test_relay_library_tv).
         clip = self.watch(library=ids["Clip.mkv"])
         self.assertEqual((clip["ok"], clip["mode"], clip["kind"], clip["seekable"]), (True, "hls", "video", True), clip)
         self.assertIn("片库里没有", self.watch(library="0" * 16)["error"])
-        tv = self.call("alice", "POST", "/tv/api/play", {"target": watch_base.ALICE_DEVICE,
-                                                          "item": {"kind": "library", "id": movie}})[1]
-        self.assertFalse(tv["ok"])
-        self.assertIn("这台电脑", tv["error"])
         pc = self.call("alice", "POST", "/tv/api/play", {"target": "pc", "viewer": "c0ffee00",
                                                           "item": {"kind": "library", "id": movie}})[1]
         self.assertEqual((pc["ok"], pc["mode"]), (True, "vod"))

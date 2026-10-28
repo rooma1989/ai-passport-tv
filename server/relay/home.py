@@ -15,7 +15,8 @@
 
 电脑上看的进度（PcProgress）：设计的 Q4——电脑上看到哪儿另记，「继续观看」里显示，但从不往后推小电视的
 剧集进度、不标看过。web.Relay 在内存里跟着每一路（_pc_cursor），这里把它存进数据目录的 pc-progress.json，
-按用户分开，重启后电脑上接着看也从这里起。
+按用户分开，重启后电脑上接着看也从这里起。片库的视频（键 lib:<id>）例外：小电视上看的也记在这里（记录里有
+device，小电视的名字），电脑上、小电视上都从这里接着放（library.tv_progress）。
 
 B 站的封面、头像（CoverWarm）：图床地址只记在客户端内存里（bilibili.Bilibili.cover/face），是取投稿列表、
 剧集时 B 站顺带给的；订阅的列表本身存在状态文件和共享缓存里，半小时内、没在小电视上放过的台不会重新去取。
@@ -167,7 +168,8 @@ class PcProgress:
     """{用户 id: {键: 记录}}，键是 UP 主 / 剧集的台 id（up01、sr03），投屏的视频是 v:<网站>:<id>。
     记录：channel、bvid（正在看的那一集 / 那个视频）、site、title、name（台名）、position、duration、index、
     total、series、at；投屏的多集视频（多 P、合集、番剧、YouTube 播放列表）再有 item（投的那个视频的 id）、
-    part（第几集）、kind（"pages" 等）、list（YouTube 播放列表）。done 是电脑上看完了的各集的 bvid（选集里的 ✓）。"""
+    part（第几集）、kind（"pages" 等）、list（YouTube 播放列表）。done 是电脑上看完了的各集的 bvid（选集里的 ✓）。
+    片库的视频键是 lib:<条目 id>，小电视上看的再有 device（那台的名字）。"""
 
     def __init__(self, path: Path, clock=time.time):
         self.path = Path(path)
@@ -363,9 +365,6 @@ def play(relay, caller: Caller, body: dict) -> dict:
         raise NotFound(target)
     if not dev["id"]:
         return {"ok": False, "reason": "no_device", "error": "还没有绑定小电视"}
-    if item["kind"] == "library":
-        # 片库这一步只在电脑上放（页面也是这样发的）；播到小电视以后再做。
-        return {"ok": False, "reason": "failed", "error": "片库的视频暂时只能在这台电脑上放", "target": dev["id"]}
     if not relay._playing(dev)["online"]:
         return {"ok": False, "reason": "offline", "error": f"{dev['name']}没在线", "target": dev["id"]}
     kind, cid = item["kind"], item.get("channel")
@@ -398,6 +397,11 @@ def play(relay, caller: Caller, body: dict) -> dict:
     elif kind == "feed":
         from .accountfeeds import play_tv
         answer = play_tv(relay, caller, dev, item)
+        cid = table.CAST_ID
+    elif kind == "library":
+        # 我的片库：放进小电视的投屏位，从上次看到的地方接着放（library.play_tv；访客不行）。
+        from .library import play_tv as library_tv
+        answer = library_tv(relay, caller, dev, item.get("id"))
         cid = table.CAST_ID
     else:
         return _bad()
@@ -479,7 +483,8 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
     rows = []
     store = getattr(relay, "pc_progress", None)
     names = {}
-    library = getattr(relay, "library", None)
+    library = getattr(relay, "library", None) if not caller.guest else None
+    shows: set[str] = set()
     with account.lock:
         creators = list(account.creators)
         for c in creators:
@@ -491,17 +496,23 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                 continue
             site = rec.get("site") or "bilibili"
             if key.startswith("lib:"):
-                # 片库的视频（library.py）：条目还在才显示；海报有就用。
+                # 片库的视频（library.py）：条目还在才显示；海报有就用。在电脑上、小电视上看的都记在这里
+                # （device 是小电视的名字；没有时是电脑上看的）。一部剧只显示最近看的那一集。
                 found = library.item(key[4:]) if library is not None else None
                 if found is None:
                     continue
                 episode = found["kind"] == "episode"
+                if episode:
+                    show = library.meta_key(found)
+                    if show in shows:
+                        continue
+                    shows.add(show)
                 shown = library.shown(found)
                 rows.append({"id": f"pc:{key}", "kind": "video", "title": shown["name"],
                              "subtitle": found["title"] if episode else "片库", "source": "library",
                              "art": {"url": shown["art"], "ratio": "wide"},
-                             "progress": {"position": int(position), "duration": int(duration), "device": PC_NAME,
-                                          "updated_at": rec.get("at") or 0},
+                             "progress": {"position": int(position), "duration": int(duration),
+                                          "device": rec.get("device") or PC_NAME, "updated_at": rec.get("at") or 0},
                              "play": {"kind": "library", "id": found["id"]}})
                 continue
             if key.startswith("v:"):

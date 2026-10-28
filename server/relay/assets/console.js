@@ -923,7 +923,7 @@ function pressed(node, promise) {
 // 播放一个节目（/api/home 的 play，或者页面自己拼的 {kind, channel, …}）：播到 to，不给就是记住的地方。
 async function play(item, to, label, poster) {
   if (!item || !me) return null;
-  if (item.kind === "library") return playLibrary(item, label, poster);
+  if (item.kind === "library" && item.playable === false) { toast("这个文件放不了（里面没有画面也没有声音）", true); return null; }
   if (!to) {
     to = currentTarget();
     if (!to) { openTarget(item, "", label, poster); return null; }
@@ -6085,8 +6085,8 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 
 // ---- 片库 → 我的片库（GET api/library，library.py）：网盘（OpenList 的 WebDAV）和电脑上的文件夹 ----
 // 上面一排是来源（管理员能扫描、删除、添加），下面是海报墙：电影、剧集（点进去是各集）、其他视频，搜索框按片名筛。
-// 只在这台电脑上放：浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；只有里面没有画面也没有
-// 声音的标「放不了」。家里人都能看，访客没有这一页。
+// 和别的节目一样「播放到」：这台电脑上浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；小电视上
+// 中转缩好画面推过去（library.py 的 play_tv）。只有里面没有画面也没有声音的标「放不了」。家里人都能看，访客没有这一页。
 const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", kind: "webdav", form: false, timer: 0, failed: false,
               match: null, more: false };
 async function loadLib(force, poll) {
@@ -6449,19 +6449,6 @@ function renderLib() {
   if (keep && qs("#libAdd")) for (const [name, value] of Object.entries(keep)) { const f = qs(`#libAdd [name="${name}"]`); if (f) f.value = value; }
   if (focusQ && $("libQ")) { $("libQ").focus(); $("libQ").setSelectionRange(caret, caret); }
   else restoreFocus(k);
-}
-// 片库的一个视频：这一步只在这台电脑上放；「播放到」是小电视时也在电脑上放，说一次以后再做。
-let libTvTold = false;
-function playLibrary(item, label, poster) {
-  if (item.playable === false) { toast("这个文件放不了（里面没有画面也没有声音）", true); return null; }
-  if (!canPc()) { toast("片库只能在电脑客户端或家庭服务器上看", true); return null; }
-  const to = currentTarget(), tell = to && to !== PC && !libTvTold;
-  const done = playOnPc(item, label, poster);
-  if (tell) {
-    libTvTold = true;
-    done.then((answer) => { if (answer && answer.ok) toast("片库暂时只在这台电脑上放，播到小电视以后再做", false, 5000); });
-  }
-  return done;
 }
 async function libAdmin(path, body, btn) {
   let answer;
