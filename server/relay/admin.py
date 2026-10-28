@@ -127,6 +127,9 @@ def get(handler, relay, path: str) -> bool:
     elif path == "/api/admin/clouddrive":
         # 网盘组件（clouddrive.py、server/selfhost/openlist.py）：装了没有、在不在跑；没有密码。
         handler._json(clouddrive.status(relay, handler), headers={"Cache-Control": "no-store"})
+    elif path == "/api/admin/clouddrive/storages":
+        # 网盘组件里加了哪些网盘、状态（clouddrive.storages）：没有令牌、Cookie、附加项。
+        handler._json(clouddrive.storages(relay), headers={"Cache-Control": "no-store"})
     else:
         match = _USER.match(path)
         if match and match.group(2) == "sessions":
@@ -582,6 +585,14 @@ def post(handler, relay, path: str) -> bool:
         if answer.get("ok"):
             relay.accounts.audit(action, caller.user, ip, "library", sid[:8], detail[:40])
         handler._json(answer)
+        return True
+    if path in clouddrive.ROUTES:
+        # 在小鼠电视里加网盘（clouddrive.py）：夸克 / UC 扫码、百度网盘粘贴刷新令牌、删掉、重新扫描。回答里只有
+        # 二维码图片和大白话的状态，操作记录只写挂载的名字。
+        answer, action = clouddrive.drives(relay, path, body)
+        if action:
+            relay.accounts.audit(action, caller.user, ip, "clouddrive", "", str(answer.get("mount_path") or "").strip("/")[:40])
+        handler._json(answer, headers={"Cache-Control": "no-store"})
         return True
     if path in ("/api/admin/clouddrive", "/api/admin/clouddrive/reveal"):
         # 网盘组件（clouddrive.py）：安装、更新、检查、停用、启用、重设密码；reveal 只给这台电脑上打开的电脑版，

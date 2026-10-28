@@ -305,11 +305,18 @@ YouTube 默认关着；B 站和直播频道不用它也能看。打开它是给�
 1. 用管理员打开「片库 → 我的片库 → **添加网盘**」，点**安装网盘组件**（约 37 MB，来自 OpenList 在 GitHub 上的官方
    发布；版本和 SHA-256 都写死，对不上就删掉、从不运行）。下载经「设置 → YouTube」里的代理；「下载太慢？」里可以填
    GitHub 镜像。
-2. 它跑起来后，片库里自动多一个「网盘」来源。点**打开网盘管理**（只在运行小鼠电视的这台电脑上有），用下面给出的用户名
-   和密码登录（先点**显示**，再**复制**）。
-3. 在「存储」里添加百度网盘或夸克，照 OpenList 的[百度网盘](https://doc.oplist.org/guide/drivers/baidu)、
-   [夸克](https://doc.oplist.org/guide/drivers/quark)说明填，然后回来点**扫描**。放不了时把那个存储的 WebDAV 策略
-   改成「本地代理」（[说明](https://doc.oplist.org/guide/drivers/common#webdav-策略)）。
+2. 它跑起来后，片库里自动多一个「网盘」来源，面板上列出 OpenList 里加了哪些网盘和状态（正常、需要扫码、登录过期、出错）。
+3. 在同一个面板里加网盘：
+   - **添加夸克（扫码）**：弹出一个二维码，用夸克 App 扫一扫，在手机上确认。弹窗自己关上，片库跟着重新扫描。二维码过期了
+     点**换一个**。**UC 网盘（扫码）**一样，用 UC 浏览器 App 扫。
+   - **添加百度网盘**：点**打开取令牌页**（OpenList 官方的[取令牌页](https://api.oplist.org/)），选百度网盘、用 OpenList
+     提供的参数（不用自己申请开发者），登录百度，复制刷新令牌，粘贴到框里。
+   登录过期的网盘那一行有**扫码登录**或**重新登录**；**删除**（点两下）只是从 OpenList 里去掉，网盘里的文件不动。这样加的
+   网盘 WebDAV 策略是「本地代理」。
+4. 高级：**打开网盘管理**（只在运行小鼠电视的这台电脑上有）打开 OpenList 自己的页面，用下面给出的用户名和密码登录（先点
+   **显示**，再**复制**），照 OpenList 的[百度网盘](https://doc.oplist.org/guide/drivers/baidu)、
+   [夸克](https://doc.oplist.org/guide/drivers/quark)说明加别的网盘，然后回来点**重新扫描片库**。放不了时把那个存储的
+   WebDAV 策略改成「本地代理」（[说明](https://doc.oplist.org/guide/drivers/common#webdav-策略)）。
 
 OpenList 只听 127.0.0.1，从不对家里的网络开放，小鼠电视也不把它的管理页面转给别的设备；小鼠电视退出时它一起停。
 程序和数据在数据目录的 `openlist/` 里（`bin/` 是程序，`data/` 是它自己的数据库和 `config.json`），管理员密码在
@@ -365,7 +372,8 @@ OpenList 只听 127.0.0.1，从不对家里的网络开放，小鼠电视也不�
 - 「不让电脑睡眠」在 Windows 上的实际效果；macOS 上已确认系统里出现了阻止闲置睡眠的断言。
 - Linux 的托盘（GNOME 默认没有托盘区）。
 - 网盘组件（OpenList）在 Windows、Linux 上的实际运行：固定的文件下载下来核对过哈希和内容，但 OpenList 只在 Mac
-  （Apple 芯片）上跑过，存储用的是本机文件夹；真的百度网盘、夸克账号没有试过。
+  （Apple 芯片）上跑过，存储用的是本机文件夹；真的百度网盘、夸克账号没有试过。在小鼠电视里加网盘在真的 OpenList 上
+  只试到出夸克的二维码；扫码以后、百度网盘的刷新令牌只对假的 OpenList 测过。
 - YouTube 本机模式在 Windows、Linux 上的实际运行（照着写了，只在 Mac 上跑过），以及导入 cookies 后 YouTube 多久要求
   一次登录（Mac 上经代理、不带 cookies 时每次都要求）。
 - 从真的浏览器读取 YouTube 登录：只对着假的 yt-dlp 和准备好的 `Local State`、`profiles.ini` 开发和测试过。真的钥匙串

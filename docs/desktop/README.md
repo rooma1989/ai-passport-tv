@@ -471,14 +471,29 @@ the RooTV download.
    GitHub release; the version and SHA-256 are pinned, a file that does not
    match is deleted and never run). It uses the proxy from Settings > YouTube;
    a GitHub mirror can be entered under "Download too slow?".
-2. When it runs, the library gets a source for it on its own. Click **Open
-   drive admin** (only on the computer running RooTV) and sign in with the user
-   name and password shown under it (**Show**, then **Copy**).
-3. Add Baidu Netdisk or Quark under Storage, following OpenList's
+2. When it runs, the library gets a source for it on its own, and the panel
+   lists the drives added to OpenList with their state (OK, needs scanning,
+   sign-in expired, error).
+3. Add a drive in the same panel:
+   - **Add Quark (scan)**: a QR code appears; scan it with the Quark app and
+     confirm on the phone. The window closes by itself and the library
+     rescans. If the code expires, click **New code**. **UC Netdisk (scan)**
+     works the same way with the UC browser app.
+   - **Add Baidu Netdisk**: click **Open token page** (OpenList's official
+     [token page](https://api.oplist.org/)), choose Baidu Netdisk with the
+     parameters OpenList provides (no developer account needed), sign in to
+     Baidu, copy the refresh token and paste it into the box.
+   A drive whose sign-in expired shows **Scan to sign in** or **Sign in
+   again**; **Delete** (click twice) removes it from OpenList without touching
+   the files on the drive. Drives added this way use the "native proxy" WebDAV
+   policy.
+4. Advanced: **Open drive admin** (only on the computer running RooTV) opens
+   OpenList's own page; sign in with the user name and password shown under it
+   (**Show**, then **Copy**) to add other drives, following OpenList's
    [Baidu](https://doc.oplist.org/guide/drivers/baidu) and
-   [Quark](https://doc.oplist.org/guide/drivers/quark) pages, then click
-   **Scan**. If a video does not play, set that storage's WebDAV policy to
-   "native proxy" ([details](https://doc.oplist.org/guide/drivers/common#webdav-policy)).
+   [Quark](https://doc.oplist.org/guide/drivers/quark) pages. Then click
+   **Rescan library**. If a video does not play, set that storage's WebDAV
+   policy to "native proxy" ([details](https://doc.oplist.org/guide/drivers/common#webdav-policy)).
 
 OpenList listens on 127.0.0.1 only, never on your home network, and RooTV does
 not pass its admin page to other devices. It stops when RooTV stops. Its program
@@ -573,7 +588,9 @@ Developer notes (code map, building, CI, the interface with the core):
 - The Linux tray (GNOME has no tray area by default).
 - The cloud-drive component (OpenList) on Windows and Linux: the pinned files were downloaded and their
   hashes and contents checked, but OpenList was only run on a Mac (Apple silicon), with a local folder as
-  storage; real Baidu Netdisk and Quark accounts were not tried.
+  storage; real Baidu Netdisk and Quark accounts were not tried. Adding a drive from RooTV was checked
+  against a real OpenList up to the Quark QR code; scanning it and the Baidu refresh token were tested
+  only against a fake OpenList.
 - YouTube local mode on Windows and Linux (written for them, run only on a Mac), and how often YouTube
   asks for sign-in with imported cookies (on the Mac, through a proxy, it asked every time without).
 - Reading the YouTube login from a real browser: developed and tested against a fake yt-dlp and canned

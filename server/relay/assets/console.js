@@ -5839,7 +5839,9 @@ function libSourceRow(s, admin, scan) {
 // ---- 片库 → 我的片库 → 网盘（管理员；GET / POST api/admin/clouddrive，server/relay/clouddrive.py） ----
 // 网盘组件就是 OpenList（AGPL-3.0）：第一次点「安装」才从它的官方发布下载，只在这台电脑的 127.0.0.1 上跑，
 // 装好后片库里自动多一个「网盘」来源。它的管理页面要自己登录（用户名、密码在这里看），百度网盘、夸克在那里加。
-const drive = { data: null, open: false, timer: 0, mirror: "", pw: "", busy: false };
+const drive = { data: null, open: false, timer: 0, mirror: "", pw: "", busy: false,
+                list: null, listBusy: false, baidu: false, baiduMount: "", tok: "", adv: false };
+$("libBox").addEventListener("toggle", (event) => { if (event.target.dataset && event.target.dataset.driveadv) drive.adv = event.target.open; }, true);
 async function loadDrive() {
   if (!isAdmin() || drive.busy) return;
   drive.busy = true;
@@ -5853,6 +5855,7 @@ async function loadDrive() {
   // 刚装好、刚起来：片库里的「网盘」来源要过一会儿才出现。
   if (answer.ok && before && (before.running !== answer.running || before.component.state !== answer.component.state
       || !!before.source !== !!answer.source)) loadLib(true);
+  if (answer.ok && answer.running && (!drive.list || !before || !before.running)) loadDriveList();
   clearTimeout(drive.timer);
   const c = answer.ok ? answer.component : null;
   if (c && (c.state === "working" || (c.installed && c.enabled && (!answer.running || !answer.source))))
@@ -5862,6 +5865,106 @@ async function driveCall(body, btn) {
   const answer = await libAdmin("api/admin/clouddrive", body, btn);
   if (answer && answer.component && drive.data && drive.data.ok) drive.data.component = answer.component;
   return answer;
+}
+// ---- 网盘 → 加了哪些网盘、一键添加（GET api/admin/clouddrive/storages，POST …/quark/start、check、baidu） ----
+// 夸克、UC 用 TV 版的扫码登录（页面每 3 秒问一次扫了没有）；百度网盘在 OpenList 的取令牌页拿刷新令牌、粘贴进来。
+async function loadDriveList() {
+  if (drive.listBusy) return;
+  drive.listBusy = true;
+  try { drive.list = await call("GET", "api/admin/clouddrive/storages"); }
+  catch (error) { return; }
+  finally { drive.listBusy = false; }
+  // 正在粘贴令牌时不重画（会打断输入）。
+  if (!(document.activeElement && document.activeElement.id === "driveBaiduTok")) renderLib();
+}
+function driveRow(s) {
+  const tone = s.state === "ok" ? "ok" : s.state === "off" ? "" : "bad";
+  const why = s.reason ? "：" + s.reason : "";
+  const again = s.state !== "ok" && s.state !== "off" && s.relogin
+    ? `<button class="ghost sm" data-drvre="${esc(s.relogin)}" data-m="${esc(s.mount_path)}">${s.relogin === "baidu" ? "重新登录" : "扫码登录"}</button>` : "";
+  return `<div class="ldrv"><span class="lstx"><b>${esc(s.name)}</b><small class="${tone}">${esc(s.kind + " · " + s.label + why)}</small></span>
+    <span class="ldrvacts">${again}<button class="ghost sm red" data-drvdel="${esc(s.mount_path)}">删除</button></span></div>`;
+}
+function drivesHTML(docs) {
+  const L = drive.list;
+  let o = "";
+  if (!L) o += '<p class="hint">正在读取加了哪些网盘…</p>';
+  else if (!L.ok || !L.running) o += `<p class="hint">${esc(L.error || "网盘组件还没在运行")}</p>`;
+  else if (L.storages.length) o += `<div class="ldrvs">${L.storages.map(driveRow).join("")}</div>`;
+  else o += "<p>还没有加网盘。</p>";
+  o += `<div class="inline ldadd"><button class="btn pri sm" data-drvqr="quark" data-k="ld-quark">添加夸克（扫码）</button><button class="btn sm" data-drvbaidu="1" data-k="ld-baidu">添加百度网盘</button><button class="ghost sm" data-drvqr="uc" data-k="ld-uc">UC 网盘（扫码）</button></div>`;
+  if (drive.baidu) {
+    o += `<div class="ldbaidu">
+      <p>① 打开取令牌页，选「百度网盘」，用 OpenList 提供的参数（不用自己申请），登录百度后复制刷新令牌（refresh_token）。</p>
+      <div class="inline"><a class="btn sm" href="${esc(docs.baidu_token)}" target="_blank" rel="noopener noreferrer" data-k="ld-token">打开取令牌页</a><small>${outLink(docs.baidu, "说明")}</small></div>
+      <p>② 粘贴到这里：</p>
+      <div class="inline"><input type="text" id="driveBaiduTok" value="${esc(drive.tok || "")}" placeholder="刷新令牌" aria-label="百度网盘的刷新令牌" autocomplete="off" spellcheck="false" autocapitalize="off"><button class="btn pri sm" data-drvbaiduadd="1">${drive.baiduMount ? "重新登录" : "添加"}</button><button class="ghost sm" data-drvbaidu="0">取消</button></div>
+    </div>`;
+  }
+  if (L && L.ok && L.running && L.storages.length) o += '<div class="inline"><button class="ghost sm" data-drvscan="1" data-k="ld-rescan">重新扫描片库</button></div>';
+  return o;
+}
+function driveAdded(answer) {
+  toast("加好了「" + String(answer.mount_path || "").replace(/^\//, "") + "」，正在扫描片库");
+  loadDriveList();
+  loadDrive();
+  loadLib(true);
+  setTimeout(() => loadHome(true), 4000);
+}
+// 扫码登录：二维码在弹窗里，每 3 秒问一次；过期了点「换一个」（还是同一个网盘，不再多挂一个）。
+let drvRun = 0;
+async function driveQr(kind, mount, btn) {
+  const text = btn.textContent;
+  btn.textContent = "正在要二维码…";
+  const answer = await libAdmin("api/admin/clouddrive/quark/start", { kind, mount_path: mount || "" }, btn);
+  if (btn.isConnected) btn.textContent = text;
+  loadDriveList();
+  if (!answer || !answer.ok) return;
+  if (answer.state === "done") { driveAdded(answer); return; }
+  const run = ++drvRun, at = answer.mount_path;
+  const qrb = el("div", "qrbox ldqr"), img = el("img");
+  img.alt = "登录二维码";
+  img.src = answer.qr;
+  qrb.appendChild(img);
+  const app = kind === "uc" ? "UC 浏览器 App" : "夸克 App";
+  const state = el("p", "ldqrstate", "用" + app + "扫一扫");
+  const row = el("div", "row");
+  row.append(button("取消", "go", closeOverlays));
+  modal("添加" + answer.kind, qrb, state, el("p", "hint", "扫完在手机上点「确认」，这里会自己关上。"), row);
+  $("modal").classList.add("ldqrm");
+  const expired = () => {
+    const over = el("div", "over");
+    over.append(el("span", "", "二维码过期了"), button("换一个", "go", (event) => driveQr(kind, at, event.target)));
+    qrb.appendChild(over);
+    state.textContent = "过期了，点「换一个」";
+  };
+  while (run === drvRun && !$("modal").hidden) {
+    await sleep(3000);
+    if (run !== drvRun || $("modal").hidden) return;
+    let s;
+    try { s = await call("POST", "api/admin/clouddrive/quark/check", { mount_path: at }); }
+    catch (error) { if (error instanceof SignedOut) { signedOut(); return; } continue; }
+    if (run !== drvRun || $("modal").hidden) return;
+    if (!s.ok) { state.textContent = s.error || "出错了"; continue; }
+    if (s.qr) img.src = s.qr;
+    if (s.state === "done") { closeOverlays(); driveAdded(s); return; }
+    if (s.state === "expired") { expired(); loadDriveList(); return; }
+    state.textContent = s.note ? "等扫码…（" + s.note + "）" : "用" + app + "扫一扫";
+  }
+}
+async function driveBaidu(btn) {
+  const input = qs("#driveBaiduTok"), token = input ? input.value.trim() : "";
+  if (!token) { toast("先粘贴刷新令牌", true); if (input) input.focus(); return; }
+  const text = btn.textContent;
+  btn.textContent = "正在登录百度网盘…";
+  const answer = await libAdmin("api/admin/clouddrive/baidu", { refresh_token: token, mount_path: drive.baiduMount }, btn);
+  btn.textContent = text;
+  loadDriveList();
+  if (!answer || !answer.ok) return;
+  drive.baidu = false;
+  drive.baiduMount = "";
+  drive.tok = "";
+  driveAdded(answer);
 }
 function copyText(text) {
   if (!navigator.clipboard) { toast("复制不了，请手动选中复制", true); return; }
@@ -5895,17 +5998,20 @@ function driveHTML() {
     o += '<div class="inline"><button class="btn pri sm" data-drive="enable" data-k="ld-enable">启用网盘组件</button></div>';
     return o + credit + "</div>";
   }
-  if (d.running && d.local) o += `<div class="inline"><a class="btn pri sm" href="${esc(d.url)}@manage" target="_blank" rel="noopener noreferrer" data-k="ld-manage">打开网盘管理</a></div>`;
-  else if (d.running) o += `<p class="hint">网盘管理只能在运行小鼠电视的这台电脑上打开（${esc(d.url)}）。</p>`;
+  if (d.running) o += drivesHTML(docs);
+  // 高级：自己在 OpenList 的网页里加（夸克 Cookie、别家网盘、改 WebDAV 策略）。
+  let adv = "";
+  if (d.running && d.local) adv += `<div class="inline"><a class="btn sm" href="${esc(d.url)}@manage" target="_blank" rel="noopener noreferrer" data-k="ld-manage">打开网盘管理</a></div>`;
+  else if (d.running) adv += `<p class="hint">网盘管理只能在运行小鼠电视的这台电脑上打开（${esc(d.url)}）。</p>`;
   const pw = drive.pw ? `<code>${esc(drive.pw)}</code><button class="ghost sm" data-drivecopy="pw">复制</button>`
     : d.local ? '<code>••••••••</code><button class="ghost sm" data-drivereveal="1" data-k="ld-reveal">显示</button>' : "<small>在运行小鼠电视的电脑上才能看</small>";
-  o += `<div class="ldlogin"><span>用户名</span><code>${esc(d.user)}</code><button class="ghost sm" data-drivecopy="user">复制</button>
+  adv += `<div class="ldlogin"><span>用户名</span><code>${esc(d.user)}</code><button class="ghost sm" data-drivecopy="user">复制</button>
     <span>密码</span>${pw}</div>`;
-  o += `<ol class="ldhow">
-    <li>百度网盘：在网盘管理的「存储」里添加，驱动选「百度网盘」，刷新令牌在 ${outLink(docs.baidu_token, "OpenList 的取令牌页")} 获取（${outLink(docs.baidu, "说明")}）。</li>
-    <li>夸克：驱动选「夸克网盘」，Cookie 从登录了夸克网页版的浏览器里复制（${outLink(docs.quark, "说明")}）。</li>
-    <li>加好后回来点「网盘」那一行的「扫描」；放不了时把那个存储的 WebDAV 策略改成「本地代理」（${outLink(docs.proxy, "说明")}）。</li>
+  adv += `<ol class="ldhow">
+    <li>在网盘管理的「存储」里添加别的网盘（${outLink(docs.quark, "夸克 Cookie")}、${outLink(docs.baidu, "百度网盘")}）。</li>
+    <li>加好后回来点「重新扫描」；放不了时把那个存储的 WebDAV 策略改成「本地代理」（${outLink(docs.proxy, "说明")}）。</li>
   </ol>`;
+  o += `<details class="ldmore"${drive.adv ? " open" : ""} data-driveadv="1"><summary>高级：在网盘管理里自己加</summary><div class="ldadv">${adv}</div></details>`;
   const src = d.source;
   if (src && src.ok === false && /用户名或密码不对/.test(src.error || ""))
     o += '<p class="hint bad">片库连网盘时密码不对（在网盘管理里改过密码？）<button class="ghost sm" data-drive="repair" data-k="ld-repair">改回来</button></p>';
@@ -6005,6 +6111,35 @@ $("libBox").addEventListener("click", async (event) => {
     if (answer && answer.ok) { drive.pw = answer.password; renderLib(); setTimeout(() => { drive.pw = ""; renderLib(); }, 60000); }
     return;
   }
+  if (ds.drvqr) { driveQr(ds.drvqr, "", t); return; }
+  if (ds.drvbaidu) {
+    drive.baidu = ds.drvbaidu === "1";
+    if (!drive.baidu) { drive.baiduMount = ""; drive.tok = ""; }
+    renderLib();
+    const f = qs("#driveBaiduTok");
+    if (f) f.focus();
+    return;
+  }
+  if (ds.drvbaiduadd) { driveBaidu(t); return; }
+  if (ds.drvre) {
+    if (ds.drvre !== "baidu") { driveQr(ds.drvre, ds.m, t); return; }
+    drive.baidu = true; drive.baiduMount = ds.m; renderLib();
+    const f = qs("#driveBaiduTok");
+    if (f) f.focus();
+    return;
+  }
+  if (ds.drvscan) {
+    const answer = await libAdmin("api/admin/clouddrive/rescan", {}, t);
+    if (answer && answer.ok) { toast("开始扫描"); loadLib(true); }
+    return;
+  }
+  if (ds.drvdel) {
+    // 两步：4 秒内再点一下才删。只是从网盘组件里去掉，网盘里的文件不动。
+    if (t.dataset.sure !== "1") { t.dataset.sure = "1"; t.textContent = "确定删除？"; setTimeout(() => { if (t.isConnected) { t.dataset.sure = ""; t.textContent = "删除"; } }, 4000); return; }
+    const answer = await libAdmin("api/admin/clouddrive/storages/delete", { mount_path: ds.drvdel }, t);
+    if (answer && answer.ok) { toast("删掉了「" + ds.drvdel.replace(/^\//, "") + "」（网盘里的文件不动）"); loadDriveList(); loadLib(true); }
+    return;
+  }
   if (ds.drive) {
     const what = ds.drive;
     if (what === "disable" && t.dataset.sure !== "1") {
@@ -6051,6 +6186,7 @@ $("libBox").addEventListener("submit", async (event) => {
 });
 $("libBox").addEventListener("input", (event) => {
   if (event.target.id === "driveMirror") { drive.mirror = event.target.value; return; }
+  if (event.target.id === "driveBaiduTok") { drive.tok = event.target.value; return; }
   if (event.target.id !== "libQ") return;
   lib.q = event.target.value;
   renderLib();

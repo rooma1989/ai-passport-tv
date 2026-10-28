@@ -1125,6 +1125,22 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .ldmore summary { cursor: pointer; color: var(--label-2); font-size: 13px; }
 .ldmore input { width: 100%; margin: 8px 0 4px; }
 .ldmore small, .ldcredit { color: var(--label-3); font-size: 12px; }
+/* 加了哪些网盘、一键添加（console.js drivesHTML / driveQr） */
+.ldrvs { display: grid; gap: 6px; }
+.ldrv { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px; background: var(--fill); }
+.ldrv .lstx { flex: 1; }
+.ldrv .lstx small.ok { color: var(--ok); }
+.ldrvacts { flex: none; display: flex; gap: 6px; }
+.ldrvacts .ghost { height: 30px; padding: 0 10px; font-size: 13px; }
+.ldbaidu { display: grid; gap: 8px; padding: 12px; border-radius: 12px; background: var(--fill); font-size: 14px; }
+.ldbaidu .inline > input { flex: 1 1 200px; min-width: 0; }
+.ldbaidu small { align-self: center; }
+.ldadv { display: grid; gap: 10px; margin-top: 10px; }
+.ldqr img { display: block; width: 100%; height: 100%; object-fit: contain; }
+#modal.ldqrm { text-align: center; }
+#modal.ldqrm .ldqrstate { font: 600 16px var(--sans); }
+.m .ldrv { flex-wrap: wrap; }
+.m .ldrvacts { margin-left: auto; }
 .lempty .lformbox { margin: 18px auto 0; }
 .lempty .eic { color: var(--label-2); }
 .lempty .libadd { max-width: 560px; margin: 18px auto 0; }

@@ -1064,7 +1064,7 @@ class Library:
             reason = str(error)
             if src.get("managed") == MANAGED and reason == "网盘出错了（500）":
                 # OpenList 里还没有挂任何网盘时 PROPFIND / 回答 500（storage not found）。
-                reason = "网盘组件里还没有添加网盘：打开网盘管理，添加百度网盘或夸克"
+                reason = "还没有添加网盘：点「网盘」，再点「添加夸克」或「添加百度网盘」"
             self._update_source(sid, lambda s: s.update(last_scan=int(self.clock()), ok=False, error=reason))
             with _LOCK:
                 self._status.update(running=False, error=f"「{name}」：{reason}", finished_at=int(self.clock()))
