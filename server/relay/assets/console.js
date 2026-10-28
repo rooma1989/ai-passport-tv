@@ -442,6 +442,7 @@ function showApp() {
   schedule(5000);
 }
 
+let shownPath = "";
 function routeParts() {
   const h = decodeURIComponent(location.hash.slice(1)) || "/home";
   return h.split("?")[0].split("/").filter(Boolean);
@@ -456,7 +457,8 @@ function showRoute() {
   if (name === "admin" && !isAdmin()) name = "home";
   // 进不去的地址（访客、不是管理员打开 #/admin）：地址栏也改成真正显示的那一页。
   if (name !== parseRoute()) { history.replaceState(null, "", "#/" + name); lastHash = location.hash; }
-  const was = route;
+  const was = route, wasPath = shownPath;
+  shownPath = routeParts().join("/");
   route = name;
   lsSet("rootv.route", name === "remote" || name === "me" ? "home" : name);
   for (const p of qsa(".page")) p.classList.toggle("on", p.dataset.route === name);
@@ -466,7 +468,15 @@ function showRoute() {
   renderTabs();
   $("view").classList.toggle("bleed", name === "home" && !!(homeData && homeData.hero && homeData.hero.length));
   document.title = TITLES[name] + " · " + BRAND_ZH;
+  // 列表 → 资料页（同一页、地址不同）：记下列表滚到哪儿，资料页从顶上看；回到列表时回到原处（showDetailRoute）。
+  const from = detailRoute(wasPath), to = detailRoute(shownPath);
+  if (was === name && wasPath !== shownPath) {
+    if (!from && to) listScroll[name] = $("main").scrollTop;
+    if (to) $("main").scrollTop = 0;
+  }
   if (was !== name) $("main").scrollTop = 0;
+  if (name === "series" || name === "up") showDetailRoute(name, was === name && from && !to ? from : null);
+  else dt.kind = "";
   updateTop();
   if (name === "home") { renderHome(); loadHome(); }
   if (name === "live" && was !== name) loadEpg();
@@ -481,6 +491,7 @@ function showRoute() {
   if (name === "up") { renderUpLatest(); renderFollows(); loadFollows(); }
   if (name === "home") loadFeeds();
   if (name === "up" || name === "series") loadHome();
+  if (name === "series") loadSeriesWall();
   if (data) render();
 }
 // 「管理」的脚本（console-admin.js，约 100 KB）只有管理员打开「管理」时才取：别人的首屏不用下载它。地址带内容散列，
@@ -787,7 +798,8 @@ function render() {
   renderWatch();
   renderMini();
   if (route === "live") renderLive();
-  if (route === "series") renderSeriesGrid();
+  if (route === "series" && !detailRoute()) { renderSeriesGrid(); loadSeriesWall(); }
+  if (detailRoute()) refreshMarks();
   renderSubs();
   renderHistory();
   if (route === "search") renderSearchSource();
@@ -1042,7 +1054,7 @@ $("rememberSw").onclick = () => setRemember(!remember);
 // ======================================================================= 抽屉、弹窗
 
 let lastFocus = null;
-const SHEETS = ["sheet", "rsheet", "drawer", "csheet", "allsheet"];
+const SHEETS = ["sheet", "rsheet", "drawer", "allsheet"];
 function anyOverlay() { return SHEETS.some((id) => !$(id).hidden) || !$("modal").hidden; }
 function openSheet(node) {
   if (!anyOverlay()) lastFocus = document.activeElement;
@@ -1063,7 +1075,6 @@ function closeSheets(quiet) {
   if (typeof closeWifi === "function" && wifiDev) closeWifi();
   if (follow) follow = null;
   if (ysub) { ysub = null; clearTimeout(ysubPoll); }
-  cs = null;
   al = null;
   if (!quiet && lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
   lastFocus = null;
@@ -3937,6 +3948,7 @@ function removeButton(kind, item) {
     } catch (error) { if (error instanceof SignedOut) signedOut(); }
     refresh();
     loadHome(true);
+    if (kind === "series") loadSeriesWall(true);
   });
 }
 // UP 主：中转只轮播最新的 20 个投稿，「未看」只数这些；count 是 UP 主一共有多少个（不知道时为 0）。
@@ -3982,49 +3994,304 @@ function renderSubs() {
   $("upCount2").textContent = data.creators.length + " / 12";
   if (!data.creators.length) ups.appendChild(emptyRow("还没有添加 UP 主：在下面粘贴主页链接，或者去搜索里找"));
   for (const c of data.creators) {
-    ups.appendChild(listRow(onAir(c.id) ? "air" : "", c.name, upMeta(c) + (onAir(c.id) ? " · " + deviceName() + "正在播" : ""),
-                            [playButton(c), pickButton(c), removeButton("creators", c)]));
+    // 点这一行（不是按钮）：这个 UP 主的资料页（#/up/<台 id>）。
+    const row = listRow("tap" + (onAir(c.id) ? " air" : ""), c.name, upMeta(c) + (onAir(c.id) ? " · " + deviceName() + "正在播" : ""),
+                        [playButton(c), pickButton(c), removeButton("creators", c)]);
+    row.onclick = () => { location.hash = "#/up/" + c.id; };
+    ups.appendChild(row);
   }
-  const rows = $("seriesRows");
-  rows.replaceChildren();
   const room = data.room || {};
   $("seriesCount").textContent = (data.series || []).length + " 部" + (room.fits === false ? " · 频道列表已满" : "");
-  if (!(data.series || []).length) rows.appendChild(emptyRow("还没有添加剧集"));
-  for (const s of data.series || []) {
-    const row = listRow("tap" + (onAir(s.id) ? " air" : ""), s.name,
-                        siteTag(s.site) + " · 第 " + s.episode + " / " + s.total + " 集" + (onAir(s.id) ? " · " + deviceName() + "正在播" : ""),
-                        [playButton(s), button("选集 ›", "linkbtn", (event) => { event.stopPropagation(); openEpisodes(s.id); }), removeButton("series", s)]);
-    row.onclick = () => openEpisodes(s.id);
-    rows.appendChild(row);
-  }
   markSubscribed();
 }
-// 剧集海报格子：封面来自 /api/home 的 series_updates（B 站给过的海报），没有就用占位图。
+// ======================================================================= 资料页：剧集、UP 主（server/relay/detail.py）
+// 剧集海报墙（GET api/detail/series）、一部剧（#/series/<台 id>，GET api/detail/series/<台 id>）、一个 UP 主
+// （#/up/<台 id 或关注的键>，GET api/detail/up/…）。看到哪儿是统一的进度（detail.Marks：小电视、这台电脑、片库的
+// 一起读，不改它们存的样子），首页的「剧集追更」「UP 主更新」也用它，几处的标记一样；资料页开着时每 MARKS_MS 用
+// GET api/progress 只取进度，在电脑上、小电视上看着，标记就跟上了。头部和片库的资料页是同一个样子（infoHTML）。
+
+const MARKS_MS = 10000;
+const WALL_MS = 15000;
+const EPS_WINDOW = 120;      // 集数多的剧先列出当前这集前后这么多集，「显示全部」再列全
+const DETAIL_ID = /^[0-9A-Za-z:_-]{1,40}$/;
+const SERIES_KINDS = [["all", "全部"], ["going", "在看"], ["fresh", "没开始"], ["done", "看完了"]];
+const sw = { list: null, at: 0, busy: false, filter: lsGet("rootv.seriesFilter", "all") };
+const dt = { kind: "", id: "", data: null, busy: false, run: 0, error: "", marksAt: 0, more: false, all: false, polls: 0 };
+const listScroll = {};
+
+// ---- 资料页的几个纯函数（tests/console_detail_test.mjs 截出这一段单独测）----
+// 地址 → {kind: "series" | "up", id}；不是资料页时 null。path 不给就是现在的地址（"series/sr01" 这样）。
+function detailRoute(path) {
+  const parts = (path == null ? routeParts().join("/") : path).split("/").filter(Boolean);
+  return (parts[0] === "series" || parts[0] === "up") && parts.length === 2 && DETAIL_ID.test(parts[1]) ? { kind: parts[0], id: parts[1] } : null;
+}
+// 一部剧的进度（detail.Marks.channel）→ 海报下面那行字。
+function seriesLine(p) {
+  return p.finished ? "看完了 · 共 " + p.total + " 集" : p.started ? "看到第 " + p.episode + " 集 · 共 " + p.total + " 集" : "共 " + p.total + " 集";
+}
+function seriesKind(p) { return p.finished ? "done" : p.started ? "going" : "fresh"; }
+// 海报上的进度条：看完的集数加上正在看的那一集看了几成。
+function seriesPct(p) {
+  if (!p.total) return 0;
+  const part = !p.finished && p.duration && p.position ? Math.min(1, p.position / p.duration) : 0;
+  return Math.min(1, (p.watched + part) / p.total);
+}
+// 主按钮的字：没开始「播放第 1 集」，看到一半「继续看第 N 集」，看完了「重看第 1 集」。
+function resumeLabel(p) { return p.finished ? "重看第 1 集" : p.started ? "继续看第 " + p.episode + " 集" : "播放第 1 集"; }
+// 一集 / 一个视频的进度 → 那一行的小字。
+function markText(m, duration) {
+  if (m && m.finished) return "看过" + (m.device ? " · " + m.device : "");
+  if (m && m.position) return "看到 " + clock(m.position) + (m.duration ? " / " + clock(m.duration) : "") + (m.device ? " · " + m.device : "");
+  return duration ? clock(duration) : "";
+}
+// 集数多的剧只列当前这集前后的一段：[from, to)（从 0 数）。
+function episodeWindow(total, current, size) {
+  if (total <= size) return [0, total];
+  const from = Math.max(0, Math.min(current - 1 - Math.floor(size / 6), total - size));
+  return [from, from + size];
+}
+// GET api/progress 的回答合进资料页的数据：变了的才换，回答「有没有变」（变了才重画）。
+function applyMarks(d, items) {
+  let changed = false;
+  const take = (x) => {
+    if (!(x.key in items)) return;
+    const m = items[x.key];
+    if (JSON.stringify(m) !== JSON.stringify(x.mark)) { x.mark = m; changed = true; }
+  };
+  for (const e of d.episodes || []) take(e);
+  for (const v of d.videos || []) take(v);
+  const ch = d.id ? items["ch:" + d.id] : null;
+  if (ch && JSON.stringify(ch) !== JSON.stringify(d.progress)) { d.progress = ch; changed = true; }
+  return changed;
+}
+// ---- 资料页的纯函数到此 ----
+
+async function loadSeriesWall(force) {
+  if (sw.busy || isGuest() || (!force && sw.list && Date.now() - sw.at < WALL_MS)) return;
+  sw.busy = true;
+  let answer;
+  try { answer = await call("GET", "api/detail/series"); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  finally { sw.busy = false; }
+  if (!answer.ok) return;
+  sw.list = answer.items;
+  sw.at = Date.now();
+  if (route === "series" && !detailRoute()) renderSeriesGrid();
+}
+function seriesPoster(s) {
+  const p = s.progress;
+  const badge = s.on_tv.length ? '<span class="badge live">正在播</span>' : p.finished ? '<span class="badge">看完了</span>'
+    : p.new ? '<span class="badge new">更新</span>' : p.started ? `<span class="badge new">第 ${p.episode} 集</span>` : "";
+  return `<a class="card p" href="#/series/${esc(s.id)}" data-k="sr-${esc(s.id)}" aria-label="${esc(s.name)}，${esc(seriesLine(p))}">
+    <span class="art">${art(s.name, "p", { title: s.name, kick: siteTag(s.site) })}${imgTag(s.art)}${badge}${p.started && !p.finished ? pbar(seriesPct(p)) : ""}</span>
+    <span class="t">${esc(s.name)}</span><span class="s">${esc(seriesLine(p))}</span></a>`;
+}
 let seriesSig = "";
 function renderSeriesGrid() {
-  if (!data) return;
-  const grid = $("seriesGrid");
-  const arts = {};
-  for (const s of (homeData && homeData.series_updates) || []) arts[s.series.id] = s;
-  const list = data.series || [];
-  const sig = JSON.stringify([list, Object.keys(arts).map((k) => [k, arts[k].art.url, arts[k].series.done]), data.now.channel, data.now.online]);
+  const grid = $("seriesGrid"), list = sw.list;
+  if (!list) { if (!grid.childElementCount) grid.innerHTML = '<p class="hint" style="grid-column:1/-1">正在读取…</p>'; return; }
+  const kinds = SERIES_KINDS.filter(([k]) => k === "all" || list.some((s) => seriesKind(s.progress) === k));
+  if (!kinds.some(([k]) => k === sw.filter)) sw.filter = "all";
+  const shown = list.filter((s) => sw.filter === "all" || seriesKind(s.progress) === sw.filter);
+  const sig = JSON.stringify([list, sw.filter]);
   if (sig === seriesSig && grid.childElementCount) return;
   seriesSig = sig;
   const fk = focusKey();
-  if (!list.length) {
-    grid.innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="eic">${ic("series", 40)}</div><b>还没有剧</b><p>番剧、多集视频、合集、播放列表都行：每部剧是一个台，按顺序播，接着上次的地方。</p><a class="btn pri sm" href="#/search">去搜索里找</a></div>`;
+  $("seriesChips").hidden = list.length < 2;
+  $("seriesChips").innerHTML = kinds.map(([k, t]) => `<button data-srk="${k}" data-k="srk-${k}" aria-pressed="${k === sw.filter}">${t} <em>${k === "all" ? list.length : list.filter((s) => seriesKind(s.progress) === k).length}</em></button>`).join("");
+  grid.innerHTML = !list.length
+    ? `<div class="empty" style="grid-column:1/-1"><div class="eic">${ic("series", 40)}</div><b>还没有剧</b><p>番剧、多集视频、合集、播放列表都行：每部剧是一个台，按顺序播，接着上次的地方。</p><a class="btn pri sm" href="#/search">去搜索里找</a></div>`
+    : shown.map(seriesPoster).join("");
+  restoreFocus(fk);
+}
+$("seriesChips").addEventListener("click", (event) => {
+  const t = event.target.closest("[data-srk]");
+  if (!t) return;
+  sw.filter = t.dataset.srk;
+  lsSet("rootv.seriesFilter", sw.filter);
+  renderSeriesGrid();
+});
+
+// ---- 资料页：打开、取数据、画 ----
+
+function showDetailRoute(name, back) {
+  const r = detailRoute();
+  const on = !!(r && r.kind === name);
+  $(name === "series" ? "seriesMain" : "upMain").hidden = on;
+  $(name === "series" ? "seriesDetail" : "upDetail").hidden = !on;
+  if (!on) {
+    dt.kind = "";
+    if (back) {
+      // 从资料页回来：回到点进去以前滚到的地方，焦点回到那张海报（或那个 UP 主）上。
+      if (name === "series") renderSeriesGrid();
+      $("main").scrollTop = listScroll[name] || 0;
+      const card = qs(`#${name === "series" ? "seriesGrid" : "upMain"} [data-k="${name === "series" ? "sr-" : "fw-"}${CSS.escape(back.id)}"]`);
+      if (card) card.focus({ preventScroll: true });
+    }
     return;
   }
-  grid.innerHTML = list.map((s) => {
-    const h = arts[s.id];
-    const done = h && h.series.done;
-    const badge = onAir(s.id) ? '<span class="badge live">正在播</span>' : done ? '<span class="badge">看完了</span>' : s.episode > 1 ? `<span class="badge new">第 ${s.episode} 集</span>` : "";
-    const pct = s.total ? (s.episode - 1) / s.total : 0;
-    return `<button class="card p" data-series="${esc(s.id)}" data-k="sr-${esc(s.id)}" aria-label="${esc(s.name)}，选集">
-      <span class="art">${art(s.name, "p", { title: s.name, kick: siteTag(s.site) })}${h ? imgTag(h.art.url) : ""}${badge}${pct > 0 ? `<span class="pbar"><i style="width:${(pct * 100).toFixed(1)}%"></i></span>` : ""}</span>
-      <span class="t">${esc(s.name)}</span><span class="s">${s.episode > 1 ? "下次第 " + s.episode + " 集 · " : ""}共 ${s.total} 集</span></button>`;
-  }).join("");
+  if (dt.kind !== r.kind || dt.id !== r.id) {
+    Object.assign(dt, { kind: r.kind, id: r.id, data: null, error: "", more: false, all: false, polls: 0, marksAt: 0 });
+    renderDetail();
+  }
+  loadDetail(true);
+}
+async function loadDetail(force) {
+  const r = detailRoute();
+  if (!r || (dt.busy && !force)) return;
+  const run = ++dt.run;
+  dt.busy = true;
+  let answer;
+  try { answer = await call("GET", "api/detail/" + r.kind + "/" + r.id); }
+  catch (error) {
+    if (run === dt.run) dt.busy = false;
+    if (error instanceof SignedOut) signedOut();
+    else if (run === dt.run) { dt.error = "网络不通"; renderDetail(); }
+    return;
+  }
+  if (run !== dt.run) return;
+  dt.busy = false;
+  if (dt.kind !== r.kind || dt.id !== r.id) return;
+  if (answer.ok) { dt.data = answer; dt.error = ""; dt.marksAt = Date.now(); }
+  else { dt.data = null; dt.error = answer.error || "没取到"; }
+  renderDetail();
+  // 只关注、没放到小电视的 UP 主：投稿在后台取（follows.videos），取到以前每 2 秒再问一次，最多一分钟。
+  if (answer.ok && answer.loading && dt.polls++ < 30) setTimeout(() => { if (dt.run === run && detailRoute()) loadDetail(true); }, 2000);
+}
+// 开着资料页时（render() 每次都叫）：隔 MARKS_MS 只取一次进度（GET api/progress），变了才重画。
+function refreshMarks() {
+  const d = dt.data;
+  if (!d || dt.busy || Date.now() - dt.marksAt < MARKS_MS) return;
+  dt.marksAt = Date.now();
+  const keys = [];
+  if (d.id) keys.push("ch:" + d.id);
+  if (dt.kind === "series") { const [a, b] = shownEpisodes(d); keys.push(...d.episodes.slice(a, b).map((e) => e.key)); }
+  else keys.push(...(d.videos || []).map((x) => x.key));
+  if (!keys.length) return;
+  call("GET", "api/progress?keys=" + encodeURIComponent(keys.slice(0, 300).join(","))).then((answer) => {
+    if (answer.ok && dt.data === d && applyMarks(d, answer.items)) renderDetail();
+  }).catch(() => {});
+}
+function shownEpisodes(d) { return dt.all ? [0, d.episodes.length] : episodeWindow(d.episodes.length, d.progress.episode || 1, EPS_WINDOW); }
+function backHTML(kind) {
+  return `<div class="lshow"><a class="ghost sm" href="#/${kind}" data-k="dback">${ic("back", 16)}${kind === "series" ? "剧集与番剧" : "UP 主"}</a></div>`;
+}
+function renderDetail() {
+  if (!dt.kind) return;
+  const box = $(dt.kind === "series" ? "seriesDetail" : "upDetail");
+  if (!dt.data) {
+    box.innerHTML = backHTML(dt.kind) + (dt.error
+      ? `<div class="empty sm"><div class="eic">${ic(dt.kind === "series" ? "series" : "up", 36)}</div><b>${esc(dt.error)}</b><p>可能已经删掉了。</p><a class="btn sm" href="#/${dt.kind}">回到列表</a></div>`
+      : '<p class="hint">正在读取…</p>');
+    return;
+  }
+  const fk = focusKey();
+  box.innerHTML = backHTML(dt.kind) + (dt.kind === "series" ? seriesDetailHTML(dt.data) : upDetailHTML(dt.data));
+  // 简介没被折起来（三行放得下）就不要「展开」。
+  const plotP = qs(".lplot", box), plotB = qs("[data-dmore]", box);
+  if (plotP && plotB && !dt.more && plotP.scrollHeight <= plotP.clientHeight + 1) plotB.hidden = true;
+  document.title = dt.data.name + " · " + BRAND_ZH;
   restoreFocus(fk);
+}
+function targetHint() {
+  const to = currentTarget();
+  return to === PC ? "在这台电脑上看：不动小电视的进度" : to ? "播放到「" + targetName(to) + "」：小电视从这一集接着播" : "";
+}
+function seriesDetailHTML(d) {
+  const p = d.progress, n = p.episode || 1, ep = d.episodes[n - 1];
+  const item = (k, m) => reg({ id: "sd" + k + ":" + d.id, title: d.name + " 第 " + m + " 集", subtitle: d.name,
+                               art: { url: (d.episodes[m - 1] && d.episodes[m - 1].art) || d.art, ratio: "wide" },
+                               play: { kind: "episode", channel: d.id, episode: m } });
+  const resume = p.started && !p.finished && p.position ? "从 " + clock(p.position) : "";
+  let acts = splitHTML(item("", n), resumeLabel(p), resume);
+  if (p.started && !p.finished && n > 1) acts += `<button class="btn" data-play="${esc(item("1", 1))}" data-k="sd-first">从第 1 集看</button>`;
+  acts += `<button class="ghost red" data-ddrop="series" data-k="sd-drop">删除这部剧</button>`;
+  const facts = [esc(siteTag(d.site)), "共 " + d.total + " 集", p.watched ? "看过 " + p.watched + " 集" : "",
+                 d.on_tv.length ? `<b class="lrate">「${esc(d.on_tv.join("」「"))}」正在播</b>` : ""].filter(Boolean);
+  const where = p.device ? "最后在「" + p.device + "」" : "";
+  const progress = p.finished ? { pct: 1, text: "看完了" + (where ? " · " + where + "看的" : "") }
+    : p.started ? { pct: seriesPct(p), text: where + "看到第 " + n + " 集" + (p.position ? " " + clock(p.position) : "") + " · 看过 " + p.watched + " / " + p.total + " 集" } : null;
+  const head = infoHTML({ title: d.name, art: d.art, facts, plot: d.desc, more: dt.more, moreKey: "dmore", progress,
+                          state: targetHint(), acts });
+  const [a, b] = shownEpisodes(d);
+  const rows = d.episodes.slice(a, b).map((e) => episodeRowHTML(d, e, e.n === n && p.started && !p.finished)).join("");
+  const more = b - a < d.episodes.length ? `<div class="bsmore"><button class="ghost" data-dall="1" data-k="sd-all">显示全部 ${d.episodes.length} 集</button></div>` : "";
+  return head + `<div class="h2 leps"><h2>选集</h2><small>共 ${d.total} 集${p.watched ? " · 看过 " + p.watched + " 集" : ""}${ep && p.started && !p.finished ? " · 接着看第 " + n + " 集" : ""}</small></div>
+    <div class="hlist dlist">${a > 0 ? `<p class="hint">前面还有 ${a} 集</p>` : ""}${rows}</div>${more}`;
+}
+function episodeRowHTML(d, e, cur) {
+  const m = e.mark;
+  const id = reg({ id: "se:" + d.id + ":" + e.n, title: d.name + " 第 " + e.n + " 集", subtitle: d.name,
+                   art: { url: e.art || d.art, ratio: "wide" }, play: { kind: "episode", channel: d.id, episode: e.n } });
+  const text = markText(m, e.duration);
+  const pct = m && !m.finished && m.duration ? m.position / m.duration : 0;
+  return `<button class="hrow${m && m.finished ? " seen" : ""}${cur ? " cur" : ""}" data-play="${esc(id)}" data-k="se-${e.n}" aria-label="第 ${e.n} 集 ${esc(e.title)}${text ? "，" + esc(text) : ""}"${cur ? ' aria-current="true"' : ""}>
+    <span class="art">${art(d.name, "w")}${imgTag(e.art)}${m && m.finished ? '<span class="badge r b">看过</span>' : ""}${pbar(pct)}</span>
+    <span class="htx"><b><span class="hn">${e.n}</span>${esc(e.title || "第 " + e.n + " 集")}</b><small>${cur ? '<span class="dnow">接着看</span>' : ""}${esc(text)}</small></span></button>`;
+}
+function upVideoCard(x) {
+  const id = reg(x), m = x.mark;
+  const pct = m && !m.finished && m.duration ? m.position / m.duration : 0;
+  return `<button class="card${m && m.finished ? " seen" : ""}" data-play="${esc(id)}" data-k="uv-${esc(x.key)}" aria-label="播放 ${esc(x.title)}${m ? "，" + esc(markText(m)) : ""}"><span class="art">${itemArt(x, "w")}${x.duration ? `<span class="badge r b num">${clock(x.duration)}</span>` : ""}${m && m.finished ? '<span class="badge">看过</span>' : m && m.position ? '<span class="badge new">看到一半</span>' : ""}${pbar(pct)}</span>
+    <span class="t">${esc(x.title)}</span><span class="s">${esc([x.pubdate ? ago(x.pubdate) : "", m && !m.finished && m.position ? markText(m) : ""].filter(Boolean).join(" · "))}</span></button>`;
+}
+function upDetailHTML(d) {
+  const p = d.progress || {}, videos = d.videos || [];
+  const facts = [esc(siteTag(d.site)), d.count ? "共 " + d.count + " 个视频" : "",
+                 d.id ? "小电视上的 UP 主台" : "", d.followed ? "关注中" : d.key && d.can_follow_tv ? "已取关" : "",
+                 d.on_tv.length ? `<b class="lrate">「${esc(d.on_tv.join("」「"))}」正在播</b>` : ""].filter(Boolean);
+  let acts = "";
+  if (d.id) {
+    acts += splitHTML(reg({ id: "ud:" + d.id, title: d.name, subtitle: "UP 主", art: { url: d.face, ratio: "wide" },
+                            play: { kind: "channel", channel: d.id, title: d.name } }), "播放没看过的");
+    acts += `<button class="ghost red" data-dsub="0" data-k="ud-sub">取消订阅</button>`;
+  } else if (d.can_follow_tv) {
+    acts += `<button class="btn pri" data-dsub="1" data-k="ud-sub" title="订阅：放到小电视的 UP 主台（最多 12 个）">${ic("plus", 17)}订阅 · 放到小电视</button>`;
+  }
+  const watched = videos.filter((x) => x.mark && x.mark.finished).length;
+  const progress = videos.length ? { pct: watched / videos.length, text: "最近 " + videos.length + " 个里看过 " + watched + " 个" } : null;
+  const state = d.id ? "订阅了就是小电视上的一个台：从最新的没看过的视频播起（只轮播最新的 20 个）" : d.can_follow_tv ? "只是关注，还没放到小电视上；点视频照样能看" : "";
+  const head = infoHTML({ title: d.name, art: d.face, round: true, facts, plot: d.sign, more: dt.more, moreKey: "dmore", progress, state, acts });
+  const grid = videos.length ? `<div class="wgrid">${videos.map(upVideoCard).join("")}</div>`
+    : `<p class="hint">${d.loading ? "正在取最新的投稿…" : esc(d.error_note || "还没有投稿")}</p>`;
+  return head + `<div class="h2 leps"><h2>最近的投稿</h2><small>${videos.length ? "新的在前 · 点一下播放到「" + esc(targetName(currentTarget())) + "」" : ""}</small></div>${grid}`;
+}
+async function detailAct(t) {
+  const d = dt.data;
+  if (!d) return;
+  if (t.dataset.dmore) { dt.more = !dt.more; renderDetail(); return; }
+  if (t.dataset.dall) { dt.all = true; renderDetail(); return; }
+  if (t.dataset.ddrop) {
+    if (!confirm("删除「" + d.name + "」这个台？看到哪一集也会忘掉。")) return;
+    const answer = await call("DELETE", "api/series/" + d.id);
+    if (!answer.ok) { toast(answer.error || "没删成", true); return; }
+    toast("删掉了「" + d.name + "」");
+    refresh(); loadHome(true); loadSeriesWall(true);
+    location.hash = "#/series";
+    return;
+  }
+  if (t.dataset.dsub === "1") {
+    const answer = await call("POST", "api/follows/tv", { key: d.key, on: true });
+    if (!answer.ok) { toast(answer.error || "没订阅上", true); return; }
+    toast("「" + d.name + "」放到小电视上了");
+    refresh(); loadHome(true); loadDetail(true); if (fw) loadFollows();
+    return;
+  }
+  if (t.dataset.dsub === "0") {
+    if (!confirm("取消订阅「" + d.name + "」？小电视上的这个台会拿下来，看到哪里会忘掉；以后可以再订阅。")) return;
+    const answer = await call("DELETE", "api/creators/" + d.id);
+    if (!answer.ok) { toast(answer.error || "没取消成", true); return; }
+    toast("取消订阅了「" + d.name + "」");
+    refresh(); loadHome(true); if (fw) loadFollows();
+    // 还在「我的关注」里：留在这一页（按关注的键），只是不在小电视上了；不然回到列表。
+    if (d.key && d.followed) { history.replaceState(null, "", "#/up/" + d.key); lastHash = location.hash; showRoute(); } else location.hash = "#/up";
+  }
+}
+for (const id of ["seriesDetail", "upDetail"]) {
+  $(id).addEventListener("click", (event) => {
+    const t = event.target.closest("button");
+    if (t && (t.dataset.dmore || t.dataset.dall || t.dataset.ddrop || t.dataset.dsub)) busy(t, () => detailAct(t));
+  });
 }
 function renderUpLatest() {
   const box = $("upLatest");
@@ -5912,13 +6179,13 @@ async function setFollowTv(key, on) {
   await loadFollows();
   refresh();
   loadHome(true);
-  if (cs && cs.key === key) renderCreatorActs();
+  if (dt.kind === "up" && dt.data && dt.data.key === key) loadDetail(true);
 }
 $("fwList").addEventListener("click", (event) => {
   const t = event.target.closest("button");
   if (!t) return;
   if (t.dataset.fwtv) { setFollowTv(t.dataset.fwtv, t.getAttribute("aria-checked") !== "true"); return; }
-  if (t.dataset.fw) openCreator(t.dataset.fw);
+  if (t.dataset.fw) location.hash = "#/up/" + t.dataset.fw;
 });
 $("fwChips").addEventListener("click", (event) => {
   const t = event.target.closest("[data-fwk]");
@@ -5938,43 +6205,6 @@ $("fwSync").onclick = () => busy($("fwSync"), async () => {
   renderFollows();
   pollFollows();
 });
-
-// 一个关注的 UP 主：最新的投稿，点一个播放（播放到记住的地方），上面是「放到小电视」。
-let cs = null;
-function renderCreatorActs() {
-  const f = fw && cs && fw.items.find((x) => x.key === cs.key);
-  if (!f) return;
-  const b = button(f.tv ? "从小电视上拿下来" : "放到小电视", f.tv ? "ghost" : "go", () => setFollowTv(f.key, !f.tv));
-  $("csActs").replaceChildren(b);
-  $("csSite").textContent = siteTag(f.site) + (f.unfollowed ? " · 已取关" : "") + (f.tv ? " · 小电视上的台" : "");
-}
-function openCreator(key) {
-  const f = fw && fw.items.find((x) => x.key === key);
-  if (!f) return;
-  cs = { key, run: (cs ? cs.run : 0) + 1 };
-  $("csName").textContent = f.name;
-  $("csSum").textContent = "正在取最新的投稿…";
-  $("csList").innerHTML = '<div class="wgrid">' + skelCards(4) + "</div>";
-  renderCreatorActs();
-  openSheet($("csheet"));
-  pollCreator(cs.run, 0);
-}
-async function pollCreator(run, n) {
-  let answer;
-  try { answer = await call("GET", "api/follows/videos?key=" + encodeURIComponent(cs.key)); }
-  catch (error) { if (error instanceof SignedOut) signedOut(); else if (cs && cs.run === run) $("csSum").textContent = "网络不通"; return; }
-  if (!cs || cs.run !== run) return;
-  if (!answer.ok) { $("csSum").textContent = answer.error; $("csList").replaceChildren(); return; }
-  if (answer.items.length) {
-    const to = currentTarget();
-    $("csSum").textContent = "最新 " + answer.items.length + " 个投稿 · 点一下播放" + (to ? (to === PC ? "（在这台电脑上）" : "到「" + targetName(to) + "」") : "");
-    $("csList").innerHTML = '<div class="wgrid">' + answer.items.map(cardFeed).join("") + "</div>";
-  } else if (!answer.loading) {
-    $("csSum").textContent = answer.error || "还没有投稿";
-    $("csList").replaceChildren();
-  }
-  if (answer.loading && n < 60) setTimeout(() => pollCreator(run, n + 1), 2000);
-}
 
 // ======================================================================= 片库：历史、我的片库
 // 「历史」是自己 B 站的观看记录（GET api/feeds/history，accountfeeds.py 的 history_page）：每次打开都要新的
@@ -6178,13 +6408,23 @@ function libInfoHTML(o, playHTML) {
     : `<button class="ghost sm" data-libmatch="${esc(o.key)}">匹配豆瓣</button><button class="ghost sm" data-librefresh="${esc(o.key)}">自动找一次</button>`) : "";
   const plot = m && m.plot ? m.plot : o.plot || "";
   const box = lib.match && lib.match.key === o.key ? libMatchHTML() : "";
-  return `<div class="linfo"><span class="lpost">${art(o.title, "p", { title: o.title })}${imgTag(o.art)}</span>
-    <div class="linx"><h2>${esc(o.title)}</h2>${m && m.original && m.original !== o.title ? `<p class="lorig">${esc(m.original)}</p>` : ""}
-    ${facts.length ? `<p class="lfacts">${facts.map((f) => String(f).startsWith("<b") ? f : esc(f)).join('<i aria-hidden="true">·</i>')}</p>` : ""}
-    ${m ? people("导演", m.directors) + people("主演", (m.actors || []).slice(0, 5)) : ""}
-    ${plot ? `<p class="lplot${lib.more ? " open" : ""}">${esc(plot)}</p>${plot.length > 24 ? `<button class="lmore" data-libmore="1" aria-expanded="${lib.more}">${lib.more ? "收起" : "展开"}</button>` : ""}` : ""}
-    ${state ? `<p class="hint lstate">${esc(state)}</p>` : ""}
-    ${playHTML || acts ? `<div class="inline lacts">${playHTML || ""}${acts}</div>` : ""}${box}</div></div>`;
+  return infoHTML({ title: o.title, art: o.art, orig: m && m.original && m.original !== o.title ? m.original : "",
+                    facts: facts.map((f) => String(f).startsWith("<b") ? f : esc(f)),
+                    people: m ? people("导演", m.directors) + people("主演", (m.actors || []).slice(0, 5)) : "",
+                    plot, more: lib.more, moreKey: "libmore", state, acts: (playHTML || "") + acts, box });
+}
+// 资料页的头，片库、剧集、UP 主三处共用一个样子：左边海报（UP 主是圆头像），右边标题、原名、一行事实（已经转义好的
+// HTML）、人、简介（三行以上折起来，moreKey 是「展开」按钮的 data-…）、看到哪儿的进度线、提示、按钮。
+function infoHTML(o) {
+  const pr = o.progress;
+  return `<div class="linfo${o.round ? " round" : ""}"><span class="lpost">${o.round ? avatarSVG(o.title, 200) : art(o.title, "p", { title: o.title })}${imgTag(o.art)}</span>
+    <div class="linx"><h2>${esc(o.title)}</h2>${o.orig ? `<p class="lorig">${esc(o.orig)}</p>` : ""}
+    ${o.facts && o.facts.length ? `<p class="lfacts">${o.facts.join('<i aria-hidden="true">·</i>')}</p>` : ""}
+    ${o.people || ""}
+    ${o.plot ? `<p class="lplot${o.more ? " open" : ""}">${esc(o.plot)}</p>${o.plot.length > 24 ? `<button class="lmore" data-${o.moreKey}="1" aria-expanded="${!!o.more}">${o.more ? "收起" : "展开"}</button>` : ""}` : ""}
+    ${pr ? `<div class="dprog"><span class="dbar" aria-hidden="true"><i style="width:${(Math.min(1, Math.max(0, pr.pct)) * 100).toFixed(1)}%"></i></span><small>${esc(pr.text)}</small></div>` : ""}
+    ${o.state ? `<p class="hint lstate">${esc(o.state)}</p>` : ""}
+    ${o.acts ? `<div class="inline lacts">${o.acts}</div>` : ""}${o.box || ""}</div></div>`;
 }
 function libMatchHTML() {
   const M = lib.match;
@@ -6677,8 +6917,9 @@ function cardLib(x) {
 function cardSeries(x) {
   const id = reg(x);
   const s = x.series || {};
-  const badge = s.done ? '<span class="badge">看完了</span>' : s.fresh ? '<span class="badge new">新加</span>' : s.watched ? `<span class="badge new">第 ${s.episode} 集</span>` : "";
-  return `<button class="card p" data-series="${esc(s.id)}" data-k="s-${esc(id)}" aria-label="${esc(x.title)}，选集"><span class="art">${art(x.title, "p", { title: x.title, kick: siteTag(x.source) })}${imgTag(x.art && x.art.url)}${badge}${s.watched && !s.done && s.total ? pbar(s.watched / s.total) : ""}</span>
+  // 进度是统一的（detail.py）：和剧集海报墙、资料页一样。点开是这部剧的资料页。
+  const badge = s.done ? '<span class="badge">看完了</span>' : s.fresh ? '<span class="badge new">新加</span>' : s.new ? '<span class="badge new">更新</span>' : `<span class="badge new">第 ${s.episode} 集</span>`;
+  return `<button class="card p" data-series="${esc(s.id)}" data-k="s-${esc(id)}" aria-label="${esc(x.title)}，${esc(x.subtitle || "")}"><span class="art">${art(x.title, "p", { title: x.title, kick: siteTag(x.source) })}${imgTag(x.art && x.art.url)}${badge}${!s.fresh && !s.done && s.total ? pbar(seriesPct({ total: s.total, watched: s.watched, position: s.position, duration: 0 })) : ""}</span>
     <span class="t">${esc(x.title)}</span><span class="s">${esc(x.subtitle || "")}</span></button>`;
 }
 // 一排货架。all：「全部 ›」打开的弹窗（SHELF 里的键）；没有 all 时 more 是跳到别的页的链接。pre：标题和货架之间的一行
@@ -7176,12 +7417,12 @@ document.addEventListener("click", (event) => {
   if (ds.play) {
     event.preventDefault();
     const x = ITEMS[ds.play];
-    if (t.closest("#csheet, #allsheet")) closeSheets(true);
+    if (t.closest("#allsheet")) closeSheets(true);
     if (x) pressed(t, play(x.play, null, x.title, x.art && x.art.url));
     return;
   }
   if (ds.pick) { const x = ITEMS[ds.pick]; if (x) openTarget(x.play, "", x.title, x.art && x.art.url); return; }
-  if (ds.series) { openEpisodes(ds.series); return; }
+  if (ds.series) { location.hash = "#/series/" + ds.series; return; }
   if (ds.sheet === "target") { openTarget(null); return; }
   if (ds.tg) {
     if (t.getAttribute("aria-disabled") === "true") { toast(targetName(ds.tg) + "离线了，看看电源和 Wi-Fi"); return; }
@@ -7230,6 +7471,8 @@ function restoreFocus(k) {
 }
 function goBack() {
   const bar = isM() ? "#tabs" : "#top .ttabs", a = document.activeElement;
+  const r = detailRoute();
+  if (r && !(a && a.closest && a.closest(bar))) { location.hash = "#/" + r.kind; return; }
   if (!(a && a.closest && a.closest(bar))) {
     const t = qs(`${bar} a[aria-current=page]`) || qs(`${bar} a`);
     if (t) { t.focus(); return; }

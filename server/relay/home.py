@@ -563,14 +563,16 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
     return rows[:CONTINUE_MAX]
 
 
-def _creator_rows(relay, account) -> list[dict]:
+def _creator_rows(relay, account, marks=None) -> list[dict]:
+    """marks：统一的进度（detail.Marks）；有它时在电脑上看完了的也不算「新」，和 UP 主的资料页一样。"""
     found = []
     with account.lock:
         for c in account.creators:
             if c.kind != "up":
                 continue
             watched = set(c.watched)
-            fresh = [(n, v) for n, v in enumerate(c.videos, 1) if v.bvid not in watched][:PER_CREATOR]
+            fresh = [(n, v) for n, v in enumerate(c.videos, 1)
+                     if v.bvid not in watched and not (marks is not None and marks.finished(v.bvid))][:PER_CREATOR]
             for n, video in fresh:
                 found.append((video.pubdate or 0, c.id, c.name, c.site, c.source, n, video))
     found.sort(key=lambda row: -row[0])
@@ -587,20 +589,24 @@ def _creator_rows(relay, account) -> list[dict]:
     return rows
 
 
-def _series_rows(relay, account) -> list[dict]:
+def _series_rows(relay, account, marks=None) -> list[dict]:
+    """marks：统一的进度（detail.Marks）。看到第几集和剧集海报墙、资料页一样：小电视、这台电脑上的都算。"""
+    if marks is None:
+        from .detail import Marks
+        marks = Marks(relay, None, account)
     rows = []
     with account.lock:
         series = [c for c in account.creators if c.kind == "series"]
         for c in series:
-            total = len(c.videos)
-            watched = len(set(c.watched) & {v.bvid for v in c.videos})
-            done = total > 0 and watched >= total
-            upcoming = account.episode(c.id)
+            mark = marks.channel(c)
+            total, watched, done, upcoming = mark["total"], mark["watched"], mark["finished"], mark["episode"]
+            started = mark["started"]
             rows.append({"id": f"sr:{c.id}", "kind": "series", "title": c.name, "source": c.site,
                          "subtitle": (f"看完了 · 共 {total} 集" if done else
-                                      f"看到第 {upcoming} 集 · 共 {total} 集" if watched else f"共 {total} 集"),
+                                      f"看到第 {upcoming} 集 · 共 {total} 集" if started else f"共 {total} 集"),
                          "series": {"id": c.id, "episode": upcoming, "total": total, "watched": watched,
-                                    "done": done, "fresh": watched == 0},
+                                    "done": done, "fresh": not started, "new": mark.get("new", False),
+                                    "position": mark["position"], "device": mark["device"]},
                          "art": {"url": _cover(relay, c.site, c.source, "p"), "ratio": "poster"},
                          "play": {"kind": "episode", "channel": c.id, "episode": upcoming or 1}})
             if not rows[-1]["art"]["url"]:
@@ -611,11 +617,11 @@ def _series_rows(relay, account) -> list[dict]:
 
 def _hero(series: list[dict], live: list[dict], creators: list[dict]) -> list[dict]:
     hero = []
-    going = next((s for s in series if s["series"]["watched"] and not s["series"]["done"]), None) or \
+    going = next((s for s in series if not s["series"]["fresh"] and not s["series"]["done"]), None) or \
         next((s for s in series if not s["series"]["done"]), None)
     if going is not None:
         n = going["series"]["episode"] or 1
-        hero.append(dict(going, kicker="剧集追更", button=f"{'继续' if going['series']['watched'] else '播放'}第 {n} 集"))
+        hero.append(dict(going, kicker="剧集追更", button=f"{'播放' if going['series']['fresh'] else '继续'}第 {n} 集"))
     on_air = next((x for x in live if x.get("on_tv")), None) or next((x for x in live if x.get("live")), None) or \
         (live[0] if live else None)
     if on_air is not None:
@@ -644,8 +650,10 @@ def home(relay, caller: Caller) -> dict:
     if account is not None:
         if caller.user is not None:
             relay.pc_sync(caller.user)
-        creators = _creator_rows(relay, account)
-        series = _series_rows(relay, account)
+        from .detail import Marks
+        marks = Marks(relay, caller, account)
+        creators = _creator_rows(relay, account, marks)
+        series = _series_rows(relay, account, marks)
         answer.update(**{"continue": _continue_rows(relay, caller, account) if caller.user is not None or
                          not relay.tenant else [],
                          "creator_updates": creators, "series_updates": series,

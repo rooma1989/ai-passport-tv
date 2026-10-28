@@ -69,9 +69,11 @@
       </section>
       <div class="gpop" id="gpop" role="dialog" aria-labelledby="gpopT" hidden></div>
 
-      <!-- 剧集与番剧 -->
+      <!-- 剧集与番剧：海报墙（#/series）和一部剧的资料页（#/series/<台 id>，console.js 的 renderDetail，detail.py） -->
       <section class="page" data-route="series" aria-label="剧集与番剧">
+       <div id="seriesMain">
         <header class="ph"><h1 class="lt">剧集与番剧</h1><p class="hint" id="seriesCount"></p></header>
+        <nav class="chips" id="seriesChips" aria-label="看哪些"></nav>
         <div class="pgrid" id="seriesGrid"></div>
         <div class="panel" style="margin-top:30px">
           <h3>加一部剧 <small>B 站番剧、多集视频、合集，或 YouTube 播放列表</small></h3>
@@ -82,13 +84,15 @@
             <input type="text" id="seriesName" placeholder="台名（可不填，自动取剧名）" maxlength="20" autocomplete="off">
             <button class="go" id="addSeries">添加</button>
           </div>
-          <p class="hint">每部剧是一个台（在「动画影视」组里），按顺序播，换台回来接着上次的地方。不知道链接？去<a class="linkbtn" href="#/search">搜索</a>，结果上就有「加为剧集」。</p>
+          <p class="hint">每部剧是一个台（在「动画影视」组里），按顺序播，换台回来接着上次的地方。不知道链接？去<a class="linkbtn" href="#/search">搜索</a>，结果上就有「加为剧集」。选集、删除在点开一部剧以后。</p>
         </div>
-        <div class="list" id="seriesList"><h3>管理 <small>选集、删除</small></h3><div class="rows" id="seriesRows"></div></div>
+       </div>
+       <div class="dpage" id="seriesDetail" hidden></div>
       </section>
 
-      <!-- UP 主 -->
+      <!-- UP 主：列表（#/up）和一个 UP 主的资料页（#/up/<台 id 或关注的键>，console.js 的 renderDetail，detail.py） -->
       <section class="page" data-route="up" aria-label="UP 主">
+       <div id="upMain">
         <header class="ph"><h1 class="lt">UP 主</h1><p class="hint" id="upCount"></p></header>
         <div id="upLatest"></div>
         <!-- 我的关注：B 站关注 + YouTube 订阅，自动同步（server/relay/follows.py）；云端没有 -->
@@ -121,6 +125,8 @@
           </div>
           <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播（只轮播最新的 20 个）。<span id="subsHint"></span></p>
         </div>
+       </div>
+       <div class="dpage" id="upDetail" hidden></div>
       </section>
 
       <!-- 片库：「历史」是自己 B 站的观看记录（console.js renderHist，accountfeeds.py）；「我的片库」是网盘和电脑上的视频（renderLib，library.py） -->
@@ -452,13 +458,6 @@
     <div class="grab" aria-hidden="true"></div>
     <div class="shh"><div style="flex:1;min-width:0"><span class="crumb" id="epId"></span><h2 id="epName"></h2><p class="hint" id="epSum"></p></div><button class="iconbtn" data-close id="epClose" aria-label="关闭" data-ic="x" data-ics="18"></button></div>
     <div class="shb"><div class="actions" id="epActs" style="margin:0 0 14px"></div><div class="eplist" id="epList"></div></div>
-  </div>
-
-  <!-- 一个关注的 UP 主的最新投稿（我的关注 → 点一个） -->
-  <div id="csheet" class="sheet wide" role="dialog" aria-modal="true" aria-labelledby="csName" hidden>
-    <div class="grab" aria-hidden="true"></div>
-    <div class="shh"><div style="flex:1;min-width:0"><span class="crumb" id="csSite"></span><h2 id="csName"></h2><p class="hint" id="csSum"></p></div><button class="iconbtn" data-close aria-label="关闭" data-ic="x" data-ics="18"></button></div>
-    <div class="shb"><div class="actions" id="csActs" style="margin:0 0 14px"></div><div class="cslist" id="csList"></div></div>
   </div>
 
   <!-- 首页一排的「全部 ›」、搜索里点开的 UP 主：大弹窗，网格排开，滚到底接着取 -->

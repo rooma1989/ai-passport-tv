@@ -510,6 +510,24 @@ audio-only 模式。
   `programmes`，时间段夹在服务器留的那段里（回答里的 `window: {before, after}`），一次最多 60 个台、每台 64 条；数写错了回答
   `ok: false`。读节目单时去掉央视标题结尾的「-2026-248」（年份和期数）或「-2026-10-26」（`epg.tidy_title`）。小电视没在播时，直播页
   默认打开第一个有直播台的组，而不是投屏组。没做的：选中节目的头部、频道表分段；以后的节目「提醒我」。
+- **M4 剧集、UP 主、资料页和统一进度**（2026-10-28）：`server/relay/detail.py`。一个读进度的 `Marks`
+  把小电视按账号记的 `positions` 和 `watched`（state.py）、`pc-progress.json` 里电脑上和片库的记录
+  （`home.PcProgress`：位置、时长、时间、`done` 各集，片库在小电视上看的有 `device`）一起读，按视频 id 回答
+  `{position, duration, finished, device, at}`；什么都不转换、不写。哪儿说看完了就是看完了（离结尾 30 秒或最后一成以内
+  也算）；位置取最远的，因为小电视的进度没记时间；剧集从有记录的最后一集接着看，那一集看完了就是下一集，最后一集
+  看完了整部就看完了。`GET /api/progress?keys=` 回答 `v:<网站>:<id>`、`lib:<id>` 和 `ch:<台>`（最多 300 个键；访客
+  404）。`GET /api/detail/series` 是海报墙（海报、进度、调用者的哪台小电视在播），`/api/detail/series/<sr..>` 再加
+  简介（B 站番剧的 `evaluate` 或视频的 `desc`，和封面一样只记在客户端内存里；番剧的各集现在记下 `pub_time`，给
+  「更新」用）和带标记的各集，`/api/detail/up/<up.. | bilibili:<mid> | youtube:<UC..>>` 是 UP 主和最近投稿的标记，
+  小电视上的台和关注的键两头都对得上（只关注的 UP 主，投稿来自 `follows.videos`）。首页的 `series_updates` 和
+  `creator_updates` 用同一份标记。电脑版：「剧集与番剧」是带筛选（全部、在看、没开始、看完了）的海报墙；
+  `#/series/<id>` 和 `#/up/<id>` 是剧集页、UP 主页里的资料页（能直接用地址打开；「后退」和 Esc 回到列表原来滚到
+  的地方），头部就是片库的（`infoHTML`，`libInfoHTML` 现在也用它）加一条进度线；主按钮「继续看第 N 集」走
+  「播放到」（到小电视时动那台的进度，和以前选集一样；到电脑时从电脑或小电视记的位置接着），还有「从第 1 集看」、
+  删除，UP 主有「播放没看过的」和订阅 / 取消订阅（小电视上的 UP 主台；`POST /api/follows/tv` 或
+  `DELETE /api/creators/<id>`）。开着的资料页每 10 秒用 `/api/progress` 刷新标记。第 18 节的 UP 主面板和剧集的
+  「管理」列表换成了这两种页面；遥控面板的选集不变。以前没有调整顺序，这次也没加。验证：主机测试，加上内置浏览器里
+  对着本机中转、用造出来的订阅和进度看（桌面和 375 px）；没拿真的 B 站、YouTube 列表试，也没真的播放。
 - **没验证的**：新播放器窗口里在电脑上真实播放（界面检查用的是生成的数据，没有联网）、Safari 和 Firefox、Windows、
   读屏软件、真的触屏设备；电脑上的播放器：真实的 B 站多 P、合集、番剧，YouTube 播放列表，全屏；YouTube 的 DASH 对真实 YouTube 的播放
   （唯一一次不带 cookies 的检查被要求登录，没看到真实的格式字段，比如 `init_range` 和确切的编码）。
