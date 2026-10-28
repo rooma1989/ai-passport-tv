@@ -32,6 +32,8 @@ EXPECTED = {
              "周传雄精选84首(6小时)", "王菲精选145首(10小时)", "张惠妹精选50首(2小时)"],
     "动画影视": ["猫和老鼠", "哆啦A梦", "海绵宝宝", "中华小当家", "七龙珠", "让子弹飞", "周星驰电影",
                  "止戈电影"],
+    # Gala recordings, not live channels: they used to sit in 其他 (2026-10-28, 43 of them).
+    "节目回看": ["2019春晚", "央视春晚 1983", "CCTV春晚1990", "1998年春节联欢晚会", "2023元宵晚会", "网络春晚2024"],
     "其他": ["环球电视", "熊猫直播", "新纪实", "阿良说美剧", "大象放映室", "陆家嘴", "老高与小茉",
              "自说自话的总裁"],
 }
@@ -49,6 +51,17 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(cg.classify("sr01", "海尔兄弟"), "动画影视")
         # A series channel can be moved like a live one.
         self.assertEqual(cg.group_of("sr01", "海尔兄弟", {"sr01": "其他"}), "其他")
+
+    def test_gala_recordings_get_their_own_group(self):
+        self.assertEqual(cg.GROUPS[-2:], ("节目回看", "其他"))
+        # Before 央视: a gala recorded from CCTV is still a recording.
+        self.assertEqual(cg.classify("ch001", "CCTV春晚1990"), "节目回看")
+        self.assertEqual(cg.classify("ch001", "CCTV-1 综合"), "央视")
+        # An admin can still move one; the group name from a playlist maps too.
+        self.assertEqual(cg.group_of("ch001", "2019春晚", {"ch001": "其他"}), "其他")
+        self.assertEqual(cg.from_title("📺春晚回顾"), "节目回看")
+        self.assertEqual(cg.from_title("央视春晚"), "节目回看")
+        self.assertEqual(cg.from_title("央视频道"), "央视")
 
     def test_config_bytes_counts_escaped_names(self):
         one = cg.config_bytes([("sr01", "AB")])

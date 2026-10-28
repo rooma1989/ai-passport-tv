@@ -118,6 +118,10 @@ def get(handler, relay, path: str) -> bool:
         handler._json(channels(relay))
     elif path == "/api/admin/epg":
         handler._json(epg.admin_view(relay))
+    elif path in ("/api/admin/epg/search", "/api/admin/epg/preview"):
+        # 节目单手动指定台（epg.py）：搜打开的来源里的台、看一眼一个台接下来的节目。
+        answer = epg.admin_search(relay, query) if path.endswith("search") else epg.admin_preview(relay, query)
+        handler._json(answer, headers={"Cache-Control": "no-store"})
     elif path == "/api/admin/subs":
         subs = getattr(relay, "subscriptions", None)
         handler._json(subs.view() if subs is not None else {"ok": False, "error": "只有自建和电脑客户端能订阅直播源"})
@@ -571,6 +575,10 @@ def post(handler, relay, path: str) -> bool:
         return True
     if path == "/api/admin/epg/refresh":
         handler._json(epg.admin_refresh(relay, caller, ip))
+        return True
+    if path == "/api/admin/epg/assign":
+        # 没自动对上的台手动指定节目单里的台（epg.admin_assign，按台存在账号库里，重新导入频道表也还在）。
+        handler._json(epg.admin_assign(relay, body, caller, ip))
         return True
     if path == "/api/admin/epg/dismiss":
         # 「推荐的节目单来源」（导入的播放列表文件头写的 x-tvg-url）里不要的一个：不再列出。

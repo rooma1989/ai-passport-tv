@@ -193,9 +193,10 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 节目单（epg.py）：默认关着；总后台打开后在数据库旁边的 epg/ 里存下好的文件。
     from . import epg
     epg.attach(relay, args.db.parent / "epg")
-    # 电脑版首页的台标（logos.py）：用到时取一次，存在数据库旁边的 logos/ 里。
+    # 电脑版首页的台标（logos.py）：用到时取一次，存在数据库旁边的 logos/ 里；频道表里没写台标的台用节目单的。
     from .logos import LogoCache
-    relay.logos = LogoCache(args.db.parent / "logos", relay.main_channels, log=lambda message: print(message, flush=True))
+    relay.logos = LogoCache(args.db.parent / "logos", relay.main_channels, log=lambda message: print(message, flush=True),
+                            extra=lambda: relay.guide.icons() if relay.guide is not None and relay.guide.enabled else {})
     # 直播台线路的后台自检和真画面封面（linecheck.py）：只在自建 / 电脑客户端（有「在电脑上看」时）开，
     # 封面存在数据库旁边的 covers/live/。
     from . import linecheck

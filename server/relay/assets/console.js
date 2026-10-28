@@ -6611,7 +6611,8 @@ function heroHTML(list) {
   const title = live ? (h.live && h.live.title ? h.live.title : c.name || h.title) : h.title;
   const meta = [];
   if (live) {
-    meta.push(c.name || "");
+    // 大字是正在播的节目时小字写台名；没有节目单（大字已经是台名）时写分组，不把台名写两遍。
+    meta.push(title !== (c.name || h.title) ? c.name || "" : c.group || "直播");
     if (h.live && h.live.start) meta.push(hm(h.live.start) + "–" + hm(h.live.end), "还有 " + Math.max(1, Math.round((h.live.end - Date.now() / 1000) / 60)) + " 分钟");
   } else if (h.kind === "series") {
     meta.push(siteTag(h.source), h.subtitle || "");

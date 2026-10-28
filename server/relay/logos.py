@@ -9,6 +9,7 @@
 - 最多 MAX_BYTES，只收 PNG、JPEG、GIF、WebP（按文件头认，不信对方说的类型）；SVG 不收（能带脚本）。
 - 取到的按地址的散列存成 <散列>.<扩展名>：地址改了就是新文件，旧文件留着不碍事。取不到的记下来，
   RETRY_S 内不再去（重启后再试一次）；同时最多 PARALLEL 个在取，目录里最多 MAX_FILES 个文件。
+- 频道表里没写台标的台，用节目单里对上的那个台的 <icon src>（extra，epg.Guide.icons）：取的规矩一样。
 - 没有台标、取不到：404，页面画一个用台名生成的徽标。
 - 唯一的例外是总后台频道表里改台标时的「看一眼」（preview，只有管理员能用，admin.logo_preview）：地址是管理员
   填的，规矩和上面完全一样，取到的存进同一个缓存。
@@ -108,8 +109,11 @@ def fetch(url: str, check=allowed_url, timeout: float = TIMEOUT_S) -> bytes:
 
 
 class LogoCache:
-    def __init__(self, folder: Path, table: Path | None, fetcher=fetch, clock=time.monotonic, log=lambda _m: None):
+    def __init__(self, folder: Path, table: Path | None, fetcher=fetch, clock=time.monotonic, log=lambda _m: None,
+                 extra=None):
         self.folder = Path(folder)
+        # 兜底的台标 {台 id: 地址}（节目单的 <icon src>）：频道表里写了台标的台不用它。
+        self.extra = extra
         self.table = Path(table) if table is not None else None
         self.fetcher = fetcher
         self.clock = clock
@@ -120,7 +124,14 @@ class LogoCache:
         self._meta: tuple[float, dict] | None = None
 
     def _logos(self) -> dict[str, str]:
-        """{台 id: 台标地址}；meta 文件改了才重读。"""
+        """{台 id: 台标地址}：频道表 meta 里写的，没写的台用 extra 给的；meta 文件改了才重读。"""
+        own = self._own()
+        extra = self.extra() if self.extra is not None else None
+        if not extra:
+            return own
+        return {**extra, **own}
+
+    def _own(self) -> dict[str, str]:
         if self.table is None:
             return {}
         path = channeltable.meta_path(self.table)
