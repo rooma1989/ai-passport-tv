@@ -21,7 +21,13 @@ authorisation. Fastest line: the check stores how long a line took, real plays
 the last good line first only while no other line is much faster (FASTER), then
 the rest by speed; a failed check drops a line's start time; promoting a backup
 to main on save forgets the last good line; the PC player can ask for one line
-(route) and is told which line plays (answer and X-RTV-Route).
+(route) and is told which line plays (answer and X-RTV-Route). Lines whose HLS
+segment URLs have no standard extension: when ffmpeg refuses one
+(allowed_segment_extensions) the PC player retries it with -extension_picky 0,
+remembers it in the sidecar (lenient) and opens it that way next time; the TV
+media server and the cover grab add the same option with network-only
+protocols; other lines and other failures are untouched; saving the table keeps
+the marks of lines still there.
 """
 
 from __future__ import annotations
@@ -617,6 +623,96 @@ class PlayerFailoverTests(unittest.TestCase):
         self.assertEqual(set(lines[0]) - {"ms"}, set(), "the line playing has its time, if any")
         self.assertEqual(lines[2], {})
         self.assertNotIn("https://", json.dumps(lines))
+
+
+PICKY = {"lines": ["[hls @ 0x1] URL https://p/api/fhz?s=1 is not in allowed_segment_extensions, consider updating hls.c",
+                   "[in#0 @ 0x2] Error opening input: Invalid data found when processing input"], "hold": False, "code": 1}
+
+
+class LenientByArgs(ByInput):
+    """Fake ffmpeg that refuses odd segment names unless -extension_picky 0 is given."""
+
+    def __call__(self, args, **kwargs):
+        if args[args.index("-i") + 1] in self.by_url and "-extension_picky" not in args:
+            proc = FakeProc(args, **PICKY)
+            self.procs.append(proc)
+            return proc
+        return super().__call__(args, **kwargs)
+
+
+class LenientTests(unittest.TestCase):
+    """HLS lines whose segment URLs have no standard extension (ffmpeg >= 7.1 refuses them)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.table = Path(self.tmp.name) / "channels.txt"
+        self.table.write_text("ch002 | CCTV2 | https://a/2.m3u8 | UA\n", encoding="utf-8")
+        self.logs = []
+        self.service = watch.WatchService("ffmpeg", b"k" * 32, log=self.logs.append, background=False)
+        self.service.routes_path = lambda: self.table
+        self.addCleanup(self.service.stop_all)
+
+    def test_meta_helpers(self):
+        self.assertFalse(routes.is_lenient(self.table, "https://p/x.php"))
+        self.assertTrue(routes.remember_lenient(self.table, "ch002", "https://p/x.php"))
+        self.assertTrue(routes.is_lenient(self.table, "https://p/x.php"))
+        self.assertFalse(routes.is_lenient(self.table, "https://a/2.m3u8"))
+        self.assertFalse(routes.is_lenient(None, "https://p/x.php"))
+        before = routes.meta_path(self.table).stat().st_mtime_ns
+        routes.remember_lenient(self.table, "ch002", "https://p/x.php")
+        self.assertEqual(routes.meta_path(self.table).stat().st_mtime_ns, before, "already known: not rewritten")
+        self.assertEqual(routes.lenient_in({"lenient": ["a", 3]}), {"a"})
+
+    def test_a_refused_line_is_retried_leniently_and_remembered(self):
+        self.service.popen = LenientByArgs(GOOD, **{"https://a/2.m3u8": GOOD})
+        source = live_source([("https://a/2.m3u8", "UA")])
+        stream = self.service.open("pc1-a", source, user=1)
+        self.assertTrue(stream.wait_ready(5))
+        first, second = self.service.popen.procs[:2]
+        self.assertNotIn("-extension_picky", first.args)
+        at = second.args.index("-extension_picky")
+        self.assertEqual(second.args[at + 1], "0")
+        self.assertLess(at, second.args.index("-i"), "an input option")
+        self.assertEqual(second.args[second.args.index("-protocol_whitelist") + 1], "http,https,tls,tcp,crypto,httpproxy")
+        self.assertTrue(routes.is_lenient(self.table, "https://a/2.m3u8"), "written to the sidecar for the TV too")
+        self.assertTrue(any("放宽检查" in line for line in self.logs), self.logs)
+        self.assertFalse(any("https://" in line for line in self.logs), self.logs)
+        # Next time: lenient straight away, one ffmpeg.
+        self.service.close("pc1-a")
+        self.service.popen = LenientByArgs(GOOD, **{"https://a/2.m3u8": GOOD})
+        again = self.service.open("pc1-a", source, user=1)
+        self.assertTrue(again.wait_ready(5))
+        self.assertEqual(len(self.service.popen.procs), 1)
+        self.assertIn("-extension_picky", self.service.popen.procs[0].args)
+
+    def test_other_lines_and_other_failures_are_untouched(self):
+        self.service.popen = ByInput(GOOD, **{"https://a/2.m3u8": DENY})
+        stream = self.service.open("pc1-a", live_source(), user=1)
+        self.assertTrue(stream.wait_ready(5) or stream.wait_ready(5))
+        self.assertFalse(any("-extension_picky" in p.args for p in self.service.popen.procs))
+        self.assertFalse(routes.meta_path(self.table).exists() and
+                         any(routes.lenient_in(e) for e in routes.read_meta(self.table).values()))
+
+    def test_saving_the_table_keeps_marks_of_lines_still_there(self):
+        routes.remember_lenient(self.table, "ch002", "https://a/2.m3u8")
+        routes.remember_lenient(self.table, "ch002", "https://gone/2.m3u8")
+        data = routes.read_meta(self.table)
+        channeltable.merge_meta(data, ["ch002"], [{"id": "ch002", "url": "https://a/2.m3u8"}])
+        self.assertEqual(data["ch002"]["lenient"], [routes.fingerprint("https://a/2.m3u8")])
+
+    def test_tv_and_cover_commands(self):
+        from server import frames
+        from server.relay import linecheck
+        self.assertEqual(frames.input_options("https://p/x.php", "UA"), frames.input_options("https://p/x.php", "UA", lenient=False))
+        options = frames.input_options("https://p/x.php", "UA", lenient=True)
+        self.assertEqual(options[options.index("-extension_picky") + 1], "0")
+        self.assertIn("-protocol_whitelist", options)
+        self.assertNotIn("-extension_picky", frames.input_options("/tmp/a.ts", lenient=True), "not for local files")
+        seen = []
+        linecheck.grab_frame("ff", "https://p/x.php", "UA", run=lambda args, **_k: seen.append(args) or
+                             types.SimpleNamespace(stdout=b""), lenient=True)
+        self.assertLess(seen[0].index("-extension_picky"), seen[0].index("-i"))
 
 
 class FakeHandler:

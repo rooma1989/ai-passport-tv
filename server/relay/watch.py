@@ -230,8 +230,9 @@ def fits(mode: Mode, video: str | None, audio: str | None) -> bool:
     return mode.video != "copy" or video == "h264"
 
 
-def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode) -> list[str]:
-    """ffmpeg 的参数（列表，不经 shell）。url 是取到的地址；opener 的片源从标准输入读。"""
+def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool = False) -> list[str]:
+    """ffmpeg 的参数（列表，不经 shell）。url 是取到的地址；opener 的片源从标准输入读。lenient：片段地址不标准的
+    HLS 线路（routes.LENIENT_*），放宽扩展名检查（协议照样只许网络的）。"""
     piped = source.opener is not None
     args = [ffmpeg, "-hide_banner", "-nostats", "-loglevel", "info"]
     if not piped:
@@ -250,6 +251,8 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode) -> list[str]:
         args += ["-ss", str(int(source.offset))]
     if not piped and is_live(source):
         args += LIVE_PROBE
+    if lenient and not piped:
+        args += live_routes.LENIENT_OPTION
     args += ["-i", "pipe:0" if piped else url]
     # 大写 V：不要封面图。没有这一路时不报错（?）。
     args += ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"]
@@ -596,6 +599,8 @@ class RouteMemory:
         self._bad: dict[tuple[str, str], float] = {}
         # (台, 指纹) → 起播用时（毫秒，和以前的 blend 过）：只在内存里也算，写 meta 的变了才写。
         self._starts: dict[tuple[str, str], int] = {}
+        # (台, 指纹)：这次运行里发现要放宽检查的线路（也写进 meta；没有频道表时只在这里）。
+        self._lenient: set[tuple[str, str]] = set()
         # 读过的 meta（文件的修改时间, 内容）：直播页一次预解析几十个台，不必每个台都重读、重解析一遍。
         self._meta: tuple[tuple, dict] | None = None
         self._lock = threading.Lock()
@@ -694,6 +699,22 @@ class RouteMemory:
             live_routes.mark_failed(self.path(), cid, url, live_routes.friendly(reason), self.wall())
         except OSError as error:
             self.log(f"在电脑上看：记不下坏了的线路（{type(error).__name__}）")
+
+    def lenient(self, cid: str, url: str) -> bool:
+        """这条线路要放宽 ffmpeg 的扩展名检查（meta 的 lenient，或者这次运行里刚发现的）。"""
+        mark = live_routes.fingerprint(url)
+        with self._lock:
+            if (cid, mark) in self._lenient:
+                return True
+        return mark in live_routes.lenient_in(self._entry(cid))
+
+    def remember_lenient(self, cid: str, url: str) -> None:
+        with self._lock:
+            self._lenient.add((cid, live_routes.fingerprint(url)))
+        try:
+            live_routes.remember_lenient(self.path(), cid, url)
+        except OSError as error:
+            self.log(f"在电脑上看：记不下要放宽检查的线路（{type(error).__name__}）")
 
     def failed(self, cid: str, url: str) -> None:
         mark = live_routes.fingerprint(url)
@@ -813,6 +834,10 @@ class WatchStream:
         # 这条线路从什么时候开始试（出第一段时算起播用了多久，RouteMemory.ok）。
         self._leg_began: float | None = None
         self._starved = False
+        # ffmpeg 因为片段地址不标准拒绝打开（routes.LENIENT_ERROR）：放宽检查再试这条线路一次。
+        self._picky = False
+        # 没有 RouteMemory 时（测试、云端以外的少见情形）这一路自己记着放宽了哪条线路。
+        self._lenient_here: set[tuple[str, str]] = set()
 
     # ---- 状态 ----
 
@@ -977,6 +1002,12 @@ class WatchStream:
                     return "stopped", ""
                 detail = ""
                 continue
+            if outcome in ("failed", "copy_failed") and self._picky and not self._leg_segments \
+                    and is_live(self.leg) and not self._lenient_leg() and not self.stopped:
+                # 片段地址不标准（/api/…、.php）、ffmpeg 不肯打开：记下这条线路，放宽检查再试（电视服务、取封面也照着记的放宽）。
+                self._remember_lenient()
+                self.log(f"在电脑上看 {self.device}：片段地址不标准，放宽检查再试")
+                continue
             if outcome in ("failed", "copy_failed") and self._via_memory and not self._leg_segments \
                     and not self.stopped:
                 # 记住的地址失效了（会话过期之类）：忘掉，从频道表里的地址重来。
@@ -995,6 +1026,30 @@ class WatchStream:
                 return "ended", ""
             return ("stopped", "") if self.stopped else ("failed", str(detail or ""))
         return "failed", str(detail or "片源打不开")
+
+    def _leg_line(self) -> tuple[str, str] | None:
+        """(台, 频道表里这条线路的地址)：直播台才有。"""
+        leg = self.leg
+        if not is_live(leg) or len(leg.key) < 2 or not isinstance(leg.url, str):
+            return None
+        return leg.key[1], leg.url
+
+    def _lenient_leg(self) -> bool:
+        line = self._leg_line()
+        if line is None:
+            return False
+        if self.route_memory is not None:
+            return self.route_memory.lenient(*line)
+        return line in self._lenient_here
+
+    def _remember_lenient(self) -> None:
+        line = self._leg_line()
+        if line is None:
+            return
+        if self.route_memory is not None:
+            self.route_memory.remember_lenient(*line)
+        else:
+            self._lenient_here.add(line)
 
     def _attempt(self, mode: Mode) -> tuple[str, object]:
         """起一次 ffmpeg。返回 ("restart", (新的 Mode, 编码说明))、("ended", None)、("copy_failed", 原因)、("failed", 原因)。"""
@@ -1016,7 +1071,8 @@ class WatchStream:
         self._via_memory = remembered is not None
         # 从频道表里的地址起的直播台：ffmpeg 打开的真正的列表地址记下来（_read_stderr）。
         self._given = url if self.memory is not None and not self._via_memory else ""
-        args = ffmpeg_args(self.ffmpeg, source, remembered or url, mode)
+        self._picky = False
+        args = ffmpeg_args(self.ffmpeg, source, remembered or url, mode, lenient=self._lenient_leg())
         proc = self.popen(args, stdin=subprocess.PIPE if source.opener else subprocess.DEVNULL,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=loopback_bypass(os.environ))
         self._proc = proc
@@ -1156,6 +1212,8 @@ class WatchStream:
                         if len(opened) == 1:
                             self.memory.remember_url(self.leg.key, opened[0])
                 self.stderr.append(line)
+                if live_routes.LENIENT_ERROR in line:
+                    self._picky = True
                 if self.route_memory is not None or is_live(self.source):
                     if routes_known(line):
                         self.telling.append(line)

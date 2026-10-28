@@ -9,7 +9,8 @@
               "routes": [{"url": "https://…", "ua": "…"}, …],     # 备用线路，不含主线路，至多 BACKUPS_MAX 条
               "good": "<指纹>",                                   # 上次放得起来的那条（电脑上看和电视服务都写）
               "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000, "ms": 800}},  # 「检测线路」的结果（总后台点的、后台自检的、放的时候明确坏了的）
-              "starts": {"pc": {"<指纹>": 4200}, "tv": {"<指纹>": 6100}}}  # 真放起来用了多久（毫秒，见 speeds_of）
+              "starts": {"pc": {"<指纹>": 4200}, "tv": {"<指纹>": 6100}},  # 真放起来用了多久（毫秒，见 speeds_of）
+              "lenient": ["<指纹>"]}                              # 分片地址不标准、要放宽 ffmpeg 检查的线路（LENIENT_*）
 
 指纹是地址的 SHA-256 前 12 位：meta 里不重复存地址，地址里常有会话参数，也不进日志。这个文件坏了、没有
 都不要紧：只有主线路，和以前一样。
@@ -338,6 +339,47 @@ def mark_ok(path, cid: str, url: str, at: float) -> bool:
     if mark not in bad_in(entry_of(path, cid)):
         return False
     return record_checks(path, cid, [(mark, True, "", 0, at)])
+
+
+# ---------------------------------------------------------------- 分片地址不标准的线路
+# 有的 HLS 片段地址不带标准扩展名（/api/fhz、.php?id=…，转发站常这样）：ffmpeg 7.1 起默认不打开，报
+# 「…allowed_segment_extensions…」。这样的线路记在 meta 的 lenient 里，打开时加 LENIENT_OPTION；没加
+# -protocol_whitelist 的地方（电视服务、取封面）同时只许网络协议（LENIENT_ARGS）：ffmpeg 加这道检查是怕
+# 列表把片段指到本机文件、或者当成别的格式去解，只许网络协议就读不到本机文件。别的线路照旧。
+
+LENIENT_ERROR = "allowed_segment_extensions"
+LENIENT_OPTION = ("-extension_picky", "0")
+LENIENT_ARGS = ("-protocol_whitelist", "http,https,tls,tcp,crypto,httpproxy", *LENIENT_OPTION)
+
+
+def lenient_in(entry) -> set[str]:
+    found = entry.get("lenient") if isinstance(entry, dict) else None
+    return {m for m in found if isinstance(m, str)} if isinstance(found, list) else set()
+
+
+def is_lenient(path, url: str) -> bool:
+    """这条地址（哪个台的都算）记过要放宽检查。没有频道表、读不了时 False。"""
+    if path is None or not url:
+        return False
+    mark = fingerprint(url)
+    try:
+        return any(mark in lenient_in(entry) for entry in read_meta(path).values())
+    except (OSError, ValueError):
+        return False
+
+
+def remember_lenient(path, cid: str, url: str) -> bool:
+    """记下这条线路要放宽检查（已经记过的不写文件）。"""
+    if path is None or not url:
+        return False
+    mark = fingerprint(url)
+
+    def change(data: dict) -> None:
+        entry = data.setdefault(cid, {})
+        marks = lenient_in(entry)
+        if mark not in marks:
+            entry["lenient"] = sorted(marks | {mark})
+    return update_meta(path, change)
 
 
 # ---------------------------------------------------------------- 按顺序换线路

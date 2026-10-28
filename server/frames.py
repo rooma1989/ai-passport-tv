@@ -328,10 +328,12 @@ FIT = (f"scale=iw*sar:ih,setsar=1,"
 DEFAULT_USER_AGENT = "AptvPlayer-UA"
 
 
-def input_options(url: str, user_agent: str = "", paced: bool = False) -> list[str]:
+def input_options(url: str, user_agent: str = "", paced: bool = False, lenient: bool = False) -> list[str]:
     """读取源的 ffmpeg 输入参数。
 
     reconnect 选项仅网络源可用，本地文件会因未知选项而打不开。
+    lenient：片段地址不标准的 HLS 线路（routes.LENIENT_ARGS，记在频道表的 meta 里）放宽扩展名检查，
+    同时只许网络协议；只给 http(s) 地址（不是 HLS 的源不认识这个选项，会打不开）。
     """
     options: list[str] = []
     if paced:
@@ -340,6 +342,9 @@ def input_options(url: str, user_agent: str = "", paced: bool = False) -> list[s
     if url.startswith(("http://", "https://", "rtsp://", "rtmp://")):
         options += ["-reconnect", "1", "-reconnect_streamed", "1",
                     "-reconnect_delay_max", "5", "-rw_timeout", "15000000"]
+    if lenient and url.startswith(("http://", "https://")):
+        from . import routes
+        options += list(routes.LENIENT_ARGS)
     if os.environ.get("TV_STREAM_LOOP") == "1":
         options += ["-stream_loop", "-1"]
     effective_ua = user_agent or (DEFAULT_USER_AGENT if url.startswith(("http://", "https://")) else "")

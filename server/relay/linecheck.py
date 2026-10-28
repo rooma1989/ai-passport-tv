@@ -56,10 +56,12 @@ STAMPS_S = 10.0
 _CID = re.compile(r"^[A-Za-z0-9_-]{1,15}$")
 
 
-def grab_frame(ffmpeg: str, url: str, agent: str = "", run=subprocess.run) -> bytes | None:
-    """取一帧画面，缩到 COVER_WIDTH 宽的 JPEG（和总后台「试一下」一样只取一帧，playlist.probe）。取不到为 None。"""
+def grab_frame(ffmpeg: str, url: str, agent: str = "", run=subprocess.run, lenient: bool = False) -> bytes | None:
+    """取一帧画面，缩到 COVER_WIDTH 宽的 JPEG（和总后台「试一下」一样只取一帧，playlist.probe）。取不到为 None。
+    lenient：片段地址不标准的线路（routes.LENIENT_ARGS）。"""
     command = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "quiet",
                "-rw_timeout", str((COVER_TIMEOUT_S - 3) * 1000000), "-user_agent", agent or routecheck.DEFAULT_USER_AGENT,
+               *(routes.LENIENT_ARGS if lenient else ()),
                "-i", url, "-map", "0:v:0", "-frames:v", "1", "-threads", "1",
                "-vf", f"scale={COVER_WIDTH}:-2", "-q:v", "6", "-c:v", "mjpeg", "-f", "image2pipe", "-"]
     try:
@@ -377,7 +379,7 @@ class LineChecker:
 
     def _grab(self, cid: str, url: str, agent: str) -> None:
         try:
-            body = self.grab(self.ffmpeg, url, agent)
+            body = self.grab(self.ffmpeg, url, agent, lenient=routes.is_lenient(self.table(), url))
             if body is not None and self.covers is not None:
                 path = self.table()
                 known = {row["id"] for row in self._table_rows(path)} if path is not None else None

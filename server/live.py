@@ -420,7 +420,7 @@ def source_graph(fps: int) -> str:
 
 
 def source_command(url: str, video_port: int, audio_port: int, ffmpeg: str,
-                   user_agent: str = "", fps: int = FPS) -> list[str]:
+                   user_agent: str = "", fps: int = FPS, lenient: bool = False) -> list[str]:
     """构造 ffmpeg 命令：读取源一次，画面与音频经两个回环 TCP 端口输出，时间戳由 showinfo 日志给出。
 
     画面量化到 ffmpeg 固定 3-3-2 调色板（与固件 av_palette_rgb565 一致），关闭抖动（见 CLAUDE.md 关键设计决策 1）；
@@ -430,7 +430,7 @@ def source_command(url: str, video_port: int, audio_port: int, ffmpeg: str,
     """
     return [
         ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "info", "-nostats",
-        *frames.input_options(url, user_agent, paced=True),
+        *frames.input_options(url, user_agent, paced=True, lenient=lenient),
         "-i", url,
         "-filter_complex", source_graph(fps),
         "-map", "[v]", "-pix_fmt", "rgb8", "-sws_dither", "none",
@@ -519,6 +519,8 @@ class LiveChannel:
         self.url = url
         self.ffmpeg = ffmpeg
         self.user_agent = user_agent
+        # 片段地址不标准的线路（电脑上放时发现的、记在 meta 的 lenient 里）：打开时放宽检查。
+        self.lenient = routes.is_lenient(_LOADED.get("main"), url)
         self.stop = threading.Event()
         self.audio = collections.deque(maxlen=PCM_QUEUE_CHUNKS)
         self.video = collections.deque(maxlen=VIDEO_QUEUE_FRAMES)
@@ -621,7 +623,7 @@ class LiveChannel:
             self.timestamps = pts.Timestamps()
             self.decoder = subprocess.Popen(
                 source_command(self.url, video_port, audio_port, self.ffmpeg,
-                               self.user_agent, self.fps),
+                               self.user_agent, self.fps, lenient=self.lenient),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE)
             self.pts_reader = pts.Reader(self.decoder.stderr, self.timestamps)

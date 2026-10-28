@@ -103,7 +103,7 @@ class Base(unittest.TestCase):
         self.grabbed: list[str] = []
 
     def checker(self, probe=None, spawn=now_spawn, grab=None, covers=True):
-        def fake_grab(_ffmpeg, url, _agent):
+        def fake_grab(_ffmpeg, url, _agent, lenient=False):
             self.grabbed.append(url)
             return JPEG
         self.covers = linecheck.CoverStore(self.root / "covers" / "live", monotonic=self.clock) if covers else None
@@ -344,7 +344,7 @@ class CoverTests(Base):
         self.assertEqual(len(self.grabbed), 1)
 
     def test_failed_grab_is_retried_later_not_at_once(self):
-        checker = self.checker(grab=lambda _ff, url, _ua: self.grabbed.append(url))
+        checker = self.checker(grab=lambda _ff, url, _ua, lenient=False: self.grabbed.append(url))
         self.run_checks(checker)
         for _ in range(4):
             self.clock.now += linecheck.COVER_GAP_S

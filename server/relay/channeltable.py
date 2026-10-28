@@ -134,7 +134,7 @@ def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
     """保存频道表时整理 meta（原地改 data，见 routes.update_meta）：
     - tvg-id / 台标：新台用页面带来的（从播放列表导入的才有），留下的台照旧，删掉的台跟着删；
     - 备用线路：页面给了 routes 的用页面的，没给的照旧；和主线路一样的去掉；
-    - 上次好的线路、检测结果、真放起来的用时：只留还在这个台的线路里的；备用线路换成了主线路时不留上次好的。"""
+    - 上次好的线路、检测结果、真放起来的用时、要放宽检查的线路（lenient）：只留还在这个台的线路里的；备用线路换成了主线路时不留上次好的。"""
     old = dict(data)
     data.clear()
     for item, row in zip(items, rows):
@@ -162,6 +162,9 @@ def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
         starts = {kind: found for kind, found in starts.items() if found}
         if starts:
             entry["starts"] = starts
+        lenient = sorted(routes.lenient_in(prev) & marks)
+        if lenient:
+            entry["lenient"] = lenient
         if entry:
             data[row["id"]] = entry
 
