@@ -63,7 +63,7 @@ _BIND_INFO = re.compile(r"^/api/bind/([A-Za-z2-7]{20})$")
 _JOIN_SHORT = re.compile(r"^/b/([0-9]{6})$")
 _BIND_INFO_SHORT = re.compile(r"^/api/bind/([0-9]{6})$")
 _DEVICE_API = re.compile(r"^/api/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})(?:/(unbind|repair))?$")
-# 电脑版（媒体中心界面）的台标：只报台 id，地址只来自频道表的 meta（logos.py）。
+# 电脑版（媒体中心界面）的台标：只报台 id，地址只来自频道表的 meta 和节目单里对上的台（logos.py）。
 _LOGO = re.compile(r"^/api/art/logo/([A-Za-z0-9_-]{1,15})$")
 # 直播台的真画面封面（linecheck.py 在后台检测线路时取的一帧）：只报台 id，只读数据目录的 covers/live/。
 _LIVE_COVER = re.compile(r"^/api/art/live/([A-Za-z0-9_-]{1,15})$")

@@ -14,12 +14,18 @@
   和台名本身，原样相同最好；再比「规整过的名字」（key_of：CCTV-1 / CCTV1 / CCTV1综合 / CCTV-1 HD
   都是 CCTV1；湖南卫视HD、湖南卫视高清 都是湖南卫视）；最后「湖南卫视4K」这类没有自己节目单的 4K 台
   用不带 4K 的那个（CCTV4K、CCTV8K 是单独的台，不这样退）。几个来源都有的台用排在前面的来源。
+- 手动指定：自动对不上的台，管理员在总后台「节目单」里搜节目单里的台（search，按台名和 id）、看一眼它接下来的
+  节目（preview）再指定（MANUAL_KEY，存在账号库里，按台 id 和台名记，重新导入频道表也还在，见 pins_of）。
+  指定了的台不再自动对，指定的来源比排前面的来源优先。
+- 时区：每个来源一个（ZONES_KEY）。时间写了时差（「+0800」）就按写的；没写的按这个来源选的时区，默认北京时间；
+  也可以让它连写了的时差也不信。
+- 台标：对上的节目单台的 <icon src> 记下来（icons），频道表里没写台标的台用它（logos.py，取的规矩一样）。
 
 给页面的：GET /api/epg?channels=ch000,ch001（web.py，和别的遥控接口一样要登录，访客也行）回答每个台的
 now / next（title、start、end，Unix 秒）。加上 from / to（Unix 秒）就是电脑版「节目表」要的一段时间：每个台
 再多一个 programmes（和这段时间有重叠的节目，按时间排）；时间段夹在内存里留的那一天里（现在前 1 小时到后
 24 小时），一次最多 RANGE_CHANNELS_MAX 个台、每台最多 RANGE_PER_CHANNEL_MAX 条（max 可以再少）。
-总后台：GET/POST /api/admin/epg（admin.py 转过来）。
+总后台：GET/POST /api/admin/epg，手动指定的 GET /api/admin/epg/search、/preview 和 POST /api/admin/epg/assign（admin.py 转过来）。
 
 推荐的节目单来源：导入或订阅的播放列表文件头写着 x-tvg-url（url-tvg）时，记下地址和是哪份列表推荐的
 （SUGGEST_KEY，至多 SUGGEST_MAX 个，新的在前），总后台「节目单」里列出来，管理员点一下才加进来源；不会自己打开。
@@ -34,6 +40,8 @@ now / next（title、start、end，Unix 秒）。加上 from / to（Unix 秒）�
 from __future__ import annotations
 
 import calendar
+import datetime
+import functools
 import gzip
 import hashlib
 import json
@@ -48,11 +56,17 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from .. import channel_groups
 from . import channeltable, presets
 
 # 账号库 meta 表里的设置：打开的来源，JSON 列表 ["https://…", …]；没有或空列表就是关着。
 META_KEY = "epg.sources"
 SOURCES_MAX = 3
+# 每个来源的时区：JSON {地址: {"zone": ZONES 里的名字, "ignore": 文件里写的时差也不信}}；没有的按北京时间。
+ZONES_KEY = "epg.zones"
+# 手动指定的台：JSON {台 id: {"source": 来源地址（"" 是哪个来源有都行）, "epg": 节目单台 id, "name": 指定时的台名}}。
+# 存在账号库里，和频道表分开：重新导入、订阅更新频道表都不动它（pins_of 按 id、再按台名找回来）。
+MANUAL_KEY = "epg.manual"
 # 推荐的节目单来源（播放列表文件头的 x-tvg-url）：JSON 列表 [{url, from, at, dismissed?}]。
 SUGGEST_KEY = "epg.suggested"
 SUGGEST_MAX = 6
@@ -77,10 +91,15 @@ PER_CHANNEL_MAX = 200
 TITLE_MAX = 60
 # 节目单里认识的台名最多记这么多个（一份全国的节目单有一两千个台）。
 CHANNELS_SEEN_MAX = 20000
-# 时间没写时区的（「20261024190000」）按北京时间：国内的节目单都是这样写的。
-DEFAULT_OFFSET_S = 8 * 3600
 # /api/epg 一次最多问这么多个台。
 QUERY_MAX = 200
+# 总后台「节目单」：没对上的台最多列这么多个；手动指定最多记这么多个台；搜节目单里的台最多回答这么多条；
+# 「看一眼」最多几个节目。
+UNMATCHED_MAX = 300
+MANUAL_MAX = 1000
+SEARCH_MAX = 40
+PREVIEW_MAX = 5
+EPG_ID_MAX = 200
 # 带 from / to 的（节目表）：台少一点、每台的条数有上限，一次的回答最多几百 KB。
 RANGE_CHANNELS_MAX = 60
 RANGE_PER_CHANNEL_MAX = 64
@@ -94,9 +113,45 @@ _CHUNK = 64 * 1024
 _TIME = re.compile(r"^\s*(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})?\s*"
                    r"(?:([+-])(\d{2}):?(\d{2})|(Z|UTC|GMT))?\s*$", re.IGNORECASE)
 
+# 每个来源的时区（总后台「节目单」里一个来源一个）：时间没写时差（「20261024190000」）时按它算，默认北京时间，
+# 国内的节目单都是这样写的；ignore 为真时文件里写了的时差也不信（有的节目单写着 +0000，其实是北京时间）。
+# 只能从这几个里挑：(名字, 页面上的说法, 平时的时差（小时）, 有没有夏令时)。有夏令时的查系统的时区库
+# （zoneinfo）；查不到（Windows 上没装 tzdata）时退回平时的时差，夏天会差一小时。
+DEFAULT_ZONE = "Asia/Shanghai"
+ZONES = (("Asia/Shanghai", "北京时间", 8, False), ("Asia/Hong_Kong", "香港", 8, False),
+         ("Asia/Taipei", "台北", 8, False), ("Asia/Singapore", "新加坡", 8, False),
+         ("Asia/Tokyo", "东京", 9, False), ("Asia/Seoul", "首尔", 9, False), ("UTC", "UTC（格林尼治）", 0, False),
+         ("Europe/London", "伦敦", 0, True), ("Europe/Paris", "巴黎", 1, True),
+         ("America/New_York", "纽约", -5, True), ("America/Los_Angeles", "洛杉矶", -8, True),
+         ("Australia/Sydney", "悉尼", 10, True))
+_ZONES = {name: (hours, dst) for name, _label, hours, dst in ZONES}
 
-def parse_time(text) -> int | None:
-    """XMLTV 的时间「20261024190000 +0800」→ Unix 秒；看不懂的 None。没写时区按北京时间。"""
+
+@functools.lru_cache(maxsize=16)
+def _tzinfo(zone: str):
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(zone)
+    except Exception:  # noqa: BLE001 —— 没有时区库、库里没有这个名字：退回平时的时差
+        return None
+
+
+def zone_offset(naive: int, zone: str = DEFAULT_ZONE) -> int:
+    """那个时区里写成 naive（把写的时刻当成 UTC 算出来的秒）的时刻，比 UTC 早多少秒。不认识的时区按北京时间。"""
+    hours, dst = _ZONES.get(zone, _ZONES[DEFAULT_ZONE])
+    if dst:
+        info = _tzinfo(zone)
+        if info is not None:
+            try:
+                local = datetime.datetime.fromtimestamp(naive, datetime.timezone.utc).replace(tzinfo=info)
+                return int(local.utcoffset().total_seconds())
+            except (OverflowError, ValueError, OSError):
+                pass
+    return hours * 3600
+
+
+def split_time(text) -> tuple[int, int | None] | None:
+    """XMLTV 的时间 → (把写的时刻当成 UTC 算出来的秒, 写着的时差秒数；没写是 None)；看不懂的 None。"""
     match = _TIME.match(text or "") if isinstance(text, str) else None
     if not match:
         return None
@@ -104,14 +159,13 @@ def parse_time(text) -> int | None:
     second = int(match.group(6) or 0)
     if not (1 <= month <= 12 and 1 <= day <= 31 and hour <= 23 and minute <= 59 and second <= 60):
         return None
+    offset = None
     if match.group(7):
         offset = (int(match.group(8)) * 3600 + int(match.group(9)) * 60) * (1 if match.group(7) == "+" else -1)
         if abs(offset) > 14 * 3600:
             return None
     elif match.group(10):
         offset = 0
-    else:
-        offset = DEFAULT_OFFSET_S
     try:
         stamp = calendar.timegm((year, month, day, hour, minute, min(second, 59), 0, 0, 0))
         time.gmtime(stamp)
@@ -120,7 +174,20 @@ def parse_time(text) -> int | None:
     # timegm 不查日期：2 月 31 日会滚到 3 月，这里挡掉。
     if time.gmtime(stamp)[:3] != (year, month, day):
         return None
-    return stamp - offset
+    return stamp, offset
+
+
+def parse_time(text, zone: str = DEFAULT_ZONE, ignore_offset: bool = False) -> int | None:
+    """XMLTV 的时间「20261024190000 +0800」→ Unix 秒；看不懂的 None。没写时差（或 ignore_offset）按 zone。"""
+    found = split_time(text)
+    return None if found is None else _stamp(found, zone, ignore_offset)
+
+
+def _stamp(found: tuple[int, int | None], zone: str, ignore_offset: bool) -> int:
+    naive, offset = found
+    if offset is None or ignore_offset:
+        offset = zone_offset(naive, zone)
+    return naive - offset
 
 
 _YEAR_ISSUE = re.compile(r"[-_ ]?(?:19|20)\d\d(?:-\d{1,2}-\d{1,2}|-\d{1,4})$")
@@ -268,19 +335,24 @@ def open_xml(path: Path):
     return handle, (gzip.GzipFile(fileobj=handle, mode="rb") if head == b"\x1f\x8b" else handle)
 
 
-def parse(stream, matcher: Matcher, start_s: int, end_s: int, limit: int = XML_MAX) -> dict:
+def parse(stream, matcher: Matcher, start_s: int, end_s: int, limit: int = XML_MAX, zone: str = DEFAULT_ZONE,
+          ignore_offset: bool = False, manual: dict | None = None) -> dict:
     """边读边扔地读一份 XMLTV。回答 {"programmes": {台 id: [(开始, 结束, 标题)]}, "channels": 节目单里的台数,
-    "seen": 读到的节目数, "error": 半路出错的原因（前面读到的照样用）}。
+    "seen": 读到的节目数, "error": 半路出错的原因（前面读到的照样用）, "names": {节目单台 id: [id, 台名…]},
+    "icons": {台 id: 对上的节目单台的台标地址}, "offsets": {"with": 写了时差的节目数, "without": 没写的}}。
 
     只留 matcher 认得的台、和 [start_s, end_s) 有重叠的节目。没写结束时间的用下一个节目的开始时间。
+    manual：管理员手动指定的 {节目单台 id: [台 id…]}，比自动对上的都优先。时间按 zone / ignore_offset（parse_time）。
     xml.etree 不解析外部实体；实体展开的放大攻击由 expat（2.4 起）自己挡，解开的总字节数另有 limit。"""
     from xml.etree import ElementTree
 
     names: dict[str, list[str]] = {}
+    icons: dict[str, str] = {}
     resolved: dict[str, dict[str, int]] = {}
     kept: dict[str, list[list]] = {}
     order: dict[str, int] = {}
-    seen = 0
+    counts = {"seen": 0, "with": 0, "without": 0}
+    rules = (matcher, manual or {}, zone, ignore_offset)
     error = ""
     depth = 0
     root = None
@@ -300,9 +372,12 @@ def parse(stream, matcher: Matcher, start_s: int, end_s: int, limit: int = XML_M
                     shown = [(e.text or "").strip() for e in elem.findall("display-name")][:6]
                     names[epg_id] = [epg_id] + [n for n in shown if n]
                     resolved.pop(epg_id, None)
+                    icon = _icon_of(elem)
+                    if icon:
+                        icons[epg_id] = icon
             elif elem.tag == "programme":
-                seen += 1
-                _programme(elem, names, resolved, kept, order, matcher, start_s, end_s)
+                counts["seen"] += 1
+                _programme(elem, names, resolved, kept, order, rules, start_s, end_s, counts)
             root.clear()
     except (ElementTree.ParseError, ValueError, OSError, EOFError) as problem:
         error = f"{type(problem).__name__}: {problem}"[:200]
@@ -316,10 +391,22 @@ def parse(stream, matcher: Matcher, start_s: int, end_s: int, limit: int = XML_M
             if cid not in best or rank < best[cid][0]:
                 best[cid] = (rank, epg_id)
     return {"programmes": {cid: channels[epg_id] for cid, (_rank, epg_id) in best.items()},
-            "channels": len(names), "seen": seen, "error": error}
+            "icons": {cid: icons[epg_id] for cid, (_rank, epg_id) in best.items() if epg_id in icons},
+            "channels": len(names), "seen": counts["seen"], "error": error, "names": names,
+            "offsets": {"with": counts["with"], "without": counts["without"]}}
 
 
-def _programme(elem, names, resolved, kept, order, matcher, start_s, end_s) -> None:
+def _icon_of(elem) -> str:
+    """<channel> 里的 <icon src="…">：http(s) 的、能当台标地址存的（channeltable.clean_meta 的规矩）才要。"""
+    for node in elem.findall("icon"):
+        found = channeltable.clean_meta({"logo": node.get("src") or ""})
+        if found:
+            return found["logo"]
+    return ""
+
+
+def _programme(elem, names, resolved, kept, order, rules, start_s, end_s, counts) -> None:
+    matcher, manual, zone, ignore_offset = rules
     epg_id = (elem.get("channel") or "").strip()
     if not epg_id:
         return
@@ -327,12 +414,19 @@ def _programme(elem, names, resolved, kept, order, matcher, start_s, end_s) -> N
     if found is None:
         if len(resolved) >= CHANNELS_SEEN_MAX:
             return
-        found = resolved[epg_id] = matcher.match(names.get(epg_id, [epg_id]))
+        found = matcher.match(names.get(epg_id, [epg_id]))
+        for cid in manual.get(epg_id, ()):
+            found[cid] = -1         # 手动指定的：比原样相同（0）还优先
+        resolved[epg_id] = found
     if not found:
         return
-    start = parse_time(elem.get("start"))
-    stop = parse_time(elem.get("stop")) if elem.get("stop") else None
-    if start is None or start >= end_s or (stop is not None and (stop <= start_s or stop <= start)):
+    began = split_time(elem.get("start"))
+    if began is None:
+        return
+    counts["with" if began[1] is not None else "without"] += 1
+    start = _stamp(began, zone, ignore_offset)
+    stop = parse_time(elem.get("stop"), zone, ignore_offset) if elem.get("stop") else None
+    if start >= end_s or (stop is not None and (stop <= start_s or stop <= start)):
         return
     title = ""
     for node in elem.findall("title"):
@@ -492,9 +586,16 @@ class Guide:
         self.table = Path(table) if table is not None else None
         self.log, self.clock, self.monotonic, self.opener = log, clock, monotonic, opener
         self.sources: list[str] = []
+        # 每个来源的时区 {地址: {"zone", "ignore"}}（load_zones）和手动指定的台 {台 id: {"source", "epg", "name"}}
+        # （load_manual）；改了都重读一遍。
+        self.zones: dict[str, dict] = {}
+        self.manual: dict[str, dict] = {}
         self._data: dict[str, list[tuple]] = {}
+        self._icons: dict[str, str] = {}
+        # 每个来源里认识的台 {地址: {节目单台 id: [id, 台名…]}}：手动指定时搜（search）。
+        self._catalog: dict[str, dict[str, list[str]]] = {}
         self._status: dict[str, dict] = {}
-        self._coverage = {"matched": 0, "total": 0, "missing": []}
+        self._coverage = _EMPTY_COVERAGE
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
@@ -509,7 +610,9 @@ class Guide:
     def enabled(self) -> bool:
         return bool(self.sources)
 
-    def configure(self, sources: list[str], start: bool | None = None) -> None:
+    def configure(self, sources: list[str], start: bool | None = None, zones: dict | None = None,
+                  manual: dict | None = None) -> None:
+        """换来源（zones、manual 给了才换；它们改了只重读、不重新下载）。"""
         start = self.autostart if start is None else start
         with self._lock:
             changed = sources != self.sources
@@ -517,9 +620,13 @@ class Guide:
             if changed:
                 self._next_fetch = 0.0
                 self._signature = None
+            if zones is not None and zones != self.zones:
+                self.zones, self._signature = dict(zones), None
+            if manual is not None and manual != self.manual:
+                self.manual, self._signature = dict(manual), None
             if not self.sources:
-                self._data, self._status = {}, {}
-                self._coverage = {"matched": 0, "total": 0, "missing": []}
+                self._data, self._status, self._icons, self._catalog = {}, {}, {}, {}
+                self._coverage = _EMPTY_COVERAGE
             elif start and self._thread is None:
                 self._thread = threading.Thread(target=self._run, name="epg", daemon=True)
                 self._thread.start()
@@ -589,14 +696,23 @@ class Guide:
         """用下好的文件重读一遍（不上网），整份换掉内存里的节目。"""
         now = self.clock() if now is None else now
         rows = table_rows(self.table)
-        matcher = Matcher(rows)
+        pins = pins_of(rows, self.manual)
+        # 手动指定了的台不再自动对：指定的节目单台这会儿没有节目时宁可空着，也不换成一个像的。
+        matcher = Matcher([row for row in rows if row[0] not in pins])
         start_s, end_s = int(now) - WINDOW_BEFORE_S, int(now) + WINDOW_AFTER_S
         merged: dict[str, list[tuple]] = {}
+        icons: dict[str, str] = {}
+        catalog: dict[str, dict[str, list[str]]] = {}
         notes: dict[str, dict] = {}
         for url in list(self.sources):
             path = self.folder / f"{cache_name(url)}.xml"
             if not path.is_file():
                 continue
+            setting = self.zones.get(url) or {}
+            manual: dict[str, list[str]] = {}
+            for cid, (source, epg_id) in pins.items():
+                if not source or source == url:
+                    manual.setdefault(epg_id, []).append(cid)
             began = time.process_time()
             try:
                 handle, stream = open_xml(path)
@@ -604,13 +720,25 @@ class Guide:
                 notes[url] = {"parse_error": f"{type(problem).__name__}"}
                 continue
             try:
-                result = parse(stream, matcher, start_s, end_s)
+                result = parse(stream, matcher, start_s, end_s, zone=setting.get("zone") or DEFAULT_ZONE,
+                               ignore_offset=bool(setting.get("ignore")), manual=manual)
             finally:
                 handle.close()
             for cid, items in result["programmes"].items():
-                merged.setdefault(cid, items)
+                # 指定了这个来源的：用这个来源的，哪怕排在前面的来源也有这个台。
+                if cid in pins and pins[cid][0] == url:
+                    merged[cid] = items
+                    icons.pop(cid, None)
+                else:
+                    merged.setdefault(cid, items)
+            # 台标跟着节目走：用的是哪个来源的节目，就用那个来源的台标。
+            for cid, icon in result["icons"].items():
+                if merged.get(cid) is result["programmes"].get(cid):
+                    icons.setdefault(cid, icon)
+            catalog[url] = result["names"]
             notes[url] = {"channels": result["channels"], "programmes": result["seen"],
                           "matched": len(result["programmes"]), "parse_error": result["error"],
+                          "offsets": result["offsets"],
                           "parse_cpu_s": round(time.process_time() - began, 2), "parsed_at": int(now)}
             if result["error"]:
                 self.log(f"节目单：{url} 读到一半出错（{result['error']}），前面的照用")
@@ -618,11 +746,17 @@ class Guide:
         with self._lock:
             if not self.sources:
                 return
-            self._data = merged
+            self._data, self._icons, self._catalog = merged, icons, catalog
             for url, note in notes.items():
                 self._status[url] = dict(self._status.get(url, {"url": url}), **note)
+            missing = [cid for cid in names if cid not in merged]
             self._coverage = {"matched": sum(cid in merged for cid in names), "total": len(names),
-                              "missing": [names[cid] for cid in names if cid not in merged][:40]}
+                              "missing": [names[cid] for cid in missing][:40],
+                              # 没对上、也没手动指定的台（总后台「节目单」里列出来，点一下手动指定）。
+                              "unmatched": [{"id": cid, "name": names[cid]} for cid in missing
+                                            if cid not in pins][:UNMATCHED_MAX],
+                              "pinned": {cid: {"source": source, "epg": epg_id, "ok": cid in merged}
+                                         for cid, (source, epg_id) in pins.items()}}
         self._parsed_at = now
 
     def lookup(self, cids, now: float | None = None) -> dict[str, dict]:
@@ -659,6 +793,102 @@ class Guide:
             return {"sources": [dict(self._status.get(url, {"url": url})) for url in self.sources],
                     "coverage": dict(self._coverage), "channels": len(self._data)}
 
+    def icons(self) -> dict[str, str]:
+        """{台 id: 对上的节目单台的 <icon src>}：频道表里没写台标的台用它（logos.LogoCache 的 extra）。"""
+        with self._lock:
+            return self._icons
+
+    def channel_names(self, url: str, epg_id: str) -> list[str]:
+        """某个来源里一个节目单台的 [id, 台名…]；没读到过是 []。"""
+        with self._lock:
+            return list(self._catalog.get(url, {}).get(epg_id, []))
+
+    def search(self, text, limit: int = SEARCH_MAX) -> list[dict]:
+        """手动指定时搜节目单里的台：按 id 和台名，不分大小写，也比规整过的名字（key_of）。
+        原样或规整后相同的排前面，再是开头相同的，再是包含的；同样像的按来源的顺序。"""
+        text = " ".join(str(text or "").split())[:64]
+        if not text:
+            return []
+        plain = text.casefold()
+        key = key_of(text)[0]
+        with self._lock:
+            catalog = [(url, self._catalog.get(url, {})) for url in self.sources]
+        found = []
+        for rank_source, (url, channels) in enumerate(catalog):
+            for epg_id, names in channels.items():
+                score = None
+                for name in names:
+                    folded, name_key = name.casefold(), key_of(name)[0]
+                    if folded == plain or (key and name_key == key):
+                        score = 0
+                        break
+                    if folded.startswith(plain) or (key and name_key.startswith(key)):
+                        score = 1
+                    elif score is None and (plain in folded or (key and key in name_key)):
+                        score = 2
+                if score is not None:
+                    found.append(((score, rank_source, len(found)), {"source": url, "id": epg_id, "names": names[1:]}))
+        found.sort(key=lambda item: item[0])
+        return [item for _rank, item in found[:limit]]
+
+    def preview(self, url: str, epg_id: str, count: int = PREVIEW_MAX, now: float | None = None) -> list[dict] | None:
+        """手动指定前看一眼：这个来源里这个节目单台从现在起的几个节目（按这个来源的时区）。会把整份文件再读一遍
+        （大的一秒左右），只有管理员点的时候才读。没有这个来源、文件没下好是 None。"""
+        now = self.clock() if now is None else now
+        if url not in self.sources:
+            return None
+        path = self.folder / f"{cache_name(url)}.xml"
+        setting = self.zones.get(url) or {}
+        try:
+            handle, stream = open_xml(path)
+        except OSError:
+            return None
+        try:
+            result = parse(stream, Matcher([]), int(now) - WINDOW_BEFORE_S, int(now) + WINDOW_AFTER_S,
+                           zone=setting.get("zone") or DEFAULT_ZONE, ignore_offset=bool(setting.get("ignore")),
+                           manual={epg_id: ["_"]})
+        finally:
+            handle.close()
+        items = [item for item in result["programmes"].get("_", ()) if item[1] > now]
+        return [_shown(item) for item in items[:count]]
+
+
+_EMPTY_COVERAGE = {"matched": 0, "total": 0, "missing": [], "unmatched": [], "pinned": {}}
+
+
+def pins_of(rows, manual: dict) -> dict[str, tuple[str, str]]:
+    """手动指定的台 {台 id: (来源地址或 "", 节目单台 id)}。按台 id 记，也记着台名：频道表重新导入、台的 id 变了时
+    按名字找回来。先认 id 和名字都对的，再认名字对的，最后认只有 id 对的（台改了名字）；一条只用一次。"""
+    return {cid: (manual[key].get("source") or "", manual[key]["epg"]) for cid, key in pin_keys(rows, manual).items()}
+
+
+def pin_keys(rows, manual: dict) -> dict[str, str]:
+    """pins_of 的对法：{台 id: 用的是 manual 里哪一条（键）}。"""
+    names = {cid: (names[-1] if names else "") for cid, names in rows}
+    pins: dict[str, str] = {}
+    used: set[str] = set()
+
+    def take(cid, key):
+        pins[cid] = key
+        used.add(key)
+
+    for cid, name in names.items():
+        entry = manual.get(cid)
+        if entry is not None and entry.get("name", "").casefold() == name.casefold():
+            take(cid, cid)
+    by_name: dict[str, str] = {}
+    for key, entry in manual.items():
+        if key not in used and entry.get("name"):
+            by_name.setdefault(entry["name"].casefold(), key)
+    for cid, name in names.items():
+        key = by_name.get(name.casefold())
+        if cid not in pins and key is not None and key not in used:
+            take(cid, key)
+    for cid in names:
+        if cid not in pins and cid in manual and cid not in used:
+            take(cid, cid)
+    return pins
+
 
 def _shown(item) -> dict | None:
     return {"title": item[2], "start": item[0], "end": item[1]} if item else None
@@ -674,6 +904,42 @@ def load_sources(accounts) -> list[str]:
     if not isinstance(data, list):
         return []
     return [url for url in data if valid_url(url)][:SOURCES_MAX]
+
+
+def _meta_dict(accounts, key: str) -> dict:
+    try:
+        data = json.loads(accounts.meta(key, "{}") or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def clean_zone(item) -> dict | None:
+    """一个来源的时区设置 → {"zone", "ignore"}；看不懂的 None。"""
+    if not isinstance(item, dict) or item.get("zone", DEFAULT_ZONE) not in _ZONES:
+        return None
+    return {"zone": item.get("zone", DEFAULT_ZONE), "ignore": item.get("ignore") is True}
+
+
+def load_zones(accounts) -> dict[str, dict]:
+    found = {}
+    for url, item in _meta_dict(accounts, ZONES_KEY).items():
+        clean = clean_zone(item)
+        if valid_url(url) and clean is not None:
+            found[url] = clean
+    return found
+
+
+def load_manual(accounts) -> dict[str, dict]:
+    found = {}
+    for cid, item in _meta_dict(accounts, MANUAL_KEY).items():
+        if not (isinstance(cid, str) and _CID.match(cid) and isinstance(item, dict)):
+            continue
+        epg_id, source, name = item.get("epg"), item.get("source", ""), item.get("name", "")
+        if isinstance(epg_id, str) and epg_id.strip() and len(epg_id) <= EPG_ID_MAX and isinstance(name, str) \
+                and isinstance(source, str) and (source == "" or valid_url(source)):
+            found[cid] = {"source": source, "epg": epg_id.strip(), "name": name[:channeltable.NAME_MAX]}
+    return dict(list(found.items())[:MANUAL_MAX])
 
 
 def load_suggested(accounts) -> list[dict]:
@@ -711,7 +977,7 @@ def attach(relay, folder: Path) -> Guide:
     """中转启动时（多用户）：建一个 Guide，按库里的设置打开或不打开。"""
     guide = Guide(folder, relay.main_channels, log=lambda message: relay.log(message), clock=relay.clock)
     relay.guide = guide
-    guide.configure(load_sources(relay.accounts))
+    guide.configure(load_sources(relay.accounts), zones=load_zones(relay.accounts), manual=load_manual(relay.accounts))
     return guide
 
 
@@ -780,7 +1046,20 @@ def admin_view(relay) -> dict:
             item["name"] = preset["name"] if preset else ""
             for key in ("etag", "last_modified"):
                 item.pop(key, None)
-        view.update(status=status["sources"], coverage=status["coverage"])
+        coverage = status["coverage"]
+        names = {cid: name for cid, name in channel_groups.read_table(relay.main_channels)} \
+            if relay.main_channels is not None else {}
+        # 手动指定了的台：页面上列出来（可以改、可以取消）；节目单里的台名从读到的文件里找。
+        manual = []
+        for cid, pin in coverage.get("pinned", {}).items():
+            shown = guide.channel_names(pin["source"], pin["epg"]) if pin["source"] else next(
+                (found for url in sources for found in [guide.channel_names(url, pin["epg"])] if found), [])
+            manual.append({"id": cid, "name": names.get(cid, cid), "source": pin["source"], "epg": pin["epg"],
+                           "epg_name": shown[1] if len(shown) > 1 else "", "ok": pin["ok"]})
+        view.update(status=status["sources"], coverage={k: v for k, v in coverage.items() if k != "pinned"},
+                    manual=manual, zones={url: guide.zones.get(url) or {"zone": DEFAULT_ZONE, "ignore": False}
+                                          for url in sources},
+                    zone_choices=[{"id": name, "label": label} for name, label, _h, _d in ZONES])
     return view
 
 
@@ -798,8 +1077,22 @@ def admin_save(relay, body: dict, caller, ip: str) -> dict:
     bad = [url for url in sources if not valid_url(url)]
     if bad:
         return {"ok": False, "error": f"地址不对：{bad[0][:80]}（要以 http:// 或 https:// 开头）"}
+    # 时区（页面一起发来的 zones：{地址: {zone, ignore}}）；没发时原来的照旧。去掉了的来源的设置一起去掉。
+    zones = body.get("zones")
+    if zones is not None and not isinstance(zones, dict):
+        return {"ok": False, "error": "请求格式不对"}
+    kept = {url: item for url, item in load_zones(relay.accounts).items() if url in sources}
+    for url, item in (zones or {}).items():
+        if url not in sources:
+            continue
+        clean = clean_zone(item)
+        if clean is None:
+            return {"ok": False, "error": "不认识这个时区"}
+        kept[url] = clean
+    kept = {url: item for url, item in kept.items() if item != {"zone": DEFAULT_ZONE, "ignore": False}}
     relay.accounts.set_meta(META_KEY, json.dumps(sources, ensure_ascii=False))
-    guide.configure(sources)
+    relay.accounts.set_meta(ZONES_KEY, json.dumps(kept, ensure_ascii=False))
+    guide.configure(sources, zones=kept)
     relay.accounts.audit("epg.save", caller.user, ip, "epg", "", f"{len(sources)} 个来源" if sources else "关闭")
     relay.log(f"总后台：节目单{'打开，' + str(len(sources)) + ' 个来源' if sources else '关闭'}")
     return {"ok": True, "sources": sources}
@@ -826,4 +1119,64 @@ def admin_refresh(relay, caller, ip: str) -> dict:
     if not guide.refresh_now():
         return {"ok": False, "error": f"刚更新过，{MANUAL_MIN_S // 60} 分钟内只能点一次"}
     relay.accounts.audit("epg.refresh", caller.user, ip, "epg")
+    return {"ok": True}
+
+
+def admin_search(relay, query: dict) -> dict:
+    """GET /api/admin/epg/search?q=：手动指定时，在打开的来源里按台名、id 搜节目单的台。"""
+    guide = getattr(relay, "guide", None)
+    if guide is None or not guide.enabled:
+        return {"ok": False, "error": "节目单没有打开"}
+    return {"ok": True, "results": guide.search(query.get("q"))}
+
+
+def admin_preview(relay, query: dict) -> dict:
+    """GET /api/admin/epg/preview?source=&id=：这个节目单台从现在起的几个节目，指定之前看一眼对不对。"""
+    guide = getattr(relay, "guide", None)
+    url, epg_id = query.get("source"), query.get("id")
+    if guide is None or not guide.enabled:
+        return {"ok": False, "error": "节目单没有打开"}
+    if not isinstance(url, str) or not isinstance(epg_id, str) or not epg_id or len(epg_id) > EPG_ID_MAX:
+        return {"ok": False, "error": "请求格式不对"}
+    shown = guide.preview(url, epg_id)
+    if shown is None:
+        return {"ok": False, "error": "这个来源还没下载好（或者已经去掉了）"}
+    return {"ok": True, "programmes": shown}
+
+
+def admin_assign(relay, body: dict, caller, ip: str) -> dict:
+    """POST /api/admin/epg/assign {channel, source, epg}：给一个台手动指定节目单里的台（epg 为空是取消，
+    回到自动对）。按台 id 存，也记下台名（pins_of）。"""
+    guide = getattr(relay, "guide", None)
+    if guide is None:
+        return {"ok": False, "error": "这个中转没有节目单功能（单用户模式）"}
+    cid, source, epg_id = body.get("channel"), body.get("source", ""), body.get("epg", "")
+    if not isinstance(cid, str) or not _CID.match(cid) or not isinstance(source, str) or not isinstance(epg_id, str):
+        return {"ok": False, "error": "请求格式不对"}
+    names = dict(channel_groups.read_table(relay.main_channels)) if relay.main_channels is not None else {}
+    if cid not in names:
+        return {"ok": False, "error": "频道表里没有这个台（可能刚改过，请刷新）"}
+    manual = load_manual(relay.accounts)
+    # 这个台现在用的那一条（可能是按台名找回来的，键是导入前的旧 id）：取消、改都先去掉它。
+    old = pin_keys(table_rows(relay.main_channels), manual).get(cid)
+    epg_id = epg_id.strip()
+    if not epg_id:
+        if old is None:
+            return {"ok": True}
+        manual.pop(old)
+        detail = f"{names[cid]}：取消"
+    else:
+        if len(epg_id) > EPG_ID_MAX or (source and source not in guide.sources):
+            return {"ok": False, "error": "没有这个节目单来源（页面可能是旧的，请刷新）"}
+        if source and not guide.channel_names(source, epg_id):
+            return {"ok": False, "error": "这个节目单里没有这个台（可能刚更新过，请重新搜）"}
+        if cid not in manual and len(manual) >= MANUAL_MAX:
+            return {"ok": False, "error": f"最多手动指定 {MANUAL_MAX} 个台"}
+        if old is not None:
+            manual.pop(old)
+        manual[cid] = {"source": source, "epg": epg_id, "name": names[cid]}
+        detail = f"{names[cid]} → {epg_id}"[:120]
+    relay.accounts.set_meta(MANUAL_KEY, json.dumps(manual, ensure_ascii=False))
+    guide.configure(guide.sources, manual=manual)
+    relay.accounts.audit("epg.assign", caller.user, ip, "epg", cid, detail)
     return {"ok": True}

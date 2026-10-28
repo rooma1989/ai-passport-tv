@@ -12,10 +12,12 @@ from pathlib import Path
 
 CAST = "我的投屏"
 CREATORS = "UP 主"
-GROUPS = (CAST, CREATORS, "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "其他")
+GROUPS = (CAST, CREATORS, "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "节目回看", "其他")
 OTHER = "其他"
 # 剧集台（中转的 sr01…）默认放的组；和直播台一样可以在手机上改。
 SERIES = "动画影视"
+# 晚会、春晚这类录像（「2019春晚」「央视春晚 1983」）：不是直播，单独一组，不和直播台挤在「其他」里。
+REPLAYS = "节目回看"
 # 设备的频道列表放在一个 CONFIG 包里：包长和台数的上限，与固件 main/av_protocol.h 的
 # AV_CONTROL_MAX、AV_CHANNEL_MAX 一致。中转加台前也按这个算，免得列表超长、设备一个台都收不到。
 CONFIG_MAX = 7168
@@ -51,6 +53,8 @@ def unmark(channel_id: str, name: str) -> tuple[str, str]:
 _HK_TW = ("香港", "凤凰", "TVBS", "东森", "华视", "民视", "三立", "中视", "中天", "台视", "耀才")
 _MUSIC = ("精选", "音乐")
 _FILMS = ("猫和老鼠", "哆啦A梦", "海绵宝宝", "七龙珠", "中华小当家", "周星驰", "让子弹飞", "电影")
+# 录像的名字片段：先于「央视」判断，「CCTV春晚1990」也归「节目回看」。
+_REPLAYS = ("春晚", "春节联欢晚会", "春节晚会", "元宵晚会", "中秋晚会", "联欢晚会", "回看")
 # 带中文说明的国际台，只看开头。
 _WORLD_PREFIXES = ("CGTN", "CNA", "NHK", "BBC", "RT ", "TRT", "ABC", "Al Jazeera", "France 24")
 
@@ -62,6 +66,8 @@ def classify(channel_id: str, name: str) -> str:
         return CREATORS
     if channel_id.startswith("sr") and channel_id[2:].isdigit():
         return SERIES
+    if any(part in name for part in _REPLAYS):
+        return REPLAYS
     if name.upper().startswith("CCTV"):
         return "央视"
     if any(part in name for part in _HK_TW):
@@ -84,6 +90,7 @@ def classify(channel_id: str, name: str) -> str:
 # 按顺序比，先比到的算：「港澳台」在「卫视」前面（「香港卫视」那组归港澳台）。比的是去掉符号、表情和空格、
 # 不分大小写以后的分组名里有没有这些字。
 _TITLE_GROUPS = (
+    (REPLAYS, ("春晚", "晚会", "回看")),
     ("港澳台", ("港澳台", "港澳", "港台", "香港", "澳门", "台湾", "hongkong", "taiwan", "macau")),
     ("央视", ("央视", "cctv", "中央台", "中央电视")),
     ("卫视", ("卫视", "satellite")),

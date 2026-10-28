@@ -29,7 +29,7 @@ const ADM_ACTIONS = {
   "session.revoke": "退出一个登录", "session.revoke_others": "退出别处的登录",
   "admin.session.revoke": "管理员退出他的一个登录", "admin.session.revoke_all": "管理员退出他的全部登录",
   "legacy_token.on": "打开共享配对令牌", "legacy_token.off": "关闭共享配对令牌", "channels.save": "保存频道表",
-  "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "library.add": "加片库来源", "library.delete": "删片库来源", "library.scan": "扫描片库", "clouddrive.install": "安装网盘组件", "clouddrive.update": "更新网盘组件", "clouddrive.enable": "启用网盘组件", "clouddrive.disable": "停用网盘组件", "clouddrive.repair": "重设网盘管理密码", "clouddrive.reveal": "查看网盘管理密码", "clouddrive.drive_qr": "出网盘登录二维码", "clouddrive.drive_add": "添加网盘", "clouddrive.drive_delete": "删除网盘", "clouddrive.rescan": "重新扫描网盘", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "epg.dismiss": "不要推荐的节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
+  "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "library.add": "加片库来源", "library.delete": "删片库来源", "library.scan": "扫描片库", "clouddrive.install": "安装网盘组件", "clouddrive.update": "更新网盘组件", "clouddrive.enable": "启用网盘组件", "clouddrive.disable": "停用网盘组件", "clouddrive.repair": "重设网盘管理密码", "clouddrive.reveal": "查看网盘管理密码", "clouddrive.drive_qr": "出网盘登录二维码", "clouddrive.drive_add": "添加网盘", "clouddrive.drive_delete": "删除网盘", "clouddrive.rescan": "重新扫描网盘", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "epg.dismiss": "不要推荐的节目单", "epg.assign": "节目单手动指定台", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
   "wifi.add": "给设备加 Wi-Fi", "wifi.remove": "删设备的 Wi-Fi", "wifi.up": "调 Wi-Fi 顺序", "wifi.switch": "让设备换 Wi-Fi",
   "login.pc.confirm": "手机确认电脑登录", "login.pc.deny": "手机拒绝电脑登录", "migrate": "从单用户迁移",
 };
@@ -848,7 +848,7 @@ async function admSystem() {
 
 // ach.rows：{id?, name, url, agent, group, logo, tvg_id, tvg_name（台标、节目单编号，存在频道表旁边的 meta 里）,
 //            routes: [{url, ua?}]（备用线路）, checks: {地址: {ok, why, at}}, good, orig?}
-const ach = { data: null, rows: [], imp: [], impKind: "", impSource: "", epg: null, epgSources: [], filter: "", impFilter: "", problems: null,
+const ach = { data: null, rows: [], imp: [], impKind: "", impSource: "", epg: null, epgSources: [], epgZones: {}, filter: "", impFilter: "", problems: null,
               checking: false, probing: false, tab: "list" };
 const ACH_DUP = { url: "已在表里", name: "表里有同名", list: "列表里重复" };
 function achRoutesKey(routes) { return JSON.stringify((routes || []).map((x) => [x.url, x.ua || ""])); }
@@ -969,9 +969,15 @@ function achShell() {
         <button class="ghost" id="achEpgRefresh">现在更新</button>
         <span class="hint" id="achEpgState" style="margin:0"></span>
       </div>
+      <div class="subsbox epgpin" id="achEpgPin" hidden>
+        <b>手动指定</b>
+        <p class="hint">没自动对上的台，点一下在节目单里挑一个。按台记着，重新导入频道表也还在；点了马上生效，不用点「保存」。</p>
+        <div id="achEpgPinned"></div>
+        <div class="epgchips" id="achEpgUnmatched"></div>
+      </div>
       <details class="more-info">
         <summary>说明</summary>
-        <p>直播台名下面显示「正在播：…」。服务器每 <span id="achEpgHours">8</span> 小时下载一次（存在数据目录的 epg/ 里），只留表里有的台、前后一天的节目；按台名和 tvg-id 对台，CCTV-1、CCTV1综合、湖南卫视HD 这类写法都认。最多 <span id="achEpgMax">3</span> 个来源，排前面的优先；关掉就不再下载。</p>
+        <p>直播台名下面显示「正在播：…」。服务器每 <span id="achEpgHours">8</span> 小时下载一次（存在数据目录的 epg/ 里），只留表里有的台、前后一天的节目；按台名和 tvg-id 对台，CCTV-1、CCTV1综合、湖南卫视HD 这类写法都认，对不上的可以手动指定。最多 <span id="achEpgMax">3</span> 个来源，排前面的优先；关掉就不再下载。节目单的时间没写时差时按每个来源选的时区算（默认北京时间）。频道表里没有台标的台，用节目单里那个台的台标。</p>
       </details>
     </div>
     <div class="savebar" role="region" aria-label="保存频道表">
@@ -1518,11 +1524,24 @@ async function achLoadEpg() {
   achTab(ach.tab);
   if (!data.available) return;
   ach.epgSources = data.sources.slice();
+  ach.epgZones = JSON.parse(JSON.stringify(data.zones || {}));
   $("achEpgHours").textContent = data.refresh_hours;
   $("achEpgMax").textContent = data.max;
   achRenderEpg();
 }
-function achEpgDirty() { return !!ach.epg && ach.epgSources.join("\n") !== ach.epg.sources.join("\n"); }
+// 每个来源的时区（epg.ZONES）：没设过的是北京时间、信文件里写的时差。
+const ACH_ZONE = { zone: "Asia/Shanghai", ignore: false };
+function achZoneOf(url) { return ach.epgZones[url] || ACH_ZONE; }
+function achZonesFor(sources, zones) { return JSON.stringify(sources.map((u) => { const z = zones[u] || ACH_ZONE; return [z.zone, !!z.ignore]; })); }
+function achEpgDirty() {
+  return !!ach.epg && (ach.epgSources.join("\n") !== ach.epg.sources.join("\n") ||
+    achZonesFor(ach.epgSources, ach.epgZones) !== achZonesFor(ach.epgSources, ach.epg.zones || {}));
+}
+// 来源的名字：预设的用预设的名字，别的用地址。
+function achEpgName(url) {
+  const p = ach.epg && ach.epg.presets.find((x) => x.urls[0].url === url);
+  return p ? p.name : url;
+}
 // 播放列表推荐的节目单（epg.suggest）：「加上」直接保存（和勾选预设、点「保存」一样），「不要」以后不再列。
 function achRenderEpgSuggest() {
   const e = ach.epg, box = $("achEpgSuggestList");
@@ -1590,20 +1609,138 @@ function achRenderEpg() {
       text += s.ok === false ? "这次没取到（" + s.error + "）" + (s.fetched_at ? "，用 " + when(s.fetched_at) + " 下载的" : "")
         : "上次检查 " + when(s.checked_at) + (s.fetched_at ? "，文件是 " + when(s.fetched_at) + " 的（" + admKb(s.bytes) + " KB）" : "");
       if (s.parsed_at) text += "；节目单里 " + s.channels + " 个台，对上频道表 " + s.matched + " 个" + (s.parse_error ? "（文件有错，只读了一部分）" : "");
+      const o = s.offsets;
+      if (o && (o.with || o.without)) text += "；时间" + (!o.without ? "都写着时差" : !o.with ? "没写时差，按下面选的时区算" : "有的写了时差、有的没写");
     }
     li.appendChild(el("span", s && s.ok === false ? "bad" : "", text));
     if (!known.has(url)) li.appendChild(button("去掉", "linkbtn red", () => { ach.epgSources.splice(i, 1); achRenderEpg(); }));
+    li.appendChild(achZoneRow(url));
     list.appendChild(li);
   });
   const c = e.coverage;
   if (e.sources.length && c && c.total) {
     list.appendChild(el("li", "", "频道表 " + c.total + " 个台里 " + c.matched + " 个有节目单" +
-      (c.missing.length ? "；没对上的：" + c.missing.slice(0, 15).join("、") + (c.missing.length > 15 ? " 等" : "") : "") + "。"));
+      ((c.unmatched || []).length ? "；没对上的 " + c.unmatched.length + " 个台在下面「手动指定」里" : "") + "。"));
   }
   if (!ach.epgSources.length) list.appendChild(el("li", "", "现在关着：勾选一个节目单或填地址，再点「保存」。"));
+  achRenderPins();
   $("achEpgState").textContent = achEpgDirty() ? "有没保存的修改" : "";
   $("achEpgSave").disabled = !achEpgDirty();
   $("achEpgRefresh").hidden = !e.sources.length;
+}
+// 一个来源的时区：时间没写时差时按它算；勾上「不信」时写了的也按它（有的节目单写着 +0000，其实是北京时间）。
+function achZoneRow(url) {
+  const row = el("div", "epgzone");
+  const z = achZoneOf(url);
+  const pick = el("select");
+  pick.setAttribute("aria-label", "「" + achEpgName(url) + "」的时区");
+  for (const c of ach.epg.zone_choices || []) {
+    const o = el("option", "", c.label);
+    o.value = c.id; o.selected = c.id === z.zone;
+    pick.appendChild(o);
+  }
+  const label = el("label", "chk");
+  const check = el("input");
+  check.type = "checkbox"; check.checked = !!z.ignore;
+  label.append(check, document.createTextNode("文件里写的时差也不信"));
+  const change = () => { ach.epgZones[url] = { zone: pick.value, ignore: check.checked }; achRenderEpg(); };
+  pick.onchange = change; check.onchange = change;
+  row.append(el("span", "", "时区（没写时差时按）"), pick, label);
+  return row;
+}
+// 手动指定（epg.admin_assign）：上面是指定过的台（改、取消），下面是没对上的台，点一个打开挑选框。
+function achRenderPins() {
+  const e = ach.epg, c = e.coverage || {};
+  const pinned = e.manual || [], unmatched = c.unmatched || [];
+  $("achEpgPin").hidden = !e.sources.length || !(pinned.length || unmatched.length);
+  const top = $("achEpgPinned");
+  top.replaceChildren();
+  for (const m of pinned) {
+    const row = el("div", "subrow");
+    const text = el("div", "subtext");
+    text.append(el("b", "", m.name + " → " + (m.epg_name || m.epg)),
+                el("span", "hint" + (m.ok ? "" : " bad"), "节目单里的 id：" + m.epg + " · " + (m.source ? achEpgName(m.source) : "哪个来源有都行") +
+                  (m.ok ? "" : " · 这会儿没有节目（节目单可能改了 id）")));
+    const actions = el("div", "inline");
+    const edit = button("改", "ghost", () => achEpgPick({ id: m.id, name: m.name }));
+    const drop = button("取消", "ghost");
+    drop.onclick = () => admBusy(drop, async () => {
+      if (await admAct("api/admin/epg/assign", { channel: m.id, epg: "" }, "已取消：回到自动对台")) setTimeout(achLoadEpg, 1500);
+    });
+    actions.append(edit, drop);
+    row.append(text, actions);
+    top.appendChild(row);
+  }
+  const box = $("achEpgUnmatched");
+  box.replaceChildren();
+  if (unmatched.length) box.appendChild(el("span", "hint", "没对上的 " + unmatched.length + " 个台："));
+  for (const u of unmatched) {
+    const b = button(u.name, "ghost", () => achEpgPick(u));
+    b.title = "给「" + u.name + "」指定节目单里的台";
+    box.appendChild(b);
+  }
+}
+// 挑选框：按台名、id 搜打开的来源里的台（api/admin/epg/search），点一个看它接下来的节目（…/preview），对了点「用这个」。
+function achEpgPick(ch) {
+  const form = el("div", "epgpick");
+  const input = el("input");
+  input.type = "text"; input.enterKeyHint = "search"; input.value = ch.name; input.placeholder = "节目单里的台名或 id"; input.maxLength = 64;
+  input.autocomplete = "off"; input.spellcheck = false;
+  input.setAttribute("aria-label", "搜节目单里的台");
+  const list = el("div", "epgres");
+  const look = el("div", "epglook");
+  look.setAttribute("aria-live", "polite");
+  let seq = 0, timer = 0;
+  const search = async () => {
+    const q = input.value.trim(), n = ++seq;
+    look.replaceChildren();
+    if (!q) { list.replaceChildren(el("p", "hint", "输入台名搜，比如「CCTV1」「湖南」")); return; }
+    let answer;
+    try { answer = await admCall("GET", "api/admin/epg/search?q=" + encodeURIComponent(q)); } catch (error) { admFail(error); return; }
+    if (n !== seq) return;
+    list.replaceChildren();
+    if (!answer.ok) { list.appendChild(el("p", "hint", answer.error || "搜不了")); return; }
+    if (!answer.results.length) list.appendChild(el("p", "hint", "没找到：换个写法试试（去掉「高清」、只写台号或地名）"));
+    for (const r of answer.results) {
+      const row = el("button", "epgresrow");
+      row.type = "button";
+      row.append(el("b", "", r.names[0] || r.id),
+                 el("span", "hint", "id：" + r.id + (r.names.length > 1 ? " · " + r.names.slice(1).join(" / ") : "") +
+                   (ach.epg.sources.length > 1 ? " · " + achEpgName(r.source) : "")));
+      row.onclick = () => preview(r, row);
+      list.appendChild(row);
+    }
+  };
+  const preview = async (r, row) => {
+    for (const b of list.querySelectorAll(".epgresrow")) b.setAttribute("aria-pressed", b === row ? "true" : "false");
+    const n = seq;
+    look.replaceChildren(el("p", "hint", "正在读节目单…"));
+    let answer;
+    try { answer = await admCall("GET", "api/admin/epg/preview?source=" + encodeURIComponent(r.source) + "&id=" + encodeURIComponent(r.id)); } catch (error) { admFail(error); return; }
+    if (n !== seq) return;
+    look.replaceChildren();
+    if (!answer.ok) { look.appendChild(el("p", "hint", answer.error || "看不了")); return; }
+    const head = el("b", "", (r.names[0] || r.id) + " 接下来：");
+    const ul = el("ul", "epgstat");
+    for (const p of answer.programmes) ul.appendChild(el("li", "", hm(p.start) + "–" + hm(p.end) + "  " + p.title));
+    if (!answer.programmes.length) ul.appendChild(el("li", "bad", "从现在到明天没有节目：可能不是这个台"));
+    const use = button("用这个", "go");
+    use.onclick = () => admBusy(use, async () => {
+      if (!await admAct("api/admin/epg/assign", { channel: ch.id, source: r.source, epg: r.id }, "已指定「" + ch.name + "」：几秒后生效")) return;
+      closeOverlays();
+      setTimeout(achLoadEpg, 1500);
+    });
+    look.append(head, ul, use);
+  };
+  input.oninput = () => { clearTimeout(timer); timer = setTimeout(search, 250); };
+  input.onkeydown = (event) => { if (event.key === "Enter") { clearTimeout(timer); search(); } };
+  const row = el("div", "row");
+  row.append(button("关掉", "ghost", closeOverlays));
+  form.append(input, list, look, row);
+  modal("给「" + ch.name + "」指定节目单里的台", form);
+  $("modal").classList.add("wide");
+  input.select();
+  search();
 }
 function achWireEpg() {
   $("achEpgAdd").onclick = () => {
@@ -1618,7 +1755,8 @@ function achWireEpg() {
   };
   $("achEpgUrl").onkeydown = (event) => { if (event.key === "Enter") $("achEpgAdd").click(); };
   $("achEpgSave").onclick = () => admBusy($("achEpgSave"), async () => {
-    const answer = await admAct("api/admin/epg", { sources: ach.epgSources }, ach.epgSources.length ? "已保存：服务器在后台下载节目单，过一会儿刷新看结果" : "已关掉节目单");
+    const zones = Object.fromEntries(ach.epgSources.map((u) => [u, achZoneOf(u)]));
+    const answer = await admAct("api/admin/epg", { sources: ach.epgSources, zones }, ach.epgSources.length ? "已保存：服务器在后台下载节目单，过一会儿刷新看结果" : "已关掉节目单");
     if (answer) { await achLoadEpg(); setTimeout(achLoadEpg, 8000); }
   });
   $("achEpgRefresh").onclick = () => admBusy($("achEpgRefresh"), async () => {
