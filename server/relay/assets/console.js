@@ -880,6 +880,7 @@ function pressed(node, promise) {
 // 播放一个节目（/api/home 的 play，或者页面自己拼的 {kind, channel, …}）：播到 to，不给就是记住的地方。
 async function play(item, to, label, poster) {
   if (!item || !me) return null;
+  if (item.kind === "library") return playLibrary(item, label, poster);
   if (!to) {
     to = currentTarget();
     if (!to) { openTarget(item, "", label, poster); return null; }
@@ -2319,7 +2320,10 @@ function seekPreview(pos, tip) {
 // ---- 进度（电脑上看的，和小电视的分开记） ----
 
 function pcBody(extra) {
-  return Object.assign({ viewer, sid: watching.sid, position: Math.round(pcPos() * 10) / 10 }, extra || {});
+  const body = { viewer, sid: watching.sid, position: Math.round(pcPos() * 10) / 10 };
+  // 片库的视频中转不知道多长：报文件自己的时长（继续观看的进度条、看完了没有）。
+  if (watching.again && watching.again.library && watching.duration) body.duration = Math.round(watching.duration * 10) / 10;
+  return Object.assign(body, extra || {});
 }
 function pcTracked() { return watching && watching.mode === "direct" && watching.kind === "video" && watching.seeking == null && watching.player.started; }
 function pcReport(extra) {
@@ -2346,6 +2350,10 @@ addEventListener("pagehide", () => {
 
 function partReq(n) {
   if (!watching) return null;
+  if (watching.again && watching.again.library && watching.parts) {
+    const item = watching.parts.items[n - 1];
+    return item ? { library: item.id } : null;
+  }
   if (/^(up|sr)\d\d$/.test(watching.channel)) return { channel: watching.channel, episode: n };
   if (watching.video) return { video: watching.video, part: n };
   return null;
@@ -2673,6 +2681,8 @@ function dashFallback(why) {
 }
 // 点播还没放起来就出错：多半是这个浏览器放不了这个文件（或者地址不通），改要 HLS（中转用 ffmpeg 转）。
 function vodFallback() {
+  // 片库的文件没有别的放法（转码是以后的事）：说一声，不再重试。
+  if (watching.again && watching.again.library) { watchSay("这个文件电脑上放不了（多半不是 H.264 编码）", true); return; }
   pcStage("换一种方式放…");
   if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: Math.round((watching.start || 0) * 10) / 10 }), { group: watching.group, seek: true, again: true, hls: true });
   else startWatch(false, true, undefined, true);
@@ -2909,7 +2919,8 @@ function openDirect(answer, ctx) {
   if (same) switched();      // 还是正在放的那一路（又点了同一个台）
   const player = same ? watching.player : playerFor(answer);
   // 重试、跳转用的请求：不再「下一个」，而是回到这一个（UP 主、剧集按第几个；投屏的按视频和第几集）。
-  const again = answer.index ? { channel: answer.channel, episode: answer.index }
+  const again = answer.library ? { library: answer.library }
+    : answer.index ? { channel: answer.channel, episode: answer.index }
     : answer.video && (answer.channel === "cast" || answer.part) ? Object.assign({ video: answer.video }, answer.part ? { part: answer.part } : {})
     : { channel: answer.channel };
   watching = { mode: "direct", device: deviceId(), sid: answer.sid, key: "", player, busy: false, channel: answer.channel,
@@ -5630,11 +5641,11 @@ async function pollCreator(run, n) {
   if (answer.loading && n < 60) setTimeout(() => pollCreator(run, n + 1), 2000);
 }
 
-// ======================================================================= 片库：历史、本地片库
+// ======================================================================= 片库：历史、我的片库
 // 「历史」是自己 B 站的观看记录（GET api/feeds/history，accountfeeds.py 的 history_page）：每次打开都要新的
 // （fresh=1；服务器至少隔 30 秒才真去问 B 站），「加载更多」按 B 站给的游标往下翻。每一行是首页那样的节目
 // （data-play），点了按「播放到」接着看：视频是那一 P，剧集、番剧是那一集，都从看到的地方起。
-const LIB_TABS = [["history", "历史", "hist"], ["local", "本地片库", "lib"]];
+const LIB_TABS = [["history", "历史", "hist"], ["local", "我的片库", "lib"]];
 const HIST_KINDS = [["all", "全部"], ["video", "视频"], ["pgc", "剧集·番剧"], ["yt", "YouTube"]];
 const hist = { items: [], more: null, state: "", message: "", busy: false, at: 0, writeback: null, kind: "all", ytAsked: false };
 let libTab = "", libNavHTML = "", histTimer = 0;
@@ -5651,6 +5662,7 @@ function libNav() {
   for (const pane of qsa("#app .lpane")) pane.hidden = pane.dataset.pane !== cur;
   libTab = cur;
   if (cur === "history") { renderHist(); loadHist(false); }
+  if (cur === "local") { renderLib(); loadLib(false); }
 }
 // YouTube 观看记录（管理员、YouTube 开着）：就是首页那一排（feedRows.yt_history），在这里多一个标签。
 const histYt = () => !!(feedsInfo && feedsInfo.rows.some((r) => r.id === "yt_history" && r.state !== "hidden"));
@@ -5768,6 +5780,171 @@ $("histChips").addEventListener("click", (event) => {
 $("histMore").onclick = () => loadHist(true);
 $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarget);
 
+// ---- 片库 → 我的片库（GET api/library，library.py）：网盘（OpenList 的 WebDAV）和电脑上的文件夹 ----
+// 上面一排是来源（管理员能扫描、删除、添加），下面是海报墙：电影、剧集（点进去是各集）、其他视频，搜索框按片名筛。
+// 这一步只在这台电脑上放（mp4 / m4v / mov），别的格式标「电脑上暂时放不了」。家里人都能看，访客没有这一页。
+const lib = { data: null, busy: false, at: 0, q: "", show: "", kind: "webdav", form: false, timer: 0, failed: false };
+async function loadLib(force, poll) {
+  if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
+  lib.busy = true;
+  let answer;
+  try { answer = await call("GET", "api/library"); }
+  catch (error) {
+    lib.busy = false;
+    if (error instanceof SignedOut) { lib.failed = true; renderLib(); } else toast("网络不通", true);
+    return;
+  }
+  lib.busy = false;
+  lib.at = Date.now();
+  lib.failed = false;
+  if (answer.ok) lib.data = answer;
+  // 正在填「添加来源」时不重画（扫描时每 3 秒问一次，重画会打断输入）。
+  const form = qs("#libAdd");
+  if (!(poll && form && form.contains(document.activeElement))) renderLib();
+  // 正在扫描：过几秒再问一次，扫完了墙上就有了。
+  clearTimeout(lib.timer);
+  if (answer.ok && (answer.scan.running || answer.scan.queued)) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 3000);
+}
+const libKind = (k) => k === "webdav" ? "网盘" : "本机文件夹";
+function libCard(c, wide) {
+  const id = reg({ id: "lib:" + c.id, title: c.title, subtitle: c.year ? String(c.year) : "", art: { url: c.art, ratio: wide ? "wide" : "poster" },
+                   play: { kind: "library", id: c.id, playable: c.playable } });
+  const no = c.playable ? "" : '<span class="badge">电脑上暂时放不了</span>';
+  const sub = [c.year, wide ? c.source : ""].filter(Boolean).join(" · ") || (c.ext || "").toUpperCase();
+  return `<button class="card${wide ? "" : " p"}${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="lc-${esc(c.id)}" aria-label="播放 ${esc(c.title)}${c.playable ? "" : "（电脑上暂时放不了）"}" title="${esc(c.plot || c.title)}"><span class="art">${art(c.title, wide ? "w" : "p", wide ? {} : { title: c.title, kick: "片库" })}${imgTag(c.art)}${no}</span>
+    <span class="t">${esc(c.title)}</span><span class="s">${esc(sub)}</span></button>`;
+}
+function libShowCard(s) {
+  return `<button class="card p${s.playable ? "" : " dead"}" data-libshow="${esc(s.id)}" data-k="ls-${esc(s.id)}" aria-label="${esc(s.title)}，${s.count} 集，选集"><span class="art">${art(s.title, "p", { title: s.title, kick: "剧集" })}${imgTag(s.art)}</span>
+    <span class="t">${esc(s.title)}</span><span class="s">${s.seasons > 1 ? s.seasons + " 季 · " : ""}${s.count} 集</span></button>`;
+}
+function libEpisode(c) {
+  const id = reg({ id: "lib:" + c.id, title: c.show + " " + c.title, subtitle: c.show, art: { url: c.art, ratio: "wide" },
+                   play: { kind: "library", id: c.id, playable: c.playable } });
+  const se = c.season ? "第 " + c.season + " 季" : "";
+  return `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
+    <span class="htx"><b>${esc(c.title)}</b><small>${esc([se, c.playable ? "" : "电脑上暂时放不了", c.source].filter(Boolean).join(" · "))}</small></span></button>`;
+}
+function libSourceRow(s, admin, scan) {
+  const busy = scan && scan.running && scan.source === s.id;
+  const state = busy ? "正在扫描… 已经看了 " + (scan.walked || 0) + " 个"
+    : s.ok === false ? "没扫成：" + (s.error || "出错了") : s.last_scan ? s.count + " 个视频 · " + ago(s.last_scan) + "扫描" : "还没扫描";
+  const acts = admin ? `<button class="ghost sm" data-libscan="${esc(s.id)}"${busy ? " disabled" : ""}>扫描</button><button class="ghost sm red" data-libdel="${esc(s.id)}">删除</button>` : "";
+  return `<div class="lsrc"><span class="lsic">${ic(s.kind === "webdav" ? "link" : "lib", 20)}</span><span class="lstx"><b>${esc(s.name)}</b><small${s.ok === false && !busy ? ' class="bad"' : ""}>${esc(libKind(s.kind) + " · " + state + (s.note ? " · " + s.note : ""))}</small></span>${acts}</div>`;
+}
+function libFormHTML() {
+  const dav = lib.kind === "webdav";
+  return `<form class="libadd" id="libAdd" autocomplete="off">
+    <div class="chips" role="group" aria-label="来源的种类"><button type="button" data-libkind="webdav" aria-pressed="${dav}">网盘（OpenList / WebDAV）</button><button type="button" data-libkind="local" aria-pressed="${!dav}">本机文件夹</button></div>
+    ${dav ? `<input type="text" name="url" placeholder="地址，例如 http://127.0.0.1:5244/dav" aria-label="WebDAV 地址" required>
+    <div class="inline"><input type="text" name="user" placeholder="用户名" aria-label="用户名"><input type="password" name="password" placeholder="密码" aria-label="密码" autocomplete="new-password"></div>`
+    : `<input type="text" name="path" placeholder="文件夹路径，例如 /Users/你/Movies" aria-label="文件夹路径" required>`}
+    <div class="inline"><input type="text" name="name" placeholder="名字（可以不填）" aria-label="名字" maxlength="40"><button class="btn pri sm" type="submit">添加</button>${lib.data && lib.data.sources.length ? '<button class="ghost sm" type="button" data-libform="0">取消</button>' : ""}</div>
+  </form>`;
+}
+function renderLib() {
+  if (route !== "lib" || libTab !== "local") return;
+  const box = $("libBox"), d = lib.data;
+  const admin = isAdmin();
+  if (!d) { box.innerHTML = `<p class="hint">${lib.failed ? "这里只有登录的家里人能看" : "正在加载…"}</p>`; return; }
+  const k = focusKey();
+  const keep = qs("#libAdd") ? Object.fromEntries(new FormData(qs("#libAdd"))) : null;
+  let o = "";
+  if (!d.sources.length) {
+    o = `<div class="empty sm lempty"><div class="eic">${ic("lib", 40)}</div><b>还没有片库</b><p>${admin ? "加一个网盘（OpenList）或电脑上的文件夹。" : "请管理员在这里添加网盘或文件夹。"}</p>${admin ? libFormHTML() : ""}</div>`;
+  } else {
+    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}</div>`;
+    if (admin && lib.form) o += `<div class="lformbox">${libFormHTML()}</div>`;
+    if (d.scan.error && !d.scan.running) o += `<p class="hint bad">${esc(d.scan.error)}</p>`;
+    const q = lib.q.trim().toLowerCase();
+    const hit = (t) => !q || String(t || "").toLowerCase().includes(q);
+    const show = lib.show && d.shows.find((s) => s.id === lib.show);
+    if (show) {
+      o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button><h2>${esc(show.title)}</h2><small>${show.count} 集</small></div>`;
+      o += `<div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
+    } else {
+      lib.show = "";
+      o += `<div class="lbar"><input type="search" id="libQ" placeholder="搜片名" aria-label="搜片名" value="${esc(lib.q)}"><small>${d.total} 个视频</small></div>`;
+      const movies = d.movies.filter((c) => hit(c.title)), shows = d.shows.filter((s) => hit(s.title) || s.episodes.some((e) => hit(e.title))),
+        videos = d.videos.filter((c) => hit(c.title));
+      if (movies.length) o += `<section aria-label="电影"><div class="h2"><h2>电影</h2><small>${movies.length}</small></div><div class="pgrid">${movies.map((c) => libCard(c)).join("")}</div></section>`;
+      if (shows.length) o += `<section aria-label="剧集"><div class="h2"><h2>剧集</h2><small>${shows.length}</small></div><div class="pgrid">${shows.map(libShowCard).join("")}</div></section>`;
+      if (videos.length) o += `<section aria-label="其他视频"><div class="h2"><h2>其他视频</h2><small>${videos.length}</small></div><div class="wgrid">${videos.map((c) => libCard(c, true)).join("")}</div></section>`;
+      if (!movies.length && !shows.length && !videos.length) {
+        o += `<p class="hint">${q ? "没有找到「" + esc(lib.q) + "」" : d.scan.running || d.scan.queued ? "正在扫描，稍等…" : "还没有找到视频"}</p>`;
+      }
+      if (d.more) o += `<p class="hint">视频太多，只列出了最近的一部分</p>`;
+    }
+  }
+  const focusQ = document.activeElement && document.activeElement.id === "libQ";
+  const caret = focusQ ? document.activeElement.selectionStart : 0;
+  box.innerHTML = o;
+  if (keep && qs("#libAdd")) for (const [name, value] of Object.entries(keep)) { const f = qs(`#libAdd [name="${name}"]`); if (f) f.value = value; }
+  if (focusQ && $("libQ")) { $("libQ").focus(); $("libQ").setSelectionRange(caret, caret); }
+  else restoreFocus(k);
+}
+// 片库的一个视频：这一步只在这台电脑上放；「播放到」是小电视时也在电脑上放，说一次以后再做。
+let libTvTold = false;
+function playLibrary(item, label, poster) {
+  if (item.playable === false) { toast("这个格式电脑上暂时放不了", true); return null; }
+  if (!canPc()) { toast("片库只能在电脑客户端或家庭服务器上看", true); return null; }
+  const to = currentTarget(), tell = to && to !== PC && !libTvTold;
+  const done = playOnPc(item, label, poster);
+  if (tell) {
+    libTvTold = true;
+    done.then((answer) => { if (answer && answer.ok) toast("片库暂时只在这台电脑上放，播到小电视以后再做", false, 5000); });
+  }
+  return done;
+}
+async function libAdmin(path, body, btn) {
+  let answer;
+  btn.disabled = true;
+  try { answer = await call("POST", path, body); }
+  catch (error) { btn.disabled = false; if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return null; }
+  btn.disabled = false;
+  if (!answer.ok) toast(answer.error || "没成功", true);
+  return answer;
+}
+$("libBox").addEventListener("click", async (event) => {
+  const t = event.target.closest("button");
+  if (!t) return;
+  const ds = t.dataset;
+  if (ds.libshow) { lib.show = ds.libshow; renderLib(); $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return; }
+  if (ds.libback) { const was = lib.show; lib.show = ""; renderLib(); const c = qs(`#libBox [data-libshow="${CSS.escape(was)}"]`); if (c) c.focus(); return; }
+  if (ds.libkind) { lib.kind = ds.libkind; renderLib(); return; }
+  if (ds.libform) { lib.form = ds.libform === "1"; renderLib(); const f = qs("#libAdd input:not([type=hidden])"); if (f && lib.form) f.focus(); return; }
+  if (ds.libscan) {
+    const answer = await libAdmin("api/admin/library/scan", { id: ds.libscan }, t);
+    if (answer && answer.ok) { toast("开始扫描"); loadLib(true); }
+    return;
+  }
+  if (ds.libdel) {
+    // 两步：先变成「确定删除？」，4 秒内再点一下才删（有的窗口里没有 confirm()）。
+    if (t.dataset.sure !== "1") { t.dataset.sure = "1"; t.textContent = "确定删除？"; setTimeout(() => { if (t.isConnected) { t.dataset.sure = ""; t.textContent = "删除"; } }, 4000); return; }
+    const answer = await libAdmin("api/admin/library/delete", { id: ds.libdel }, t);
+    if (answer && answer.ok) { toast("删掉了来源「" + answer.name + "」（文件本身不动）"); loadLib(true); loadHome(true); }
+  }
+});
+$("libBox").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target, btn = qs("button[type=submit]", form);
+  const body = Object.assign({ kind: lib.kind }, Object.fromEntries(new FormData(form)));
+  btn.textContent = lib.kind === "webdav" ? "正在连网盘…" : "正在添加…";
+  const answer = await libAdmin("api/admin/library", body, btn);
+  btn.textContent = "添加";
+  if (!answer || !answer.ok) return;
+  form.reset();
+  lib.form = false;
+  toast("加好了「" + answer.source.name + "」，正在扫描");
+  loadLib(true);
+  setTimeout(() => loadHome(true), 4000);
+});
+$("libBox").addEventListener("input", (event) => {
+  if (event.target.id !== "libQ") return;
+  lib.q = event.target.value;
+  renderLib();
+});
+
 // ======================================================================= 首页（/api/home）
 
 // 页面上的节目：data-play / data-pick 指到这里（id → {title, subtitle, play}）。
@@ -5809,6 +5986,12 @@ function cardVideo(x) {
   const face = cr.face ? `<img src="${esc(cr.face)}" alt="" loading="lazy">` : avatarSVG(cr.name || "?", 20);
   return `<button class="card" data-play="${esc(id)}" data-k="v-${esc(id)}" aria-label="播放 ${esc(x.title)}"><span class="art">${itemArt(x, "w")}${x.duration ? `<span class="badge r b num">${clock(x.duration)}</span>` : ""}${x.new ? '<span class="badge new">新</span>' : ""}</span>
     <span class="t">${esc(x.title)}</span><span class="who">${face}<span class="s">${esc(cr.name || x.subtitle || "")}${x.pubdate ? " · " + ago(x.pubdate) : ""}</span></span></button>`;
+}
+function cardLib(x) {
+  const id = reg(x);
+  const p = x.play || {};
+  return `<button class="card p${p.playable === false ? " dead" : ""}" data-play="${esc(id)}" data-k="lib-${esc(id)}" aria-label="播放 ${esc(x.title)}"><span class="art">${art(x.title, "p", { title: x.title, kick: "片库" })}${imgTag(x.art && x.art.url)}${p.playable === false ? '<span class="badge">电脑上暂时放不了</span>' : ""}</span>
+    <span class="t">${esc(x.title)}</span><span class="s">${esc(x.subtitle || "")}</span></button>`;
 }
 function cardSeries(x) {
   const id = reg(x);
@@ -5920,12 +6103,15 @@ function renderHome() {
       o += `<div class="h2"><h2>开始收集你爱看的</h2></div><div class="onb">
         <a href="#/search"><b>${ic("up")}订阅一个 UP 主</b><p>B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。</p></a>
         <a href="#/series"><b>${ic("series")}加一部剧</b><p>番剧、多集视频、合集、播放列表都行，按顺序播，接着上次的地方。</p></a>
-        <a href="#/lib/local"><b>${ic("lib")}本地片库（即将推出）</b><p>电脑或 NAS 上的电影、剧集、动画和家庭视频。</p></a></div>`;
+        ${homeData.library && homeData.library.enabled ? `<a href="#/lib/local"><b>${ic("lib")}我的片库</b><p>网盘或电脑上的电影、剧集和家庭视频。</p></a>` : ""}</div>`;
     } else {
       if (homeData.creator_updates.length) o += shelf("UP 主更新", homeData.creator_updates.length + " 个没看的视频", homeData.creator_updates.map(cardVideo).join(""), "", "", "creators");
       if (homeData.series_updates.length) o += shelf("剧集追更", "", homeData.series_updates.map(cardSeries).join(""), "", "", "series");
     }
-    o += shelf("我的片库", "", `<a class="card soon" href="#/lib/local"><span class="art"><span>${ic("lib", 30)}本地片库即将推出</span></span><span class="t">本地片库</span><span class="s">电脑或 NAS 上的视频，以后在这里</span></a>`);
+    // 我的片库（library.py，只在电脑客户端和家庭服务器）：最近加进来的；还没有时一张「去添加」。
+    const L = homeData.library || {};
+    if (L.enabled && (homeData.library_recent || []).length) o += shelf("我的片库", "", homeData.library_recent.map(cardLib).join(""), "#/lib/local", "片库");
+    else if (L.enabled) o += shelf("我的片库", "", `<a class="card soon" href="#/lib/local"><span class="art"><span>${ic("lib", 30)}${L.admin ? "添加片库来源" : "还没有片库"}</span></span><span class="t">我的片库</span><span class="s">${L.admin ? "网盘（OpenList）或电脑上的文件夹" : "请管理员添加"}</span></a>`);
   }
   box.innerHTML = o + "</div>";
   qsa("#homeBody .shelf").forEach((e, i) => { if (scrolls[i] !== undefined) e.scrollLeft = scrolls[i]; shelfEdges(e); });

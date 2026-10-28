@@ -29,13 +29,13 @@ const ADM_ACTIONS = {
   "session.revoke": "退出一个登录", "session.revoke_others": "退出别处的登录",
   "admin.session.revoke": "管理员退出他的一个登录", "admin.session.revoke_all": "管理员退出他的全部登录",
   "legacy_token.on": "打开共享配对令牌", "legacy_token.off": "关闭共享配对令牌", "channels.save": "保存频道表",
-  "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
+  "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "library.add": "加片库来源", "library.delete": "删片库来源", "library.scan": "扫描片库", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
   "wifi.add": "给设备加 Wi-Fi", "wifi.remove": "删设备的 Wi-Fi", "wifi.up": "调 Wi-Fi 顺序", "wifi.switch": "让设备换 Wi-Fi",
   "login.pc.confirm": "手机确认电脑登录", "login.pc.deny": "手机拒绝电脑登录", "migrate": "从单用户迁移",
 };
 const ADM_PREFIX = { "user.": "用户…", "device.": "设备…", "login.": "登录…", "session.": "退出登录…", "invite.": "邀请…",
   "phone_link.": "登录链接…", "admin.": "管理员退出别人…", "channels.": "频道表…", "epg.": "节目单…", "legacy_token.": "共享令牌…",
-  "wifi.": "设备 Wi-Fi…", "bind.": "绑定…" };
+  "wifi.": "设备 Wi-Fi…", "bind.": "绑定…", "library.": "片库…" };
 
 const adm = { primed: false, on: false, sec: "", run: 0, timer: 0, me: 0, users: [], devices: [], review: 0, history: [], historyAt: 0, auNext: null };
 

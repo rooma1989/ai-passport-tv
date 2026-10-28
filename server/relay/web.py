@@ -15,6 +15,7 @@ import hmac
 import http.cookies
 import json
 import re
+import secrets
 import threading
 import time
 import urllib.parse
@@ -30,6 +31,7 @@ from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
 from . import accountfeeds, bilidash, bililogin, follows, ytsearch, ytsettings, ytvod
+from . import library as library_api
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
     UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
 from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
@@ -146,6 +148,14 @@ def _clamp(position: float, duration: float) -> float:
     return min(position, max(0.0, float(duration) - 3)) if duration else position
 
 
+class _LibraryPlay:
+    """片库的视频在电脑上放（library.py）：没有转发的那一路，浏览器自己按 Range 取文件；只有一个编号，
+    让播放器报的进度对得上这一次（_pc_page 比 sid）。"""
+
+    def __init__(self, sid: str):
+        self.sid = sid
+
+
 def _relay_channel(cid: str) -> bool:
     """中转推流的台：投屏、UP 主、剧集。"""
     return cid == table.CAST_ID or (cid[:2] in ("up", "sr") and cid[2:].isdigit())
@@ -244,6 +254,8 @@ class Relay:
         self.linecheck = None
         # 直播源订阅（subscriptions.py）：自建 / 电脑客户端由 __main__ 建，云端为 None。
         self.subscriptions = None
+        # 我的片库（library.py，网盘经 WebDAV 和本机文件夹）：自建 / 电脑客户端由 __main__ 建，云端为 None。
+        self.library = None
         # 每个人常看的直播台（livetally.py，直播页的「常看」分组）：由 __main__ 建。
         self.tally = None
         self.starter = starter
@@ -601,7 +613,7 @@ class Relay:
         if self.account_feeds is None or caller.user is None:
             return
         _, cursor = self._pc_page(caller, body)
-        if cursor is None or not cursor.get("bvid"):
+        if cursor is None or not cursor.get("bvid") or cursor.get("site") == "library":
             return
         try:
             self.account_feeds.report(caller.user, cursor.get("site") or "bilibili", cursor["bvid"],
@@ -1562,8 +1574,8 @@ class Relay:
         if cursor.get("position") is not None:
             return max(0.0, float(cursor["position"]))
         stream = cursor.get("stream")
-        if isinstance(stream, vod.VodSession):
-            return max(0.0, float(cursor["offset"]))      # 点播：播放器还没报过，就是起播的地方
+        if isinstance(stream, (vod.VodSession, _LibraryPlay)):
+            return max(0.0, float(cursor["offset"]))      # 点播、片库：播放器还没报过，就是起播的地方
         produced = stream.window.total_s if stream is not None else 0.0
         return max(0.0, cursor["offset"] + produced - PC_BEHIND_S)
 
@@ -1625,6 +1637,11 @@ class Relay:
         if cursor is None:
             return False
         position = _seconds(body.get("position"))
+        if not cursor.get("duration") and isinstance(cursor.get("stream"), _LibraryPlay):
+            # 片库的视频服务器不知道多长：播放器读到文件的时长后跟着进度一起报。
+            length = _seconds(body.get("duration"))
+            if isinstance(length, float) and length > 0:
+                cursor["duration"] = round(length, 1)
         duration = float(cursor.get("duration") or 0)
         if isinstance(position, float):
             cursor["position"] = min(position, duration) if duration else position
@@ -1749,6 +1766,8 @@ class Relay:
         account = self._account(caller)
         self.pc_sync(caller.user)
         prefer = _prefer(body)
+        if body.get("library") is not None:
+            return self._pc_library(caller, viewer, body.get("library"), start)
         cid, name, extra, meta, key, duration = "cast", table.CAST_LABEL, {}, {}, "", 0
         if body.get("url") is not None or body.get("video") is not None:
             planned = self._pc_cast_item(caller, account, dev, body.get("url"), body.get("video"), part, start,
@@ -1816,6 +1835,57 @@ class Relay:
             extra.setdefault("video", {"site": source.key[2], "id": source.key[3]})
         return {"channel": cid, "name": name,
                 **self._watch_answer(stream, duration, start=source.start if native else None), **extra}
+
+    def _pc_library(self, caller: Caller, viewer: str, iid, start: float | None) -> dict:
+        """片库里的一个视频在电脑上放（library.py）：浏览器直接按 Range 取 api/library/file/<id>（同源，带登录的
+        cookie），不经 vod.py 的那一路。进度和别的视频一样记在 pc-progress.json（键 lib:<id>），继续观看、
+        「接着上次看的地方」照旧；剧集给选集（parts，每集带 id）。"""
+        found = self.library.item(iid) if self.library is not None and isinstance(iid, str) else None
+        if found is None:
+            return {"ok": False, "error": "片库里没有这个视频（可能刚重新扫描过，刷新一下）"}
+        if not found.get("playable"):
+            return {"ok": False, "error": "这个格式电脑上暂时放不了"}
+        slot = self._pc_slot(caller, viewer)
+        if self.vod is not None:
+            self.vod.close(slot)
+        self.watch.close(slot)
+        key = "lib:" + found["id"]
+        cursor = self._pc_cursor.get((caller.user, key))
+        saved = self._pc_saved(caller.user, key)
+        duration = float((cursor or {}).get("duration") or (saved or {}).get("duration") or 0)
+        offset = self._pc_position(cursor) if cursor is not None else float((saved or {}).get("position") or 0)
+        if start is not None:
+            offset = _clamp(start, duration) if duration else max(0.0, start)
+        elif duration and offset >= duration - 5:
+            offset = 0.0
+        episodes = self.library.episodes_of(found)
+        show = found.get("show") or ""
+        name = show if episodes else found["title"]
+        play = _LibraryPlay(secrets.token_hex(8))
+        self._pc_cursor[(caller.user, key)] = {"bvid": found["id"], "offset": offset, "stream": play,
+                                               "title": found["title"], "name": name, "duration": duration,
+                                               "site": "library"}
+        if start is not None:
+            self._pc_cursor[(caller.user, key)]["position"] = offset
+        self._pc_pages[(caller.user, viewer)] = key
+        self.pc_sync(caller.user)
+        answer = {"ok": True, "sid": play.sid, "title": found["title"], "kind": "video", "mode": "vod",
+                  "url": f"api/library/file/{found['id']}", "start": round(offset, 1), "duration": int(duration),
+                  "seekable": True, "channel": "lib", "name": name, "library": found["id"]}
+        if start is None and offset > 0:
+            answer["resume"] = round(offset, 1)
+        if len(episodes) > 1:
+            done = set()
+            if self.pc_progress is not None:
+                for ep in episodes:
+                    done |= self.pc_progress.done(caller.user, "lib:" + ep["id"])
+            current = next(n for n, ep in enumerate(episodes, 1) if ep["id"] == found["id"])
+            answer["parts"] = {"kind": "series", "name": show, "current": current,
+                               "items": [{"n": n, "id": ep["id"], "title": ep["title"], "duration": 0,
+                                          "watched": ep["id"] in done, "playable": bool(ep.get("playable"))}
+                                         for n, ep in enumerate(episodes, 1)]}
+            answer["part"] = current
+        return answer
 
     # ---- 投到电脑的视频：多 P、合集、番剧、YouTube 播放列表的选集 ----
 
@@ -2844,6 +2914,9 @@ def _manage_handler(relay: Relay):
                 return
             device = self._query().get("device") or None
             caller = self._device_scoped(caller, path, device)
+            if library_api.get(self, relay, caller, path):
+                # 我的片库（library.py）：页面、文件、海报；只给登录的家里人，访客和云端 404。
+                return
             if path == "/":
                 self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             elif path == "/api/state":
@@ -3062,8 +3135,8 @@ def _manage_handler(relay: Relay):
                 self._json(relay.listen(caller, device))
                 return
             if path == "/api/watch":
-                if any(body.get(k) is not None for k in ("channel", "url", "video")):
-                    # 直接看一个台（不经小电视），见 Relay.watch_direct。
+                if any(body.get(k) is not None for k in ("channel", "url", "video", "library")):
+                    # 直接看一个台（不经小电视）、片库里的一个视频，见 Relay.watch_direct。
                     self._json(relay.watch_direct(caller, device, body))
                 else:
                     self._json(relay.watch_start(caller, device, body.get("viewer"), body.get("start"),

@@ -123,7 +123,7 @@
         </div>
       </section>
 
-      <!-- 片库：「历史」是自己 B 站的观看记录（console.js renderHist，accountfeeds.py）；「本地片库」还没做（M7） -->
+      <!-- 片库：「历史」是自己 B 站的观看记录（console.js renderHist，accountfeeds.py）；「我的片库」是网盘和电脑上的视频（renderLib，library.py） -->
       <section class="page" data-route="lib" aria-label="片库">
         <header class="ph"><h1 class="lt">片库</h1></header>
         <nav class="chips ssub" id="libNav" aria-label="片库分类"></nav>
@@ -136,8 +136,7 @@
           <div class="bsmore"><button class="ghost" id="histMore" hidden>加载更多</button></div>
         </div>
         <div class="lpane" data-pane="local" hidden>
-          <div class="empty"><div class="eic" data-ic="lib" data-ics="40"></div><b>本地片库即将推出</b>
-            <p>电脑或 NAS 上的视频，以后在这里。</p></div>
+          <div id="libBox"></div>
         </div>
       </section>
 

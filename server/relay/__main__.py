@@ -191,6 +191,10 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 直播源订阅（subscriptions.py）：自建 / 电脑客户端定时重新取订阅的播放列表，新线路并进频道表。
     from . import subscriptions
     subscriptions.attach(relay)
+    # 我的片库（library.py）：自建 / 电脑客户端的网盘（OpenList 的 WebDAV）和本机文件夹，定时重新扫描；
+    # 来源和索引存在数据库旁边的 library.json、library-index.json，网盘的海报缓存在 library-art/。
+    from . import library
+    library.attach(relay)
     # 每个人常看的直播台（livetally.py）：直播页的「常看」分组，存在数据库旁边的 live-plays.json。
     from . import livetally
     livetally.attach(relay, args.db.parent)

@@ -43,6 +43,7 @@ _USER = re.compile(r"^/api/admin/users/(\d{1,9})(?:/(rename|ban|unban|reviewed|l
                    r"sessions|sessions/revoke))?$")
 _DEVICE = re.compile(r"^/api/admin/devices/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/"
                      r"(unbind|ban|unban|reconnect|repair|rename)$")
+LIBRARY_OFF = "只有自建和电脑客户端有片库"
 # 用户删除前的导出：数据库旁边的 exports/（和数据库一样只给服务账号和它的组读）。
 EXPORT_DIR = "exports"
 _channels_lock = threading.Lock()
@@ -119,6 +120,10 @@ def get(handler, relay, path: str) -> bool:
     elif path == "/api/admin/subs":
         subs = getattr(relay, "subscriptions", None)
         handler._json(subs.view() if subs is not None else {"ok": False, "error": "只有自建和电脑客户端能订阅直播源"})
+    elif path == "/api/admin/library":
+        # 我的片库的来源（library.py）：路径、地址、用户名；密码从不给页面。
+        library = getattr(relay, "library", None)
+        handler._json(library.admin_view() if library is not None else {"ok": False, "error": LIBRARY_OFF})
     else:
         match = _USER.match(path)
         if match and match.group(2) == "sessions":
@@ -552,6 +557,27 @@ def post(handler, relay, path: str) -> bool:
             answer, action = subs.remove(sid), "channels.unsubscribe"
         if answer.get("ok"):
             relay.accounts.audit(action, caller.user, ip, "channels", sid[:8], "")
+        handler._json(answer)
+        return True
+    if path in ("/api/admin/library", "/api/admin/library/delete", "/api/admin/library/scan"):
+        # 我的片库（library.py，自建 / 电脑客户端）：加来源（先试连得上）、删来源、扫描（不给 id 是全部）。
+        library = getattr(relay, "library", None)
+        if library is None:
+            handler._json({"ok": False, "error": LIBRARY_OFF})
+            return True
+        sid = body.get("id") if isinstance(body.get("id"), str) else ""
+        if path == "/api/admin/library":
+            answer, action = library.add(body), "library.add"
+            sid = (answer.get("source") or {}).get("id", "")
+            detail = (answer.get("source") or {}).get("name", "")
+        elif path == "/api/admin/library/delete":
+            answer, action = library.remove(sid), "library.delete"
+            detail = answer.get("name", "")
+        else:
+            answer, action = library.scan(sid or None), "library.scan"
+            detail = ""
+        if answer.get("ok"):
+            relay.accounts.audit(action, caller.user, ip, "library", sid[:8], detail[:40])
         handler._json(answer)
         return True
     if selfhost and path == "/api/admin/channels/peek":

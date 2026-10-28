@@ -1093,3 +1093,35 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .spacelink:focus-visible { outline: 2px solid var(--label); outline-offset: 2px; }
 .hit .spacelink .cover.face { transition: transform var(--t-focus) var(--ease); }
 .hit .spacelink:hover .cover.face { transform: scale(1.06); }
+
+/* ---- 片库 → 我的片库（console.js renderLib，library.py）：来源一排、添加来源、海报墙、一部剧的各集 ---- */
+.lsrcs { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 8px; }
+.lsrc { display: flex; align-items: center; gap: 12px; min-width: 0; max-width: 100%; padding: 10px 12px 10px 14px; border-radius: 14px; background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--sep); }
+.lsic { flex: none; width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--fill); color: var(--label-2); }
+.lstx { display: grid; gap: 2px; min-width: 0; }
+.lstx b { font: 600 15px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lstx small { font-size: 13px; color: var(--label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lstx small.bad, #libBox .hint.bad { color: var(--bad); }
+.lsrc .ghost { flex: none; height: 32px; padding: 0 12px; font-size: 13px; }
+.lformbox { max-width: 620px; margin: 6px 0 4px; padding: 18px; border-radius: var(--r-l); background: var(--bg-2); }
+.libadd { display: grid; gap: 10px; text-align: left; }
+.libadd .chips { margin: 0 0 4px; }
+.libadd .inline { margin: 0; }
+.libadd .inline > input { flex: 1 1 180px; }
+.lempty .eic { color: var(--label-2); }
+.lempty .libadd { max-width: 560px; margin: 18px auto 0; }
+.lbar { display: flex; align-items: center; gap: 14px; margin: 18px 0 0; max-width: 620px; }
+.lbar input[type=search] { flex: 1; min-width: 0; }
+.lbar small { flex: none; color: var(--label-3); font-size: 13px; }
+#libBox .pgrid, #libBox .wgrid { margin-top: 16px; }
+#libBox .card .badge { white-space: nowrap; }
+.lshow { display: flex; align-items: baseline; gap: 14px; margin: 18px 0 10px; }
+.lshow h2 { margin: 0; font: 700 22px var(--sans); }
+.lshow small { color: var(--label-3); font-size: 13px; }
+.lshow .ghost { align-self: center; display: inline-flex; align-items: center; gap: 4px; }
+.hrow.dead .art > svg, .hrow.dead .art > img { opacity: .42; filter: grayscale(.7); }
+.hrow.dead b { color: var(--label-2); }
+.m .lsrc { flex: 1 1 100%; }
+.m .lsrc .lstx { flex: 1; }
+.m .lformbox { padding: 14px; }
+.m #libBox .card.p .badge { font-size: 9px; padding: 3px 4px; top: 6px; left: 6px; }

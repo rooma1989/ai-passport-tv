@@ -319,6 +319,9 @@ def _pc_body(item: dict) -> dict | None:
         return {"url": item["url"]}
     if kind == "history" and isinstance(item.get("site"), str) and isinstance(item.get("id"), str):
         return {"video": {"site": item["site"], "id": item["id"]}}
+    if kind == "library" and isinstance(item.get("id"), str):
+        # 我的片库（library.py）：按条目 id，浏览器直接放文件。
+        return {"library": item["id"]}
     if kind == "feed":
         # 首页自己账号的几排、「我的关注」里的视频（accountfeeds.py）：按链接在电脑上看；观看记录从看到的地方起。
         from .accountfeeds import play_url, start_of
@@ -359,6 +362,9 @@ def play(relay, caller: Caller, body: dict) -> dict:
         raise NotFound(target)
     if not dev["id"]:
         return {"ok": False, "reason": "no_device", "error": "还没有绑定小电视"}
+    if item["kind"] == "library":
+        # 片库这一步只在电脑上放（页面也是这样发的）；播到小电视以后再做。
+        return {"ok": False, "reason": "failed", "error": "片库的视频暂时只能在这台电脑上放", "target": dev["id"]}
     if not relay._playing(dev)["online"]:
         return {"ok": False, "reason": "offline", "error": f"{dev['name']}没在线", "target": dev["id"]}
     kind, cid = item["kind"], item.get("channel")
@@ -472,6 +478,7 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
     rows = []
     store = getattr(relay, "pc_progress", None)
     names = {}
+    library = getattr(relay, "library", None)
     with account.lock:
         creators = list(account.creators)
         for c in creators:
@@ -482,6 +489,20 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
             if position < PROGRESS_MIN_S or (duration and position > duration - PROGRESS_END_S):
                 continue
             site = rec.get("site") or "bilibili"
+            if key.startswith("lib:"):
+                # 片库的视频（library.py）：条目还在才显示；海报有就用。
+                found = library.item(key[4:]) if library is not None else None
+                if found is None:
+                    continue
+                episode = found["kind"] == "episode"
+                rows.append({"id": f"pc:{key}", "kind": "video", "title": found.get("show") if episode else found["title"],
+                             "subtitle": found["title"] if episode else "片库", "source": "library",
+                             "art": {"url": f"api/library/art/{found['id']}" if found.get("poster") else "",
+                                     "ratio": "wide"},
+                             "progress": {"position": int(position), "duration": int(duration), "device": PC_NAME,
+                                          "updated_at": rec.get("at") or 0},
+                             "play": {"kind": "library", "id": found["id"]}})
+                continue
             if key.startswith("v:"):
                 # 投到电脑的视频：键里是投的那个视频的 id（多 P、合集、番剧时 bvid 是正在看的那一集）。
                 play = {"kind": "history", "site": site, "id": key.split(":", 2)[2]}
@@ -617,6 +638,12 @@ def home(relay, caller: Caller) -> dict:
                          not relay.tenant else [],
                          "creator_updates": creators, "series_updates": series,
                          "hero": _hero(series, live, creators)})
+        library = getattr(relay, "library", None)
+        if library is not None and not caller.guest and caller.user is not None:
+            # 我的片库（library.py）：最近加进来的；还没有来源时页面放一个「去添加」。
+            from .library import home_rows
+            answer["library_recent"] = home_rows(relay, caller)
+            answer["library"] = {"enabled": True, "count": len(library.items()), "admin": caller.role == "admin"}
         warm = getattr(relay, "_cover_warm", None)
         if warm is not None and warm.pending():
             # 正在后台补封面：页面过几秒再问一次（console.js 的 loadHome）。
