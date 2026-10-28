@@ -100,6 +100,10 @@ svg { display: block; }
 .iconbtn { width: 44px; height: 44px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--label);
            transition: transform var(--t-focus) var(--ease), background var(--t-fast), color var(--t-fast), box-shadow var(--t-focus); }
 .iconbtn:hover, .iconbtn[aria-current=page] { background: var(--fill-2); }
+/* 要管理员去处理的事（YouTube 要求重新登录）：设置按钮、设置里那个标签上的小黄点 */
+.iconbtn.alert { position: relative; }
+.iconbtn.alert::after { content: ""; position: absolute; top: 7px; right: 7px; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--mat-thick); }
+.adot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
 /* 窗口窄时这颗胶囊跟着缩（名字省略），不压到中间的标签上 */
 .tchip { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 999px; background: var(--mat); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
          box-shadow: inset 0 0 0 1px var(--mat-line); color: var(--label); font: 600 14px var(--sans); white-space: nowrap; max-width: 320px; overflow: hidden;

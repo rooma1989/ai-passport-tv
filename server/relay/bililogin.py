@@ -10,8 +10,16 @@
     POST /api/bili/followings/import    {"mids": [...]}：订阅选中的（受 UP 主个数和频道列表大小的限制）
 
 登录用的是 B 站网页版的扫码登录（passport.bilibili.com/x/passport-login/web/qrcode/generate 和 poll）。
-登录成功后存 SESSDATA、bili_jct、DedeUserID(__ckMd5)、sid 和 buvid3/4（refresh_token 也存，留给以后刷新 cookies），
+登录成功后存 SESSDATA、bili_jct、DedeUserID(__ckMd5)、sid、buvid3/4 和 refresh_token，
 存在数据目录的 secrets/bilibili/<用户 id>.json（目录 0700、文件 0600）。诊断包不带 secrets/，数据库备份也不带。
+
+自动续期（网页版的 cookie 刷新，社区文档 bilibili-API-collect 的 docs/login/cookie_refresh.md）：中转每天问一次
+cookie/info 要不要刷新；要刷新（或 SESSDATA 离过期不到 RENEW_BEFORE_S）时，把 refresh_<毫秒时间戳> 用 B 站公布的
+RSA 公钥按 RSA-OAEP（SHA-256）加密成 correspondPath，取 www.bilibili.com/correspond/1/<它> 页面里的 refresh_csrf，
+POST cookie/refresh 换来新的 cookies 和新的 refresh_token（马上存，和扫码登录同一个文件），再用新 cookies 加旧的
+refresh_token POST confirm/refresh 让旧的作废（失败了下次续期前再补）。RSA-OAEP 只用标准库（correspond_path）：
+中转不依赖 cryptography 包。续期失败一律先留着原来的登录，RENEW_RETRY_S 后再试；只有 B 站明说没登录（导航、
+cookie/info 回答 -101）才记成「登录已失效」请他重新扫码。
 cookies 不进日志、不进操作记录、不进任何回答；回答里只有昵称、头像地址、大会员与否。
 
 谁能用：自己（用户或管理员）管自己的；访客 404。每个用户只看得到、只用得到自己的登录。
@@ -25,6 +33,8 @@ cookies 不进日志、不进操作记录、不进任何回答；回答里只有
 
 from __future__ import annotations
 
+import email.utils
+import hashlib
 import json
 import os
 import re
@@ -63,6 +73,9 @@ IMPORT_GAP_S = 0.3
 # 存下来的 cookie：这些名字，值只许这些字符（不能有换行、分号，免得拼进请求头出事）。
 COOKIE_NAMES = ("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5", "sid", "buvid3", "buvid4")
 _COOKIE_VALUE = re.compile(r"^[A-Za-z0-9%_.,*:+/=-]{1,512}$")
+# request() 把 SESSDATA 的过期时刻（Unix 秒）放在回答的 cookies 里这个名字下（不是合法的 cookie 名，
+# clean_cookies 会丢掉它，不会存成 cookie）。
+EXPIRES_KEY = "@expires"
 _MID = re.compile(r"^[0-9]{1,20}$")
 _TOKEN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -74,23 +87,110 @@ STATES = {"waiting": "等待扫码", "scanned": "已扫码，请在手机上确�
 # 扫码结果接口里的 data.code。
 POLL_CODES = {0: "done", 86101: "waiting", 86090: "scanned", 86038: "expired"}
 
+# ---- 自动续期 ----
+WWW = "https://www.bilibili.com"
+# 每个登录多久问一次要不要刷新（文档：每天第一次用接口时问）；失败了多久再试；
+# 离 SESSDATA 过期不到这么久时不等 B 站说要刷新，自己先刷新。
+RENEW_EVERY_S = 24 * 3600
+RENEW_RETRY_S = 6 * 3600
+RENEW_BEFORE_S = 14 * 24 * 3600
+# 后台多久看一次有没有到期要问的登录；两个用户之间歇一下。
+RENEW_SCAN_S = 15 * 60
+RENEW_GAP_S = 2.0
+PAGE_MAX_BYTES = 256 * 1024
+# B 站网页版生成 correspondPath 用的 RSA 公钥（1024 位，e = 65537）：bilibili-API-collect 的
+# docs/login/cookie_refresh.md 里的 JWK 和 PEM，两份的模数一致（openssl rsa -pubin -modulus 核对过）。
+RSA_N = int("CB81DD8E02470656DA04DD38544446E2A3412051CFE9ADC6A330A5EF90228509684960970B91C3360CA29C49E1690F"
+            "F8FA068CB9DFC6179D1E9585CB9424E847DB1EF59F33E37DD4DCA8CCFB7631EE9B4A92640D00C8204300152A0AB7CD80"
+            "2889D3445AEC69918FE6022B534912E7B095BE3424DAD1BA81145E969B533181F1", 16)
+RSA_E = 65537
+# correspond 页面里放 refresh_csrf 的标签：<div id="1-name">…</div>。
+_REFRESH_CSRF = re.compile(r'<div\s+id="1-name"\s*>\s*([0-9A-Za-z]{8,64})\s*</div>')
 
-def request(url: str, cookie: str = "", data: dict | None = None, timeout: float = TIMEOUT_S):
-    """(JSON 回答, 回答里 Set-Cookie 的 {名字: 值})。data 不为 None 时是表单 POST。"""
-    headers = {"User-Agent": UA, "Referer": REFERER}
+
+def _cookie_expiry(attributes: str, now: float) -> float | None:
+    """Set-Cookie 里 ; 后面那些属性的 Max-Age / Expires → Unix 秒；没有、看不懂时 None。"""
+    expires = None
+    for part in attributes.split(";"):
+        key, _, value = part.strip().partition("=")
+        key = key.strip().lower()
+        if key == "max-age" and value.strip().lstrip("-").isdigit():
+            return now + int(value.strip())
+        if key == "expires":
+            try:
+                expires = email.utils.parsedate_to_datetime(value.strip()).timestamp()
+            except (TypeError, ValueError, IndexError, OverflowError):
+                pass
+    return expires
+
+
+def _request(url: str, cookie: str, data: dict | None, timeout: float, referer: str = REFERER):
+    headers = {"User-Agent": UA, "Referer": referer}
     if cookie:
         headers["Cookie"] = cookie
     body = None
     if data is not None:
         body = urllib.parse.urlencode(data).encode("ascii")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
-    req = urllib.request.Request(url, data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as answer:
+    return urllib.request.Request(url, data=body, headers=headers)
+
+
+def request(url: str, cookie: str = "", data: dict | None = None, timeout: float = TIMEOUT_S):
+    """(JSON 回答, 回答里 Set-Cookie 的 {名字: 值})。data 不为 None 时是表单 POST。
+    有 SESSDATA 时它的过期时刻另放在 EXPIRES_KEY 下。"""
+    with urllib.request.urlopen(_request(url, cookie, data, timeout), timeout=timeout) as answer:
         cookies = {}
         for line in answer.headers.get_all("Set-Cookie") or []:
             name, _, rest = line.partition("=")
-            cookies[name.strip()] = rest.split(";", 1)[0].strip()
+            value, _, attributes = rest.partition(";")
+            cookies[name.strip()] = value.strip()
+            if name.strip() == "SESSDATA":
+                expires = _cookie_expiry(attributes, time.time())
+                if expires is not None:
+                    cookies[EXPIRES_KEY] = expires
         return json.loads(answer.read(MAX_ANSWER_BYTES)), cookies
+
+
+def request_page(url: str, cookie: str = "", timeout: float = TIMEOUT_S) -> str:
+    """GET 一个网页（correspond 页面），回答 HTML 文字。"""
+    with urllib.request.urlopen(_request(url, cookie, None, timeout, referer=WWW + "/"), timeout=timeout) as answer:
+        return answer.read(PAGE_MAX_BYTES).decode("utf-8", "replace")
+
+
+def _mgf1(seed: bytes, length: int) -> bytes:
+    out = b""
+    counter = 0
+    while len(out) < length:
+        out += hashlib.sha256(seed + counter.to_bytes(4, "big")).digest()
+        counter += 1
+    return out[:length]
+
+
+def oaep_encrypt(message: bytes, n: int = RSA_N, e: int = RSA_E, random_bytes=os.urandom) -> bytes:
+    """RSA-OAEP 加密（RFC 8017 第 7.1.1 节：SHA-256、MGF1-SHA-256、空标签），只用标准库。
+    只用来加密公开的 refresh_<时间戳>，没有私钥，不涉及要保密的运算。"""
+    k = (n.bit_length() + 7) // 8
+    h = hashlib.sha256().digest_size
+    if len(message) > k - 2 * h - 2:
+        raise ValueError("message too long")
+    db = hashlib.sha256(b"").digest() + b"\0" * (k - len(message) - 2 * h - 2) + b"\1" + message
+    seed = random_bytes(h)
+    masked_db = bytes(a ^ b for a, b in zip(db, _mgf1(seed, k - h - 1)))
+    masked_seed = bytes(a ^ b for a, b in zip(seed, _mgf1(masked_db, h)))
+    encoded = int.from_bytes(b"\0" + masked_seed + masked_db, "big")
+    return pow(encoded, e, n).to_bytes(k, "big")
+
+
+def correspond_path(timestamp_ms: int, random_bytes=os.urandom) -> str:
+    """refresh_<毫秒时间戳> 用 B 站的公钥加密，小写十六进制（www.bilibili.com/correspond/1/<它>）。"""
+    return oaep_encrypt(f"refresh_{int(timestamp_ms)}".encode("ascii"), random_bytes=random_bytes).hex()
+
+
+def expires_from_url(url: str) -> float | None:
+    """扫码成功时 data.url 的查询串里的 Expires（SESSDATA 的过期时刻，Unix 秒）。"""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(str(url or "")).query)
+    value = (query.get("Expires") or [""])[0]
+    return float(value) if value.isdigit() and 0 < int(value) < 1e11 else None
 
 
 class Login:
@@ -203,14 +303,24 @@ class Store:
         except FileNotFoundError:
             return False
 
+    def users(self) -> list[int]:
+        """存着登录的用户 id。"""
+        try:
+            names = [path.stem for path in self.root.glob("*.json")]
+        except OSError:
+            return []
+        return sorted(int(name) for name in names if name.isdigit())
+
 
 class BiliAccounts:
     """一个中转里所有用户的 B 站登录：存储、扫码、导航、关注列表。"""
 
     def __init__(self, root: Path, fetch=request, clock=time.time, monotonic=time.monotonic, sleep=time.sleep,
-                 log=lambda _m: None):
+                 log=lambda _m: None, fetch_page=request_page, random_bytes=os.urandom):
         self.store = Store(root)
         self.fetch = fetch
+        self.fetch_page = fetch_page
+        self.random_bytes = random_bytes
         self.clock = clock
         self.monotonic = monotonic
         self.sleep = sleep
@@ -225,6 +335,9 @@ class BiliAccounts:
         self._follows: dict[int, tuple[float, list[dict], int]] = {}
         # 同一个人同一时间只做一件要访问 B 站的事（导入、取关注列表）。
         self._busy: set[int] = set()
+        # 自动续期：上次看有没有到期要问的时刻、后台线程是不是正在跑。
+        self._renew_scanned = -1e9
+        self._renewing = False
 
     # ---- 存的登录 ----
 
@@ -247,8 +360,9 @@ class BiliAccounts:
         if record is None or record.get("invalid"):
             return None
         profile = record.get("profile") or {}
+        used = record["cookies"].get("SESSDATA")
         return Login(user, record["cookies"], vip=bool(profile.get("vip")),
-                     on_rejected=lambda: self.mark_invalid(user))
+                     on_rejected=lambda: self.mark_invalid(user, used))
 
     def status(self, user: int | None) -> dict:
         """/api/state 里的一小段：电脑版据此显示「B 站账号」和导入按钮。"""
@@ -258,10 +372,13 @@ class BiliAccounts:
         return {"login": True, "invalid": bool(record.get("invalid")),
                 "vip": bool((record.get("profile") or {}).get("vip"))}
 
-    def mark_invalid(self, user: int) -> None:
+    def mark_invalid(self, user: int, used: str | None = None) -> None:
+        """记成「登录已失效」。used：被拒绝的那次用的 SESSDATA；已经续期换掉了（拒绝的是旧 cookies）就不算。"""
         with self.lock:
             record = self.record(user)
             if record is None or record.get("invalid"):
+                return
+            if used is not None and record["cookies"].get("SESSDATA") != used:
                 return
             record = dict(record, invalid=True)
             try:
@@ -313,7 +430,7 @@ class BiliAccounts:
         profile = profile_of(answer.get("data")) if answer.get("code") == 0 else None
         if profile is None:
             if answer.get("code") in (0, -101):
-                self.mark_invalid(user)
+                self.mark_invalid(user, record["cookies"].get("SESSDATA"))
                 return ""
             return REFUSED
         try:
@@ -416,10 +533,11 @@ class BiliAccounts:
         if "SESSDATA" not in found or "bili_jct" not in found:
             return {"ok": True, "state": "error", "text": REFUSED, "error": REFUSED}
         token = str(data.get("refresh_token") or "")
-        self._finish(user, found, token if _TOKEN.match(token) else "")
+        expires = expires_from_url(data.get("url")) or (set_cookies or {}).get(EXPIRES_KEY)
+        self._finish(user, found, token if _TOKEN.match(token) else "", expires)
         return dict(self.account(user), state="done", text=STATES["done"])
 
-    def _finish(self, user: int, cookies: dict, refresh_token: str) -> None:
+    def _finish(self, user: int, cookies: dict, refresh_token: str, expires: float | None = None) -> None:
         """登录成功：顺手要 buvid3/4（网页版也有），问一次导航拿昵称和大会员，存起来。"""
         if "buvid3" not in cookies:
             try:
@@ -429,7 +547,9 @@ class BiliAccounts:
             except (OSError, ValueError, AttributeError):
                 pass
         record = {"version": 1, "cookies": cookies, "refresh_token": refresh_token, "saved_at": self.clock(),
-                  "checked_at": 0, "invalid": False, "profile": {}}
+                  "checked_at": 0, "invalid": False, "profile": {},
+                  # 自动续期：SESSDATA 什么时候过期（不知道时 0）、下次什么时候问要不要刷新。
+                  "expires_at": float(expires or 0), "renew_at": self.clock() + RENEW_EVERY_S}
         self._save(user, record)
         with self.lock:
             self._follows.pop(user, None)
@@ -452,6 +572,164 @@ class BiliAccounts:
             self.fetch(f"{PASSPORT}/login/exit/v2", login.header(), data={"biliCSRF": login.csrf})
         except (OSError, ValueError):
             pass
+
+    # ---- 自动续期 ----
+
+    def tick(self) -> None:
+        """中转的后台循环每隔几秒叫一次：每 RENEW_SCAN_S 秒看一次有没有到期要续期的登录，有就在后台线程里做。"""
+        now = self.monotonic()
+        with self.lock:
+            if self._renewing or now - self._renew_scanned < RENEW_SCAN_S:
+                return
+            self._renew_scanned = now
+            due = [user for user in self.store.users() if self._renew_due(self.record(user))]
+            if not due:
+                return
+            self._renewing = True
+        threading.Thread(target=self._renew_all, args=(due,), daemon=True, name="bili-renew").start()
+
+    def _renew_due(self, record: dict | None) -> bool:
+        """到了每天问一次的时候；或者快过期了（这时失败后 RENEW_RETRY_S 再试，不等一天）。"""
+        if record is None or record.get("invalid"):
+            return False
+        now = self.clock()
+        if now >= float(record.get("renew_at") or 0):
+            return True
+        expires = float(record.get("expires_at") or 0)
+        return bool(expires) and expires - now < RENEW_BEFORE_S \
+            and now >= float(record.get("renew_tried") or 0) + RENEW_RETRY_S
+
+    def _renew_all(self, users: list[int]) -> None:
+        try:
+            for n, user in enumerate(users):
+                if n:
+                    self.sleep(RENEW_GAP_S)
+                try:
+                    self.renew(user)
+                except Exception as error:      # noqa: BLE001 —— 后台线程不能死，下一轮再试
+                    self.log(f"用户 {user} 的 B 站登录续期出错：{type(error).__name__}")
+        finally:
+            with self.lock:
+                self._renewing = False
+
+    def _update(self, user: int, record: dict, drop: tuple = (), **changes) -> bool:
+        """record 还是存着的那个登录（中间没有退出、重新扫码）时改几项（drop 里的删掉）存回去。"""
+        with self.lock:
+            current = self.record(user)
+            if current is None or current.get("refresh_token") != record.get("refresh_token") \
+                    or current["cookies"].get("SESSDATA") != record["cookies"].get("SESSDATA"):
+                return False
+            current = dict(current, **changes)
+            for name in drop:
+                current.pop(name, None)
+            try:
+                self._save(user, current)
+            except OSError:
+                return False
+            return True
+
+    def renew(self, user: int) -> str:
+        """问一次要不要刷新 cookies，要就刷新。返回 fresh（不用刷新）/ renewed / failed（留着原来的，过一阵再试）
+        / invalid（B 站说没登录了）/ skipped（没有登录、已失效）。"""
+        record = self.record(user)
+        if record is None or record.get("invalid"):
+            return "skipped"
+        now = self.clock()
+        self._update(user, record, renew_tried=now)
+        record = self.record(user) or record
+        if record.get("confirm_token"):
+            self._confirm(user, record)
+            record = self.record(user) or record
+        login = Login(user, record["cookies"])
+        try:
+            answer, _ = self.fetch(f"{PASSPORT}/x/passport-login/web/cookie/info?"
+                                   f"{urllib.parse.urlencode({'csrf': login.csrf})}", login.header())
+            code = answer.get("code") if isinstance(answer, dict) else None
+            data = answer.get("data") if code == 0 and isinstance(answer.get("data"), dict) else {}
+        except (OSError, ValueError) as error:
+            return self._renew_failed(user, record, f"连不上 B 站（{type(error).__name__}）")
+        if code == -101:
+            return self._renew_rejected(user, record)
+        if code != 0:
+            return self._renew_failed(user, record, f"cookie/info 回答 {code}")
+        expires = float(record.get("expires_at") or 0)
+        soon = bool(expires) and expires - now < RENEW_BEFORE_S
+        if data.get("refresh") is not True and not soon:
+            self._update(user, record, renew_at=now + RENEW_EVERY_S)
+            return "fresh"
+        token = str(record.get("refresh_token") or "")
+        if not _TOKEN.match(token):
+            # 很早以前的登录没存 refresh_token：续不了，到期后只能重新扫码。
+            self._update(user, record, renew_at=now + RENEW_EVERY_S)
+            self.log(f"用户 {user} 的 B 站登录要刷新，但没有存 refresh_token，过期后要重新扫码")
+            return "failed"
+        stamp = data.get("timestamp")
+        if not isinstance(stamp, int) or isinstance(stamp, bool) or stamp <= 0:
+            stamp = int(now * 1000)
+        try:
+            page = self.fetch_page(f"{WWW}/correspond/1/{correspond_path(stamp, self.random_bytes)}",
+                                   login.header())
+        except (OSError, ValueError) as error:
+            return self._renew_failed(user, record, f"取不到 refresh_csrf（{type(error).__name__}）")
+        found = _REFRESH_CSRF.search(page or "")
+        if found is None:
+            return self._renew_failed(user, record, "correspond 页面里没有 refresh_csrf")
+        try:
+            answer, set_cookies = self.fetch(
+                f"{PASSPORT}/x/passport-login/web/cookie/refresh", login.header(),
+                data={"csrf": login.csrf, "refresh_csrf": found.group(1), "source": "main_web",
+                      "refresh_token": token})
+            code = answer.get("code") if isinstance(answer, dict) else None
+            data = answer.get("data") if code == 0 and isinstance(answer.get("data"), dict) else {}
+        except (OSError, ValueError) as error:
+            return self._renew_failed(user, record, f"cookie/refresh 失败（{type(error).__name__}）")
+        if code == -101:
+            return self._renew_rejected(user, record)
+        new_token = str(data.get("refresh_token") or "")
+        fresh = clean_cookies(set_cookies or {})
+        if code != 0 or not _TOKEN.match(new_token) or "SESSDATA" not in fresh or "bili_jct" not in fresh:
+            return self._renew_failed(user, record, f"cookie/refresh 回答 {code}")
+        expires = (set_cookies or {}).get(EXPIRES_KEY)
+        later = self.clock()
+        if not self._update(user, record, cookies=dict(record["cookies"], **fresh), refresh_token=new_token,
+                            confirm_token=token, renewed_at=later, renew_at=later + RENEW_EVERY_S,
+                            expires_at=float(expires) if isinstance(expires, (int, float)) else 0.0):
+            # 刷新的这一会儿他退出了或重新扫了码：新 cookies 不要了（旧的 refresh_token 也不去确认）。
+            return "skipped"
+        self.log(f"用户 {user} 的 B 站登录已自动续期")
+        self._confirm(user, self.record(user))
+        return "renewed"
+
+    def _confirm(self, user: int, record: dict | None) -> None:
+        """用新 cookies 和旧的 refresh_token 确认刷新（让旧 cookies 作废）。失败了留着 confirm_token 下次续期前再补。"""
+        if record is None or not record.get("confirm_token"):
+            return
+        login = Login(user, record["cookies"])
+        try:
+            answer, _ = self.fetch(f"{PASSPORT}/x/passport-login/web/confirm/refresh", login.header(),
+                                   data={"csrf": login.csrf, "refresh_token": record["confirm_token"]})
+            code = answer.get("code") if isinstance(answer, dict) else None
+        except (OSError, ValueError) as error:
+            self.log(f"用户 {user} 确认 B 站登录续期失败（{type(error).__name__}），下次再补")
+            return
+        if code == 0:
+            self._update(user, record, drop=("confirm_token",))
+            return
+        self.log(f"用户 {user} 确认 B 站登录续期：回答 {code}，下次再补")
+
+    def _renew_failed(self, user: int, record: dict, why: str) -> str:
+        """续期没成：原来的登录照用（cookies 还没过期就还能用），RENEW_RETRY_S 后再试。"""
+        self._update(user, record, renew_at=self.clock() + RENEW_RETRY_S)
+        self.log(f"用户 {user} 的 B 站登录续期没成：{why}，先用原来的，{RENEW_RETRY_S // 3600} 小时后再试")
+        return "failed"
+
+    def _renew_rejected(self, user: int, record: dict) -> str:
+        """cookie 接口说没登录：用导航核对一次（和平时一样），真没登录了才记成失效，请他重新扫码。"""
+        self._check(user, record)
+        current = self.record(user)
+        if current is not None and current.get("invalid"):
+            return "invalid"
+        return self._renew_failed(user, record, "cookie 接口说没登录，导航说还登录着")
 
     # ---- 关注的 UP 主 ----
 

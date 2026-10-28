@@ -20,6 +20,10 @@ zipapp 下好、核对过后存成 yt-dlp-<版本>.pyz，再在旁边解开成 y
 装好的记在 bin/components.json（ytnode.read_components 读它）：{"yt-dlp": {"version", "file", "sha256"}, "deno": …}。
 文件名带版本，换版本时先写好新文件（和解开的文件夹）、再改 components.json、最后删旧文件，节点任何时候都只会
 看到完整的一套。
+
+自动更新（server/relay/ytupdate.py）换 yt-dlp 时多一步：旧版本先不删，记在 components.json 的
+"yt-dlp-previous" 里；新版本通过自检（解析一次测试视频）后 commit() 才删旧的，没通过 rollback() 换回旧的。
+换之前还要问一次 start() 的 gate（YouTube 正在起播时不换）。
 """
 
 from __future__ import annotations
@@ -71,6 +75,8 @@ GITHUB = "https://github.com"
 YTDLP_REPO = "yt-dlp/yt-dlp"
 DENO_REPO = "denoland/deno"
 SUMS = "SHA2-256SUMS"
+# components.json 里自动更新留着回退用的上一个 yt-dlp。
+PREVIOUS = "yt-dlp-previous"
 _TAG = re.compile(r"^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 DOWNLOAD_MAX = 150 * 1024 * 1024
@@ -398,8 +404,11 @@ class Components:
 
     # ---- 开始一件事 ----
 
-    def start(self, action: str, proxy: str = "", mirror: str = "", wait: bool = False) -> bool:
-        """action：install（装缺的）/ update（yt-dlp 更新到最新）。已经在做别的事时 False。"""
+    def start(self, action: str, proxy: str = "", mirror: str = "", wait: bool = False, keep_previous: bool = False,
+              gate=None) -> bool:
+        """action：install（装缺的）/ update（yt-dlp 更新到最新）。已经在做别的事时 False。
+        keep_previous：换 yt-dlp 时留着旧的（自动更新，自检后 commit / rollback）；gate：换之前问一次，
+        回答 False 就不换（下好的删掉）。"""
         if action not in ("install", "update"):
             raise ValueError(action)
         with self._lock:
@@ -407,14 +416,14 @@ class Components:
                 return False
             self.state, self.task, self.error, self.done, self.total, self.what = "working", action, "", 0, 0, ""
         self._publish(force=True)
-        thread = threading.Thread(target=self._work, args=(action, proxy, mirror), daemon=True,
+        thread = threading.Thread(target=self._work, args=(action, proxy, mirror, keep_previous, gate), daemon=True,
                                   name=f"yt-{action}")
         thread.start()
         if wait:
             thread.join()
         return True
 
-    def _work(self, action: str, proxy: str, mirror: str) -> None:
+    def _work(self, action: str, proxy: str, mirror: str, keep_previous: bool = False, gate=None) -> None:
         try:
             if self.assets is None:
                 raise ComponentError(f"这台电脑（{self.system} / {platform.machine()}）没有官方的 deno，"
@@ -424,7 +433,10 @@ class Components:
             if action == "install":
                 self._install(proxy, mirror)
             else:
-                self._update(proxy, mirror)
+                if not keep_previous:
+                    # 手动更新：上次自动更新还没自检完留着的旧版本不要了（手动装的就是用户要的）。
+                    self.commit()
+                self._update(proxy, mirror, keep_previous, gate)
         except ComponentError as error:
             self.log(f"YouTube 组件：{error}")
             self._set(state="failed", error=str(error), what="")
@@ -444,7 +456,7 @@ class Components:
     def _clean_partial(self) -> None:
         for path in self.bin_dir.glob("*.part"):
             _remove(path)
-        # 上次没删掉的旧版本（Windows 上删正在运行的程序会失败）。
+        # 上次没删掉的旧版本（Windows 上删正在运行的程序会失败）。留着回退用的上一个 yt-dlp 不删（_prune 认它）。
         for component, entry in self.installed().items():
             self._prune(component, entry["file"])
 
@@ -470,7 +482,8 @@ class Components:
         self.log(f"YouTube 组件已就绪：yt-dlp {self.installed()['yt-dlp']['version']}，"
                  f"deno {self.installed()['deno']['version']}")
 
-    def _get_ytdlp(self, version: str, sha256: str, proxy: str, mirror: str) -> None:
+    def _get_ytdlp(self, version: str, sha256: str, proxy: str, mirror: str, keep_previous: bool = False,
+                   gate=None) -> None:
         self._set(what=f"yt-dlp {version}", done=0, total=0)
         self.log(f"正在下载 yt-dlp {version}（{YTDLP_ASSET}，纯 Python 版）…")
         name = f"yt-dlp-{version}{ytnode.ZIPAPP_SUFFIX}"
@@ -493,7 +506,11 @@ class Components:
             _remove(target)
             _remove(folder)
             raise ComponentError("下载的 yt-dlp 运行不了（这台电脑的 Python 太旧，或被安全软件拦住了）")
-        self._record("yt-dlp", version, name, sha256)
+        if gate is not None and not gate():
+            _remove(target)
+            _remove(folder)
+            raise ComponentError("YouTube 正在起播，这次先不换 yt-dlp，过一会儿再试")
+        self._record("yt-dlp", version, name, sha256, keep_previous=keep_previous)
 
     def _get_deno(self, asset: str, proxy: str, mirror: str) -> None:
         version = DENO_VERSION
@@ -527,30 +544,87 @@ class Components:
             raise ComponentError("下载的 deno 运行不了（系统拦住了，或这台电脑太旧）")
         self._record("deno", version, name, DENO_SHA256[asset])
 
-    def _record(self, component: str, version: str, file: str, sha256: str) -> None:
-        """改 components.json（原子地），再删掉这个组件的旧文件。"""
-        path = self.bin_dir / ytnode.COMPONENTS_FILE
+    def _read(self) -> dict:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads((self.bin_dir / ytnode.COMPONENTS_FILE).read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        data[component] = {"version": version, "file": file, "sha256": sha256}
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write(self, data: dict) -> None:
+        path = self.bin_dir / ytnode.COMPONENTS_FILE
         tmp = path.with_name(path.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
         os.replace(tmp, path)
+
+    def _record(self, component: str, version: str, file: str, sha256: str, keep_previous: bool = False) -> None:
+        """改 components.json（原子地），再删掉这个组件的旧文件。keep_previous：yt-dlp 的旧版本先留着回退用。"""
+        data = self._read()
+        old = data.get(component)
+        if component == "yt-dlp":
+            if keep_previous and isinstance(old, dict) and old.get("file") != file \
+                    and str(old.get("file") or "").endswith(ytnode.ZIPAPP_SUFFIX):
+                data[PREVIOUS] = old
+            else:
+                data.pop(PREVIOUS, None)
+        data[component] = {"version": version, "file": file, "sha256": sha256}
+        self._write(data)
         self._prune(component, file)
 
     def _prune(self, component: str, file: str) -> None:
-        """删掉这个组件别的版本（文件和解开的文件夹），留下 file 和它解开的文件夹。"""
+        """删掉这个组件别的版本（文件和解开的文件夹），留下 file 和它解开的文件夹（还有回退用的上一个 yt-dlp）。"""
         keep = {file}
-        if file.endswith(ytnode.ZIPAPP_SUFFIX):
-            keep.add(file[:-len(ytnode.ZIPAPP_SUFFIX)])
+        previous = self.previous() if component == "yt-dlp" else None
+        if previous is not None:
+            keep.add(previous["file"])
+        for name in list(keep):
+            if name.endswith(ytnode.ZIPAPP_SUFFIX):
+                keep.add(name[:-len(ytnode.ZIPAPP_SUFFIX)])
         prefix = "yt-dlp-" if component == "yt-dlp" else "deno-"
         for stale in self.bin_dir.glob(prefix + "*"):
             if stale.name not in keep and not stale.name.endswith((".part", ".json", ".tmp")):
                 _remove(stale)
+
+    # ---- 自动更新的回退 ----
+
+    def previous(self) -> dict | None:
+        """自动更新换下来、还留着的上一个 yt-dlp：{"version", "file", "sha256"}；没有（或文件没了）时 None。"""
+        entry = self._read().get(PREVIOUS)
+        if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+            return None
+        file = os.path.basename(entry["file"])
+        if file != entry["file"] or not (self.bin_dir / file).is_file():
+            return None
+        return {"version": str(entry.get("version") or ""), "file": file, "sha256": str(entry.get("sha256") or "")}
+
+    def commit(self) -> None:
+        """新的 yt-dlp 自检通过（或手动更新）：不再留着上一个，删掉它。"""
+        data = self._read()
+        if PREVIOUS not in data:
+            return
+        data.pop(PREVIOUS, None)
+        self._write(data)
+        entry = self.installed().get("yt-dlp")
+        if entry is not None:
+            self._prune("yt-dlp", entry["file"])
+
+    def rollback(self) -> str:
+        """新的 yt-dlp 自检没通过：换回上一个（先改 components.json，再删新的）。返回换回的版本，没有可回退的时 ""。"""
+        with self._lock:
+            if self.state == "working":
+                return ""
+        previous = self.previous()
+        if previous is None:
+            return ""
+        data = self._read()
+        data["yt-dlp"] = previous
+        data.pop(PREVIOUS, None)
+        self._write(data)
+        self._prune("yt-dlp", previous["file"])
+        with self._lock:
+            self.latest = ""
+        self._publish(force=True)
+        return previous["version"]
 
     # ---- 更新 yt-dlp ----
 
@@ -604,7 +678,7 @@ class Components:
             raise ComponentError(f"{tag} 的 {SUMS} 里没有 {YTDLP_ASSET}")
         return sha256
 
-    def _update(self, proxy: str, mirror: str) -> None:
+    def _update(self, proxy: str, mirror: str, keep_previous: bool = False, gate=None) -> None:
         if not self.ready() or self.legacy():
             self._install(proxy, mirror)
         self._set(what="查最新版本")
@@ -616,5 +690,5 @@ class Components:
             self.log(f"yt-dlp {current} 已经是最新的")
             return
         sha256 = self._release_sha(latest, proxy, mirror)
-        self._get_ytdlp(latest, sha256, proxy, mirror)
+        self._get_ytdlp(latest, sha256, proxy, mirror, keep_previous, gate)
         self.log(f"yt-dlp 已更新：{current or '无'} → {latest}")

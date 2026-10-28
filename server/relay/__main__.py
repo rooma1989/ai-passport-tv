@@ -177,6 +177,9 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 本机模式第一次用：组件还没装好就在后台下载（server/relay/ytsettings.py）。
     from . import ytsettings
     ytsettings.autostart(relay)
+    # 本机模式的 yt-dlp 自动更新：每天查一次、解析失败像是 yt-dlp 跟不上时马上查（ytupdate.py）。
+    from . import ytupdate
+    ytupdate.attach(relay)
     relay.sync_devices(force=True)
     # 节目单（epg.py）：默认关着；总后台打开后在数据库旁边的 epg/ 里存下好的文件。
     from . import epg
@@ -218,6 +221,12 @@ def _serve_tenants(args, key: str, youtube) -> int:
                     relay.account_feeds.tick()
                 except Exception as error:  # noqa: BLE001
                     print(f"检查关注同步失败：{type(error).__name__}", flush=True)
+            if relay.bili_accounts is not None:
+                try:
+                    # B 站登录自动续期：每天问一次要不要刷新 cookies（bililogin.py；tick 自己限次数，在后台线程里做）。
+                    relay.bili_accounts.tick()
+                except Exception as error:  # noqa: BLE001
+                    print(f"检查 B 站登录续期失败：{type(error).__name__}", flush=True)
 
     threading.Thread(target=keep_in_sync, daemon=True).start()
     # 总后台的主机负载曲线：每 5 秒读一次 /proc，留 24 小时（没有 /proc 时不采样）。
