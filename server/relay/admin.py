@@ -28,7 +28,7 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, console, epg, events, playlist, presets, qr, routecheck, table
+from . import channeltable, console, epg, events, playlist, presets, qr, routecheck, subscriptions, table
 from .ytnode import MAX_STREAMS
 
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
@@ -115,6 +115,9 @@ def get(handler, relay, path: str) -> bool:
         handler._json(channels(relay))
     elif path == "/api/admin/epg":
         handler._json(epg.admin_view(relay))
+    elif path == "/api/admin/subs":
+        subs = getattr(relay, "subscriptions", None)
+        handler._json(subs.view() if subs is not None else {"ok": False, "error": "只有自建和电脑客户端能订阅直播源"})
     else:
         match = _USER.match(path)
         if match and match.group(2) == "sessions":
@@ -348,6 +351,7 @@ def channels(relay) -> dict:
                                                                   "table": channel_groups.TABLE_MAX},
             "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:],
             "import": relay.selfhost is not None, "routes_max": routes.ROUTES_MAX,
+            "subs_every_h": int(subscriptions.EVERY_S // 3600),
             # 后台在自动检测线路（linecheck.py，自建 / 电脑客户端）：上次测的时刻、全部线路不通的台。
             "auto": relay.linecheck.status() if getattr(relay, "linecheck", None) is not None else None,
             # 网上公开的第三方播放列表（只有列表地址）：和导入一样只在自建 / 电脑客户端里有。
@@ -490,6 +494,33 @@ def post(handler, relay, path: str) -> bool:
             preset = body.get("preset") if isinstance(body.get("preset"), str) else ""
             relay.accounts.audit("channels.import", caller.user, ip, "channels", preset[:40],
                                  f"{len(answer['entries'])} 个台")
+        handler._json(answer)
+        return True
+    if path in ("/api/admin/subs", "/api/admin/subs/refresh", "/api/admin/subs/delete"):
+        # 直播源订阅（subscriptions.py，自建 / 电脑客户端）：加一个（马上取一次）、现在更新、删掉。
+        subs = getattr(relay, "subscriptions", None)
+        if subs is None:
+            handler._json({"ok": False, "error": "只有自建和电脑客户端能订阅直播源"})
+            return True
+        sid = body.get("id") if isinstance(body.get("id"), str) else ""
+        if path == "/api/admin/subs":
+            url = body.get("url") if isinstance(body.get("url"), str) else ""
+            name = body.get("name") if isinstance(body.get("name"), str) else ""
+            if "preset" in body:
+                # 页面上列的公开列表（presets.py）：地址在服务器上，页面只给是哪个、第几个镜像。
+                url = presets.url_of(body.get("preset"), body.get("mirror", 0)) or ""
+                name = next((p["name"] for p in presets.PRESETS if p["id"] == body.get("preset")), "")
+                if not url:
+                    handler._json({"ok": False, "error": "没有这个播放列表（页面可能是旧的，请刷新）"})
+                    return True
+            answer = subs.add(url, name)
+            action = "channels.subscribe"
+        elif path == "/api/admin/subs/refresh":
+            answer, action = subs.refresh(sid), "channels.subscription_refresh"
+        else:
+            answer, action = subs.remove(sid), "channels.unsubscribe"
+        if answer.get("ok"):
+            relay.accounts.audit(action, caller.user, ip, "channels", sid[:8], "")
         handler._json(answer)
         return True
     if selfhost and path == "/api/admin/channels/probe":

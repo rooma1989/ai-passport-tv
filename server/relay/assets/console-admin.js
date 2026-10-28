@@ -29,7 +29,7 @@ const ADM_ACTIONS = {
   "session.revoke": "退出一个登录", "session.revoke_others": "退出别处的登录",
   "admin.session.revoke": "管理员退出他的一个登录", "admin.session.revoke_all": "管理员退出他的全部登录",
   "legacy_token.on": "打开共享配对令牌", "legacy_token.off": "关闭共享配对令牌", "channels.save": "保存频道表",
-  "channels.import": "导入播放列表", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
+  "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
   "wifi.add": "给设备加 Wi-Fi", "wifi.remove": "删设备的 Wi-Fi", "wifi.up": "调 Wi-Fi 顺序", "wifi.switch": "让设备换 Wi-Fi",
   "login.pc.confirm": "手机确认电脑登录", "login.pc.deny": "手机拒绝电脑登录", "migrate": "从单用户迁移",
 };
@@ -913,6 +913,11 @@ function achShell() {
       </details>
     </div>
     <div class="achpane" data-pane="import" id="achImport" hidden>
+      <div class="subsbox" id="achSubs" hidden>
+        <b>订阅的直播源</b>
+        <p class="hint">每 ${d.subs_every_h || 12} 小时自动重新读一次：表里已有的台补上新线路、换掉打不开的；表里没有的台不自动加，点「看新台」挑。</p>
+        <div id="achSubList"></div>
+      </div>
       <div id="achPresetBox" hidden>
         <p class="disclaimer">下面是网上公开的第三方列表，内容由维护者负责，本项目不提供任何直播源；请只添加你有权观看的内容。</p>
         <div class="presets" id="achPresets"></div>
@@ -920,6 +925,7 @@ function achShell() {
       <div class="improw">
         <input type="text" id="achImpUrl" placeholder="或者填播放列表地址（.m3u / .txt）" autocomplete="off" spellcheck="false">
         <button class="ghost" id="achImpFetch">读取</button>
+        <button class="ghost" id="achImpSub" title="记住这个地址，定时自动更新线路">订阅</button>
         <label class="ghost" for="achImpFile" tabindex="0" id="achImpPick">选文件</label>
         <input type="file" id="achImpFile" accept=".m3u,.m3u8,.txt,audio/x-mpegurl" hidden>
       </div>
@@ -1502,20 +1508,99 @@ function achRenderPresets() {
       b.onclick = () => admBusy(b, () => achImpRead({ preset: p.id, mirror: i }, p.name + (i ? " · " + u.label : "")));
       actions.appendChild(b);
     });
+    const subscribed = ((ach.subs && ach.subs.subs) || []).some((s) => s.name === p.name);
+    const sub = button(subscribed ? "已订阅" : "订阅", "ghost");
+    sub.disabled = subscribed || !ach.subs;
+    sub.title = "记住这个列表，定时自动更新线路";
+    sub.onclick = () => admBusy(sub, () => achSubAdd({ preset: p.id, mirror: 0 }));
+    actions.appendChild(sub);
     item.append(el("b", "", p.name), about, actions);
     box.appendChild(item);
   }
   $("achPresetBox").hidden = !box.children.length;
 }
-async function achImpRead(body, source) {
+// ---- 订阅的直播源（server/relay/subscriptions.py）：定时重新读，新线路并进已有的台 ----
+async function achSubsLoad() {
+  let answer = null;
+  try { answer = await admCall("GET", "api/admin/subs"); } catch (error) { answer = null; }
+  ach.subs = answer && answer.ok ? answer : null;
+  achRenderSubs();
+  achRenderPresets();
+}
+function achSubSummary(r) {
+  if (!r) return "还没读过";
+  const parts = ["对上 " + r.channels + " 个台"];
+  if (r.added) parts.push("补了 " + r.added + " 条线路");
+  if (r.replaced) parts.push("换掉 " + r.replaced + " 条打不开的");
+  if (!r.added && !r.replaced) parts.push("没有新线路");
+  if (r.new) parts.push(r.new + " 个新台");
+  return parts.join("，");
+}
+function achRenderSubs() {
+  const box = $("achSubList");
+  if (!box) return;
+  const subs = (ach.subs && ach.subs.subs) || [];
+  $("achSubs").hidden = !subs.length;
+  box.replaceChildren();
+  for (const s of subs) {
+    const row = el("div", "subrow");
+    const text = el("div", "subtext");
+    text.append(el("b", "", s.name));
+    const status = s.busy ? "正在更新…" : s.ok === false ? "上次没读到（" + (s.error || "取不到") + "）· " + ago(s.last_at)
+      : s.last_at ? achSubSummary(s.result) + " · " + ago(s.last_at) : "还没读过";
+    text.append(el("span", s.ok === false ? "hint bad" : "hint", status));
+    const actions = el("div", "inline");
+    if (s.result && s.result.new) {
+      const look = button("看新台", "ghost");
+      look.title = (s.result.new_names || []).slice(0, 12).join("、");
+      look.onclick = () => admBusy(look, () => achImpRead({ url: s.url }, s.name, true));
+      actions.append(look);
+    }
+    const now = button("现在更新", "ghost");
+    now.onclick = () => admBusy(now, async () => {
+      const answer = await admCall("POST", "api/admin/subs/refresh", { id: s.id });
+      if (!answer.ok) toast(answer.error || "没更新", true);
+      else { toast(s.name + "：" + achSubSummary(answer.result)); achLoad(true); }
+      await achSubsLoad();
+    });
+    const drop = button("取消订阅", "ghost");
+    drop.onclick = () => {
+      if (drop.dataset.sure !== "1") { drop.dataset.sure = "1"; drop.textContent = "确定取消？"; setTimeout(() => { drop.dataset.sure = ""; drop.textContent = "取消订阅"; }, 4000); return; }
+      admBusy(drop, async () => {
+        const answer = await admCall("POST", "api/admin/subs/delete", { id: s.id });
+        if (!answer.ok) toast(answer.error || "没取消", true); else toast("已取消订阅：已经加进来的线路照旧");
+        await achSubsLoad();
+      });
+    };
+    actions.append(now, drop);
+    row.append(text, actions);
+    box.appendChild(row);
+  }
+}
+async function achSubAdd(body) {
+  const answer = await admCall("POST", "api/admin/subs", body);
+  if (!answer.ok) { toast(answer.error || "没订阅上", true); await achSubsLoad(); return false; }
+  toast("已订阅：" + achSubSummary(answer.result), false, 6000);
+  await achSubsLoad();
+  achLoad(true);
+  return true;
+}
+// onlyNew：订阅的「看新台」只列频道表里还没有的台（已有的台，新线路订阅时已经并进去了）。
+async function achImpRead(body, source, onlyNew) {
   const answer = await admCall("POST", "api/admin/channels/import", body);
   if (!answer.ok) { toast(answer.error || "没读出来", true); return; }
   ach.imp = answer.entries.map((e) => ({ ...e, on: false, state: "" }));
   achImpMark();
+  let total = answer.total, listed = answer.entries.length;
+  if (onlyNew) {
+    ach.imp = ach.imp.filter((r) => r.dup !== "url" && r.dup !== "name");
+    source += "：表里没有的";
+    total = listed = ach.imp.length;
+  }
   ach.impKind = "";
   ach.impFilter = $("achImpFilter").value = "";
-  ach.impSource = source + "：" + answer.total + " 个台" +
-    (answer.total > answer.entries.length ? "（列出前 " + answer.entries.length + " 个）" : "") +
+  ach.impSource = source + "：" + total + " 个台" +
+    (total > listed ? "（列出前 " + listed + " 个）" : "") +
     (answer.skipped ? "，" + answer.skipped + " 个地址不合格" : "");
   $("achImpSource").textContent = ach.impSource;
   $("achImpList").hidden = false;
@@ -1578,6 +1663,12 @@ function achWireImport() {
     await achImpRead({ url }, url);
   });
   $("achImpUrl").onkeydown = (event) => { if (event.key === "Enter") $("achImpFetch").click(); };
+  $("achImpSub").onclick = () => admBusy($("achImpSub"), async () => {
+    const url = $("achImpUrl").value.trim();
+    if (!/^https?:\/\//.test(url)) { toast("地址要以 http:// 或 https:// 开头", true); return; }
+    if (await achSubAdd({ url })) $("achImpUrl").value = "";
+  });
+  achSubsLoad();
   $("achImpPick").onkeydown = (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); $("achImpFile").click(); } };
   $("achImpFile").onchange = async () => {
     const file = $("achImpFile").files[0];

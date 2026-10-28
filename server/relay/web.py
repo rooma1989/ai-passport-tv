@@ -242,6 +242,8 @@ class Relay:
         self.logos = None
         # 直播台线路的后台自检和真画面封面（linecheck.py）：自建 / 电脑客户端由 __main__ 建，云端为 None。
         self.linecheck = None
+        # 直播源订阅（subscriptions.py）：自建 / 电脑客户端由 __main__ 建，云端为 None。
+        self.subscriptions = None
         self.starter = starter
         self.pumper = pumper
         self._quick_failures: dict[tuple, int] = {}

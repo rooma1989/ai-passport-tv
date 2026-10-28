@@ -188,6 +188,9 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 封面存在数据库旁边的 covers/live/。
     from . import linecheck
     linecheck.attach(relay, args.db.parent / "covers" / "live")
+    # 直播源订阅（subscriptions.py）：自建 / 电脑客户端定时重新取订阅的播放列表，新线路并进频道表。
+    from . import subscriptions
+    subscriptions.attach(relay)
     # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。
     from . import wifi as wifi_api
     wifi_api.setup_key(relay, args.wifi_key)
