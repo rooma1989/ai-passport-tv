@@ -7,7 +7,8 @@ fonts) are remuxed with the video copied when the page says it can play HEVC and
 it cannot, the cover is never taken for the video, an existing AAC is copied (not from MPEG-TS),
 otherwise the default audio is transcoded; Hi10P H.264 and Rext HEVC are transcoded; a remote
 mp4 with text subtitles is remuxed (subtitles are extracted while streaming); a file with
-nothing playable is refused; an unprobed file is guessed from its extension. Both probe parsers
+nothing playable is refused; an unprobed file is guessed from its extension, and a
+cloud file gets PROBE_TIMEOUT_REMOTE_S to probe (throttled drives read the mkv fonts slowly). Both probe parsers
 (ffprobe JSON and ffmpeg's own input dump, which is all the PC client's downloaded ffmpeg has)
 read the same streams. The ffmpeg arguments: explicit maps of only the chosen video and audio
 (no subtitle, attachment or cover map in the media output), -tag:v hvc1, copy / encode as
@@ -231,6 +232,23 @@ class FfmpegArgsTests(unittest.TestCase):
         source = self.lib.watch_source(self.item, media, decision, offset, "E01")
         url = source.url()
         return watch.ffmpeg_args("/usr/bin/ffmpeg", source, url, watch.WatchService.mode_of(None, source)), source, url
+
+    def test_cloud_files_get_longer_to_probe(self):
+        self.lib.item = lambda _iid: dict(self.item)
+        seen = []
+
+        def run(args, **kw):
+            seen.append(kw["timeout"])
+            raise subprocess.TimeoutExpired(args, kw["timeout"])
+        real = library.subprocess.run
+        library.subprocess.run = run
+        try:
+            for remote in (False, True):
+                self.lib.remote = lambda _item, r=remote: r
+                self.assertIsNone(self.lib.probe(self.item["id"]))
+        finally:
+            library.subprocess.run = real
+        self.assertEqual(seen, [library.PROBE_TIMEOUT_S, library.PROBE_TIMEOUT_REMOTE_S])
 
     def test_owner_mkv_maps_only_video_and_audio_with_hvc1(self):
         args, source, url = self.args(OWNER_MKV, MAC_CHROME, offset=125.5)

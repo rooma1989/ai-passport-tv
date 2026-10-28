@@ -608,6 +608,8 @@ def _client_gone(sock) -> bool:
 # 探测的结果存在索引的条目里（media）：格式变了（这里的写法改了）就加一，旧的重新探测。
 PROBE_VERSION = 1
 PROBE_TIMEOUT_S = 25
+# 网盘上的：夸克不开会员限速一秒一两 MB，mkv 里的字体附件也在文件头里整个读，实测 15–23 秒。
+PROBE_TIMEOUT_REMOTE_S = 60
 # 探测读多少：文件头里就有各路流（mp4 的 moov 再大 ffmpeg 也会整个读，不受这个限制）。
 PROBE_ARGS = ("-probesize", "5000000", "-analyzeduration", "5000000")
 # 探测失败了（网盘超时之类）这么久以内不再探测同一个，照扩展名猜着放。
@@ -1735,7 +1737,9 @@ class Library:
         else:
             args = [self.ffmpeg, "-hide_banner", "-nostdin", *whitelist, *PROBE_ARGS, "-i", url]
         try:
-            done = subprocess.run(args, capture_output=True, timeout=PROBE_TIMEOUT_S, env=loopback_bypass(os.environ))
+            item = self.item(iid)
+            limit = PROBE_TIMEOUT_REMOTE_S if item is not None and self.remote(item) else PROBE_TIMEOUT_S
+            done = subprocess.run(args, capture_output=True, timeout=limit, env=loopback_bypass(os.environ))
         except (OSError, subprocess.SubprocessError) as error:
             self.log(f"片库探测不了一个文件（{type(error).__name__}）")
             return None
