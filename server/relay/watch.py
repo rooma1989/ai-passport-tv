@@ -314,11 +314,17 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool
         args += ["-map", "0:V:0?", "-map", "0:a:0?"]
     args += ["-sn", "-dn"]
     if source.exact:
-        args += ["-copyts", "-avoid_negative_ts", "disabled", "-output_ts_offset", str(EXACT_TS_OFFSET)]
+        # 章节不要：mp4 会把它写成一条 text 轨，CODECS 里多出「text」，浏览器就不放了。
+        args += ["-map_chapters", "-1",
+                 "-copyts", "-avoid_negative_ts", "disabled", "-output_ts_offset", str(EXACT_TS_OFFSET)]
     if mode.video == "copy":
         args += ["-c:v", "copy"]
         if source.video_tag:
             args += ["-tag:v", source.video_tag]
+        if source.video_tag == "hvc1":
+            # 有的 mkv 的 hvcC 只有头、参数集（VPS/SPS/PPS）在帧里：照抄就是空的 hvcC，浏览器解不了。转成 Annex B、
+            # moov 等第一段出来再写（delay_moov），封装时从帧里取参数集写进 hvcC；hvcC 本来完整的也照样对。
+            args += ["-bsf:v", "hevc_mp4toannexb"]
     elif mode.video == "encode":
         args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "4M", "-bufsize", "8M",
                  "-pix_fmt", "yuv420p", "-vf", "scale=-2:'min(720,ih)'",
@@ -327,13 +333,15 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool
         args += ["-c:a", "aac", "-b:a", source.audio_rate or "128k", "-ac", "2"]
     elif mode.audio == "copy":
         args += ["-c:a", "copy"]
-    discont = "+frag_discont" if source.exact else ""       # tfdt 写真的时间（见 EXACT_TS_OFFSET）
+    flags = "+frag_discont" if source.exact else ""         # tfdt 写真的时间（见 EXACT_TS_OFFSET）
+    if mode.video == "copy" and source.video_tag == "hvc1":
+        flags += "+delay_moov"                               # 见上面的 hevc_mp4toannexb
     if mode.video is not None:
         # 每段从关键帧起（Safari 和 MediaSource 都要），至少 2 秒。
-        args += ["-movflags", "frag_keyframe+empty_moov+default_base_moof" + discont,
+        args += ["-movflags", "frag_keyframe+empty_moov+default_base_moof" + flags,
                  "-min_frag_duration", str(FRAGMENT_US)]
     else:
-        args += ["-movflags", "empty_moov+default_base_moof" + discont, "-frag_duration", str(FRAGMENT_US)]
+        args += ["-movflags", "empty_moov+default_base_moof" + flags, "-frag_duration", str(FRAGMENT_US)]
     args += ["-flush_packets", "1", "-f", "mp4", "pipe:1"]
     for index, path in source.subs_out:
         # 另一个输出：只有这一路字幕，转成 WebVTT 写进缓存（library.py 边放边读，从不进画面那一路）。

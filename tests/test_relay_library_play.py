@@ -11,7 +11,8 @@ nothing playable is refused; an unprobed file is guessed from its extension, and
 cloud file gets PROBE_TIMEOUT_REMOTE_S to probe (throttled drives read the mkv fonts slowly). Both probe parsers
 (ffprobe JSON and ffmpeg's own input dump, which is all the PC client's downloaded ffmpeg has)
 read the same streams. The ffmpeg arguments: explicit maps of only the chosen video and audio
-(no subtitle, attachment or cover map in the media output), -tag:v hvc1, copy / encode as
+(no subtitle, attachment or cover map in the media output, no chapters), -tag:v hvc1 with the
+hvcC rebuilt from in-band parameter sets (hevc_mp4toannexb, delay_moov), copy / encode as
 decided, the exact timeline (-copyts, +frag_discont, output offset), the loopback token URL as
 the only input and no WebDAV password anywhere; live channels keep their old arguments and
 still copy only H.264. The CODECS string of HEVC comes from the hvcC (a synthetic one and a real
@@ -258,12 +259,15 @@ class FfmpegArgsTests(unittest.TestCase):
         self.assertEqual(maps, ["0:0", "0:1"], "no subtitle, attachment or cover in the output")
         self.assertEqual(args[args.index("-c:v") + 1], "copy")
         self.assertEqual(args[args.index("-tag:v") + 1], "hvc1")
+        self.assertEqual(args[args.index("-bsf:v") + 1], "hevc_mp4toannexb", "hvcC rebuilt from in-band parameter sets")
+        self.assertIn("+delay_moov", args[args.index("-movflags") + 1])
+        self.assertEqual(args[args.index("-map_chapters") + 1], "-1", "chapters would add a text track")
         self.assertEqual(args[args.index("-c:a") + 1:args.index("-c:a") + 4], ["aac", "-b:a", "192k"])
         self.assertIn("-sn", args)
         self.assertEqual(args[args.index("-ss") + 1], "125.500")
         self.assertIn("-copyts", args)
         self.assertEqual(args[args.index("-output_ts_offset") + 1], str(watch.EXACT_TS_OFFSET))
-        self.assertTrue(args[args.index("-movflags") + 1].endswith("+frag_discont"))
+        self.assertIn("+frag_discont", args[args.index("-movflags") + 1])
         self.assertNotIn("-re", args, "a library file is read ahead of the player (bounded)")
         self.assertEqual(args[-1], "pipe:1", "local files have no subtitle side output")
         self.assertEqual(source.copy_video, ("h264", "hevc"))
