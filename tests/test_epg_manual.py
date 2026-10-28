@@ -125,6 +125,14 @@ class GuideManualTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_recordings_are_not_listed_as_unmatched(self):
+        self.table.write_text(TABLE + "ch050 | 春晚1990 | https://x/gala.m3u8\n", encoding="utf-8")
+        self.guide.configure([URL], start=False)
+        self.guide.tick()
+        unmatched = [u["id"] for u in self.guide.status()["coverage"]["unmatched"]]
+        self.assertIn("ch001", unmatched)
+        self.assertNotIn("ch050", unmatched, "a Spring Festival Gala recording has no guide to match")
+
     def test_pin_beats_automatic_matching_and_shows_up_in_search(self):
         self.guide.configure([URL], start=False)
         self.guide.tick()

@@ -752,9 +752,11 @@ class Guide:
             missing = [cid for cid in names if cid not in merged]
             self._coverage = {"matched": sum(cid in merged for cid in names), "total": len(names),
                               "missing": [names[cid] for cid in missing][:40],
-                              # 没对上、也没手动指定的台（总后台「节目单」里列出来，点一下手动指定）。
+                              # 没对上、也没手动指定的台（总后台「节目单」里列出来，点一下手动指定）。录像（「节目回看」
+                              # 组，春晚之类）本来就没有节目单，不列。
                               "unmatched": [{"id": cid, "name": names[cid]} for cid in missing
-                                            if cid not in pins][:UNMATCHED_MAX],
+                                            if cid not in pins and channel_groups.classify(cid, names[cid])
+                                            != channel_groups.REPLAYS][:UNMATCHED_MAX],
                               "pinned": {cid: {"source": source, "epg": epg_id, "ok": cid in merged}
                                          for cid, (source, epg_id) in pins.items()}}
         self._parsed_at = now
