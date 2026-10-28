@@ -1,9 +1,10 @@
 """Resolving live channels ahead of a click (server/relay/watch.py prepare, POST /api/watch/prepare).
 
 What is checked: resolve_playlist follows redirects and a master playlist with a
-single variant to the playlist ffmpeg would open, returns None for several
-variants, a separate audio playlist, non-HLS answers, failures and an address
-that did not move, and quotes non-ASCII paths; WatchService.prepare stores what
+single variant to the playlist ffmpeg would open, picks one of several variants
+(the highest bitrate under the PC cap; server/hlsopen.py, tests/test_hlsopen.py),
+returns None for a separate audio playlist, non-HLS answers, failures and an
+address that did not move, and quotes non-ASCII paths; WatchService.prepare stores what
 it found in LiveMemory (so the next open starts ffmpeg there), skips channels
 resolved less than PREPARE_FRESH_S ago and non-live sources, resolves only the
 route that will be tried first, and caps a request at PREPARE_MAX; the endpoint
@@ -75,11 +76,14 @@ class ResolveTests(unittest.TestCase):
     def test_redirect_to_a_media_playlist(self):
         self.assertEqual(watch.resolve_playlist(TABLE_URL, urlopen=opener(VARIANT, MEDIA)), VARIANT)
 
-    def test_nothing_to_remember(self):
+    def test_several_variants_open_only_the_one_picked(self):
         several = MASTER + "#EXT-X-STREAM-INF:BANDWIDTH=800000\n02.m3u8\n"
+        found = watch.resolve_playlist(TABLE_URL, urlopen=opener("https://cdn.example/live/index.m3u8", several))
+        self.assertEqual(found, VARIANT, "2 Mbit/s is under the PC cap and beats 800 kbit/s")
+
+    def test_nothing_to_remember(self):
         audio = '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",URI="audio.m3u8"\n' + MASTER[8:]
-        for final, text in (("https://cdn.example/live/index.m3u8", several),
-                            ("https://cdn.example/live/index.m3u8", audio),
+        for final, text in (("https://cdn.example/live/index.m3u8", audio),
                             (TABLE_URL, "not a playlist"),
                             ("https://cdn.example/live/stream.flv", MEDIA),
                             ("https://x/live.m3u8", MEDIA)):

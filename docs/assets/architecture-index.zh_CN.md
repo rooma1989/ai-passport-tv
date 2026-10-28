@@ -72,7 +72,8 @@
 | 文件 | 负责什么 |
 | --- | --- |
 | [`server/tv_server.py`](../../server/tv_server.py) | 入口；`live`/`run`/`prepare`/`import-video` 子命令；单连接会话循环。 |
-| [`server/live.py`](../../server/live.py) | 直播频道的 ffmpeg 管线、`CHANNELS` 表（从 `channels.txt` 加载）、调色板处理。 |
+| [`server/live.py`](../../server/live.py) | 直播频道的 ffmpeg 管线、`CHANNELS` 表（从 `channels.txt` 加载）、调色板处理。快速起播：`open_urls`（解析好的列表地址、`TV_MEMORY`，打不开时 `LiveChannel.start` 退回频道表里的地址）、短探测、`LIVE_BURST_S` / `burst_supported`（`-readrate_initial_burst`）、帧率探测缓存（`FPS_PROBE_ARGS`、`FPS_RETRY_S`）。 |
+| [`server/hlsopen.py`](../../server/hlsopen.py) | 小电视（`live.py`）和电脑上看（`relay/watch.py`）共用的直播起播代码：`LIVE_PROBE`、`LiveMemory`（`RESOLVED_S` 内记住的列表地址、电脑上的转法）、`resolved_playlist`（从 ffmpeg 输出里认）、`resolve_playlist`（先走一遍跳转和主列表）、`variants` / `pick_variant`（多码率主列表挑一路：小电视挑不用放大的最小一路，电脑挑不超过 `PC_MAX_BPS` / `PC_MAX_HEIGHT` 的最高一路）（+ `tests/test_live_fast_start.py`）。 |
 | [`server/routes.py`](../../server/routes.py) | 直播台的备用线路（存在 `channels.txt.meta.json` 里）、试线路的顺序（`preferred`：上次好用的先试，除非另一条快 40% 以上，再按量到的用时；`RouteCycle`）、上次好用的线路、检测和起播的用时、出错的大白话；轻量的线路检测在 [`server/relay/routecheck.py`](../../server/relay/routecheck.py)；后台按时间表检测每条线路、顺便取的直播封面（`/api/art/live/<id>`，只在自建 / 电脑客户端）在 [`server/relay/linecheck.py`](../../server/relay/linecheck.py)；订阅的直播源（定时重新读，新线路并进表里已有的台，`<频道表>.subs.json`，只在自建 / 电脑客户端）在 [`server/relay/subscriptions.py`](../../server/relay/subscriptions.py)；每条线路的真实速度和画面真不真（画面不动、和同台其他线路对不上；存成 `quality`，排线路顺序用）在 [`server/relay/linequality.py`](../../server/relay/linequality.py)。 |
 | [`server/protocol.py`](../../server/protocol.py) | `main/av_protocol.h` 线协议的 Python 镜像。两边要保持一致；有测试交叉核对共用常量。 |
 | [`server/frames.py`](../../server/frames.py) | 索引图的条带切割/压缩——是 `av_expand_indexed`/`push_stripe` 的服务端对应物。 |
