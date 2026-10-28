@@ -95,6 +95,11 @@ LIVE_PROBE = ("-probesize", "1000000", "-analyzeduration", "1000000")
 WARM_S = 30.0
 # 预热（含刚换走的）最多几路，不算正在看的；只在自建 / 电脑客户端、内存够时开（中转的 --pc-warm）。
 WARM_MAX = 2
+# 直播片源跟不跟得上：最近 PACE_SPAN_S 秒里出的片段（媒体秒）不到 PACE_SLOW 倍就算慢（WatchStream.speed）。
+# 慢的时候不预热别的台：同一个源站上的台（一个源站常常几十个台）一起拉只会更卡；页面也说一声片源慢。
+# 量过（CCTV1，一个源站 63 个台）：一路只有 0.2–0.7 倍，几秒卡一次、断续时画面落在声音后面。
+PACE_SPAN_S = 30.0
+PACE_SLOW = 0.9
 # 记住多少个直播台的转法（只换封装还是转码），下次直接按它起，不用先试一次再重起。
 MODE_CACHE_MAX = 256
 # 直播台跳转以后真正的列表地址记多久（LiveMemory）：咪咕这类源先经两三次跳转、再取主列表，才到真正的列表，
@@ -798,6 +803,9 @@ class WatchStream:
         # 页面上选的线路（第几条，从 0 数）：先试它，起不来照常换别的。
         self.first_route = first_route
         self._legs: list[tuple[int, Source]] = []
+        # (时刻, 一共出了多少媒体秒)：每出一段记一个，留最近两个 PACE_SPAN_S（speed）。
+        self._pace: collections.deque[tuple[float, float]] = collections.deque()
+        self._pace_lock = threading.Lock()
         self.notice = ""
         self.reopen = False
         self._leg_segments = 0
@@ -812,6 +820,30 @@ class WatchStream:
     def alive(self) -> bool:
         """还在转（或者还在起）：没停、没出错、没播完。"""
         return not self.stopped and not self.error and not self.window.ended
+
+    def _paced(self) -> None:
+        now = self.clock()
+        with self._pace_lock:
+            self._pace.append((now, self.window.total_s))
+            while len(self._pace) > 2 and self._pace[1][0] < now - 2 * PACE_SPAN_S:
+                self._pace.popleft()
+
+    def speed(self) -> float | None:
+        """最近 PACE_SPAN_S 秒里片源出片的速度（1 是刚好实时）；出片还不到这么久时 None。ffmpeg 不按实时读
+        （直播源不加 -re），起播时会一下子读进列表里已有的几段，过了这一阵才看得出片源本身的速度；
+        一直没来新的一段时，等着的这段也算进去。"""
+        now = self.clock()
+        since = now - PACE_SPAN_S
+        with self._pace_lock:
+            before = [total for at, total in self._pace if at <= since]
+            last = self._pace[-1][1] if self._pace else 0.0
+        if not before:
+            return None
+        return (last - before[-1]) / PACE_SPAN_S
+
+    def slow(self) -> bool:
+        speed = self.speed()
+        return speed is not None and speed < PACE_SLOW
 
     def touch(self) -> None:
         self.seen = self.clock()
@@ -1099,6 +1131,7 @@ class WatchStream:
                                 fragment_start(pending, tracks))
                 pending = b""
                 produced += 1
+                self._paced()
                 self._leg_segments += 1
                 if self._leg_segments == 1:
                     self._first_segment()
@@ -1363,7 +1396,8 @@ class WatchService:
 
     def warm(self, user: int | None, source: Source) -> str:
         """先把这个直播台转起来（没人看），换过去时 open 接上。返回发生了什么（给页面和测试看）：
-        "off" 没开预热、"live" 不是直播台、"playing" 这个用户正在看它、"warm" 已经在转（续上 warm_s 秒）、
+        "off" 没开预热、"live" 不是直播台、"playing" 这个用户正在看它、"slow" 这个用户正在看的直播片源跟不上
+        （不再多拉一路和它抢）、"warm" 已经在转（续上 warm_s 秒）、
         "encode" 要转码不预热、"full" 中转的路数满了、"started" 起了一路。"""
         if not self.warm_max:
             return "off"
@@ -1371,8 +1405,11 @@ class WatchService:
             return "live"
         evicted: list[WatchStream] = []
         with self._lock:
-            if any(s.alive and s.user == user and s.source.key == source.key for s in self._by_device.values()):
+            mine = [s for s in self._by_device.values() if s.alive and s.user == user]
+            if any(s.source.key == source.key for s in mine):
                 return "playing"
+            if any(is_live(s.source) and s.slow() for s in mine):
+                return "slow"
             found = self._warm.get(source.key)
             if found is not None and found.alive and found.user == user:
                 found.warm_until = self.clock() + self.warm_s
@@ -1594,8 +1631,13 @@ def get(handler, relay, path: str) -> bool:
         text = stream.window.master() if name == "master.m3u8" else stream.window.playlist()
         # 有几条线路的直播台：X-RTV-Route 是现在在放第几条（从 1 数）。自动换了线路以后播放器头上的「线路 2/3」
         # 跟着变（页面每秒取一次列表，不用再问 /api/state）。
-        multi = is_live(stream.source) and len(stream.source.routes) > 1
-        handler._send(200, text.encode(), PLAYLIST_TYPE, {"X-RTV-Route": str(stream.route + 1)} if multi else None)
+        # 直播片源跟不上（WatchStream.slow）：X-RTV-Slow 是最近的速度（0.6 就是六成），播放器说一声「片源慢」。
+        headers = {}
+        if is_live(stream.source) and len(stream.source.routes) > 1:
+            headers["X-RTV-Route"] = str(stream.route + 1)
+        if is_live(stream.source) and stream.slow():
+            headers["X-RTV-Slow"] = f"{stream.speed():.2f}"
+        handler._send(200, text.encode(), PLAYLIST_TYPE, headers or None)
         return True
     data = stream.window.init if name == "init.mp4" else stream.window.segment(int(seq))
     if data is None:

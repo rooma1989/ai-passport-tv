@@ -1446,6 +1446,7 @@ class WatchPlayer {
     this.video = video; this.base = base; this.say = opts.say; this.live = !!opts.live; this.gap = opts.gap || (() => {});
     this.notice = opts.notice || this.say; this.reopen = opts.reopen || (() => false);
     this.line = opts.line || (() => {});
+    this.slow = opts.slow || (() => {});
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
     this.t0 = performance.now(); this.playedAt = 0;
     this.onWaiting = () => this.kick();
@@ -1503,6 +1504,8 @@ class WatchPlayer {
         // 几条线路的直播台：列表的 X-RTV-Route 是现在放第几条（从 1 数），自动换了线路以后头上的「线路 n/N」跟着变。
         const line = Number(response.headers.get("X-RTV-Route"));
         if (line > 0) this.line(line - 1);
+        // 直播片源跟不上时列表带 X-RTV-Slow（最近的速度，0.6 是六成）；跟上了就没有。
+        if (name === "index.m3u8") this.slow(Number(response.headers.get("X-RTV-Slow")) || 0);
         return response[kind]();
       }
       const notice = response.status === 503 && response.headers.get("X-RTV-Notice");
@@ -2018,8 +2021,10 @@ function playerFor(answer) {
     });
     return player;
   }
+  $("watchSlow").hidden = true;
   const player = new WatchPlayer($("watchVideo"), answer.url, {
     say: watchSay, ended: watchEnded, live,
+    slow: (speed) => { if (!watching || watching.player === player) slowNote(speed); },
     notice: (text) => { if (watching && watching.player !== player) return; routeNotice(answer.name || answer.title || answer.channel, text); },
     reopen: (text) => (!watching || watching.player === player) && routeReopen(answer, text),
     line: (i) => { if (watching && watching.player === player && watching.route !== i) { watching.route = i; renderLine(); } },
@@ -2584,6 +2589,12 @@ function pickQuality(q) {
 // ---- 直播台的线路（server/routes.py）：头上「线路 2/3」，点开选一条，马上从那条重起；起不来中转照常换别的 ----
 // 只在直接看（不是跟着小电视）、有几条线路时有。每条后面是上次量到的用时（真放起来的，没有时是检测的）或「打不开」。
 function canPickLine() { return !!watching && watching.mode === "direct" && watching.kind === "live" && watching.routes > 1; }
+// 片源慢的小标：鼠标停上去说清楚是片源的事，有别的线路时提一句。
+function slowNote(speed) {
+  const b = $("watchSlow");
+  b.hidden = !speed;
+  if (speed) b.title = "片源只有约 " + speed.toFixed(1) + " 倍速，会卡，声音和画面也可能对不上" + (canPickLine() ? "；可以换条线路试试" : "");
+}
 function renderLine() {
   const b = $("watchLine");
   b.hidden = !canPickLine();

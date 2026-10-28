@@ -337,14 +337,14 @@ class FakeSource(http.server.BaseHTTPRequestHandler):
             time.sleep(1.5)
             self.send_error(500)
             return
-        if self.path == "/ok.m3u8":
+        if self.path in ("/ok.m3u8", "/%E6%B9%96%E5%8D%97/ok.m3u8"):
             return self._send(b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n")
-        if self.path in ("/v.m3u8", "/cut.m3u8"):
-            seg = "seg.ts" if self.path == "/v.m3u8" else "cutseg.ts"
+        if self.path in ("/v.m3u8", "/cut.m3u8", "/%E6%B9%96%E5%8D%97/v.m3u8"):
+            seg = "cutseg.ts" if self.path == "/cut.m3u8" else "seg.ts"
             return self._send(f"#EXTM3U\n#EXTINF:2,\nold.ts\n#EXTINF:2,\n{seg}\n".encode())
         if self.path == "/empty.m3u8":
             return self._send(b"#EXTM3U\n#EXT-X-TARGETDURATION:2\n")
-        if self.path == "/seg.ts":
+        if self.path in ("/seg.ts", "/%E6%B9%96%E5%8D%97/seg.ts"):
             return self._send(b"G" * 30000)
         if self.path == "/raw.ts":
             return self._send(b"G" * 5000)
@@ -389,6 +389,12 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual([p for p, _, _ in FakeSource.seen], ["/ok.m3u8", "/v.m3u8", "/seg.ts"])
         self.assertEqual(FakeSource.seen[-1][1:], ("UA/9", f"bytes=0-{routecheck.SEGMENT_BYTES - 1}"))
         self.assertTrue(self.probe("/raw.ts")["ok"], "a stream that is not a playlist")
+
+    def test_a_chinese_path_is_quoted(self):
+        FakeSource.seen.clear()
+        found = self.probe("/湖南/ok.m3u8")
+        self.assertTrue(found["ok"], found)
+        self.assertEqual(FakeSource.seen[0][0], "/%E6%B9%96%E5%8D%97/ok.m3u8")
 
     def test_failures(self):
         self.assertEqual(self.probe("/deny.m3u8")["why"], "线路被源站拒绝（403），可能已失效")

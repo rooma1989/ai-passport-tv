@@ -11,6 +11,8 @@ channel just switched away from, neighbours the page asks for) are adopted by
 the next open of the same channel and user, expire after WARM_S, never exceed
 warm_max, are counted in max_streams but stopped before anybody is refused,
 are not kept for transcoding channels, and do not exist when warm_max is 0;
+a live stream's speed over the last PACE_SPAN_S (stalls included), no new warm
+stream while the user's live channel falls behind, and X-RTV-Slow on its playlist;
 POST /api/watch/warm and the console's flag; the self-host config's
 [pc] warm_channels and --pc-warm; and the player's pure live-start logic under
 node (tests/console_live_test.mjs).
@@ -24,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -358,6 +361,70 @@ class WarmTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------- the relay's endpoint
+
+class PaceTests(unittest.TestCase):
+    """A slow source (one stream at 0.2-0.7x realtime, measured on CCTV1) is not made slower by warming its
+    neighbours, which usually sit on the same source host."""
+
+    def setUp(self):
+        self.t = 100.0
+        self.popen = Popen(data=LIVE_DATA)
+        self.service = watch.WatchService("ffmpeg", watch.derive_secret(KEY), log=lambda _m: None,
+                                          clock=lambda: self.t, popen=self.popen, background=False, warm_max=2)
+        self.stream = self.service.open("pc5-aaaaaaaa", live(), user=5)
+        self.assertTrue(self.stream.wait_ready(5))
+        self.stream._pace.clear()
+
+    def tearDown(self):
+        self.service.stop_all()
+
+    def produce(self, seconds: float, media_per_second: float) -> None:
+        """Segments of 2 media seconds arriving at media_per_second x realtime."""
+        produced = 0.0
+        while produced < seconds * media_per_second:
+            self.t += 2 / media_per_second
+            produced += 2
+            self.stream.window.total_s += 2
+            self.stream._paced()
+
+    def test_speed_needs_a_full_span_and_counts_a_stall(self):
+        self.produce(20, 1.0)
+        self.assertIsNone(self.stream.speed(), "not enough history yet")
+        self.produce(40, 1.0)
+        self.assertAlmostEqual(self.stream.speed(), 1.0, delta=0.1)
+        self.assertFalse(self.stream.slow())
+        self.t += 15  # nothing new for 15 s
+        self.assertAlmostEqual(self.stream.speed(), 0.5, delta=0.1)
+        self.assertTrue(self.stream.slow())
+
+    def test_a_burst_at_start_does_not_hide_a_slow_source(self):
+        self.stream.window.total_s += 12  # ffmpeg reads the playlist's segments at once
+        self.stream._paced()
+        self.produce(40, 0.5)
+        self.assertAlmostEqual(self.stream.speed(), 0.5, delta=0.1)
+
+    def test_no_warming_while_the_watched_channel_is_slow(self):
+        self.produce(40, 0.5)
+        self.assertEqual(self.service.warm(5, live("ch001", "https://x/2")), "slow")
+        self.assertEqual(self.service.warm_streams(), [])
+        self.assertEqual(self.service.warm(6, live("ch001", "https://x/2")), "started", "another user is not slowed")
+        self.produce(40, 1.0)
+        self.assertEqual(self.service.warm(5, live("ch002", "https://x/3")), "started")
+
+    def test_the_playlist_says_slow(self):
+        def headers():
+            handler = types.SimpleNamespace(sent=None)
+            handler._send = lambda code, body, kind, extra=None: setattr(handler, "sent", (code, body, kind, extra))
+            watch.get(handler, types.SimpleNamespace(watch=self.service),
+                      f"/watch/{self.stream.sid}/{self.service.token(self.stream)}/index.m3u8")
+            return handler.sent[3]
+        self.produce(40, 1.0)
+        self.assertIsNone(headers())
+        self.produce(40, 0.5)
+        slow = headers()
+        self.assertEqual(list(slow), ["X-RTV-Slow"])
+        self.assertAlmostEqual(float(slow["X-RTV-Slow"]), 0.5, delta=0.1)
+
 
 class WarmEndpointTests(unittest.TestCase):
     selfhost = True

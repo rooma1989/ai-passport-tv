@@ -61,6 +61,10 @@ def _read(response, limit: int, deadline: float, monotonic, data: bytes = b"", w
     return data
 
 
+# 转义时原样留下的字符：URL 的分隔符和已经转义过的 %XX。
+URL_SAFE = ":/?#[]@!$&'()*+,;=%~"
+
+
 def _get(url: str, agent: str, opener, deadline: float, monotonic, limit: int, ranged: bool = False,
          sniff: bool = False):
     """(跳转后的地址, 读到的字节)。sniff：先读 HEAD_BYTES，是列表（#EXTM3U）才接着读完（至多 limit），
@@ -68,7 +72,8 @@ def _get(url: str, agent: str, opener, deadline: float, monotonic, limit: int, r
     headers = {"User-Agent": agent or DEFAULT_USER_AGENT}
     if ranged:
         headers["Range"] = f"bytes=0-{limit - 1}"
-    request = urllib.request.Request(url, headers=headers)
+    # 频道表里不少台的路径带中文：ffmpeg 原样发，urllib 要先转义（不然 UnicodeEncodeError，当成线路不通）。
+    request = urllib.request.Request(urllib.parse.quote(url, safe=URL_SAFE), headers=headers)
     left = max(0.5, min(TIMEOUT_S, deadline - monotonic()))
     try:
         with opener(request, timeout=left) as response:

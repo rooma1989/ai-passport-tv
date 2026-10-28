@@ -318,6 +318,8 @@
     <div class="pchead">
       <div><b id="watchWhat">在电脑上看</b><span id="watchSub"></span></div>
       <!-- 直播台有几条线路时：「线路 2/3」，点开选一条（console.js 的 openMenu("line")） -->
+      <!-- 直播片源跟不上实时（中转的 X-RTV-Slow）：卡是片源的事，不是这台电脑 -->
+      <span class="pcslow" id="watchSlow" hidden>片源慢</span>
       <button class="pcline" id="watchLine" title="换线路" aria-haspopup="menu" hidden></button>
       <button class="iconbtn" id="watchPrevCh" title="上一台" aria-label="上一台" data-ic="prev" data-ics="16"></button>
       <button class="iconbtn" id="watchNextCh" title="下一台" aria-label="下一台" data-ic="next" data-ics="16"></button>
