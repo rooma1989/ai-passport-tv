@@ -5,11 +5,13 @@
 频道表旁边的 channels.txt.meta.json（总后台导入播放列表时存的，见 channeltable.meta_of）。
 
 - 只取 http(s)，不带登录信息、不带端口以外的花样；主机解析出来是本机、局域网、链路本地等地址的不取
-  （免得频道表里一个地址就能让中转去碰家里的路由器）；跳转最多 MAX_REDIRECTS 次，每一跳重新检查。
+  （免得频道表里一个地址就能让中转去碰家里的路由器；代理 TUN 的假 IP 除外，见 FAKE_IP_NETWORKS）；跳转最多 MAX_REDIRECTS 次，每一跳重新检查。
 - 最多 MAX_BYTES，只收 PNG、JPEG、GIF、WebP（按文件头认，不信对方说的类型）；SVG 不收（能带脚本）。
 - 取到的按地址的散列存成 <散列>.<扩展名>：地址改了就是新文件，旧文件留着不碍事。取不到的记下来，
   RETRY_S 内不再去（重启后再试一次）；同时最多 PARALLEL 个在取，目录里最多 MAX_FILES 个文件。
 - 没有台标、取不到：404，页面画一个用台名生成的徽标。
+- 唯一的例外是总后台频道表里改台标时的「看一眼」（preview，只有管理员能用，admin.logo_preview）：地址是管理员
+  填的，规矩和上面完全一样，取到的存进同一个缓存。
 """
 
 from __future__ import annotations
@@ -35,6 +37,10 @@ MAX_FILES = 2000
 MAX_REDIRECTS = 3
 USER_AGENT = "rootv-logo/1"
 _CID = re.compile(r"^[A-Za-z0-9_-]{1,15}$")
+# 代理软件 TUN 模式的「假 IP」（Clash、Surge、Stash 的 fake-ip：198.18.0.0/15，IPv6 是 2001:2::/48）：开着它时系统
+# 解析出来的每个网站都是这种地址，由代理按域名去连真的网站；家里的设备不会用这两段（见 server/netident.py）。
+# 不放过它们的话，开着代理的电脑上一个台标都取不到。
+FAKE_IP_NETWORKS = (ipaddress.ip_network("198.18.0.0/15"), ipaddress.ip_network("2001:2::/48"))
 _TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
 
 
@@ -73,7 +79,7 @@ def allowed_url(url: str, resolve=socket.getaddrinfo) -> bool:
             address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
         except ValueError:
             return False
-        if not address.is_global:
+        if not address.is_global and not any(address in network for network in FAKE_IP_NETWORKS):
             return False
     return True
 
@@ -188,6 +194,44 @@ class LogoCache:
             except OSError as error:
                 self.log(f"台标存不下：{error}")
             return _TYPES[ext], body
+        finally:
+            self._gate.release()
+
+    def preview(self, url: str) -> tuple[tuple[str, bytes] | None, str]:
+        """总后台频道表里改台标时看一眼（admin.logo_preview）：((类型, 内容), "") 或 (None, 为什么看不了)。
+        规矩和 get 一样（同一个 fetcher：只取公网、跳转每一跳都查、只收认得的图片），取到的按地址存进缓存，
+        保存以后 get 不用再取；取不到的不记失败（管理员可能马上改好地址再试）。"""
+        if not channeltable.clean_meta({"logo": url}):
+            return None, "台标地址要以 http:// 或 https:// 开头，不能有空格和引号"
+        name = self._name(url)
+        found = self._cached(name)
+        if found is not None:
+            return found, ""
+        if not self._gate.acquire(timeout=TIMEOUT_S):
+            return None, "正在取别的台标，稍等再试"
+        try:
+            try:
+                body = self.fetcher(url)
+            except ValueError:
+                return None, "这个地址不取：只取公网上的 http(s) 图片（本机、局域网的地址不取）"
+            except (OSError, urllib.error.URLError) as error:
+                return None, f"取不到这个地址（{type(error).__name__}）"
+            ext = sniff(body)
+            if ext is None:
+                return None, "这个地址不是认得的图片（只认 PNG、JPEG、GIF、WebP）"
+            if len(body) > MAX_BYTES:
+                return None, f"图片太大（最多 {MAX_BYTES // 1024} KB）"
+            try:
+                self.folder.mkdir(parents=True, exist_ok=True)
+                if sum(1 for _ in self.folder.iterdir()) < MAX_FILES:
+                    tmp = self.folder / f".{name}.tmp"
+                    tmp.write_bytes(body)
+                    tmp.replace(self.folder / f"{name}.{ext}")
+            except OSError as error:
+                self.log(f"台标存不下：{error}")
+            with self.lock:
+                self._failed.pop(name, None)
+            return (_TYPES[ext], body), ""
         finally:
             self._gate.release()
 

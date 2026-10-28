@@ -200,3 +200,19 @@ label.ghost { cursor: pointer; }
 .m .achtabs button { flex: none; }
 .preset p { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .m .adm .li > em { display: none; }
+/* 频道表里的台标（点开改台标地址和节目单编号）、节目单编号那一格 */
+.chedit td.logo { width: 46px; padding-right: 0; }
+.chedit button.logo { position: relative; display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 9px; overflow: hidden; cursor: pointer;
+                      background: var(--fill); color: var(--label-2); font: 600 14px var(--sans); box-shadow: inset 0 0 0 1px var(--sep); }
+.chedit button.logo:hover { box-shadow: inset 0 0 0 2px var(--brand); }
+.chedit button.logo img, .logoedit .logopic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #fff; }
+/* 取到了才盖上去（还在取、取不到时露出下面台名的第一个字） */
+.chedit button.logo img:not(.ok), .logoedit .logopic img:not(.ok) { opacity: 0; }
+.chedit input.tvg { width: 110px; font: 12px var(--mono); color: var(--label-2); }
+.logoedit { display: grid; gap: 10px; }
+.logoedit .logopic { position: relative; display: grid; place-items: center; width: 96px; height: 96px; margin: 0 auto; border-radius: 18px; overflow: hidden;
+                     background: var(--fill); color: var(--label-2); font: 700 34px var(--sans); }
+.logoedit > small { min-height: 1em; text-align: center; color: var(--label-2); }
+.logoedit .inline { display: flex; gap: 8px; align-items: flex-end; margin: 0; }
+.logoedit .fld { display: grid; gap: 4px; flex: 1; min-width: 0; font-size: 13px; color: var(--label-2); }
+#modal .logoedit .fld input[type=text] { margin: 0; }
