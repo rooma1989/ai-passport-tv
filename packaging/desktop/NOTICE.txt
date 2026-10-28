@@ -40,6 +40,16 @@ Downloaded on first run, not distributed with this program
   by your computer from their publisher and are not part of this download.
   Source: https://ffmpeg.org/download.html
 
+Downloaded only if an admin installs the cloud-drive component, not distributed
+--------------------------------------------------------------------------------
+
+- OpenList, from its official GitHub releases
+  (https://github.com/OpenListTeam/OpenList; pinned version and SHA-256 per
+  platform, updates checked against the release's published digests). OpenList
+  is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0); its
+  source is at that address. It is fetched by your computer from its publisher,
+  runs as a separate program and is not part of this download.
+
 Downloaded only if you turn on YouTube "local mode", not distributed
 --------------------------------------------------------------------
 

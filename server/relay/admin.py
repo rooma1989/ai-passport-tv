@@ -29,7 +29,7 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, console, epg, events, playlist, presets, qr, routecheck, subscriptions, table
+from . import channeltable, clouddrive, console, epg, events, playlist, presets, qr, routecheck, subscriptions, table
 from .ytnode import MAX_STREAMS
 
 # 频道表一次发整张（没改的台只发 id）：比别的接口的 4 KB 大，但不超过 nginx 给 /tv/ 的 8 KB。
@@ -124,6 +124,9 @@ def get(handler, relay, path: str) -> bool:
         # 我的片库的来源（library.py）：路径、地址、用户名；密码从不给页面。
         library = getattr(relay, "library", None)
         handler._json(library.admin_view() if library is not None else {"ok": False, "error": LIBRARY_OFF})
+    elif path == "/api/admin/clouddrive":
+        # 网盘组件（clouddrive.py、server/selfhost/openlist.py）：装了没有、在不在跑；没有密码。
+        handler._json(clouddrive.status(relay, handler), headers={"Cache-Control": "no-store"})
     else:
         match = _USER.match(path)
         if match and match.group(2) == "sessions":
@@ -579,6 +582,21 @@ def post(handler, relay, path: str) -> bool:
         if answer.get("ok"):
             relay.accounts.audit(action, caller.user, ip, "library", sid[:8], detail[:40])
         handler._json(answer)
+        return True
+    if path in ("/api/admin/clouddrive", "/api/admin/clouddrive/reveal"):
+        # 网盘组件（clouddrive.py）：安装、更新、检查、停用、启用、重设密码；reveal 只给这台电脑上打开的电脑版，
+        # 回答里有密码（不缓存，不进操作记录的详情）。
+        if path.endswith("/reveal"):
+            answer = clouddrive.reveal(relay, handler)
+            if answer.get("ok"):
+                relay.accounts.audit("clouddrive.reveal", caller.user, ip, "clouddrive", "", "")
+            handler._json(answer, headers={"Cache-Control": "no-store"})
+            return True
+        answer = clouddrive.action(relay, handler, body)
+        what = body.get("action") if isinstance(body.get("action"), str) else ""
+        if answer.get("ok") and what != "check":
+            relay.accounts.audit(f"clouddrive.{what}", caller.user, ip, "clouddrive", "", "")
+        handler._json(answer, headers={"Cache-Control": "no-store"})
         return True
     if selfhost and path == "/api/admin/channels/peek":
         # 自建：看一眼频道表里某个台的某条线路现在放的是什么（取一帧 JPEG）。线路质量的检查

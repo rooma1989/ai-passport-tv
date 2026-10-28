@@ -23,6 +23,9 @@
   都是边读边发（CHUNK），不整个读进内存。
 - 谁能看：登录的家里人看到整个片库；访客永远看不到（404）。加 / 删来源、扫描只有管理员（admin.py）。
   云端的中转没有片库（relay.library 为 None）。
+- 网盘组件（server/selfhost/openlist.py 装的 OpenList）开着时，中转（clouddrive.py）在这里维护一个「受管」的来源
+  （managed = "openlist"）：名字「网盘」，地址 http://127.0.0.1:<端口>/dav，用户名、密码是组件的管理员。页面不能
+  删它（只有停用组件才去掉），密码照样从不回给页面，端口换了地址跟着改（条目 id 只跟来源 id 和路径有关，不用重扫）。
 
 只用标准库。
 """
@@ -84,6 +87,10 @@ VIEW_MAX = 6000
 PLOT_MAX = 600
 TITLE_MAX = 120
 RECENT_MAX = 12
+# 网盘组件（OpenList）的来源：clouddrive.py 维护，页面不能删。
+MANAGED = "openlist"
+MANAGED_NAME = "网盘"
+MANAGED_NOTE = "停用网盘组件才会去掉这个来源"
 
 # 第一步在电脑上直接放的（H.264 / AAC 的 MP4 居多）；别的格式列出来，标「电脑上暂时放不了」，以后转码。
 PLAYABLE = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime"}
@@ -665,7 +672,7 @@ class Library:
     def _public_source(src: dict, count: int) -> dict:
         return {"id": src["id"], "name": src.get("name") or "", "kind": src["kind"], "count": count,
                 "last_scan": src.get("last_scan") or 0, "ok": src.get("ok"), "error": src.get("error") or "",
-                "note": src.get("note") or ""}
+                "note": src.get("note") or "", "managed": src.get("managed") == MANAGED}
 
     def _counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -834,12 +841,16 @@ class Library:
         self.scan(src["id"])
         return {"ok": True, "source": self._public_source(src, 0)}
 
-    def remove(self, sid: str) -> dict:
+    def remove(self, sid: str, managed: bool = False) -> dict:
+        """删一个来源（索引里它的条目、缓存的海报一起）。网盘组件的来源只有 managed=True（clouddrive.py
+        停用组件时）才删得掉。"""
         with _LOCK:
             sources = self._load_sources()
             found = next((s for s in sources if s["id"] == sid), None)
             if found is None:
                 return {"ok": False, "error": "没有这个来源"}
+            if found.get("managed") == MANAGED and not managed:
+                return {"ok": False, "error": MANAGED_NOTE}
             self._save_sources([s for s in sources if s["id"] != sid])
             gone = [i for i, item in self._items.items() if item["source"] == sid]
             for iid in gone:
@@ -854,6 +865,43 @@ class Library:
                 pass
         self.log(f"片库删了来源「{found.get('name')}」（{len(gone)} 个视频）")
         return {"ok": True, "name": found.get("name") or ""}
+
+    def managed(self) -> dict | None:
+        found = next((s for s in self._load_sources() if s.get("managed") == MANAGED), None)
+        return dict(found) if found is not None else None
+
+    def ensure_managed(self, url: str, user: str, password: str) -> str:
+        """网盘组件在跑：有「网盘」来源就把地址、用户名、密码对上（端口换了、密码重设了），没有就加一个并扫描。
+        不先试连（组件刚起、还没加网盘时 PROPFIND 本来就会出错）。返回 "added" / "updated" / "same"。"""
+        with _LOCK:
+            sources = self._load_sources()
+            found = next((s for s in sources if s.get("managed") == MANAGED), None)
+            if found is not None:
+                if (found.get("url"), found.get("user"), found.get("password")) == (url, user, password):
+                    return "same"
+                found.update(url=url, user=user, password=password)
+                self._save_sources(sources)
+                changed = "updated"
+            else:
+                src = {"id": secrets.token_hex(4), "kind": "webdav", "managed": MANAGED, "name": MANAGED_NAME,
+                       "url": url, "user": user, "password": password, "added_at": int(self.clock()),
+                       "last_scan": 0, "ok": None, "error": "", "note": ""}
+                sources.append(src)
+                self._save_sources(sources)
+                changed = "added"
+        if changed == "added":
+            self.log("片库加了网盘组件的来源「网盘」")
+            self.scan(src["id"])
+        else:
+            self.log("片库「网盘」的地址或密码跟着网盘组件改了")
+        return changed
+
+    def drop_managed(self) -> bool:
+        """网盘组件停用了（或卸掉了）：去掉「网盘」来源和它的条目。"""
+        found = self.managed()
+        if found is None:
+            return False
+        return bool(self.remove(found["id"], managed=True).get("ok"))
 
     def scan(self, sid: str | None = None) -> dict:
         """排上扫描（sid 为空是全部来源），后台一个一个扫。"""
@@ -1014,6 +1062,9 @@ class Library:
             items = self.build(sid, source, files, old)
         except LibraryError as error:
             reason = str(error)
+            if src.get("managed") == MANAGED and reason == "网盘出错了（500）":
+                # OpenList 里还没有挂任何网盘时 PROPFIND / 回答 500（storage not found）。
+                reason = "网盘组件里还没有添加网盘：打开网盘管理，添加百度网盘或夸克"
             self._update_source(sid, lambda s: s.update(last_scan=int(self.clock()), ok=False, error=reason))
             with _LOCK:
                 self._status.update(running=False, error=f"「{name}」：{reason}", finished_at=int(self.clock()))

@@ -11,6 +11,7 @@
   passport  python3 -m server.tv_server live --port 8097   AI Passport（320x180，12 帧）
   front     python3 -m server.front --lan-port 8080 …      手机、电脑打开的网页
   ytnode    python3 -m server.relay.ytnode --plain …       只在 [youtube] mode = "local" 时：127.0.0.1 上的 YouTube 节点
+  openlist  python3 -m server.selfhost.openlist …          只在网盘组件装好、没停用时：127.0.0.1 上的 OpenList（openlist.py）
 
 0.x 测试版每个型号一次服务一台设备（设计的 Q1 选项 A）；同一型号的第二台要等第一台断开。
 
@@ -103,6 +104,44 @@ def ytnode_port(layout, free=None) -> int:
                     sock.close()
         _ytnode_ports[key] = free(YTNODE_PORT) or free(0)
     return _ytnode_ports[key]
+
+
+_openlist_ports: dict = {}
+
+
+def openlist_port(layout, free=None) -> int:
+    """网盘组件（OpenList，openlist.py）的端口：47444 空着就用它，否则随便一个空的；和 ytnode_port 一样，
+    同一个数据目录在这个进程里只选一次。换了端口，中转按 run/openlist.json 改片库里「网盘」来源的地址。"""
+    key = str(layout.root)
+    if key not in _openlist_ports:
+        from .openlist import PORT
+        if free is None:
+            import socket
+
+            def free(port):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                try:
+                    sock.bind(("127.0.0.1", port))
+                    return sock.getsockname()[1]
+                except OSError:
+                    return 0
+                finally:
+                    sock.close()
+        _openlist_ports[key] = free(PORT) or free(0)
+    return _openlist_ports[key]
+
+
+def openlist_child_args(layout, port=None) -> list[str] | None:
+    """网盘组件的子进程参数（命令开头由调用方加）；没装、停用了、没有密码时 None（不起它）。
+    port 不给时用 openlist_port（装好了才去选端口）。"""
+    from .openlist import OpenList
+    component = OpenList(layout.root)
+    if not component.ready():
+        return None
+    port = openlist_port(layout) if port is None else port
+    paths = component.paths
+    return ["--bin", str(component.binary()), "--data", str(paths.data), "--port", str(port),
+            "--password-file", str(paths.secret), "--status-file", str(paths.status)]
 
 
 def ytnode_child_args(layout, config, ffmpeg: str, port: int) -> list[str]:
@@ -222,6 +261,11 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         node_env = dict(base_env, TV_YT_PROXY=config.youtube_proxy)
         argv = child_command("server.relay.ytnode", desktop) + ytnode_child_args(layout, config, ffmpeg, port)
         children.append(child("ytnode", argv, node_env))
+    # 网盘组件（openlist.py）：管理员在片库里装好、没停用时才有；只听 127.0.0.1。装、更新、停用后中转放
+    # run/refresh-request，这里重新算一遍，只起停这一个子进程。
+    drive = openlist_child_args(layout)
+    if drive is not None:
+        children.append(child("openlist", child_command("server.selfhost.openlist", desktop) + drive, base_env))
     return children
 
 

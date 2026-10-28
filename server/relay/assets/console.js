@@ -5662,7 +5662,7 @@ function libNav() {
   for (const pane of qsa("#app .lpane")) pane.hidden = pane.dataset.pane !== cur;
   libTab = cur;
   if (cur === "history") { renderHist(); loadHist(false); }
-  if (cur === "local") { renderLib(); loadLib(false); }
+  if (cur === "local") { renderLib(); loadLib(false); loadDrive(); }
 }
 // YouTube 观看记录（管理员、YouTube 开着）：就是首页那一排（feedRows.yt_history），在这里多一个标签。
 const histYt = () => !!(feedsInfo && feedsInfo.rows.some((r) => r.id === "yt_history" && r.state !== "hidden"));
@@ -5799,8 +5799,8 @@ async function loadLib(force, poll) {
   lib.failed = false;
   if (answer.ok) lib.data = answer;
   // 正在填「添加来源」时不重画（扫描时每 3 秒问一次，重画会打断输入）。
-  const form = qs("#libAdd");
-  if (!(poll && form && form.contains(document.activeElement))) renderLib();
+  const form = qs("#libAdd"), panel = qs("#libBox .ldrive");
+  if (!(poll && ((form && form.contains(document.activeElement)) || (panel && panel.contains(document.activeElement))))) renderLib();
   // 正在扫描：过几秒再问一次，扫完了墙上就有了。
   clearTimeout(lib.timer);
   if (answer.ok && (answer.scan.running || answer.scan.queued)) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 3000);
@@ -5829,13 +5829,93 @@ function libSourceRow(s, admin, scan) {
   const busy = scan && scan.running && scan.source === s.id;
   const state = busy ? "正在扫描… 已经看了 " + (scan.walked || 0) + " 个"
     : s.ok === false ? "没扫成：" + (s.error || "出错了") : s.last_scan ? s.count + " 个视频 · " + ago(s.last_scan) + "扫描" : "还没扫描";
-  const acts = admin ? `<button class="ghost sm" data-libscan="${esc(s.id)}"${busy ? " disabled" : ""}>扫描</button><button class="ghost sm red" data-libdel="${esc(s.id)}">删除</button>` : "";
-  return `<div class="lsrc"><span class="lsic">${ic(s.kind === "webdav" ? "link" : "lib", 20)}</span><span class="lstx"><b>${esc(s.name)}</b><small${s.ok === false && !busy ? ' class="bad"' : ""}>${esc(libKind(s.kind) + " · " + state + (s.note ? " · " + s.note : ""))}</small></span>${acts}</div>`;
+  // 网盘组件的来源（library.py 的 managed）：不能删，「网盘」打开组件的面板。
+  const second = s.managed ? `<button class="ghost sm" data-libdrive="1" data-k="ld-open">网盘</button>` : `<button class="ghost sm red" data-libdel="${esc(s.id)}">删除</button>`;
+  const acts = admin ? `<button class="ghost sm" data-libscan="${esc(s.id)}"${busy ? " disabled" : ""}>扫描</button>${second}` : "";
+  const kind = s.managed ? "网盘组件" : libKind(s.kind);
+  return `<div class="lsrc"><span class="lsic">${ic(s.kind === "webdav" ? "link" : "lib", 20)}</span><span class="lstx"><b>${esc(s.name)}</b><small${s.ok === false && !busy ? ' class="bad"' : ""}>${esc(kind + " · " + state + (s.note ? " · " + s.note : ""))}</small></span>${acts}</div>`;
+}
+
+// ---- 片库 → 我的片库 → 网盘（管理员；GET / POST api/admin/clouddrive，server/relay/clouddrive.py） ----
+// 网盘组件就是 OpenList（AGPL-3.0）：第一次点「安装」才从它的官方发布下载，只在这台电脑的 127.0.0.1 上跑，
+// 装好后片库里自动多一个「网盘」来源。它的管理页面要自己登录（用户名、密码在这里看），百度网盘、夸克在那里加。
+const drive = { data: null, open: false, timer: 0, mirror: "", pw: "", busy: false };
+async function loadDrive() {
+  if (!isAdmin() || drive.busy) return;
+  drive.busy = true;
+  let answer;
+  try { answer = await call("GET", "api/admin/clouddrive"); }
+  catch (error) { drive.busy = false; return; }          // 云端没有（404）
+  drive.busy = false;
+  const before = drive.data && drive.data.ok ? drive.data : null;
+  drive.data = answer;
+  renderLib();
+  // 刚装好、刚起来：片库里的「网盘」来源要过一会儿才出现。
+  if (answer.ok && before && (before.running !== answer.running || before.component.state !== answer.component.state
+      || !!before.source !== !!answer.source)) loadLib(true);
+  clearTimeout(drive.timer);
+  const c = answer.ok ? answer.component : null;
+  if (c && (c.state === "working" || (c.installed && c.enabled && (!answer.running || !answer.source))))
+    drive.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadDrive(); }, 2000);
+}
+async function driveCall(body, btn) {
+  const answer = await libAdmin("api/admin/clouddrive", body, btn);
+  if (answer && answer.component && drive.data && drive.data.ok) drive.data.component = answer.component;
+  return answer;
+}
+function copyText(text) {
+  if (!navigator.clipboard) { toast("复制不了，请手动选中复制", true); return; }
+  navigator.clipboard.writeText(text).then(() => toast("已复制"), () => toast("复制不了，请手动选中复制", true));
+}
+const outLink = (href, text) => `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>`;
+function driveHTML() {
+  const d = drive.data;
+  if (!d) return '<p class="hint">正在加载…</p>';
+  if (!d.ok) return `<p class="hint">${esc(d.error || "这里没有网盘组件")}</p>`;
+  const c = d.component, docs = d.docs;
+  const credit = `<p class="hint ldcredit">网盘由 ${outLink(docs.repo, "OpenList")}（${esc(d.license)}）提供</p>`;
+  let o = '<div class="ldrive"><h3>网盘</h3>';
+  if (!c.supported) return o + '<p class="hint">这台电脑的系统没有 OpenList 的官方版本，用不了网盘组件。</p>' + credit + "</div>";
+  const working = c.state === "working";
+  const mb = (n) => (n / 1e6).toFixed(1) + " MB";
+  const progress = working ? "正在" + (/^OpenList /.test(c.what || "") ? "下载 " : "") + (c.what || "准备")
+    + (c.total ? "：" + Math.floor(c.done / c.total * 100) + "%（" + mb(c.done) + " / " + mb(c.total) + "）" : c.done ? "：" + mb(c.done) : "…") : "";
+  const failed = c.state === "failed" && c.error ? `<p class="hint bad">没成功：${esc(c.error)}</p>` : "";
+  const mirror = `<details class="ldmore"${drive.mirror ? " open" : ""}><summary>下载太慢？</summary><input type="text" id="driveMirror" placeholder="GitHub 镜像前缀，例如 https://加速站/https://github.com" aria-label="GitHub 镜像前缀" value="${esc(drive.mirror)}"><small>也会经「设置 → YouTube」里的代理下载。</small></details>`;
+  if (!c.installed) {
+    o += '<p>把百度网盘、夸克里的视频加进片库。</p>';
+    o += working ? `<p class="hint">${esc(progress)}</p>`
+      : `<button class="btn pri sm" data-drive="install" data-k="ld-install">安装网盘组件（约 ${Math.max(1, Math.round(c.size / 1e6))} MB，来自 OpenList 官方发布）</button>`;
+    return o + failed + (working ? "" : mirror) + credit + "</div>";
+  }
+  const state = !c.enabled ? "已停用" : working ? progress : d.running ? "正在运行" : "正在启动…";
+  const newer = c.update ? " · 有新版 " + c.latest : c.latest && c.checked_at ? " · 已是最新" : "";
+  o += `<p class="ldstate">OpenList ${esc(c.version)} · ${esc(state)}${esc(newer)}</p>` + failed;
+  if (!c.enabled) {
+    o += '<div class="inline"><button class="btn pri sm" data-drive="enable" data-k="ld-enable">启用网盘组件</button></div>';
+    return o + credit + "</div>";
+  }
+  if (d.running && d.local) o += `<div class="inline"><a class="btn pri sm" href="${esc(d.url)}@manage" target="_blank" rel="noopener noreferrer" data-k="ld-manage">打开网盘管理</a></div>`;
+  else if (d.running) o += `<p class="hint">网盘管理只能在运行小鼠电视的这台电脑上打开（${esc(d.url)}）。</p>`;
+  const pw = drive.pw ? `<code>${esc(drive.pw)}</code><button class="ghost sm" data-drivecopy="pw">复制</button>`
+    : d.local ? '<code>••••••••</code><button class="ghost sm" data-drivereveal="1" data-k="ld-reveal">显示</button>' : "<small>在运行小鼠电视的电脑上才能看</small>";
+  o += `<div class="ldlogin"><span>用户名</span><code>${esc(d.user)}</code><button class="ghost sm" data-drivecopy="user">复制</button>
+    <span>密码</span>${pw}</div>`;
+  o += `<ol class="ldhow">
+    <li>百度网盘：在网盘管理的「存储」里添加，驱动选「百度网盘」，刷新令牌在 ${outLink(docs.baidu_token, "OpenList 的取令牌页")} 获取（${outLink(docs.baidu, "说明")}）。</li>
+    <li>夸克：驱动选「夸克网盘」，Cookie 从登录了夸克网页版的浏览器里复制（${outLink(docs.quark, "说明")}）。</li>
+    <li>加好后回来点「网盘」那一行的「扫描」；放不了时把那个存储的 WebDAV 策略改成「本地代理」（${outLink(docs.proxy, "说明")}）。</li>
+  </ol>`;
+  const src = d.source;
+  if (src && src.ok === false && /用户名或密码不对/.test(src.error || ""))
+    o += '<p class="hint bad">片库连网盘时密码不对（在网盘管理里改过密码？）<button class="ghost sm" data-drive="repair" data-k="ld-repair">改回来</button></p>';
+  o += `<div class="inline ldacts"><button class="ghost sm" data-drive="check" data-k="ld-check"${working ? " disabled" : ""}>检查更新</button>${c.update ? `<button class="ghost sm" data-drive="update" data-k="ld-update"${working ? " disabled" : ""}>更新到 ${esc(c.latest)}</button>` : ""}<button class="ghost sm red" data-drive="disable" data-k="ld-disable">停用</button></div>`;
+  return o + (c.update ? mirror : "") + credit + "</div>";
 }
 function libFormHTML() {
   const dav = lib.kind === "webdav";
   return `<form class="libadd" id="libAdd" autocomplete="off">
-    <div class="chips" role="group" aria-label="来源的种类"><button type="button" data-libkind="webdav" aria-pressed="${dav}">网盘（OpenList / WebDAV）</button><button type="button" data-libkind="local" aria-pressed="${!dav}">本机文件夹</button></div>
+    <div class="chips" role="group" aria-label="来源的种类"><button type="button" data-libkind="webdav" aria-pressed="${dav}">WebDAV 地址</button><button type="button" data-libkind="local" aria-pressed="${!dav}">本机文件夹</button></div>
     ${dav ? `<input type="text" name="url" placeholder="地址，例如 http://127.0.0.1:5244/dav" aria-label="WebDAV 地址" required>
     <div class="inline"><input type="text" name="user" placeholder="用户名" aria-label="用户名"><input type="password" name="password" placeholder="密码" aria-label="密码" autocomplete="new-password"></div>`
     : `<input type="text" name="path" placeholder="文件夹路径，例如 /Users/你/Movies" aria-label="文件夹路径" required>`}
@@ -5850,10 +5930,16 @@ function renderLib() {
   const k = focusKey();
   const keep = qs("#libAdd") ? Object.fromEntries(new FormData(qs("#libAdd"))) : null;
   let o = "";
+  const hasDrive = drive.data && drive.data.ok;
+  const driveBtn = admin && hasDrive && !d.sources.some((s) => s.managed) && !drive.open
+    ? `<button class="ghost sm" data-libdrive="1" data-k="ld-add">${ic("plus", 16)}添加网盘</button>` : "";
+  // 第一次点开时数据还没到：先显示「正在加载…」（driveHTML）。
+  const drivePanel = admin && drive.open ? `<div class="lformbox">${driveHTML()}</div>` : "";
   if (!d.sources.length) {
-    o = `<div class="empty sm lempty"><div class="eic">${ic("lib", 40)}</div><b>还没有片库</b><p>${admin ? "加一个网盘（OpenList）或电脑上的文件夹。" : "请管理员在这里添加网盘或文件夹。"}</p>${admin ? libFormHTML() : ""}</div>`;
+    o = `<div class="empty sm lempty"><div class="eic">${ic("lib", 40)}</div><b>还没有片库</b><p>${admin ? "加百度网盘、夸克（网盘组件），或电脑上的文件夹。" : "请管理员在这里添加网盘或文件夹。"}</p>${driveBtn}${drivePanel}${admin ? libFormHTML() : ""}</div>`;
   } else {
-    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}</div>`;
+    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}</div>`;
+    o += drivePanel;
     if (admin && lib.form) o += `<div class="lformbox">${libFormHTML()}</div>`;
     if (d.scan.error && !d.scan.running) o += `<p class="hint bad">${esc(d.scan.error)}</p>`;
     const q = lib.q.trim().toLowerCase();
@@ -5912,6 +5998,30 @@ $("libBox").addEventListener("click", async (event) => {
   if (ds.libshow) { lib.show = ds.libshow; renderLib(); $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return; }
   if (ds.libback) { const was = lib.show; lib.show = ""; renderLib(); const c = qs(`#libBox [data-libshow="${CSS.escape(was)}"]`); if (c) c.focus(); return; }
   if (ds.libkind) { lib.kind = ds.libkind; renderLib(); return; }
+  if (ds.libdrive) { drive.open = !drive.open; renderLib(); if (drive.open) loadDrive(); return; }
+  if (ds.drivecopy) { copyText(ds.drivecopy === "pw" ? drive.pw : drive.data.user); return; }
+  if (ds.drivereveal) {
+    const answer = await libAdmin("api/admin/clouddrive/reveal", {}, t);
+    if (answer && answer.ok) { drive.pw = answer.password; renderLib(); setTimeout(() => { drive.pw = ""; renderLib(); }, 60000); }
+    return;
+  }
+  if (ds.drive) {
+    const what = ds.drive;
+    if (what === "disable" && t.dataset.sure !== "1") {
+      t.dataset.sure = "1"; t.textContent = "确定停用？片库里的「网盘」会去掉";
+      setTimeout(() => { if (t.isConnected) { t.dataset.sure = ""; t.textContent = "停用"; } }, 4000);
+      return;
+    }
+    const answer = await driveCall({ action: what, mirror: drive.mirror.trim() }, t);
+    if (!answer || !answer.ok) return;
+    if (what === "check") toast(answer.update ? "有新版 OpenList " + answer.latest : "OpenList " + answer.current + " 已是最新");
+    if (what === "disable") { toast("网盘组件停用了"); drive.pw = ""; loadLib(true); }
+    if (what === "repair") toast("改回来了，正在重新扫描");
+    if (what === "repair" && drive.data.source) libAdmin("api/admin/library/scan", { id: drive.data.source.id }, t);
+    renderLib();
+    loadDrive();
+    return;
+  }
   if (ds.libform) { lib.form = ds.libform === "1"; renderLib(); const f = qs("#libAdd input:not([type=hidden])"); if (f && lib.form) f.focus(); return; }
   if (ds.libscan) {
     const answer = await libAdmin("api/admin/library/scan", { id: ds.libscan }, t);
@@ -5940,6 +6050,7 @@ $("libBox").addEventListener("submit", async (event) => {
   setTimeout(() => loadHome(true), 4000);
 });
 $("libBox").addEventListener("input", (event) => {
+  if (event.target.id === "driveMirror") { drive.mirror = event.target.value; return; }
   if (event.target.id !== "libQ") return;
   lib.q = event.target.value;
   renderLib();

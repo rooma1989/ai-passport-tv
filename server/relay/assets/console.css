@@ -1108,6 +1108,24 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .libadd .chips { margin: 0 0 4px; }
 .libadd .inline { margin: 0; }
 .libadd .inline > input { flex: 1 1 180px; }
+/* 网盘组件（console.js driveHTML，server/relay/clouddrive.py） */
+.ldrive { display: grid; gap: 10px; text-align: left; }
+.ldrive h3 { margin: 0; font: 600 17px var(--sans); }
+.ldrive > .btn, .ldrive .inline .btn { justify-self: start; width: auto; }
+.ldrive p, .ldrive .hint { margin: 0; }
+.ldrive .inline { margin: 0; flex-wrap: wrap; }
+.ldstate { color: var(--label-2); font-size: 14px; }
+.ldrive a:not(.btn) { color: var(--brand-2); text-decoration: underline; text-underline-offset: 2px; }
+.ldlogin { display: grid; grid-template-columns: auto auto auto; justify-content: start; align-items: center; gap: 6px 10px; font-size: 14px; }
+.ldlogin span { color: var(--label-2); }
+.ldlogin code, .ldlogin small { font: 500 14px var(--mono, ui-monospace, monospace); user-select: all; word-break: break-all; }
+.ldlogin small { grid-column: span 2; font: 13px var(--sans); color: var(--label-3); }
+.ldlogin .ghost { height: 28px; padding: 0 10px; font-size: 13px; }
+.ldhow { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 14px; color: var(--label-2); }
+.ldmore summary { cursor: pointer; color: var(--label-2); font-size: 13px; }
+.ldmore input { width: 100%; margin: 8px 0 4px; }
+.ldmore small, .ldcredit { color: var(--label-3); font-size: 12px; }
+.lempty .lformbox { margin: 18px auto 0; }
 .lempty .eic { color: var(--label-2); }
 .lempty .libadd { max-width: 560px; margin: 18px auto 0; }
 .lbar { display: flex; align-items: center; gap: 14px; margin: 18px 0 0; max-width: 620px; }

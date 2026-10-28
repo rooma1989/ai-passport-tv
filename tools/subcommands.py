@@ -34,6 +34,9 @@ CERTS_COMMAND = "__certs"
 # above. Reserved for later phases, not dispatched yet: __gate, __worker (P4),
 # __hub-agent (P5), __asr (P9).
 SELFHOST_COMMAND = "selfhost"
+# Watches the supervisor itself (it has a grandchild, the openlist binary, to stop first), so
+# tools/packaged_entry.py does not give it parentwatch's immediate exit.
+OPENLIST_COMMAND = "__openlist"
 CORE_COMMANDS = {
     SELFHOST_COMMAND: "server.selfhost.__main__",
     "__selfhost": "server.selfhost.__main__",
@@ -48,6 +51,9 @@ CORE_COMMANDS = {
     "__tenancy-admin": "server.tenancy.admin",
     # The local YouTube node ([youtube] mode = "local"): server/relay/ytnode.py with --plain.
     "__ytnode": "server.relay.ytnode",
+    # The cloud-drive component (OpenList, server/selfhost/openlist.py): a small wrapper that starts
+    # the downloaded openlist binary bound to 127.0.0.1 and stops it when the supervisor goes away.
+    OPENLIST_COMMAND: "server.selfhost.openlist",
 }
 # The module each child of the supervisor runs, and the name it is started by.
 CHILD_COMMANDS = {
@@ -55,4 +61,5 @@ CHILD_COMMANDS = {
     "server.front": "__front",
     "server.tv_server": "__tv",
     "server.relay.ytnode": "__ytnode",
+    "server.selfhost.openlist": OPENLIST_COMMAND,
 }

@@ -78,7 +78,7 @@ use_system_ca()
 from tools import (certs, channel_config, datadir, ffmpeg_fetch, launch,  # noqa: E402,F401
                    parentwatch, ytdlp_run)
 from tools.subcommands import (CERTS_COMMAND, CONFIG_COMMAND, CORE_COMMANDS,  # noqa: E402
-                               MEDIA_COMMAND, SELFHOST_COMMAND)
+                               MEDIA_COMMAND, OPENLIST_COMMAND, SELFHOST_COMMAND)
 
 # Named in packaging/tv-server.spec's hiddenimports, and imported here only as
 # the names are actually needed -- see _load_server_modules below.
@@ -229,7 +229,9 @@ def run_core(arguments: list[str]) -> int:
 
     _no_console_windows()
     command, rest = arguments[0], arguments[1:]
-    if command not in (SELFHOST_COMMAND, "__selfhost"):
+    # The cloud-drive wrapper watches the pipe itself: parentwatch would os._exit and leave its
+    # openlist grandchild running (server/selfhost/openlist.py).
+    if command not in (SELFHOST_COMMAND, "__selfhost", OPENLIST_COMMAND):
         parentwatch.start()
     module = importlib.import_module(CORE_COMMANDS[command])
     result = module.main(rest)

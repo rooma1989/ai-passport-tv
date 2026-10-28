@@ -459,6 +459,37 @@ as the Bilibili import (at most 12 creators, and what fits in the TV's channel
 list); adding fetches each channel's video list, about ten seconds each, in the
 background.
 
+## Cloud drives in My library (optional)
+
+My library (Library > My library) can show videos from Baidu Netdisk and Quark
+through a built-in **cloud-drive component**: [OpenList](https://github.com/OpenListTeam/OpenList),
+the community fork of Alist, licensed under the **AGPL-3.0**. It is not part of
+the RooTV download.
+
+1. As the admin, open **Library > My library > Add cloud drive** and click
+   **Install the cloud-drive component** (about 37 MB from OpenList's official
+   GitHub release; the version and SHA-256 are pinned, a file that does not
+   match is deleted and never run). It uses the proxy from Settings > YouTube;
+   a GitHub mirror can be entered under "Download too slow?".
+2. When it runs, the library gets a source for it on its own. Click **Open
+   drive admin** (only on the computer running RooTV) and sign in with the user
+   name and password shown under it (**Show**, then **Copy**).
+3. Add Baidu Netdisk or Quark under Storage, following OpenList's
+   [Baidu](https://doc.oplist.org/guide/drivers/baidu) and
+   [Quark](https://doc.oplist.org/guide/drivers/quark) pages, then click
+   **Scan**. If a video does not play, set that storage's WebDAV policy to
+   "native proxy" ([details](https://doc.oplist.org/guide/drivers/common#webdav-policy)).
+
+OpenList listens on 127.0.0.1 only, never on your home network, and RooTV does
+not pass its admin page to other devices. It stops when RooTV stops. Its program
+and data live in `openlist/` in the data folder (`bin/` the program,
+`data/` its own database and `config.json`); the admin password is in
+`secrets/openlist-admin`. **Disable** in the same panel stops it and removes
+its library source; **Check for updates** verifies a new version against the
+release's published SHA-256 before using it. In Docker, the drive admin page
+cannot be opened from the host, since it is bound to the container's own
+127.0.0.1.
+
 ## Common problems
 
 - **A live channel will not play ("the line was refused (403)", "the source timed out", "the source cut off")**:
@@ -540,6 +571,9 @@ Developer notes (code map, building, CI, the interface with the core):
 - "Keep this computer awake" on Windows; on macOS the idle-sleep assertion was
   confirmed to appear in the system.
 - The Linux tray (GNOME has no tray area by default).
+- The cloud-drive component (OpenList) on Windows and Linux: the pinned files were downloaded and their
+  hashes and contents checked, but OpenList was only run on a Mac (Apple silicon), with a local folder as
+  storage; real Baidu Netdisk and Quark accounts were not tried.
 - YouTube local mode on Windows and Linux (written for them, run only on a Mac), and how often YouTube
   asks for sign-in with imported cookies (on the Mac, through a proxy, it asked every time without).
 - Reading the YouTube login from a real browser: developed and tested against a fake yt-dlp and canned

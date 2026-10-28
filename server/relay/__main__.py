@@ -195,6 +195,9 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 来源和索引存在数据库旁边的 library.json、library-index.json，网盘的海报缓存在 library-art/。
     from . import library
     library.attach(relay)
+    # 网盘组件（clouddrive.py、server/selfhost/openlist.py）：组件在跑时片库里有一个受管的「网盘」来源。
+    from . import clouddrive
+    clouddrive.attach(relay)
     # 每个人常看的直播台（livetally.py）：直播页的「常看」分组，存在数据库旁边的 live-plays.json。
     from . import livetally
     livetally.attach(relay, args.db.parent)
