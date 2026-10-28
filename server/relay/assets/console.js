@@ -1445,6 +1445,9 @@ function liveNeighbours(ids, id) {
 }
 // ---- 直播起播的纯函数到此 ----
 
+// 视频（不是直播）的缓冲：往前至多 AHEAD_S 秒、往回 BEHIND_S 秒，码率高（片库的 4K 文件只换封装，一秒两三 MB）时
+// 按字节封顶，免得超出 Chrome 给一个 SourceBuffer 的一百多 MB（超了 appendBuffer 抛 QuotaExceededError）。
+const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024 };
 // 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
 // opts：say（画面上的提示）、ended（放完了）、live（直播：落后太多时追到最新附近）、gap（视频落到中转的窗口外了）、
 // notice（换线路时中转说的话）、reopen（直播放了一阵断了、中转说还有别的线路：页面重开一次，返回 true 表示接手了）。
@@ -1454,7 +1457,10 @@ class WatchPlayer {
     this.notice = opts.notice || this.say; this.reopen = opts.reopen || (() => false);
     this.line = opts.line || (() => {});
     this.slow = opts.slow || (() => {});
+    this.opening = opts.opening || "正在连片源…（要几秒钟）";
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
+    // 视频：接上了多少字节、多少秒（算码率，缓冲按字节封顶，见 VOD_BUFFER）。
+    this.gotBytes = 0; this.gotSecs = 0;
     this.t0 = performance.now(); this.playedAt = 0;
     this.onWaiting = () => this.kick();
     // 出画面了（换台时收起上一台停住的画面，见 switching）。
@@ -1480,7 +1486,7 @@ class WatchPlayer {
       return;
     }
     // 直播：画面上是「正在切换…」（switching），不再另说。
-    if (!this.live) pcStage("正在连片源…（要几秒钟）");
+    if (!this.live) pcStage(this.opening);
     try {
       const master = await this.fetch("master.m3u8", "text");
       if (!this.alive) return;
@@ -1549,6 +1555,10 @@ class WatchPlayer {
     const v = this.video, b = v.buffered;
     return b.length ? b.end(b.length - 1) - v.currentTime : 0;
   }
+  // 视频的码率（字节 / 秒）：接上的段算出来的；还没有时 0。
+  rate() { return this.gotSecs > 1 ? this.gotBytes / this.gotSecs : 0; }
+  // 视频往前缓冲多少秒：至多 AHEAD_S，码率高（片库的 4K 一秒两三 MB）时按 BYTES_AHEAD 少缓冲一点，至少 MIN_AHEAD_S。
+  aheadLimit() { const r = this.rate(); return r ? Math.max(VOD_BUFFER.MIN_AHEAD_S, Math.min(VOD_BUFFER.AHEAD_S, VOD_BUFFER.BYTES_AHEAD / r)) : VOD_BUFFER.AHEAD_S; }
   async loop() {
     while (this.alive) {
       const text = await this.fetch("index.m3u8", "text");
@@ -1566,13 +1576,24 @@ class WatchPlayer {
         if (!this.live) { this.gap(); return; }
         this.next = first;
       }
-      // 视频暂停着、缓冲里已经有一分钟：先不取了（列表照取，中转知道还有人看）。
-      const full = !this.live && this.ahead() > 60;
-      for (; !full && this.next < first + count && this.alive; this.next++) {
+      // 视频缓冲里已经够了（一分钟，码率高时按字节少一点）：先不取了（列表照取，中转知道还有人看；片库那一路
+      // 中转也就停在那里不往下读文件）。
+      const durs = {};
+      for (const m of text.matchAll(/#EXTINF:([\d.]+),\s*\n(\d+)\.m4s/g)) durs[m[2]] = Number(m[1]);
+      for (; this.next < first + count && this.alive; this.next++) {
+        if (!this.live && this.ahead() > this.aheadLimit()) break;
         const chunk = await this.fetch(this.next + ".m4s", "arrayBuffer");
         if (!chunk || !this.alive) continue;
         await this.trim();
-        await this.append(chunk);
+        try { await this.append(chunk); }
+        catch (error) {
+          // 缓冲满了（Chrome 一个 SourceBuffer 至多一百多 MB）：清掉现在位置以前的，等一下再接。
+          if (!this.alive || this.live || !error || error.name !== "QuotaExceededError") throw error;
+          await this.squeeze();
+          await sleep(1000);
+          await this.append(chunk);
+        }
+        this.gotBytes += chunk.byteLength; this.gotSecs += durs[this.next] || 0;
         this.kick();
       }
       if (ended && this.next >= first + count) {
@@ -1600,7 +1621,12 @@ class WatchPlayer {
     const end = b.end(b.length - 1);
     let inside = -1;
     for (let i = 0; i < b.length; i++) if (v.currentTime >= b.start(i) - 0.05 && v.currentTime <= b.end(i)) inside = i;
-    if (inside < 0) {
+    // 视频起播：要的那一秒（媒体时间就是 origin；片库的文件时间轴照原样，第一段从它之前的关键帧起）在缓冲里时
+    // 从它起，不从关键帧起。
+    const at = !this.started && !this.live && this.origin != null
+      ? [...Array(b.length).keys()].find((i) => this.origin >= b.start(i) && this.origin < b.end(i) - 0.1) : undefined;
+    if (at !== undefined && Math.abs(v.currentTime - this.origin) > 0.2) v.currentTime = this.origin;
+    else if (inside < 0) {
       const ahead = [...Array(b.length).keys()].map((i) => b.start(i)).find((t) => t > v.currentTime);
       v.currentTime = (ahead !== undefined ? ahead : b.start(0)) + 0.05;
     } else if (this.live && end - v.currentTime > 30) v.currentTime = end - 12;
@@ -1613,7 +1639,15 @@ class WatchPlayer {
   }
   async trim() {
     const v = this.video, b = this.sb.buffered;
-    if (b.length && v.currentTime - b.start(0) > 90) await this.remove(b.start(0), v.currentTime - 30);
+    if (!b.length) return;
+    if (this.live) { if (v.currentTime - b.start(0) > 90) await this.remove(b.start(0), v.currentTime - 30); return; }
+    // 视频：往回留 BEHIND_S 秒，码率高时按 BYTES_BEHIND 少留一点。
+    const r = this.rate(), keep = r ? Math.max(2, Math.min(VOD_BUFFER.BEHIND_S, VOD_BUFFER.BYTES_BEHIND / r)) : VOD_BUFFER.BEHIND_S;
+    if (v.currentTime - b.start(0) > keep + 10) await this.remove(b.start(0), v.currentTime - keep);
+  }
+  async squeeze() {
+    const v = this.video, b = this.sb.buffered;
+    if (b.length && v.currentTime - 2 > b.start(0)) await this.remove(b.start(0), v.currentTime - 2);
   }
   stop() {
     this.alive = false;
@@ -1632,6 +1666,14 @@ class WatchPlayer {
 // opts：say、ended、start（从第几秒起）、fallback（还没放起来就出错：多半是浏览器放不了，改要 HLS）、
 // broken（放到一半出错：地址过期、这一路被收了，按现在的位置重要一路）。
 const VOD_OK = (() => { try { return !!document.createElement("video").canPlayType('video/mp4; codecs="avc1.64001F, mp4a.40.2"'); } catch (error) { return false; } })();
+// 片库（library.py 的 plan）：这个浏览器能不能放 HEVC——MediaSource 接分片 MP4（只换封装）、<video> 直接放文件；
+// Main（8 位）和 Main 10 分开问。Mac 上的 Chrome、Safari 多半都能（硬件解码），中转就不用转码。
+const LIB_CAPS = (() => {
+  const v = document.createElement("video"), mp4 = (c) => 'video/mp4; codecs="' + c + '"';
+  const mse = (c) => { try { return !!window.MediaSource && MediaSource.isTypeSupported(mp4(c)); } catch (error) { return false; } };
+  const can = (c) => { try { return v.canPlayType(mp4(c)) !== ""; } catch (error) { return false; } };
+  return { hevc: mse("hvc1.1.6.L150.B0"), hevc10: mse("hvc1.2.4.L153.B0"), direct_hevc: can("hvc1.1.6.L150.B0"), direct_hevc10: can("hvc1.2.4.L153.B0") };
+})();
 const RATES = [0.75, 1, 1.25, 1.5, 2];
 function savedRate() { const r = Number(lsGet("rootv.rate", "1")); return RATES.includes(r) ? r : 1; }
 class VodPlayer {
@@ -2030,7 +2072,7 @@ function playerFor(answer) {
   }
   $("watchSlow").hidden = true;
   const player = new WatchPlayer($("watchVideo"), answer.url, {
-    say: watchSay, ended: watchEnded, live,
+    say: watchSay, ended: watchEnded, live, opening: answer.library ? "正在打开…" : "",
     slow: (speed) => { if (!watching || watching.player === player) slowNote(speed); },
     notice: (text) => { if (watching && watching.player !== player) return; routeNotice(answer.name || answer.title || answer.channel, text); },
     reopen: (text) => (!watching || watching.player === player) && routeReopen(answer, text),
@@ -2505,6 +2547,8 @@ function renderPc() {
   if (vod) $("pcRate").textContent = rateLabel(v.playbackRate);
   $("pcQuality").hidden = !watching.quality;
   if (watching.quality) $("pcQuality").textContent = watching.quality.current.toUpperCase();
+  $("pcSubs").hidden = !(watching.subs && watching.subs.length);
+  $("pcSubs").classList.toggle("on", subs.n >= 0);
   $("pcPip").hidden = !pipOk(v);
   $("pcPartsBtn").textContent = watching.parts && watching.parts.kind === "up" ? "视频" : "选集";
   const muted = v.muted || v.volume === 0;
@@ -2559,6 +2603,7 @@ function ytQualityPref() { const q = lsGet("rootv.ytQuality", "720p"); return YT
 // 请求里说这个页面会放点播（新的电脑版才说；旧版只会放 HLS），和要的清晰度（web.py 的 _prefer）；能用 MediaSource
 // 放 H.264 + AAC 时再说 dash（YouTube 按 DASH 放，ytq 是 YouTube 的清晰度）。hls：true 只要 HLS，"nodash" 不要 DASH。
 function vodAsk(body, hls) {
+  body.caps = LIB_CAPS;
   if (VOD_OK && hls !== true) {
     body.vod = true; body.quality = qualityPref(); body.ytq = ytQualityPref();
     if (DASH_OK && hls !== "nodash") body.dash = true;
@@ -2630,15 +2675,17 @@ function pickLine(i) {
 }
 // 速度、清晰度、线路的小菜单。
 const QUALITY_NOTES = { "720p": "秒开，拖到哪里都快", "1080p": "要转一下，拖动时稍等" };
-function menuAnchor(kind) { return kind === "rate" ? $("pcRate") : kind === "line" ? $("watchLine") : $("pcQuality"); }
+function menuAnchor(kind) { return kind === "rate" ? $("pcRate") : kind === "line" ? $("watchLine") : kind === "subs" ? $("pcSubs") : $("pcQuality"); }
 function openMenu(kind) {
   const menu = $("pcMenu"), anchor = menuAnchor(kind);
   if (!menu.hidden && menu.dataset.kind === kind) { closeMenu(); return; }
   menu.dataset.kind = kind;
-  menu.setAttribute("aria-label", kind === "rate" ? "播放速度" : kind === "line" ? "线路" : "清晰度");
+  menu.setAttribute("aria-label", kind === "rate" ? "播放速度" : kind === "line" ? "线路" : kind === "subs" ? "字幕" : "清晰度");
   menu.replaceChildren();
   const items = kind === "rate"
     ? RATES.map((r) => ({ value: r, label: rateLabel(r) + (r === 1 ? " 正常" : ""), on: r === savedRate() }))
+    : kind === "subs"
+    ? [{ value: -1, label: "关闭", on: subs.n < 0 }].concat((watching.subs || []).map((s) => ({ value: s.n, label: s.label, note: s.ok ? "" : "放不了", on: s.n === subs.n })))
     : kind === "line"
     ? Array.from({ length: watching.routes }, (_, i) => ({ value: i, label: "线路 " + (i + 1), note: lineNote(watching.lines[i]), on: i === watching.route }))
     : (watching.quality.choices || ["720p", "1080p"]).map((v) => ({
@@ -2649,7 +2696,7 @@ function openMenu(kind) {
     b.setAttribute("role", "menuitemradio");
     b.setAttribute("aria-checked", String(item.on));
     b.innerHTML = ic("check", 16) + `<span><b>${esc(item.label)}</b>${item.note ? `<small>${esc(item.note)}</small>` : ""}</span>`;
-    b.onclick = () => { closeMenu(); if (kind === "rate") setRate(item.value); else if (kind === "line") pickLine(item.value); else pickQuality(item.value); };
+    b.onclick = () => { closeMenu(); if (kind === "rate") setRate(item.value); else if (kind === "line") pickLine(item.value); else if (kind === "subs") subsPick(item.value); else pickQuality(item.value); };
     menu.appendChild(b);
   }
   menu.hidden = false;
@@ -2670,7 +2717,7 @@ function closeMenu() {
 }
 document.addEventListener("pointerdown", (event) => {
   const menu = $("pcMenu");
-  if (!menu.hidden && !menu.contains(event.target) && ![$("pcRate"), $("pcQuality"), $("watchLine")].includes(event.target)) closeMenu();
+  if (!menu.hidden && !menu.contains(event.target) && ![$("pcRate"), $("pcQuality"), $("pcSubs"), $("watchLine")].includes(event.target)) closeMenu();
 }, true);
 // YouTube 的 DASH 还没放起来就出错（浏览器放不了、取不到索引）：改要合体的 360p 文件（没有时中转给 HLS）。
 function dashFallback(why) {
@@ -2681,8 +2728,13 @@ function dashFallback(why) {
 }
 // 点播还没放起来就出错：多半是这个浏览器放不了这个文件（或者地址不通），改要 HLS（中转用 ffmpeg 转）。
 function vodFallback() {
-  // 片库的文件没有别的放法（转码是以后的事）：说一声，不再重试。
-  if (watching.again && watching.again.library) { watchSay("这个文件电脑上放不了（多半不是 H.264 编码）", true); return; }
+  // 片库的文件：让中转经 ffmpeg 封装（或转码）以后再放（library.py 的 plan，remux）。
+  if (watching.again && watching.again.library) {
+    if (watching.again.remux) { watchSay("这个文件电脑上放不了", true); return; }
+    pcStage("换一种方式放…");
+    startDirect(Object.assign({}, watching.again, { remux: true, start: Math.round((watching.start || 0) * 10) / 10 }), { group: watching.group, seek: true, again: true });
+    return;
+  }
   pcStage("换一种方式放…");
   if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: Math.round((watching.start || 0) * 10) / 10 }), { group: watching.group, seek: true, again: true, hls: true });
   else startWatch(false, true, undefined, true);
@@ -2694,6 +2746,90 @@ function vodBroken() {
   if (Date.now() - vodBrokenAt < 30000) { watchSay("片源断了", true, true); return; }
   vodBrokenAt = Date.now();
   seekRestart(pos);
+}
+
+// ---- 片库的字幕（library.py 的 subs、/api/library/subs/<id>/<n>.vtt）：菜单里选一条，取来 WebVTT，放进 <video> 的
+// 一条字幕轨（浏览器自己画，全屏也在）。经中转封装着放的（WatchPlayer）媒体时间和视频里的位置差 origin − start
+// （watch.py 的 Source.exact：origin 是 offset + 文件的起始时间 + EXACT_TS_OFFSET），每条字幕都挪这么多；直接放的（VodPlayer）不用挪。
+// 网盘上的内嵌字幕是边放边抽的（live）：隔 SUBS_POLL_MS 再取一次，只要新的。选了什么记在这个浏览器里（按语言），
+// 没选过时：有默认的就用默认的，没有就用中文的那条，都没有就关着。
+const SUBS_POLL_MS = 8000;
+const subs = { n: -1, seen: new Set(), timer: 0, after: 0, gen: 0 };
+let subsTrack = null;
+function subsTextTrack() {
+  // 只建一次（addTextTrack 建的轨删不掉）：换片、换字幕时清空它的字幕。
+  if (!subsTrack) subsTrack = $("watchVideo").addTextTrack("subtitles", "字幕", "zh");
+  return subsTrack;
+}
+function subsClear() {
+  clearTimeout(subs.timer);
+  subs.gen++; subs.n = -1; subs.seen = new Set(); subs.after = 0;
+  if (!subsTrack) return;
+  subsTrack.mode = "hidden";
+  for (const cue of Array.from(subsTrack.cues || [])) subsTrack.removeCue(cue);
+}
+function subsChinese(s) { return /^(chi|zho|zh|chs|cht|sc|tc|gb|big5)([-_].*)?$/i.test(s.lang || "") || /中|简|繁/.test(s.label || ""); }
+function subsAuto(list) {
+  const ok = list.filter((s) => s.ok), pref = lsGet("rootv.subs", "");
+  if (pref === "off" || !ok.length) return -1;
+  const same = pref && ok.find((s) => (s.lang || s.label) === pref);
+  if (same) return same.n;
+  const pick = ok.find((s) => s.def) || ok.find(subsChinese);
+  return pick ? pick.n : -1;
+}
+function subsStart() {
+  subsClear();
+  if (!watching || !watching.subs || !watching.subs.length) return;
+  const n = subsAuto(watching.subs);
+  if (n >= 0) subsLoad(n);
+  renderPc();
+}
+function subsPick(n) {
+  if (!watching) return;
+  const s = (watching.subs || []).find((x) => x.n === n);
+  if (n >= 0 && (!s || !s.ok)) { toast("这条字幕是图片的，放不了", true); return; }
+  lsSet("rootv.subs", n < 0 ? "off" : s.lang || s.label);
+  subsClear();
+  if (n >= 0) subsLoad(n);
+  renderPc();
+}
+function vttSeconds(t) { return t.replace(",", ".").split(":").reduce((a, x) => a * 60 + Number(x), 0); }
+function vttCues(text) {
+  const out = [];
+  for (const block of text.replace(/\r/g, "").split(/\n\s*\n/)) {
+    const lines = block.split("\n"), at = lines.findIndex((l) => l.includes("-->"));
+    const m = at >= 0 && lines[at].match(/([\d:.,]+)\s*-->\s*([\d:.,]+)/);
+    const body = m ? lines.slice(at + 1).join("\n").trim() : "";
+    if (body) out.push([vttSeconds(m[1]), vttSeconds(m[2]), body]);
+  }
+  return out;
+}
+async function subsLoad(n) {
+  if (!watching) return;
+  const gen = subs.gen, w = watching, s = (w.subs || []).find((x) => x.n === n);
+  subs.n = n;
+  const track = subsTextTrack();
+  track.mode = "showing";
+  const p = w.player;
+  // 封装着放的：要等列表给了 origin 才知道怎么挪。
+  if (!p.vod && p.origin == null) { subs.timer = setTimeout(() => { if (subs.gen === gen) subsLoad(n); }, 500); return; }
+  const shift = p.vod ? 0 : p.origin - (w.start || 0);
+  let partial = false;
+  try {
+    const response = await fetch(w.subsUrl + n + ".vtt" + (subs.after ? "?after=" + subs.after.toFixed(3) : ""), { credentials: "same-origin", cache: "no-store" });
+    if (subs.gen !== gen || watching !== w) return;
+    if (!response.ok) { if (!subs.after) toast("这条字幕取不到", true); return; }
+    partial = response.headers.get("X-RTV-Partial") === "1";
+    for (const [a, b, body] of vttCues(await response.text())) {
+      const key = a + "|" + b + "|" + body;
+      if (subs.seen.has(key)) continue;
+      subs.seen.add(key);
+      subs.after = Math.max(subs.after, b);
+      try { track.addCue(new VTTCue(a + shift, b + shift, body)); } catch (error) { /* 时间不对的那一条不要 */ }
+    }
+  } catch (error) { if (subs.gen !== gen) return; }
+  // 网盘上的内嵌字幕还在边放边抽：过一会儿再取新的。
+  if (partial || (s && s.live)) subs.timer = setTimeout(() => { if (subs.gen === gen && watching === w) subsLoad(n); }, SUBS_POLL_MS);
 }
 
 // 不动鼠标 3 秒后收起控制条（暂停、选集或菜单开着、焦点在控制条上时不收）。
@@ -2793,6 +2929,7 @@ $("pcFull").onclick = pcToggleFull;
 $("pcPip").onclick = pcTogglePip;
 $("pcRate").onclick = () => openMenu("rate");
 $("pcQuality").onclick = () => openMenu("quality");
+$("pcSubs").onclick = () => { if (watching && watching.subs && watching.subs.length) openMenu("subs"); };
 $("watchLine").onclick = () => { if (canPickLine()) openMenu("line"); };
 $("pcMenu").addEventListener("keydown", (event) => {
   const items = [...$("pcMenu").querySelectorAll("button")], at = items.indexOf(document.activeElement);
@@ -2919,7 +3056,8 @@ function openDirect(answer, ctx) {
   if (same) switched();      // 还是正在放的那一路（又点了同一个台）
   const player = same ? watching.player : playerFor(answer);
   // 重试、跳转用的请求：不再「下一个」，而是回到这一个（UP 主、剧集按第几个；投屏的按视频和第几集）。
-  const again = answer.library ? { library: answer.library }
+  // 片库经中转封装着放的（mode "hls"）：跳转时也这样放（remux），不再先试直接放。
+  const again = answer.library ? Object.assign({ library: answer.library }, answer.mode === "hls" ? { remux: true } : {})
     : answer.index ? { channel: answer.channel, episode: answer.index }
     : answer.video && (answer.channel === "cast" || answer.part) ? Object.assign({ video: answer.video }, answer.part ? { part: answer.part } : {})
     : { channel: answer.channel };
@@ -2929,7 +3067,8 @@ function openDirect(answer, ctx) {
                start: answer.start || 0, duration: answer.duration || 0, seekable: !!answer.seekable, seeking: null,
                parts: answer.parts || null, part: answer.part || answer.index || 0, video: answer.video || null,
                quality: answer.quality || null,
-               routes: answer.routes || 1, route: answer.route || 0, lines: answer.lines || [] };
+               routes: answer.routes || 1, route: answer.route || 0, lines: answer.lines || [],
+               subs: answer.subs || null, subsUrl: answer.subs_url || "" };
   miniWho = "pc";
   $("watchFollow").checked = false;
   const parts = answer.parts;
@@ -2951,6 +3090,7 @@ function openDirect(answer, ctx) {
   renderPc();
   pcActive();
   if (!same) player.start();
+  if (!same) subsStart();
   setTimeout(() => loadHome(true), 4000);
 }
 
@@ -2962,6 +3102,7 @@ function stopWatch() {
   }
   if (watching) {
     const body = pcTracked() ? pcBody() : { viewer };
+    subsClear();
     watching.player.stop();
     // 直接看的那一路只给这个页面用：马上停，让出名额（跟随的那一路全家共用，没人看 20 秒后自己停）。
     if (watching.mode === "direct" || watching.own) call("POST", "api/watch/stop", body).catch(() => {});
@@ -5782,7 +5923,8 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 
 // ---- 片库 → 我的片库（GET api/library，library.py）：网盘（OpenList 的 WebDAV）和电脑上的文件夹 ----
 // 上面一排是来源（管理员能扫描、删除、添加），下面是海报墙：电影、剧集（点进去是各集）、其他视频，搜索框按片名筛。
-// 这一步只在这台电脑上放（mp4 / m4v / mov），别的格式标「电脑上暂时放不了」。家里人都能看，访客没有这一页。
+// 只在这台电脑上放：浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；只有里面没有画面也没有
+// 声音的标「放不了」。家里人都能看，访客没有这一页。
 const lib = { data: null, busy: false, at: 0, q: "", show: "", kind: "webdav", form: false, timer: 0, failed: false };
 async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
@@ -5809,9 +5951,9 @@ const libKind = (k) => k === "webdav" ? "网盘" : "本机文件夹";
 function libCard(c, wide) {
   const id = reg({ id: "lib:" + c.id, title: c.title, subtitle: c.year ? String(c.year) : "", art: { url: c.art, ratio: wide ? "wide" : "poster" },
                    play: { kind: "library", id: c.id, playable: c.playable } });
-  const no = c.playable ? "" : '<span class="badge">电脑上暂时放不了</span>';
+  const no = c.playable ? "" : '<span class="badge">放不了</span>';
   const sub = [c.year, wide ? c.source : ""].filter(Boolean).join(" · ") || (c.ext || "").toUpperCase();
-  return `<button class="card${wide ? "" : " p"}${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="lc-${esc(c.id)}" aria-label="播放 ${esc(c.title)}${c.playable ? "" : "（电脑上暂时放不了）"}" title="${esc(c.plot || c.title)}"><span class="art">${art(c.title, wide ? "w" : "p", wide ? {} : { title: c.title, kick: "片库" })}${imgTag(c.art)}${no}</span>
+  return `<button class="card${wide ? "" : " p"}${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="lc-${esc(c.id)}" aria-label="播放 ${esc(c.title)}${c.playable ? "" : "（放不了）"}" title="${esc(c.plot || c.title)}"><span class="art">${art(c.title, wide ? "w" : "p", wide ? {} : { title: c.title, kick: "片库" })}${imgTag(c.art)}${no}</span>
     <span class="t">${esc(c.title)}</span><span class="s">${esc(sub)}</span></button>`;
 }
 function libShowCard(s) {
@@ -5823,7 +5965,7 @@ function libEpisode(c) {
                    play: { kind: "library", id: c.id, playable: c.playable } });
   const se = c.season ? "第 " + c.season + " 季" : "";
   return `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
-    <span class="htx"><b>${esc(c.title)}</b><small>${esc([se, c.playable ? "" : "电脑上暂时放不了", c.source].filter(Boolean).join(" · "))}</small></span></button>`;
+    <span class="htx"><b>${esc(c.title)}</b><small>${esc([se, c.playable ? "" : "放不了", c.source].filter(Boolean).join(" · "))}</small></span></button>`;
 }
 function libSourceRow(s, admin, scan) {
   const busy = scan && scan.running && scan.source === s.id;
@@ -5972,7 +6114,7 @@ function renderLib() {
 // 片库的一个视频：这一步只在这台电脑上放；「播放到」是小电视时也在电脑上放，说一次以后再做。
 let libTvTold = false;
 function playLibrary(item, label, poster) {
-  if (item.playable === false) { toast("这个格式电脑上暂时放不了", true); return null; }
+  if (item.playable === false) { toast("这个文件放不了（里面没有画面也没有声音）", true); return null; }
   if (!canPc()) { toast("片库只能在电脑客户端或家庭服务器上看", true); return null; }
   const to = currentTarget(), tell = to && to !== PC && !libTvTold;
   const done = playOnPc(item, label, poster);
@@ -6101,7 +6243,7 @@ function cardVideo(x) {
 function cardLib(x) {
   const id = reg(x);
   const p = x.play || {};
-  return `<button class="card p${p.playable === false ? " dead" : ""}" data-play="${esc(id)}" data-k="lib-${esc(id)}" aria-label="播放 ${esc(x.title)}"><span class="art">${art(x.title, "p", { title: x.title, kick: "片库" })}${imgTag(x.art && x.art.url)}${p.playable === false ? '<span class="badge">电脑上暂时放不了</span>' : ""}</span>
+  return `<button class="card p${p.playable === false ? " dead" : ""}" data-play="${esc(id)}" data-k="lib-${esc(id)}" aria-label="播放 ${esc(x.title)}"><span class="art">${art(x.title, "p", { title: x.title, kick: "片库" })}${imgTag(x.art && x.art.url)}${p.playable === false ? '<span class="badge">放不了</span>' : ""}</span>
     <span class="t">${esc(x.title)}</span><span class="s">${esc(x.subtitle || "")}</span></button>`;
 }
 function cardSeries(x) {

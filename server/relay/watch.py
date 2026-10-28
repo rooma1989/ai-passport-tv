@@ -15,6 +15,9 @@ UA，或者 YouTube 节点的流），起一个 ffmpeg 把它封装成分片 MP4
 WatchPlayer，几十行，不用第三方播放器）；没有 MediaSource 的浏览器（老 iPhone Safari）直接放 HLS。
 
 - 编码：画面是 H.264 就只换封装（-c:v copy）；别的（HEVC、MPEG-2……）才转码（libx264 veryfast，最高 720p）。
+  片库（library.py）的文件例外：浏览器说放得了 HEVC 时 HEVC 也只换封装（Source.copy_video，写成 hvc1），
+  -map 按探测好的流（第一路真画面、挑好的声音，不带字幕和附件），有 AAC 的声音直接复制（Mode.audio "copy"），
+  时间轴照原样（Source.exact）；不按实时读，跑在播放器前面但至多攒 VOD_AHEAD_*（WatchStream._hold）。
   ffmpeg 先按「复制画面」起，stderr 打出输入流的编码后，不合适就按需要重起一次（要转码的源多连一次片源）；
   直播台的转法记在内存里（LiveMemory），下次直接按它起。
   声音一律转成 AAC 128k（很便宜）：直播源（MPEG-TS、HLS）里的 AAC 带 ADTS 头，只换封装的话分片 MP4 的
@@ -136,6 +139,17 @@ LEG_TRIES = 4
 BAD_ROUTE_S = 600.0
 _OPENING = re.compile(r"Opening '(https?://[^']+)' for reading")
 _SID = re.compile(r"^[0-9a-f]{16}$")
+# 片库（Source.bounded）：ffmpeg 跑在播放器前面，至多攒这么多段、这么多字节没被取走（4K 20 Mbit/s 一段就是
+# 十几 MB，按字节封顶），取走一段再接着读文件。比 WINDOW_* 小：没取走的段不会被挤出窗口。
+VOD_AHEAD_SEGMENTS = 6
+VOD_AHEAD_BYTES = 40 * 1024 * 1024
+# 片库起播时（Source.progress）取列表最多等这么久就先回 503 和进度（「正在读取文件…已读 12 MB」），页面显示了再来取。
+PROGRESS_WAIT_S = 2.0
+# 片库（Source.exact）：输出的时间 = 文件里的时间 + 这么多秒（-copyts、-output_ts_offset）。不加的话分片 MP4 每条轨
+# 各自从 0 起：只换封装的画面从 -ss 之前的关键帧起、转码的声音从 -ss 那一秒起，两边会差出几秒（量过：-ss 32.5、
+# 关键帧在 30 秒，画面和声音都从 0 起，差 2.5 秒）。加了 frag_discont 以后 tfdt 是真的时间；再加这几秒，开头的
+# B 帧（解码时间比 0 早一点）和 AAC 的预滚也不会是负数。
+EXACT_TS_OFFSET = 10
 _PATH = re.compile(r"^/watch/([0-9a-f]{16})/([0-9]{1,12}\.[A-Za-z0-9_-]{16,32})/"
                    r"(master\.m3u8|index\.m3u8|init\.mp4|(\d{1,9})\.m4s)$")
 _STREAM_LINE = re.compile(r"^\s*Stream #0:\d+\S*: (Video|Audio): ([A-Za-z0-9_]+)")
@@ -173,11 +187,33 @@ class Source:
     # 直播台的所有线路 ((地址, UA), …)，频道表的顺序（server/routes.py）；第一条和 url / user_agent 一样。
     # 只有一条（或没给）时和以前一样只用 url。
     routes: tuple = field(default=(), compare=False)
+    # 片库（library.py）：只换封装的画面可以是哪些编码（浏览器说放得了 HEVC 时加上 "hevc"）。直播台、B 站只认 H.264：
+    # 小电视那条路和别的客户端不一样，不跟着放宽。
+    copy_video: tuple = ("h264",)
+    # 明确的 -map（"0:序号"，片库：第一路真画面、挑好的那一路声音，绝不带字幕和附件）；空的照旧 0:V:0? 0:a:0?。
+    maps: tuple = ()
+    # 只换封装的 HEVC 写成 hvc1（MediaSource 认 hvc1，不认 hev1）。
+    video_tag: str = ""
+    # 片库：时间轴照原样（-copyts，-ss 带小数，EXACT_TS_OFFSET），列表的 ORIGIN 就是 offset + 文件的起始时间
+    # （media_start）+ EXACT_TS_OFFSET：跳转以后进度和字幕都和文件里的时间对得上，画面和声音也对得上。
+    exact: bool = False
+    media_start: float = 0.0
+    # 片库：不按实时读、跑在播放器前面，但至多攒 VOD_AHEAD_*（WatchStream._hold）。
+    bounded: bool = False
+    # 声音转码的码率（片库 192k）。
+    audio_rate: str = "128k"
+    # 先按哪种转法起（片库按探测的结果定好；直播台按 LiveMemory，别的先试只换封装）。
+    mode: "Mode | None" = field(default=None, compare=False)
+    # 网盘上的内嵌文字字幕：边转边抽成 WebVTT ((流的序号, 文件路径), …)，和画面同一个 ffmpeg、另一个输出。
+    subs_out: tuple = field(default=(), compare=False)
+    # 起播时给页面看的进度（「正在读取文件…已读 12 MB」）；没有时 None。
+    progress: Callable[[], str] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
 class Mode:
-    """video："copy" 只换封装，"encode" 转码；audio："encode"（声音一律转码，见上）；None 是源里没有这一路。"""
+    """video："copy" 只换封装，"encode" 转码；audio："encode" 转成 AAC（直播源一律转码，见上），"copy"（片库里
+    本来就是 AAC 的那一路）；None 是源里没有这一路。"""
     video: str | None = "copy"
     audio: str | None = "encode"
 
@@ -204,11 +240,11 @@ def input_codecs(lines: list[str]) -> tuple[bool, str | None, str | None]:
     return False, video, audio
 
 
-def mode_for(video: str | None, audio: str | None) -> Mode | None:
-    """该怎么转：H.264 画面只换封装，别的画面转码；声音转成 AAC；什么都没有时 None。"""
+def mode_for(video: str | None, audio: str | None, copyable: tuple = ("h264",)) -> Mode | None:
+    """该怎么转：copyable 里的画面（一般只有 H.264）只换封装，别的画面转码；声音转成 AAC；什么都没有时 None。"""
     if video is None and audio is None:
         return None
-    return Mode(None if video is None else "copy" if video == "h264" else "encode",
+    return Mode(None if video is None else "copy" if video in copyable else "encode",
                 None if audio is None else "encode")
 
 
@@ -233,12 +269,13 @@ def legs_of(source: Source, order: list[int] | None = None) -> list[tuple[int, S
                         user_agent=source.routes[i][1], routes=())) for i in order]
 
 
-def fits(mode: Mode, video: str | None, audio: str | None) -> bool:
-    """这种转法能不能转这个片源：有没有画面、声音要对得上，只换封装的画面要是 H.264。
-    转码的画面什么都能转（H.264 也行，只是费 CPU）：只换封装失败后改成转码的、记住要转码的台，不再改回去。"""
+def fits(mode: Mode, video: str | None, audio: str | None, copyable: tuple = ("h264",)) -> bool:
+    """这种转法能不能转这个片源：有没有画面、声音要对得上，只换封装的画面要在 copyable 里（一般只有 H.264；
+    片库在浏览器放得了 HEVC 时还有 HEVC）。转码的画面什么都能转（H.264 也行，只是费 CPU）：只换封装失败后改成
+    转码的、记住要转码的台，不再改回去。"""
     if (mode.video is None) != (video is None) or (mode.audio is None) != (audio is None):
         return False
-    return mode.video != "copy" or video == "h264"
+    return mode.video != "copy" or video in copyable
 
 
 def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool = False) -> list[str]:
@@ -246,6 +283,8 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool
     HLS 线路（routes.LENIENT_*），放宽扩展名检查（协议照样只许网络的）。"""
     piped = source.opener is not None
     args = [ffmpeg, "-hide_banner", "-nostats", "-loglevel", "info"]
+    if source.subs_out:
+        args.append("-y")          # 字幕的输出是缓存里的文件：跳转重起时覆盖
     if not piped:
         args.append("-nostdin")
     if source.paced:
@@ -258,30 +297,47 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool
             args += ["-user_agent", source.user_agent]
         if source.referer:
             args += ["-headers", f"Referer: {source.referer}\r\n"]
-    if source.offset >= 1:
+    if source.exact and source.offset > 0:
+        args += ["-ss", f"{source.offset:.3f}"]
+    elif source.offset >= 1:
         args += ["-ss", str(int(source.offset))]
     if not piped and is_live(source):
         args += LIVE_PROBE
     if lenient and not piped:
         args += live_routes.LENIENT_OPTION
     args += ["-i", "pipe:0" if piped else url]
-    # 大写 V：不要封面图。没有这一路时不报错（?）。
-    args += ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"]
+    if source.maps:
+        for spec in source.maps:
+            args += ["-map", spec]
+    else:
+        # 大写 V：不要封面图。没有这一路时不报错（?）。
+        args += ["-map", "0:V:0?", "-map", "0:a:0?"]
+    args += ["-sn", "-dn"]
+    if source.exact:
+        args += ["-copyts", "-avoid_negative_ts", "disabled", "-output_ts_offset", str(EXACT_TS_OFFSET)]
     if mode.video == "copy":
         args += ["-c:v", "copy"]
+        if source.video_tag:
+            args += ["-tag:v", source.video_tag]
     elif mode.video == "encode":
         args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "4M", "-bufsize", "8M",
                  "-pix_fmt", "yuv420p", "-vf", "scale=-2:'min(720,ih)'",
                  "-force_key_frames", "expr:gte(t,n_forced*2)"]
     if mode.audio == "encode":
-        args += ["-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+        args += ["-c:a", "aac", "-b:a", source.audio_rate or "128k", "-ac", "2"]
+    elif mode.audio == "copy":
+        args += ["-c:a", "copy"]
+    discont = "+frag_discont" if source.exact else ""       # tfdt 写真的时间（见 EXACT_TS_OFFSET）
     if mode.video is not None:
         # 每段从关键帧起（Safari 和 MediaSource 都要），至少 2 秒。
-        args += ["-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        args += ["-movflags", "frag_keyframe+empty_moov+default_base_moof" + discont,
                  "-min_frag_duration", str(FRAGMENT_US)]
     else:
-        args += ["-movflags", "empty_moov+default_base_moof", "-frag_duration", str(FRAGMENT_US)]
+        args += ["-movflags", "empty_moov+default_base_moof" + discont, "-frag_duration", str(FRAGMENT_US)]
     args += ["-flush_packets", "1", "-f", "mp4", "pipe:1"]
+    for index, path in source.subs_out:
+        # 另一个输出：只有这一路字幕，转成 WebVTT 写进缓存（library.py 边放边读，从不进画面那一路）。
+        args += ["-map", f"0:{int(index)}", "-c:s", "webvtt", "-flush_packets", "1", "-f", "webvtt", str(path)]
     return args
 
 
@@ -393,6 +449,8 @@ def init_info(moov: bytes) -> dict:
                     avcc = _child(body, b"avcC", start=78)
                     codec = f"{name}.{avcc[1]:02x}{avcc[2]:02x}{avcc[3]:02x}" if avcc and len(avcc) >= 4 \
                         else "avc1.640028"
+                elif name in ("hvc1", "hev1"):
+                    codec = hevc_codec(name, _child(body, b"hvcC", start=78))
                 elif name == "mp4a":
                     esds = _child(body, b"esds", start=28)
                     codec = f"mp4a.40.{(_aac_object_type(esds) if esds else None) or 2}"
@@ -407,6 +465,21 @@ def init_info(moov: bytes) -> dict:
             if track_id in tracks:
                 tracks[track_id]["duration"] = default_duration
     return tracks
+
+
+def hevc_codec(name: str, hvcc: bytes | None) -> str:
+    """hvcC → CODECS 里的那一项（ISO/IEC 14496-15 附录 E）：hvc1.<profile_space><profile_idc>.<兼容标志，按位倒过来的
+    十六进制>.<L/H tier><level_idc>[.<约束标志，每字节一项，去掉后面的 0>]。例：Main 10、5.1 级是 hvc1.2.4.L153.B0。
+    hvcC 太短（坏了）时给 Main、3.1 级的保守值。"""
+    if not hvcc or len(hvcc) < 13:
+        return f"{name}.1.6.L93.B0"
+    space, tier, profile = hvcc[1] >> 6, (hvcc[1] >> 5) & 1, hvcc[1] & 0x1F
+    compat = int(f"{int.from_bytes(hvcc[2:6], 'big'):032b}"[::-1], 2)
+    constraints = list(hvcc[6:12])
+    while constraints and constraints[-1] == 0:
+        constraints.pop()
+    text = f"{name}.{'' if space == 0 else 'ABC'[space - 1]}{profile}.{compat:X}.{'H' if tier else 'L'}{hvcc[12]}"
+    return text + "".join(f".{byte:X}" for byte in constraints)
 
 
 def codecs_of(tracks: dict) -> str:
@@ -497,10 +570,19 @@ class Window:
         # 一共出了多少秒（停了以后也留着）：估计电脑上看到了哪里（web.py 的 _pc_position）。
         self.total_s = 0.0
         self.origin: float | None = None
+        # 片库（Source.exact）：ORIGIN 不看第一段的 tfdt，直接用这个（offset + 文件的起始时间）。
+        self.fixed_origin: float | None = None
+        # 播放器取过的最大的段号（片库按它攒段，WatchStream._hold）。
+        self.fetched = -1
+
+    def ahead(self) -> tuple[int, int]:
+        """还没被播放器取走的：(几段, 多少字节)。"""
+        waiting = [len(data) for seq, _, data in self.segments if seq > self.fetched]
+        return len(waiting), sum(waiting)
 
     def add(self, duration: float, data: bytes, start: float | None = None) -> None:
         if self.origin is None and not self.segments and self.next_seq == 0:
-            self.origin = start if start is not None else 0.0
+            self.origin = self.fixed_origin if self.fixed_origin is not None else start if start is not None else 0.0
         self.segments.append((self.next_seq, duration, data))
         self.next_seq += 1
         self.total_s += duration
@@ -819,6 +901,8 @@ class WatchStream:
         self.clock = clock
         self.popen = popen
         self.window = Window()
+        if source.exact:
+            self.window.fixed_origin = max(0.0, source.offset) + source.media_start + EXACT_TS_OFFSET
         self.created = self.seen = clock()
         self.error = ""
         self.stopped = False
@@ -989,6 +1073,24 @@ class WatchStream:
     def _notify(self) -> None:
         with self._cond:
             self._cond.notify_all()
+
+    def fetched(self, seq: int) -> None:
+        """播放器取了第 seq 段（watch.get）：片库攒着的那一路可以接着读了。"""
+        with self._cond:
+            if seq > self.window.fetched:
+                self.window.fetched = seq
+                self._cond.notify_all()
+
+    def _hold(self) -> None:
+        """片库（Source.bounded）：没被取走的攒够了 VOD_AHEAD_SEGMENTS 段或 VOD_AHEAD_BYTES 就先不读 ffmpeg 的输出——
+        管道满了 ffmpeg 就停下，也就不再读文件（网盘不白白多拉）；播放器取走一段再接着读。暂停着时播放器照样
+        取列表（不会被当成没人看停掉），只是不取段。"""
+        with self._cond:
+            while not self.stopped:
+                count, size = self.window.ahead()
+                if count < VOD_AHEAD_SEGMENTS and size < VOD_AHEAD_BYTES:
+                    return
+                self._cond.wait(1.0)
 
     # ---- 起停 ----
 
@@ -1200,9 +1302,10 @@ class WatchStream:
             threading.Thread(target=self._feed, args=(proc,), daemon=True).start()
         probed.wait(ROUTE_PROBE_WAIT_S if len(self.source.routes) > 1 else PROBE_WAIT_S)
         done, video, audio = input_codecs(lines)
-        wanted = mode_for(video, audio)
+        copyable = source.copy_video
+        wanted = mode_for(video, audio, copyable)
         # 输入信息打出来了、但这种转法 ffmpeg 起不来（例如只有声音的源用了按关键帧切段）：照编码换一种转法。
-        if not done and (wanted is None or fits(mode, video, audio)):
+        if not done and (wanted is None or fits(mode, video, audio, copyable)):
             self._kill()
             proc.wait()
             return "failed", self._reason(lines) or "片源连不上"
@@ -1210,7 +1313,7 @@ class WatchStream:
             self._kill()
             proc.wait()
             return "failed", "片源里没有画面也没有声音"
-        if not fits(mode, video, audio):
+        if not fits(mode, video, audio, copyable):
             self._kill()
             proc.wait()
             return "restart", (wanted, f"{video or '无画面'} + {audio or '无声音'}")
@@ -1301,6 +1404,8 @@ class WatchStream:
                 if self._leg_segments == 1:
                     self._first_segment()
                 self._notify()
+                if self.leg.bounded:
+                    self._hold()
         return produced
 
     def _read_stderr(self, proc, lines: list[str], probed: threading.Event, given: str = "") -> None:
@@ -1611,7 +1716,9 @@ class WatchService:
                            cheap=cheap, route_memory=self.routes, first_route=route)
 
     def mode_of(self, source: Source) -> Mode:
-        """这个片源先按哪种转法起：记住了的直播台按记住的，别的先试只换封装。"""
+        """这个片源先按哪种转法起：片库的按探测好的（Source.mode），记住了的直播台按记住的，别的先试只换封装。"""
+        if source.mode is not None:
+            return source.mode
         known = self.memory.mode(source.key) if is_live(source) else None
         return known or FIRST_MODE
 
@@ -1782,8 +1889,13 @@ def get(handler, relay, path: str) -> bool:
     stream.touch()
     name, seq = match.group(3), match.group(4)
     if name in ("master.m3u8", "index.m3u8"):
-        if not stream.wait_ready(READY_WAIT_S):
-            if stream.alive:
+        progress = stream.source.progress
+        if not stream.wait_ready(READY_WAIT_S if progress is None else PROGRESS_WAIT_S):
+            if stream.alive and progress is not None and not stream.notice:
+                # 片库起播：说说读到哪了（网盘上的大文件第一段要好几秒），页面显示出来再来取。
+                handler._send(503, (progress() or "正在打开…").encode(), "text/plain; charset=utf-8",
+                              {"X-RTV-Notice": "1"})
+            elif stream.alive:
                 # 换线路时正文是「CCTV2 线路 1 失效（…），正在换线路 2…」，带 X-RTV-Notice：播放器显示出来、
                 # 接着等（不算进它「503 至多等几次」的次数，线路有几条就可能要等几轮）。
                 notice = stream.notice
@@ -1807,6 +1919,8 @@ def get(handler, relay, path: str) -> bool:
         handler._send(200, text.encode(), PLAYLIST_TYPE, headers or None)
         return True
     data = stream.window.init if name == "init.mp4" else stream.window.segment(int(seq))
+    if seq is not None:
+        stream.fetched(int(seq))
     if data is None:
         handler._not_found()
         return True

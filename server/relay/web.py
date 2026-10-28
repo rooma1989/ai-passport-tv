@@ -1358,6 +1358,8 @@ class Relay:
                     "duration": int(duration or source.duration or 0), "seekable": True, **quality, **extra}
         if getattr(source, "quality", ""):
             quality = {"quality": {"current": source.quality, "choices": list(QUALITY_CHOICES)}}
+        # 片库经 watch.py 放的文件（library.py）：和视频一样能跳转、有时长。
+        video = video or source.key[0] == "library"
         if source.key[0] == "live":
             extra.setdefault("routes", max(1, len(getattr(source, "routes", ()) or ())))
             if extra["routes"] > 1 and isinstance(stream, watch_pc.WatchStream):
@@ -1574,8 +1576,9 @@ class Relay:
         if cursor.get("position") is not None:
             return max(0.0, float(cursor["position"]))
         stream = cursor.get("stream")
-        if isinstance(stream, (vod.VodSession, _LibraryPlay)):
-            return max(0.0, float(cursor["offset"]))      # 点播、片库：播放器还没报过，就是起播的地方
+        if isinstance(stream, (vod.VodSession, _LibraryPlay)) or cursor.get("site") == "library":
+            # 点播、片库：播放器还没报过，就是起播的地方（片库经 watch.py 放的那一路跑在播放器前面，不能按出了多少段算）。
+            return max(0.0, float(cursor["offset"]))
         produced = stream.window.total_s if stream is not None else 0.0
         return max(0.0, cursor["offset"] + produced - PC_BEHIND_S)
 
@@ -1637,7 +1640,7 @@ class Relay:
         if cursor is None:
             return False
         position = _seconds(body.get("position"))
-        if not cursor.get("duration") and isinstance(cursor.get("stream"), _LibraryPlay):
+        if not cursor.get("duration") and cursor.get("site") == "library":
             # 片库的视频服务器不知道多长：播放器读到文件的时长后跟着进度一起报。
             length = _seconds(body.get("duration"))
             if isinstance(length, float) and length > 0:
@@ -1767,7 +1770,9 @@ class Relay:
         self.pc_sync(caller.user)
         prefer = _prefer(body)
         if body.get("library") is not None:
-            return self._pc_library(caller, viewer, body.get("library"), start)
+            # caps：页面能不能放 HEVC（MediaSource、<video>）；remux：直接放出了错，要求换一种放法。
+            return self._pc_library(caller, viewer, body.get("library"), start, body.get("caps"),
+                                    body.get("remux") is True)
         cid, name, extra, meta, key, duration = "cast", table.CAST_LABEL, {}, {}, "", 0
         if body.get("url") is not None or body.get("video") is not None:
             planned = self._pc_cast_item(caller, account, dev, body.get("url"), body.get("video"), part, start,
@@ -1836,32 +1841,55 @@ class Relay:
         return {"channel": cid, "name": name,
                 **self._watch_answer(stream, duration, start=source.start if native else None), **extra}
 
-    def _pc_library(self, caller: Caller, viewer: str, iid, start: float | None) -> dict:
-        """片库里的一个视频在电脑上放（library.py）：浏览器直接按 Range 取 api/library/file/<id>（同源，带登录的
-        cookie），不经 vod.py 的那一路。进度和别的视频一样记在 pc-progress.json（键 lib:<id>），继续观看、
-        「接着上次看的地方」照旧；剧集给选集（parts，每集带 id）。"""
-        found = self.library.item(iid) if self.library is not None and isinstance(iid, str) else None
+    def _pc_library(self, caller: Caller, viewer: str, iid, start: float | None, caps=None,
+                    remux: bool = False) -> dict:
+        """片库里的一个视频在电脑上放（library.py）。先看探测的结果（第一次放时探测，缓存在索引里）和页面报的能力
+        （caps）定怎么放（library.plan）：
+        - 直接放：浏览器按 Range 取 api/library/file/<id>（同源，带登录的 cookie），不经 vod.py 的那一路；
+        - 封装 / 转码：watch.py 的一路（ffmpeg 读只给本机的 /api/library/raw），回答和别的 HLS 一样（mode "hls"），
+          跳转时从那里重起（start），时间轴照原样，进度和字幕都按文件里的时间。
+        进度和别的视频一样记在 pc-progress.json（键 lib:<id>），继续观看、「接着上次看的地方」照旧；剧集给选集
+        （parts，每集带 id）；字幕菜单是 subs（library.Library.subs_view）。"""
+        library = library_api.wired(self)
+        found = library.item(iid) if library is not None and isinstance(iid, str) else None
         if found is None:
             return {"ok": False, "error": "片库里没有这个视频（可能刚重新扫描过，刷新一下）"}
-        if not found.get("playable"):
-            return {"ok": False, "error": "这个格式电脑上暂时放不了"}
+        media = library.media_of(found["id"])
+        remote = library.remote(found)
+        decision = library_api.plan(media, found.get("ext") or "", caps, remote=remote, remux=remux)
+        if decision["how"] == "none":
+            return {"ok": False, "error": decision["note"]}
         slot = self._pc_slot(caller, viewer)
         if self.vod is not None:
             self.vod.close(slot)
-        self.watch.close(slot)
         key = "lib:" + found["id"]
         cursor = self._pc_cursor.get((caller.user, key))
         saved = self._pc_saved(caller.user, key)
-        duration = float((cursor or {}).get("duration") or (saved or {}).get("duration") or 0)
+        duration = float((cursor or {}).get("duration") or (saved or {}).get("duration") or 0) \
+            or round(float((media or {}).get("dur") or 0), 1)
         offset = self._pc_position(cursor) if cursor is not None else float((saved or {}).get("position") or 0)
         if start is not None:
             offset = _clamp(start, duration) if duration else max(0.0, start)
         elif duration and offset >= duration - 5:
             offset = 0.0
-        episodes = self.library.episodes_of(found)
+        episodes = library.episodes_of(found)
         show = found.get("show") or ""
         name = show if episodes else found["title"]
-        play = _LibraryPlay(secrets.token_hex(8))
+        if decision["how"] == "direct":
+            self.watch.close(slot)
+            play = _LibraryPlay(secrets.token_hex(8))
+            answer = {"ok": True, "sid": play.sid, "title": found["title"], "kind": "video", "mode": "vod",
+                      "url": f"api/library/file/{found['id']}", "start": round(offset, 1), "duration": int(duration),
+                      "seekable": True}
+        else:
+            source = library.watch_source(found, media, decision, offset, found["title"])
+            try:
+                # 每次都重起一路（跳转、从头放、换一集）：从 offset 那一秒起，时间轴照原样。
+                play = self.watch.open(slot, source, user=caller.user, restart=True)
+            except watch_pc.Busy as busy:
+                return {"ok": False, "error": self._watch_busy(busy)}
+            answer = self._watch_answer(play, duration)
+        self.log(f"在电脑上放片库的「{found['title']}」：{decision['note']}")
         self._pc_cursor[(caller.user, key)] = {"bvid": found["id"], "offset": offset, "stream": play,
                                                "title": found["title"], "name": name, "duration": duration,
                                                "site": "library"}
@@ -1869,9 +1897,9 @@ class Relay:
             self._pc_cursor[(caller.user, key)]["position"] = offset
         self._pc_pages[(caller.user, viewer)] = key
         self.pc_sync(caller.user)
-        answer = {"ok": True, "sid": play.sid, "title": found["title"], "kind": "video", "mode": "vod",
-                  "url": f"api/library/file/{found['id']}", "start": round(offset, 1), "duration": int(duration),
-                  "seekable": True, "channel": "lib", "name": name, "library": found["id"]}
+        live = decision["how"] == "remux" and remote
+        answer.update(channel="lib", name=name, library=found["id"], kind="video",
+                      subs=library.subs_view(found, media, live), subs_url=f"api/library/subs/{found['id']}/")
         if start is None and offset > 0:
             answer["resume"] = round(offset, 1)
         if len(episodes) > 1:
@@ -1882,7 +1910,7 @@ class Relay:
             current = next(n for n, ep in enumerate(episodes, 1) if ep["id"] == found["id"])
             answer["parts"] = {"kind": "series", "name": show, "current": current,
                                "items": [{"n": n, "id": ep["id"], "title": ep["title"], "duration": 0,
-                                          "watched": ep["id"] in done, "playable": bool(ep.get("playable"))}
+                                          "watched": ep["id"] in done, "playable": library.playable(ep)}
                                          for n, ep in enumerate(episodes, 1)]}
             answer["part"] = current
         return answer
@@ -2871,7 +2899,8 @@ def _manage_handler(relay: Relay):
                                  or accountfeeds.get(self, relay, path) or follows.get(self, relay, path)):
                 return
             # 在电脑上看的列表和段（watch.py）：只认地址里的令牌，不看登录；没开这个功能时 404。
-            if watch_pc.get(self, relay, path) or vod.get(self, relay, path):
+            # 片库给中转自己的 ffmpeg 的文件（library.raw）：只认本机直接连进来的、带令牌的。
+            if watch_pc.get(self, relay, path) or vod.get(self, relay, path) or library_api.raw(self, relay, path):
                 return
             if relay.tenant:
                 # 扫设备二维码、绑定码、邀请链接：落地页不用登录，页面里的脚本再带着 cookie 问接口。
@@ -3269,6 +3298,8 @@ def make_servers(relay: Relay, stream_port: int, manage_port: int,
     streams = ThreadingHTTPServer((bind, stream_port), _stream_handler(relay))
     manage = ThreadingHTTPServer((bind, manage_port), _manage_handler(relay))
     streams.daemon_threads = manage.daemon_threads = True
+    # 片库（library.py）：中转自己的 ffmpeg 从 127.0.0.1 的这个端口取文件（/api/library/raw）。
+    relay.manage_port = manage.server_address[1]
     return streams, manage
 
 

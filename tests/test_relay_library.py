@@ -17,9 +17,10 @@ cached. Serving, through the relay's real HTTP port: by item id only, 200 withou
 password is not), 416 past the end; guests and signed-out callers get 404; passwords are
 never in an API answer, in the logs or readable by others (library.json is mode 600); only
 admins add, delete and scan sources (and those are audited); the cloud relay has no library.
-On the PC a library item plays as a "vod" answer at api/library/file/<id>, its progress is
-kept under lib:<id> and resumes, a show's episodes are the episode list, and a TV target is
-refused for now.
+On the PC a library item plays as a "vod" answer at api/library/file/<id> (an mkv as an "hls"
+answer through watch.py), its progress is kept under lib:<id> and resumes, a show's episodes
+are the episode list, and a TV target is refused for now. How step 2 decides, probes, remuxes
+and serves subtitles is in test_relay_library_play.py.
 """
 
 from __future__ import annotations
@@ -262,7 +263,7 @@ class LocalTests(unittest.TestCase):
                          ("盗梦空间", 2010, "A thief who steals secrets.", "Movies/Inception.2010-poster.jpg"))
         episodes = [i for i in self.lib.items() if i["kind"] == "episode"]
         self.assertEqual({(e["show"], e["season"], e["episode"], e["playable"]) for e in episodes},
-                         {("Friends", 1, 1, True), ("Friends", 1, 2, False)})
+                         {("Friends", 1, 1, True), ("Friends", 1, 2, True)}, "an mkv plays too (step 2)")
         self.assertEqual({e["poster"] for e in episodes}, {"Shows/Friends/poster.jpg"}, "the show folder's poster")
         folder = library.LocalFolder(str(self.root))
         self.assertIsNone(folder.path_of("../secret/private.mp4"))
@@ -560,8 +561,9 @@ class ApiTests(unittest.TestCase):
         show = self.watch(library=first)
         self.assertEqual([p["id"] for p in show["parts"]["items"]], [first, ids["家庭剧/S01E02.mp4"]])
         self.assertEqual((show["name"], show["parts"]["current"]), ("家庭剧", 1))
-        # Not playable in the browser yet, and not on a TV yet.
-        self.assertIn("暂时放不了", self.watch(library=ids["Clip.mkv"])["error"])
+        # An mkv (not probed here: the relay's ffmpeg is fake) goes through watch.py; not on a TV yet.
+        clip = self.watch(library=ids["Clip.mkv"])
+        self.assertEqual((clip["ok"], clip["mode"], clip["kind"], clip["seekable"]), (True, "hls", "video", True), clip)
         self.assertIn("片库里没有", self.watch(library="0" * 16)["error"])
         tv = self.call("alice", "POST", "/tv/api/play", {"target": watch_base.ALICE_DEVICE,
                                                           "item": {"kind": "library", "id": movie}})[1]
