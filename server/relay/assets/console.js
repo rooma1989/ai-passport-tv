@@ -2934,7 +2934,7 @@ function openDirect(answer, ctx) {
   $("watchFollow").checked = false;
   const parts = answer.parts;
   const what = parts && parts.items.length > 1 && parts.kind !== "up"
-    ? partWord(parts.current) + " / " + parts.items.length + (answer.title ? " · " + answer.title : "")
+    ? partWord(parts.current) + " / " + parts.items.length + (answer.title && answer.title !== partWord(parts.current) ? " · " + answer.title : "")
     : answer.title && answer.title !== answer.name ? answer.title : "";
   const name = answer.item_title || answer.name || answer.channel;
   watching.label = "这台电脑 · " + name + (what ? " · " + what : "");
