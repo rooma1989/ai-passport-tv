@@ -40,6 +40,9 @@ from typing import Callable
 
 SUGGEST_URL = "https://movie.douban.com/j/subject_suggest?q="
 SUBJECT_URL = "https://movie.douban.com/subject/{}/"
+# 手机版的影视搜索：subject_suggest 对不带 Cookie 的请求时常整个回空（[]，查什么都一样），这时改用它。
+SEARCH_URL = "https://m.douban.com/rexxar/api/v2/search/movie?start=0&count=10&q="
+SEARCH_REFERER = "https://m.douban.com/search/"
 MOBILE_URL = "https://m.douban.com/rexxar/api/v2/subject/{}"
 REFERER = "https://movie.douban.com/"
 MOBILE_REFERER = "https://m.douban.com/movie/subject/{}/"
@@ -164,6 +167,31 @@ def parse_suggest(data: bytes | str) -> list[dict]:
                       "year": _year(row.get("year")), "type": kind,
                       "episodes": int(episodes) if episodes.isdigit() else None,
                       "img": row["img"] if good_image_url(row.get("img")) else ""})
+        if len(found) >= CANDIDATES_MAX:
+            break
+    return found
+
+
+def parse_search(data: bytes | str) -> list[dict]:
+    """手机版影视搜索的 JSON（{items: [{target_type, target: {id, title, year, cover_url}}]}）→ 和 parse_suggest
+    一样的候选；只要电影、电视剧。"""
+    try:
+        answer = json.loads(data)
+    except (TypeError, ValueError):
+        return []
+    found = []
+    rows = answer.get("items") if isinstance(answer, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        target = row.get("target") if isinstance(row, dict) else None
+        kind = row.get("target_type") if isinstance(row, dict) else None
+        if not isinstance(target, dict) or kind not in ("movie", "tv"):
+            continue
+        did = str(target.get("id") or "")
+        title = _text(target.get("title"))
+        if not _DOUBAN_ID.match(did) or not title:
+            continue
+        found.append({"id": did, "title": title, "sub_title": "", "year": _year(target.get("year")), "type": kind,
+                      "episodes": None, "img": target["cover_url"] if good_image_url(target.get("cover_url")) else ""})
         if len(found) >= CANDIDATES_MAX:
             break
     return found
@@ -344,6 +372,12 @@ class Douban:
             return []
         found = parse_suggest(self._get(SUGGEST_URL + urllib.parse.quote(query), REFERER,
                                         "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+        if not found:
+            try:
+                found = parse_search(self._get(SEARCH_URL + urllib.parse.quote(query), SEARCH_REFERER,
+                                               "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+            except Failed:
+                found = []
         with self._lock:
             for c in found:
                 self._seen[c["id"]] = c
