@@ -1411,7 +1411,7 @@ class Library:
         return {"name": name, "art": art}
 
     def titles(self) -> dict[str, dict]:
-        """片库里的「片子」：一部剧（各集一起）、一部电影、一个其他视频。{键: {key, kind, title, alt, year, added}}"""
+        """片库里的「片子」：一部剧（各集一起）、一部电影、一个其他视频。{键: {key, kind, title, alt, year, added, stale}}"""
         found: dict[str, dict] = {}
         for item in self.items():
             episode = item["kind"] == "episode"
@@ -1420,11 +1420,15 @@ class Library:
             if row is None:
                 found[key] = {"key": key, "kind": "show" if episode else item["kind"],
                               "title": (item.get("show") if episode else item.get("title")) or "",
-                              "alt": item.get("alt") or "", "year": item.get("year"), "added": item.get("added") or 0}
+                              "alt": item.get("alt") or "", "year": item.get("year"), "added": item.get("added") or 0,
+                              "stale": False}
+                row = found[key]
             else:
                 row["alt"] = row["alt"] or item.get("alt") or ""
                 row["year"] = row["year"] or item.get("year")
                 row["added"] = max(row["added"], item.get("added") or 0)
+            # 还没按新写法重新解析（下次扫描时解析）：片名可能不对，先不往外查。
+            row["stale"] = row["stale"] or item.get("pv") != PARSE_VERSION
         return found
 
     @staticmethod
@@ -1443,7 +1447,7 @@ class Library:
         due = []
         for key, title in sorted(titles.items(), key=lambda kv: (-kv[1]["added"], kv[0])):
             failed = self._meta_failed.get(key)
-            if failed is not None and now - failed < META_FAIL_S:
+            if (failed is not None and now - failed < META_FAIL_S) or title.get("stale"):
                 continue
             auto = title["kind"] in ("show", "movie") and bool(title["title"])
             entry = entries.get(key)
@@ -2016,8 +2020,10 @@ class Library:
 
     def due(self) -> list[str]:
         now = self.clock()
+        # 索引里还有按旧写法解析的条目（升级以后）的来源马上扫一遍，好让在线资料按新的片名查。
+        stale = {i["source"] for i in self.items() if i.get("pv") != PARSE_VERSION}
         return [s["id"] for s in self._load_sources()
-                if now - (s.get("last_scan") or 0) >= (RETRY_S if s.get("ok") is False else EVERY_S)]
+                if s["id"] in stale or now - (s.get("last_scan") or 0) >= (RETRY_S if s.get("ok") is False else EVERY_S)]
 
     def run_forever(self, sleep=time.sleep) -> None:
         sleep(START_DELAY_S)

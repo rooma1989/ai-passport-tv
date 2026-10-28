@@ -334,6 +334,21 @@ class MatcherTests(unittest.TestCase):
         self.now += libmeta.MISS_RETRY_S + 1
         self.assertEqual(self.lib.meta_due(), ["m" + cards["10间敢死队"]["id"]])
 
+    def test_titles_parsed_the_old_way_wait_for_a_rescan(self):
+        """An index from before the name cleanup still says "Narco-Saints": don't send that to Douban; scan first."""
+        with library._LOCK:
+            for item in self.lib._items.values():
+                item["pv"] = library.PARSE_VERSION - 1
+                if item["kind"] == "episode":
+                    item["show"], item["alt"], item["year"] = "Narco-Saints", "", None
+        self.lib._save_sources([{**s, "last_scan": self.now} for s in self.lib._load_sources()])
+        self.assertEqual(self.lib.meta_due(), [], "nothing is looked up before the rescan")
+        self.assertEqual(self.lib.due(), [self.lib._load_sources()[0]["id"]], "the source is rescanned at once")
+        self.lib.scan()
+        self.assertEqual(self.run_all(), 2)
+        self.assertNotIn("Narco-Saints", " ".join(self.fake.urls()), "looked up as 苏里南, found at once")
+        self.assertEqual(self.view()[2]["苏里南"]["meta"]["rating"], 6.9)
+
     def test_english_title_through_aka(self):
         # 中文名查不到（文件夹里是另一个写法）：英文名查出来的候选又名里有 Narco-Saints 才认。
         os.rename(self.root / SURINAM, self.root / "夸克/来自：分享/毒枭圣徒 (2022)")
