@@ -588,7 +588,7 @@ class ScanAssetTests(unittest.TestCase):
                        "这不是电脑登录码", "输入登录码", 'mode === "any"', "扫一扫", "认不出这个二维码"):
             self.assertIn(needle, scan)
         # The remote's 扫一扫 loads the same script on demand; guests and the single-user relay do not get it.
-        self.assertRegex(web.PAGE, r'class="icon noguest tenantonly" id="scanany"')
+        self.assertRegex(web.PAGE, r'class="iconbtn noguest tenantonly" id="scanany"')
         self.assertIn('mode: "any"', web.PAGE)
         self.assertNotRegex(scan, r"https?://[A-Za-z0-9]", "no external host")
 

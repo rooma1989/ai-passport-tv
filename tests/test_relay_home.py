@@ -17,6 +17,9 @@ What is checked, over real sockets like the other relay tests:
   private addresses, remembers failures; the thumbnail proxy accepts only i.ytimg.com's fixed names.
 - The console page, its stylesheet and script are served with a CSP that allows the stylesheet; the
   classic console's old addresses redirect to /tv/console.
+- The phone remote (/tv/, M6) loads the same versioned console.css and defines no tokens of its own; a
+  guest gets the same page with 订阅, 我的, group editing, cast history and the scanner hidden, and a state
+  and search answer without anyone's subscriptions, history or frequent channels.
 - Bilibili covers missing after a restart (they live only in the client's memory) are fetched again in
   the background, once per channel, and /api/home says so (covers_pending) until they are back.
 - The hero's thumbnail size "h" asks the image host for a big uncropped picture; GET /api/bili/space
@@ -37,6 +40,7 @@ import tempfile
 import threading
 import time
 import types
+import urllib.parse
 import unittest
 from pathlib import Path
 
@@ -433,6 +437,70 @@ class HomeTests(unittest.TestCase):
             self.assertEqual((status, headers["Location"]), (302, "/tv/console"), old)
         self.assertNotIn("console-classic", text)
         self.assertNotIn("旧版界面", text)
+
+    def test_phone_remote_uses_the_console_tokens(self):
+        """M6: the phone remote (/tv/) is built on console.css -- one stylesheet, same versioned address as the
+        console's, its own <style> only adds layout and never redefines the colour tokens or loads anything else."""
+        status, _, page = self.request("GET", "/tv/", "alice")
+        self.assertEqual(status, 200)
+        text = page.decode("utf-8")
+        self.assertEqual(text, web.PAGE)
+        self.assertNotIn("__CONSOLE_", text)
+        links = re.findall(r'<link rel="stylesheet" href="([^"]+)"', text)
+        self.assertEqual(links, ["console.css?v=" + console.CONSOLE_CSS_STAMP])
+        _, _, console_page = self.request("GET", "/tv/console", "alice")
+        self.assertIn('href="console.css?v=%s"' % console.CONSOLE_CSS_STAMP, console_page.decode("utf-8"),
+                      "the phone and the console share one cached stylesheet")
+        status, headers, body = self.request("GET", "/tv/" + links[0])
+        self.assertEqual(status, 200, "the stylesheet loads before sign-in, like the manifest")
+        self.assertTrue(headers["Content-Type"].startswith("text/css"))
+        css = body.decode("utf-8")
+        for token in ("--bg:", "--label:", "--fill:", "--brand:", "--mat-thick:", "--sans:", "--amber:"):
+            self.assertIn(token, css, token)
+        own = re.search(r"<style>(.*?)</style>", text, re.S).group(1)
+        self.assertIsNone(re.search(r"--[a-z0-9-]+\s*:", own), "the page's own style defines no tokens of its own")
+        for old in ("--ink", "--paper", "Songti", "var(--serif)"):
+            self.assertNotIn(old, text, "the old warm palette is gone")
+        self.assertIn('<div id="app" class="m', text, "the console's phone layout")
+        self.assertNotRegex(text, r"<script[^>]+src", "no script tag loads at page view")
+        self.assertNotRegex(text, r"""(?:src=["']?|href=["']?|url\(|@import\s+)https?:""", "nothing from elsewhere")
+        # 44 px touch targets for the shared controls the phone uses (design section 9).
+        self.assertRegex(own, r"\.chips button \{ height: 44px;")
+        self.assertRegex(own, r"\.btn, \.btn\.sm, \.go, \.ghost \{ height: 48px;")
+        self.assertRegex(own, r"\.linkbtn \{ min-height: 44px;")
+
+    def test_phone_remote_guest_view(self):
+        """A guest (scanned the TV's code) still gets only what it had: the remote, live channels and search
+        (channels and guide only, localsearch.py); no 订阅 or 我的, no group editing, no cast history, no scanner,
+        and the state it is served carries none of the owner's subscriptions, history or frequent channels."""
+        self.online(ALICE_DEVICE, "ch001")
+        status, _, page = self.request("GET", "/tv/", "guest")
+        self.assertEqual(status, 200)
+        text = page.decode("utf-8")
+        self.assertEqual(text, web.PAGE, "one page for everyone; the guest view is classes plus the server's answers")
+        markup = text.split("<script>", 1)[0]
+        for hidden in (r'data-page="creators" class="noguest"', r'data-page="mine" class="noguest"',
+                       r'class="linkbtn noguest" id="adjust"', r'class="iconbtn noguest tenantonly" id="scanany"',
+                       r'<div class="noguest">\s*<h2 class="h3">放过的</h2>'):
+            self.assertRegex(markup, hidden)
+        script = text.split("<script>", 1)[1]
+        self.assertIn('document.body.classList.toggle("guest", !!me && me.role === "guest")', script)
+        self.assertIn('if (me.role === "guest" && onPage(["creators"].concat(MINE_PAGES))) goTab("remote");', script)
+        self.assertIn("body.guest .noguest { display: none !important; }", markup)
+        # What the page reads for a guest: its one TV, nobody's subscriptions, no 常看.
+        self.relay.tally = types.SimpleNamespace(top=lambda _user: ["ch001"])
+        guest = self.call("GET", "/api/state", "guest")[1]
+        self.assertEqual(guest["me"]["role"], "guest")
+        self.assertEqual([d["id"] for d in guest["devices"]], [ALICE_DEVICE])
+        self.assertEqual((guest["creators"], guest["series"], guest["history"]), ([], [], []))
+        self.assertNotIn("frequent", guest)
+        self.assertEqual(self.call("GET", "/api/state")[1]["frequent"], ["ch001"], "members get their 常看")
+        search = self.call("GET", "/api/search/local?q=" + urllib.parse.quote("湖南"), "guest")[1]
+        self.assertTrue(search["ok"])
+        self.assertLessEqual({s["id"] for s in search["sections"]}, {"live", "epg"})
+        # Members-only endpoints the page calls from 订阅 / 我的 stay closed to a guest.
+        self.assertEqual(self.request("GET", "/tv/api/console/devices", "guest")[0], 404)
+        self.assertEqual(self.request("GET", "/tv/api/sessions", "guest")[0], 404)
 
 
 class CloudHomeTests(HomeTests):
