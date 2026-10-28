@@ -414,7 +414,7 @@ time. Each phase ships on its own; the console keeps working between phases.
 | M3 Live and lineup (guide **done**, `rootv-live`; selected-programme header and Lineup open) | Guide grid (needs `desktop-epg`), selected-programme header, Lineup as the second segment of Live (moves "adjust groups", presets, size budget) | 3 |
 | M4 Series, creators, detail, progress | Poster grid, creator page, detail pages, `/api/progress`, continue-watching rules (Q4) | 4 |
 | M5 Search | Aggregated search, paste-a-link result, add/subscribe from results | 2 |
-| M6 Phone | `remote.html` rebuilt on the same shell with bottom tabs (or one responsive page, Q1); guest view | 3 |
+| M6 Phone (**done**, `remote.html` on `console.css`; still two pages, Q1) | `remote.html` rebuilt on the same shell with bottom tabs Remote, Live, Search, Subscriptions, Me (or one responsive page, Q1); guest view (Remote, Live, Search) | 3 |
 | M7 Local library | Folder picker, scanner (walk, `.nfo`/poster, filename parsing, low-priority thumbnail extraction), index, detail, playback to the PC and to TVs through the existing ffmpeg paths | 7 |
 | M8 Media servers | Jellyfin and Emby connector (same API family); Plex after | 4 (+2 Plex) |
 | M9 Polish | Accessibility pass, empty/error states, keyboard tests, light theme checked on every screen, screenshots for the docs and the website | 2.5 |

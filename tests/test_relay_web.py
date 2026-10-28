@@ -1165,20 +1165,26 @@ class PageFieldTests(unittest.TestCase):
                   # 用手机听: now.listen, POST /api/listen (web.py Relay.listen).
                   "listen", "url", "bye",
                   # 节目单: data.epg in GET /api/state when the guide is on (epg.py); /api/epg is read as a whole.
-                  "epg"}
+                  "epg",
+                  # M6 phone remote: the 常看 group (data.frequent, livetally.py), the sleep timer (data.sleep,
+                  # POST /api/sleep in home.py) and the search tab (GET /api/search/local, localsearch.py).
+                  "frequent", "sleep", "sections"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 
     def test_tabs_and_where_things_live(self):
-        """Four tabs; 订阅 holds only creators and series; devices, sign-ins and the rest live under 我的."""
+        """Five tabs (M6): 遥控, 直播, 搜索 (which took over 投屏), 订阅 and 我的; guests keep the first three.
+        订阅 holds only creators and series; devices, sign-ins and the rest live under 我的."""
         page = web.PAGE.split("<script>", 1)[0]
-        nav = re.search(r"<nav>(.*?)</nav>", page, re.S).group(1)
-        self.assertEqual(re.findall(r'data-page="(\w+)"', nav), ["remote", "cast", "creators", "mine"])
+        nav = re.search(r'<nav id="tabs"[^>]*>(.*?)</nav>', page, re.S).group(1)
+        self.assertEqual(re.findall(r'data-page="(\w+)"', nav), ["remote", "live", "search", "creators", "mine"])
         self.assertRegex(nav, r'data-page="creators" class="noguest"')
         self.assertRegex(nav, r'data-page="mine" class="noguest"')
+        for tab in ("remote", "live", "search"):
+            self.assertNotRegex(nav, rf'data-page="{tab}"[^>]*noguest', f"guests keep {tab}")
 
         def section(name):
-            return re.search(rf'<section class="page[^"]*" id="{name}">(.*?)</section>', page, re.S).group(1)
+            return re.search(rf'<section class="page[^"]*" id="{name}"[^>]*>(.*?)</section>', page, re.S).group(1)
 
         subs = section("creators")
         for field in ("creator", "add", "creatorList", "seriesLink", "seriesName", "addSeries", "seriesList"):
@@ -1193,8 +1199,13 @@ class PageFieldTests(unittest.TestCase):
         self.assertIn('id="sessionList"', section("sessions"))
         self.assertIn('id="logoutOthers"', section("sessions"))
         self.assertIn('id="scanany"', section("remote"))
+        # 投屏 lives in 搜索 now: a pasted link is cast with the same POST /api/cast, the history stays for members.
+        self.assertIn('id="play"', section("search"))
+        self.assertRegex(section("search"), r'<div class="noguest">\s*<h2 class="h3">放过的</h2>')
         script = web.PAGE.split("<script>", 1)[1]
         self.assertIn("MOVED_TABS", script, "a remembered tab that no longer exists is moved, not ignored")
+        self.assertIn('cast: "search"', script)
+        self.assertIn('call("POST", "api/cast", { url: $("q").value })', script)
 
 
 if __name__ == "__main__":

@@ -3433,7 +3433,10 @@ def make_servers(relay: Relay, stream_port: int, manage_port: int,
 # 设备上宠物的个数（固件 xiaozhi_tv_ui_assets.h 的 PET_COUNT）。
 PET_COUNT = 11
 _ASSET_DIR = Path(__file__).resolve().parent / "assets"
-PAGE = (_ASSET_DIR / "remote.html").read_text(encoding="utf-8")
+# 手机遥控页用电脑版的样式表（console.css：颜色变量、控件、手机排版，M6）：页面里的地址换上内容散列当版本号，
+# 样式改了手机就取新的，没改就用缓存（和电脑版共用一份）。
+PAGE = (_ASSET_DIR / "remote.html").read_text(encoding="utf-8") \
+    .replace("__CONSOLE_CSS__", console.CONSOLE_CSS_STAMP)
 # 多用户：扫设备遥控码（/TV/R/）、绑定码（/TV/B/）、邀请链接（/tv/i/）的落地页。
 JOIN_PAGE = (_ASSET_DIR / "join.html").read_text(encoding="utf-8")
 # 清单和图标不带登录也要能取：浏览器取清单时不带 cookie。

@@ -45,6 +45,8 @@ def _stamp(data: bytes) -> bytes:
     return hashlib.sha256(data).hexdigest()[:12].encode()
 
 
+# 样式表的版本号：电脑版和手机遥控页（web.PAGE）的地址里都写它。
+CONSOLE_CSS_STAMP = _stamp(CONSOLE_CSS).decode()
 CONSOLE_PAGE = (_ASSET_DIR / "console.html").read_bytes() \
     .replace(b"__CONSOLE_CSS__", _stamp(CONSOLE_CSS)).replace(b"__CONSOLE_JS__", _stamp(CONSOLE_JS)) \
     .replace(b"__ADMIN_CSS__", _stamp(CONSOLE_ADMIN_CSS)).replace(b"__ADMIN_JS__", _stamp(CONSOLE_ADMIN_JS))
