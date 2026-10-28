@@ -19,6 +19,11 @@ What is checked, over real sockets like the other relay tests:
   classic console's old addresses redirect to /tv/console.
 - Bilibili covers missing after a restart (they live only in the client's memory) are fetched again in
   the background, once per channel, and /api/home says so (covers_pending) until they are back.
+- Continue watching for series watched on the PC has a cover: the one kept with the progress at play
+  time, else the episode's own, the whole video's or the series' (bangumi, multi-part, collections,
+  YouTube playlists), else one background fetch; old records are filled in once a cover is known, only
+  image hosts the thumbnail proxy accepts are used, and a collection's episode covers come with the
+  video info.
 - The hero's thumbnail size "h" asks the image host for a big uncropped picture; GET /api/bili/space
   pages one creator's uploads (validated, cached, account only); the page's hero, shelf and creator
   filter helpers are tested as pure JS (console_shelves_test.mjs).
@@ -356,6 +361,8 @@ class HomeTests(unittest.TestCase):
         self.relay.add_creator("https://space.bilibili.com/42", as_carol)
         state = self.relay.user_state(self.carol)
         state.save_position("up01", "b", 130.0)
+        self.relay.clients["bilibili"].cover = lambda key: f"https://i0.hdslb.com/bfs/archive/{key}.jpg" \
+            if key == "b" else ""
         answer = self.call("POST", "/api/play", "carol", {"target": "pc", "viewer": "c0ffee00",
                                                           "item": {"kind": "channel", "channel": "up01"}})[1]
         self.assertTrue(answer["ok"], answer)
@@ -369,6 +376,7 @@ class HomeTests(unittest.TestCase):
         self.assertEqual(list(saved), [str(self.carol)], "kept per user")
         record = saved[str(self.carol)]["up01"]
         self.assertEqual((record["bvid"], record["title"], record["index"]), ("b", "tb", 2))
+        self.assertEqual(record["cover"], "https://i0.hdslb.com/bfs/archive/b.jpg", "the cover is kept at play time")
         position = record["position"]
         self.assertGreater(position, 110)
         carol = self.call("GET", "/api/home", "carol")[1]
@@ -376,6 +384,7 @@ class HomeTests(unittest.TestCase):
         self.assertEqual(len(pc_rows), 1)
         self.assertEqual(pc_rows[0]["progress"]["device"], "这台电脑")
         self.assertEqual(pc_rows[0]["play"], {"kind": "video", "channel": "up01", "index": 2})
+        self.assertEqual(pc_rows[0]["art"]["url"], home.thumb("https://i0.hdslb.com/bfs/archive/b.jpg"))
         alice = self.call("GET", "/api/home", "alice")[1]
         self.assertFalse([x for x in alice["continue"] if x["id"].startswith("pc:")], "nobody else sees it")
         # The TV's state is untouched.
@@ -669,6 +678,97 @@ class PcProgressTests(unittest.TestCase):
             self.assertIsNone(home.PcProgress(path).get(2, "up01"))
             path.write_text("not json", encoding="utf-8")
             self.assertEqual(home.PcProgress(path).rows(1), [], "a broken file is an empty store")
+
+    def test_cover_is_filled_once_and_kept_for_the_same_episode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pc-progress.json"
+            now = [100.0]
+            store = home.PcProgress(path, clock=lambda: now[0])
+            store.put(1, "sr01", {"bvid": "ep1/1", "position": 50})
+            store.set_cover(1, "sr01", "https://i0.hdslb.com/bfs/a.jpg")
+            store.set_cover(1, "sr01", "https://i0.hdslb.com/bfs/b.jpg")
+            store.set_cover(1, "nope", "https://i0.hdslb.com/bfs/b.jpg")
+            self.assertEqual(home.PcProgress(path).get(1, "sr01")["cover"], "https://i0.hdslb.com/bfs/a.jpg")
+            self.assertEqual(home.PcProgress(path).get(1, "sr01")["at"], 100.0, "filling a cover is not watching")
+            self.assertIsNone(store.get(1, "nope"))
+            now[0] = 200.0
+            store.put(1, "sr01", {"bvid": "ep1/1", "position": 90})
+            self.assertEqual(store.get(1, "sr01")["cover"], "https://i0.hdslb.com/bfs/a.jpg", "same episode keeps it")
+            store.put(1, "sr01", {"bvid": "ep2/2", "position": 10})
+            self.assertNotIn("cover", store.get(1, "sr01"), "another episode does not inherit it")
+
+
+class ContinueCoverTests(unittest.TestCase):
+    """ui-08: series watched on the PC (bangumi, multi-part, collections, YouTube playlists) have a cover in
+    Continue watching: the one kept at play time, else the episode's own, else the whole video's or the
+    series', else one background fetch; old records are filled in when the cover is known."""
+
+    COVERS = {"ep2/2": "https://i0.hdslb.com/bfs/bangumi/ep2.jpg", "ss7": "https://i0.hdslb.com/bfs/bangumi/ss7.jpg",
+              "BVitem000001": "https://i0.hdslb.com/bfs/archive/item.jpg"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = home.PcProgress(Path(self.tmp.name) / "pc-progress.json", clock=lambda: 1000.0)
+        covers = dict(self.COVERS)
+        self.client = types.SimpleNamespace(cover=lambda key: covers.get(key, ""))
+        self.held = []
+        self.relay = types.SimpleNamespace(pc_progress=self.store, clients={"bilibili": self.client},
+                                           log=lambda _m: None)
+        self.relay._cover_warm = home.CoverWarm(self.relay, start=self.held.append, sleep=lambda _s: None)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rows(self, creators=()):
+        class Account:
+            lock = threading.Lock()
+        Account.creators = list(creators)
+        return {r["id"]: r["art"]["url"] for r in
+                home._continue_rows(self.relay, web.Caller(user=1, role="user"), Account())}
+
+    def put(self, key, **rec):
+        self.store.put(1, key, dict({"position": 100, "duration": 1000}, **rec))
+
+    def test_order_of_covers_and_backfill(self):
+        from server.relay.state import Creator, Video
+        self.put("v:bilibili:ss7", bvid="ep2/2", item="ss7", site="bilibili")            # its own episode cover
+        self.put("v:bilibili:BVitem000001", bvid="BVother00001/5", item="BVitem000001",  # the collection's
+                 site="bilibili")
+        self.put("sr01", bvid="ep9/9", site="bilibili")                                   # the series' art
+        self.put("v:youtube:PLx", bvid="dQw4w9WgXcQ", item="dQw4w9WgXcQ", site="youtube")
+        self.put("v:bilibili:BVkept0000001", bvid="BVkept0000001", site="bilibili",
+                 cover="https://i0.hdslb.com/bfs/archive/kept.jpg")
+        self.put("v:bilibili:BVbad00000001", bvid="BVbad00000001", site="bilibili", cover="https://evil.example/x.jpg")
+        series = Creator(id="sr01", site="bilibili", source="ss7", name="番剧", kind="series",
+                         videos=[Video(bvid="ep9/9", title="9", duration=1000, pubdate=0)])
+        art = self.rows([series])
+        self.assertEqual(art["pc:v:bilibili:ss7"], home.thumb(self.COVERS["ep2/2"]))
+        self.assertEqual(art["pc:v:bilibili:BVitem000001"], home.thumb(self.COVERS["BVitem000001"]))
+        self.assertEqual(art["pc:sr01"], home.thumb(self.COVERS["ss7"]))
+        self.assertEqual(art["pc:v:youtube:PLx"], home.thumb("https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg"))
+        self.assertEqual(art["pc:v:bilibili:BVkept0000001"], home.thumb("https://i0.hdslb.com/bfs/archive/kept.jpg"))
+        self.assertEqual(art["pc:v:bilibili:BVbad00000001"], "", "only image hosts the thumbnail proxy accepts")
+        # Found covers are written back, so a restart (empty client memory) still has them.
+        again = home.PcProgress(self.store.path)
+        self.assertEqual(again.get(1, "sr01")["cover"], self.COVERS["ss7"])
+        self.assertEqual(again.get(1, "v:bilibili:ss7")["cover"], self.COVERS["ep2/2"])
+        self.assertEqual(again.get(1, "v:bilibili:BVbad00000001").get("cover"), "https://evil.example/x.jpg")
+        # The unknown one is fetched once in the background (the video's info carries its cover).
+        self.assertEqual(self.relay._cover_warm._queue, [("video", "BVbad00000001")])
+
+    def test_unknown_series_cover_asks_for_the_season(self):
+        self.put("v:bilibili:ss8", bvid="ep3/3", item="ss8", site="bilibili")
+        self.assertEqual(self.rows(), {"pc:v:bilibili:ss8": ""})
+        self.assertEqual(self.relay._cover_warm._queue, [("series", "ss8")])
+        self.assertEqual(len(self.held), 1)
+
+    def test_collection_episode_covers_come_with_the_video_info(self):
+        client = bilibili.Bilibili(fetch_json=lambda *_a, **_k: {})
+        client._keep_view("BV1", {"pic": "https://i0.hdslb.com/bfs/archive/1.jpg", "ugc_season": {"sections": [
+            {"episodes": [{"bvid": "BV2", "arc": {"pic": "//i1.hdslb.com/bfs/archive/2.jpg"}},
+                          {"bvid": "BV3", "arc": {"pic": "https://evil.example/3.jpg"}}, "junk"]}]}})
+        self.assertEqual(client.cover("BV2"), "https://i1.hdslb.com/bfs/archive/2.jpg")
+        self.assertEqual(client.cover("BV3"), "")
 
 
 if __name__ == "__main__":

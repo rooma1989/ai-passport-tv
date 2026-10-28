@@ -2070,6 +2070,10 @@ class Relay:
             offset = 0.0
         meta = {"title": chosen.title if parts else item.title, "name": item.title if parts else table.CAST_LABEL,
                 "duration": duration, "site": item.site, "item": item.bvid}
+        # 继续观看的封面：这一集自己的，没有时用整个视频 / 番剧的（取信息时 B 站顺带给的，只在内存里）。
+        cover = home.raw_cover(self, item.site, chosen.bvid, item.bvid)
+        if cover:
+            meta["cover"] = cover
         extra = {"video": {"site": item.site, "id": item.bvid}}
         if parts:
             meta.update(part=n, total=len(parts), kind=found["kind"], list=found.get("list") or "")
@@ -2296,6 +2300,10 @@ class Relay:
             extra["resume"] = round(offset, 1)
         meta = {"title": video.title, "name": creator.name, "duration": video.duration, "index": n,
                 "total": len(videos), "series": series, "site": video.site}
+        # 继续观看的封面：这一集的，没有时用订阅的剧集封面。
+        cover = home.raw_cover(self, video.site, video.bvid, creator.source if series else "")
+        if cover:
+            meta["cover"] = cover
         source = self._video_source(("video", cid, video.site, video.bvid), video, offset,
                                     viewer=caller.user, owner=caller.user, prefer=prefer)
         return source, cid, extra, meta, video.duration

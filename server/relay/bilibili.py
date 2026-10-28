@@ -1011,6 +1011,14 @@ class Bilibili:
         self._views[bvid] = (self._clock(), view)
         while len(self._views) > VIEWS_MAX:
             self._views.pop(next(iter(self._views)))
+        # 合集里各集的封面（arc.pic）：电脑上看合集时继续观看用这一集自己的封面。
+        try:
+            for section in (view.get("ugc_season") or {}).get("sections") or []:
+                for e in section.get("episodes") or []:
+                    if isinstance(e, dict) and isinstance(e.get("bvid"), str):
+                        self._keep(self._covers, e["bvid"], (e.get("arc") or {}).get("pic"))
+        except (AttributeError, TypeError):
+            pass
 
     def _expand(self, text: str) -> str:
         """App 分享的 b23.tv 短链先换成真实地址。"""

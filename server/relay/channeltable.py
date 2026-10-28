@@ -11,7 +11,11 @@ live.reload_channels_if_changed() 看文件的修改时间和大小，变了就�
 （live.parse_channels，和电视服务一模一样的检查）在一个子进程里过一遍。用子进程是因为 server.live
 要带上 numpy 等一堆东西，中转常驻内存只有 200 MB，不值得为偶尔一次保存一直背着。
 
-保存前把原文件复制成 channels.txt.bak-<日期-时间>（同一目录），最多留 BACKUP_KEEP 份。
+保存前把原文件复制成 channels.txt.bak-<日期-时间>（同一目录），最多留 BACKUP_KEEP 份；旁边的 meta（备用线路、
+检测结果）同样复制成 channels.txt.meta.json.bak-<同一个时刻>。
+
+「清理」（stale）：长期打不开的线路和台。检测记录里连续 STALE_DAYS 天以上每次都连不上的备用线路、主线路，和所有线路
+都这样的台，列给管理员勾选；删掉照样走保存（save_channels，先备份）。从不自动删。
 """
 
 from __future__ import annotations
@@ -41,6 +45,9 @@ CHECK_TIMEOUT_S = 30
 HEADER = ("# 由电脑版「管理 → 频道表」生成（/tv/console#/admin/channels）。每行： id | 显示名 | 地址 | User-Agent（可选）\n"
           "# 顺序就是设备上换台的顺序。id 不要改：用户的分组和设备记住的台都按 id 记。\n"
           "# 手动编辑同样有效；电视服务在每个新会话开始时发现文件变了就重读，不用重启。\n\n")
+# 「清理」：一条线路连续这么多天、至少 STALE_FAILS 次检测都连不上，才算长期打不开。
+STALE_DAYS = 14
+STALE_FAILS = 2
 _NEW_ID = re.compile(r"^ch(\d{3,6})$")
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -168,6 +175,48 @@ def routes_view(path: Path, rows: list[dict]) -> dict[str, dict]:
                 quality[url] = found_q
         view[row["id"]] = {"routes": backups, "checks": checks, "good": good, "quality": quality}
     return view
+
+
+def _dead_since(found, now: float) -> dict | None:
+    """一条线路的检测记录 → 长期打不开时 {since, fails, last_ok, why}，否则 None（能连上、没测过、刚坏不久）。"""
+    if not isinstance(found, dict) or found.get("ok") is not False:
+        return None
+    since = routes.check_stamp(found.get("since")) or routes.check_stamp(found.get("at"))
+    fails = found.get("fails") if routes.check_count(found.get("fails")) else 1
+    if not since or now - since < STALE_DAYS * 86400 or fails < STALE_FAILS:
+        return None
+    return {"since": since, "fails": fails, "last_ok": routes.check_stamp(found.get("ok_at")),
+            "at": routes.check_stamp(found.get("at")), "why": str(found.get("why") or "")[:routes.WHY_MAX]}
+
+
+def stale(path: Path, rows: list[dict], now: float | None = None) -> list[dict]:
+    """「清理」的候选：[{id, name, kind, lines: [{url, primary, since, fails, last_ok, at, why}], tick, good}]。
+    kind "channel"：这个台每条线路都长期打不开（整个台删掉）；"lines"：只是其中几条（只删这几条）。
+    tick 是页面上默认勾不勾：都勾，只有还有别的好线路（上次检测能连上）的台的主线路不勾——那是管理员自己放在前面的。
+    good 是这个台还有几条能连上的线路。只看记录，不检测、不改文件。"""
+    now = time.time() if now is None else now
+    meta = routes.read_meta(path)
+    found = []
+    for row in rows:
+        entry = meta.get(row["id"], {})
+        checks = entry.get("checks") if isinstance(entry.get("checks"), dict) else {}
+        urls = [row["url"]] + [b["url"] for b in routes.clean_routes(entry.get("routes"), row["url"])]
+        dead, good = [], 0
+        for n, url in enumerate(urls):
+            record = checks.get(routes.fingerprint(url))
+            why = _dead_since(record, now)
+            if why is not None:
+                dead.append(dict(why, url=url, primary=n == 0))
+            elif isinstance(record, dict) and record.get("ok") is True:
+                good += 1
+        if not dead:
+            continue
+        whole = len(dead) == len(urls)
+        for line in dead:
+            line["tick"] = whole or not (line["primary"] and good > 0)
+        found.append({"id": row["id"], "name": row["name"], "kind": "channel" if whole else "lines",
+                      "lines": dead, "good": good})
+    return found
 
 
 def merge_meta(data: dict, items: list, rows: list[dict]) -> None:
@@ -366,12 +415,20 @@ def save(path: Path, text: str, clock=time.time) -> str:
             target = path.with_name(f"{path.name}.bak-{stamp}-{n}")
         shutil.copy2(path, target)
         backup = target.name
-        old = sorted(path.parent.glob(path.name + ".bak-*"), key=lambda p: p.stat().st_mtime)
-        for extra in old[:-BACKUP_KEEP]:
+        # 旁边的 meta（备用线路、检测结果）也留一份，同一个时刻：删线路、删台以后能连着线路一起找回来。
+        meta = meta_path(path)
+        if meta.is_file():
             try:
-                extra.unlink()
+                shutil.copy2(meta, meta.with_name(meta.name + target.name[len(path.name):]))
             except OSError:
                 pass
+        for name in (path.name, meta.name):
+            old = sorted(path.parent.glob(name + ".bak-*"), key=lambda p: p.stat().st_mtime)
+            for extra in old[:-BACKUP_KEEP]:
+                try:
+                    extra.unlink()
+                except OSError:
+                    pass
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.chmod(tmp, 0o644)

@@ -9,6 +9,8 @@
               "routes": [{"url": "https://…", "ua": "…"}, …],     # 备用线路，不含主线路，至多 BACKUPS_MAX 条
               "good": "<指纹>",                                   # 上次放得起来的那条（电脑上看和电视服务都写）
               "checks": {"<指纹>": {"ok": true, "why": "", "at": 1760000000, "ms": 800}},  # 「检测线路」的结果（总后台点的、后台自检的、放的时候明确坏了的）
+                                                                  # 连不上的再有 since（这一回连续连不上从哪次起）、fails（连续几次）、
+                                                                  # ok_at（上次能连上的时刻）：总后台的「清理」看它（channeltable.stale）
               "starts": {"pc": {"<指纹>": 4200}, "tv": {"<指纹>": 6100}},  # 真放起来用了多久（毫秒，见 speeds_of）
               "lenient": ["<指纹>"],                              # 分片地址不标准、要放宽 ffmpeg 检查的线路（LENIENT_*）
               "quality": {"<指纹>": {"pace": 0.6, "pace_at": …,     # 真实速度（几倍实时，remember_pace）
@@ -309,7 +311,17 @@ def _apply_checks(data: dict, cid: str, results, keep: set[str] | None) -> None:
     checks = {k: v for k, v in checks.items() if keep is None or k in keep}
     starts = entry.get("starts") if isinstance(entry.get("starts"), dict) else {}
     for mark, ok, why, ms, at in results:
+        prev = checks.get(mark) if isinstance(checks.get(mark), dict) else {}
         checks[mark] = {"ok": bool(ok), "why": str(why or "")[:WHY_MAX], "at": int(at)}
+        if not ok:
+            # 连续连不上：从哪次起（旧记录没有 since 的用它那次的时刻）、第几次、上次能连上是什么时候。
+            failing = prev.get("ok") is False
+            since, fails = check_stamp(prev.get("since")) or check_stamp(prev.get("at")), prev.get("fails")
+            checks[mark]["since"] = min(since, int(at)) if failing and since else int(at)
+            checks[mark]["fails"] = (fails if check_count(fails) else 1) + 1 if failing else 1
+            ok_at = check_stamp(prev.get("at")) if prev.get("ok") is True else check_stamp(prev.get("ok_at"))
+            if ok_at:
+                checks[mark]["ok_at"] = ok_at
         if ok and _ms(int(ms or 0)):
             # 用时（毫秒）：从开始取列表到拿到片段的头几 KB，排线路顺序用（speeds_of）。
             checks[mark]["ms"] = max(1, int(ms))
@@ -325,6 +337,16 @@ def _apply_checks(data: dict, cid: str, results, keep: set[str] | None) -> None:
         entry["starts"] = starts
     else:
         entry.pop("starts", None)
+
+
+def check_stamp(value) -> int:
+    """检测记录里的时刻（秒）；不合格时 0。"""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def check_count(value) -> bool:
+    """检测记录里的 fails 合不合格。"""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value < 10**7
 
 
 def mark_failed(path, cid: str, url: str, why: str, at: float) -> bool:

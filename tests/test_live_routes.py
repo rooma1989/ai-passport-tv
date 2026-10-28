@@ -32,6 +32,12 @@ segment for STALL_MIN_S, more for a source that arrives in bursts) or crawls
 (below SWITCH_SLOW) is dropped for the next one, recorded as just failed so the
 reopen tries another line first; never when every other line just failed, for
 a single-line channel, or for a warm stream nobody watches.
+Cleanup (res-07): a failed check remembers since when the line has failed in a
+row, how many times and when it last worked; the admin's table lists lines
+that failed every check for STALE_DAYS (and channels whose every line did),
+pre-ticked except the main line of a channel that still has a good line;
+nothing is removed by itself, and removing goes through the ordinary save,
+which now backs up the sidecar next to channels.txt with the same stamp.
 """
 
 from __future__ import annotations
@@ -1010,6 +1016,117 @@ class AdminRouteTests(unittest.TestCase):
         many = ["ch000", {"id": "ch001", "routes": [{"url": f"https://y/{n}"} for n in range(6)]}, "ch007"]
         answer = self.call("admin", "POST", "/api/admin/channels", {"version": table["version"], "rows": many})[1]
         self.assertIn("备用线路最多", answer["error"])
+
+
+DAY = 86400
+
+
+class StaleLineTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.main = Path(self.tmp.name) / "channels.txt"
+        self.main.write_text("ch000 | A | https://a/0.m3u8\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def check(self, ok, at, url="https://a/0.m3u8"):
+        routes.record_checks(self.main, "ch000", [(routes.fingerprint(url), ok, "" if ok else "源站拒绝（403）", 900, at)])
+        return routes.entry_of(self.main, "ch000")["checks"][routes.fingerprint(url)]
+
+    def test_failure_streak(self):
+        self.check(True, 100)
+        self.assertEqual(self.check(False, 200), {"ok": False, "why": "源站拒绝（403）", "at": 200, "since": 200,
+                                                  "fails": 1, "ok_at": 100})
+        found = self.check(False, 300)
+        self.assertEqual((found["since"], found["fails"], found["ok_at"]), (200, 2, 100))
+        self.assertEqual(self.check(True, 400), {"ok": True, "why": "", "at": 400, "ms": 900}, "a good check ends it")
+        # An old record without the new fields: its own time is the start of the streak.
+        routes.update_meta(self.main, lambda data: data["ch000"]["checks"].update(
+            {routes.fingerprint("https://a/0.m3u8"): {"ok": False, "why": "x", "at": 350}}))
+        found = self.check(False, 500)
+        self.assertEqual((found["since"], found["fails"]), (350, 2))
+        self.assertNotIn("ok_at", found)
+
+    def test_candidates(self):
+        now = 100 * DAY
+        long_ago, lately = now - 20 * DAY, now - 3 * DAY
+        dead = {"ok": False, "why": "源站拒绝（403）", "at": now - 600, "since": long_ago, "fails": 40, "ok_at": long_ago - DAY}
+        mark = routes.fingerprint
+        rows = [{"id": "ch000", "name": "A", "url": "https://a/0.m3u8", "agent": ""},
+                {"id": "ch001", "name": "B", "url": "https://b/0.m3u8", "agent": ""},
+                {"id": "ch002", "name": "C", "url": "https://c/0.m3u8", "agent": ""},
+                {"id": "ch003", "name": "D", "url": "https://d/0.m3u8", "agent": ""},
+                {"id": "ch004", "name": "E", "url": "https://e/0.m3u8", "agent": ""}]
+        routes.write_meta(self.main, {
+            # The main line has been dead for weeks, a backup works: listed, not ticked.
+            "ch000": {"routes": [{"url": "https://a/1.m3u8"}],
+                      "checks": {mark("https://a/0.m3u8"): dead, mark("https://a/1.m3u8"): {"ok": True, "at": now}}},
+            # One backup dead for weeks (ticked), one only lately (not listed).
+            "ch001": {"routes": [{"url": "https://b/1.m3u8"}, {"url": "https://b/2.m3u8"}],
+                      "checks": {mark("https://b/0.m3u8"): {"ok": True, "at": now},
+                                 mark("https://b/1.m3u8"): dead,
+                                 mark("https://b/2.m3u8"): dict(dead, since=lately)}},
+            # Every line dead for weeks: the whole channel.
+            "ch002": {"routes": [{"url": "https://c/1.m3u8"}],
+                      "checks": {mark("https://c/0.m3u8"): dead, mark("https://c/1.m3u8"): dict(dead, ok_at=0)}},
+            # Failed once, long ago, never checked again: not enough to say.
+            "ch003": {"checks": {mark("https://d/0.m3u8"): {"ok": False, "why": "x", "at": long_ago}}},
+            # Never checked.
+            "ch004": {}})
+        found = {c["id"]: c for c in channeltable.stale(self.main, rows, now)}
+        self.assertEqual(sorted(found), ["ch000", "ch001", "ch002"])
+        self.assertEqual((found["ch000"]["kind"], found["ch000"]["good"]), ("lines", 1))
+        self.assertEqual([(x["url"], x["primary"], x["tick"]) for x in found["ch000"]["lines"]],
+                         [("https://a/0.m3u8", True, False)])
+        self.assertEqual([(x["url"], x["tick"]) for x in found["ch001"]["lines"]], [("https://b/1.m3u8", True)])
+        line = found["ch001"]["lines"][0]
+        self.assertEqual((line["since"], line["fails"], line["last_ok"], line["why"]),
+                         (long_ago, 40, long_ago - DAY, "源站拒绝（403）"))
+        self.assertEqual(found["ch002"]["kind"], "channel")
+        self.assertTrue(all(x["tick"] for x in found["ch002"]["lines"]))
+        self.assertEqual(found["ch002"]["lines"][1]["last_ok"], 0)
+        # A main line dead while the other lines are not good either is ticked.
+        routes.update_meta(self.main, lambda data: data["ch000"]["checks"].update(
+            {mark("https://a/1.m3u8"): dict(dead, since=lately)}))
+        self.assertTrue(channeltable.stale(self.main, rows[:1], now)[0]["lines"][0]["tick"])
+        self.assertEqual(channeltable.stale(self.main, rows, now - 7 * DAY), [], "not yet STALE_DAYS")
+
+
+class AdminCleanupTests(unittest.TestCase):
+    setUp = admin_base.AdminApiTests.setUp
+    tearDown = admin_base.AdminApiTests.tearDown
+    raw = admin_base.AdminApiTests.raw
+    call = admin_base.AdminApiTests.call
+
+    def test_listed_then_removed_through_the_save_with_backups(self):
+        mark = routes.fingerprint
+        dead = {"ok": False, "why": "找不到（404）", "at": int(self.now) - 600, "since": int(self.now) - 30 * DAY, "fails": 60}
+        routes.write_meta(self.main, {
+            "ch001": {"logo": "https://logo.example/b.png", "routes": [{"url": "https://y/2.m3u8"}],
+                      "checks": {mark("https://x/2.m3u8"): {"ok": True, "at": int(self.now)}, mark("https://y/2.m3u8"): dead}},
+            "ch007": {"checks": {mark("https://x/7.m3u8"): dead}}})
+        before = routes.read_meta(self.main)
+        table = self.call("admin", "GET", "/api/admin/channels")[1]
+        self.assertEqual(table["stale_days"], channeltable.STALE_DAYS)
+        self.assertEqual([(c["id"], c["kind"]) for c in table["stale"]], [("ch001", "lines"), ("ch007", "channel")])
+        self.assertEqual(self.call("alice", "GET", "/api/admin/channels")[0], 404)
+        self.assertEqual(sorted(routes.read_meta(self.main)), sorted(before), "listing changes nothing")
+        # What the page sends after the admin confirms: the dead backup gone, the dead channel left out.
+        rows = ["ch000", {"id": "ch001", "routes": []}]
+        answer = self.call("admin", "POST", "/api/admin/channels", {"version": table["version"], "rows": rows})[1]
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual((answer["summary"]["removed"], answer["summary"]["routes"]), (1, 1))
+        meta = routes.read_meta(self.main)
+        self.assertNotIn("ch007", meta)
+        self.assertNotIn("routes", meta["ch001"])
+        self.assertEqual(meta["ch001"]["logo"], "https://logo.example/b.png")
+        stamp = answer["backup"][len("channels.txt"):]
+        saved = self.main.with_name("channels.txt.meta.json" + stamp)
+        self.assertTrue(saved.is_file(), "the sidecar is backed up with the same stamp")
+        self.assertEqual(json.loads(saved.read_text(encoding="utf-8")), before)
+        self.assertIn("ch007", self.main.with_name(answer["backup"]).read_text(encoding="utf-8"))
+        self.assertEqual(self.call("admin", "GET", "/api/admin/channels")[1]["stale"], [])
 
 
 if __name__ == "__main__":
