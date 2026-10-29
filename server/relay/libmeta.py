@@ -19,14 +19,30 @@
 - 资料存在 library-meta.json（600，和 library.json 一样整份换掉写），按剧（剧名）或电影（条目 id）记，重新扫描
   不会丢。手动选的、手动「不匹配」的从不被自动的盖掉。
 
+备用的资料来源 TMDB（The Movie Database，官方的 API v3）：豆瓣没把握（没对上）、拦着、连不上时才查它，豆瓣永远
+先查。要主人自己去 TMDB 免费注册一个 API 密钥（32 位的 API Key 或者长的 API Read Access Token），在片库里粘贴；
+存在数据目录的 secrets/tmdb-key（600），从不写进日志、从不回给页面（只说「已设置」）。没填就不用 TMDB。
+
+- 自动查：/3/search/tv 或 /3/search/movie（language=zh-CN，知道年份时带上 first_air_date_year /
+  primary_release_year），认的规矩和豆瓣一样（pick：片名或原名规整以后一样、年份一样、种类一样、只有一个）；中文名
+  对不上时用英文名再查一次（language=en-US，这时的 title 是英文名）。详细资料是 /3/tv/<id> 或 /3/movie/<id>
+  （language=zh-CN&append_to_response=credits）：简介、类型、导演（剧没有导演时用主创 created_by）、主演、海报。
+- 海报从 image.tmdb.org/t/p/w500<poster_path> 取一次存进 library-art/（tmdb-tv-<id>.jpg），和豆瓣的一样看文件头、
+  有大小上限；手动匹配的小框里的小图用 w185，只在内存里。
+- 客气：一次一个请求、至少隔 TMDB_GAP_S 秒；回 429 歇 TMDB_BACKOFF_S 秒；连着 TMDB_DOWN_AFTER 次连不上（在国内
+  常被墙）歇 TMDB_DOWN_S 秒。出去的请求经「设置 → YouTube」里填的代理（proxy()；没填就和 urllib 一样看环境变量）。
+- 测试和自测用环境变量 TV_TMDB_API、TV_TMDB_IMAGE 换成本机的假服务器（只认 http://127.0.0.1 / localhost）。
+
 只用标准库。
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import ssl
 import threading
 import time
 import unicodedata
@@ -455,13 +471,350 @@ class Douban:
         return found
 
 
+# ---------------------------------------------------------------- TMDB（备用）
+
+TMDB_API = "https://api.themoviedb.org/3"
+TMDB_IMAGE = "https://image.tmdb.org/t/p"
+TMDB_POSTER_SIZE = "w500"
+TMDB_THUMB_SIZE = "w185"
+TMDB_TIMEOUT_S = 15
+TMDB_GAP_S = 1.0
+TMDB_BACKOFF_S = 600.0
+TMDB_DOWN_AFTER = 3
+TMDB_DOWN_S = 1800.0
+TMDB_KEY_FILE = "tmdb-key"
+# 密钥的两种样子：v3 的 API Key（32 位十六进制，放在地址的 api_key 里）、API Read Access Token（JWT，放在
+# Authorization: Bearer 里，v3 v4 都认）。别的不收（防止粘贴错了东西，例如整段说明文字）。
+_TMDB_V3_KEY = re.compile(r"^[0-9a-f]{32}$")
+_TMDB_TOKEN = re.compile(r"^eyJ[A-Za-z0-9_-]{8,600}\.[A-Za-z0-9_-]{8,1200}\.[A-Za-z0-9_-]{8,600}$")
+_TMDB_ID = re.compile(r"^\d{1,10}$")
+_TMDB_PATH = re.compile(r"^/[A-Za-z0-9_-]{4,80}\.(?:jpg|jpeg|png|webp)$")
+_TMDB_PICK = re.compile(r"^tmdb:(tv|movie):(\d{1,10})$")
+_LOCAL_TEST_BASE = re.compile(r"^http://(?:127\.0\.0\.1|localhost)(?::\d{1,5})?(?:/[A-Za-z0-9_./-]*)?$")
+# TMDB 的国家是 ISO 3166-1 的两个字母（zh-CN 也不给中文名）：常见的换成中文，别的不显示。
+_COUNTRIES = {"CN": "中国大陆", "HK": "中国香港", "TW": "中国台湾", "US": "美国", "GB": "英国", "KR": "韩国",
+              "JP": "日本", "FR": "法国", "DE": "德国", "IT": "意大利", "ES": "西班牙", "CA": "加拿大",
+              "AU": "澳大利亚", "IN": "印度", "TH": "泰国", "RU": "俄罗斯", "SG": "新加坡", "NZ": "新西兰"}
+
+
+def tmdb_key_ok(text) -> bool:
+    """粘贴进来的像不像 TMDB 的 API Key / Read Access Token。"""
+    return isinstance(text, str) and bool(_TMDB_V3_KEY.match(text) or _TMDB_TOKEN.match(text))
+
+
+def tmdb_pick_id(value) -> tuple[str, str] | None:
+    """手动匹配时页面送来的 TMDB 候选「tmdb:tv:1399」→ (tv, 1399)；不是 None。"""
+    found = _TMDB_PICK.match(str(value or ""))
+    return (found.group(1), found.group(2)) if found else None
+
+
+def _tmdb_year(row: dict) -> int | None:
+    return _year(row.get("release_date") or row.get("first_air_date") or "")
+
+
+def _tmdb_path(value) -> str:
+    return value if isinstance(value, str) and _TMDB_PATH.match(value) else ""
+
+
+def _tmdb_id(value) -> str:
+    return str(value) if isinstance(value, int) and not isinstance(value, bool) and _TMDB_ID.match(str(value)) else ""
+
+
+def parse_tmdb_search(data: bytes | str, kind: str) -> list[dict]:
+    """/3/search/movie、/3/search/tv 的 JSON（{results: [{id, title|name, original_title|original_name,
+    release_date|first_air_date, poster_path}]}）→ 和 parse_suggest 一样的候选（多 src = "tmdb"、tid 是 TMDB 的
+    编号，id 是「tmdb:tv:<编号>」这样带来源和种类的，img 是 poster_path）。"""
+    try:
+        answer = json.loads(data)
+    except (TypeError, ValueError):
+        return []
+    rows = answer.get("results") if isinstance(answer, dict) else None
+    found = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get("adult") is True:
+            continue
+        tid = _tmdb_id(row.get("id"))
+        title = _text(row.get("title") if kind == "movie" else row.get("name"))
+        if not tid or not title:
+            continue
+        original = _text(row.get("original_title") if kind == "movie" else row.get("original_name"))
+        found.append({"id": f"tmdb:{kind}:{tid}", "tid": tid, "src": "tmdb", "title": title,
+                      "sub_title": original if original != title else "", "year": _tmdb_year(row), "type": kind,
+                      "episodes": None, "img": _tmdb_path(row.get("poster_path"))})
+        if len(found) >= CANDIDATES_MAX:
+            break
+    return found
+
+
+def parse_tmdb_details(data: bytes | str, kind: str) -> dict | None:
+    """/3/movie/<id>、/3/tv/<id>（append_to_response=credits）的 JSON → 和 parse_mobile 一样的资料
+    （多 src = "tmdb"，id 是 TMDB 的编号，img 是 poster_path）。看不懂 None。"""
+    try:
+        row = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(row, dict):
+        return None
+    tid = _tmdb_id(row.get("id"))
+    title = _text(row.get("title") if kind == "movie" else row.get("name"))
+    if not tid or not title:
+        return None
+    credits = row.get("credits") if isinstance(row.get("credits"), dict) else {}
+    crew = credits.get("crew") if isinstance(credits.get("crew"), list) else []
+    cast = credits.get("cast") if isinstance(credits.get("cast"), list) else []
+    directors = _names([c for c in crew if isinstance(c, dict) and c.get("job") == "Director"])
+    if not directors and kind == "tv":
+        directors = _names(row.get("created_by"))
+    cast = sorted((c for c in cast if isinstance(c, dict)),
+                  key=lambda c: c["order"] if isinstance(c.get("order"), int) else 9999)
+    votes = row.get("vote_count") if isinstance(row.get("vote_count"), int) else 0
+    countries = row.get("origin_country") if isinstance(row.get("origin_country"), list) else []
+    if not countries and isinstance(row.get("production_countries"), list):
+        countries = [c.get("iso_3166_1") for c in row["production_countries"] if isinstance(c, dict)]
+    episodes = row.get("number_of_episodes")
+    original = _text(row.get("original_title") if kind == "movie" else row.get("original_name"))
+    genres = row.get("genres") if isinstance(row.get("genres"), list) else []
+    return {"id": tid, "src": "tmdb", "title": title, "original": original if original != title else "",
+            "year": _tmdb_year(row), "type": kind,
+            "rating": _rating(row.get("vote_average")) if votes > 0 else None, "votes": max(0, votes),
+            "genres": [_text(g.get("name"), 20) for g in genres
+                       if isinstance(g, dict) and _text(g.get("name"), 20)][:GENRES_MAX],
+            "directors": directors, "actors": _names(cast),
+            "countries": [_COUNTRIES[c] for c in countries if c in _COUNTRIES][:4],
+            "plot": _text(row.get("overview"), PLOT_MAX),
+            "episodes": episodes if kind == "tv" and isinstance(episodes, int) and episodes > 0 else None,
+            "aka": [original] if original and original != title else [],
+            "img": _tmdb_path(row.get("poster_path"))}
+
+
+def tmdb_fetch(url: str, headers: dict, cap: int, timeout: float = TMDB_TIMEOUT_S, proxy: str = "") -> tuple[int, bytes]:
+    """GET → (状态, 至多 cap+1 字节)。填了代理（「设置 → YouTube」的 http:// 或 socks5://）就经它连
+    （ytnode.open_tunnel），没填就和 urllib 一样看环境变量；本机的假服务器（http://）直连。跳转不跟。
+    出错时的原因只写错误的种类，从不带地址（地址里可能有 api_key）。"""
+    parts = urllib.parse.urlsplit(url)
+    try:
+        if parts.scheme == "http" or not proxy:
+            handlers = [_NoRedirect()] + ([urllib.request.ProxyHandler({})] if parts.scheme == "http" else [])
+            opener = urllib.request.build_opener(*handlers)
+            try:
+                with opener.open(urllib.request.Request(url, headers=headers), timeout=timeout) as answer:
+                    return getattr(answer, "status", 200), answer.read(cap + 1)
+            except urllib.error.HTTPError as error:
+                error.close()
+                return error.code, b""
+        from .ytnode import open_tunnel, parse_proxy
+        host = parts.hostname or ""
+        tunnel = open_tunnel(parse_proxy(proxy), host, 443, timeout)
+        tunnel.settimeout(timeout)
+        connection = http.client.HTTPSConnection(host, timeout=timeout)
+        connection.sock = ssl.create_default_context().wrap_socket(tunnel, server_hostname=host)
+        try:
+            connection.request("GET", parts.path + ("?" + parts.query if parts.query else ""), headers=headers)
+            answer = connection.getresponse()
+            return answer.status, answer.read(cap + 1) if answer.status == 200 else b""
+        finally:
+            connection.close()
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        raise Failed(f"连不上 TMDB（{type(error).__name__}）") from None
+
+
+class Tmdb:
+    """TMDB：密钥存在 secrets/tmdb-key（600）；一次一个请求、请求之间有间隔、429 和连不上时歇。
+    fetch(url, headers, cap, timeout, proxy) → (状态, 内容)。出错一律抛 Failed（不用豆瓣的 Blocked）。"""
+
+    def __init__(self, secrets_dir: Path, fetch: Callable | None = None, clock=time.time, sleep=time.sleep,
+                 log: Callable[[str], None] = print, proxy: Callable[[], str] = lambda: "", env=None):
+        env = os.environ if env is None else env
+        self.key_path = Path(secrets_dir) / TMDB_KEY_FILE
+        self.fetch = fetch or tmdb_fetch
+        self.clock = clock
+        self.sleep = sleep
+        self.log = log
+        self.proxy = proxy
+        # 换成本机的假服务器（测试、自测）：只认 http://127.0.0.1 / localhost，别的照旧连 TMDB。
+        api, image = env.get("TV_TMDB_API") or "", env.get("TV_TMDB_IMAGE") or ""
+        self.api = api.rstrip("/") if _LOCAL_TEST_BASE.match(api) else TMDB_API
+        self.image_base = image.rstrip("/") if _LOCAL_TEST_BASE.match(image) else TMDB_IMAGE
+        self._lock = threading.Lock()
+        self._last = 0.0
+        self.blocked_until = 0.0
+        self._down = 0
+        # 密钥不对（401）：换密钥以前不再用它发请求。
+        self.bad_key = False
+        self._seen: OrderedDict[str, dict] = OrderedDict()
+        self._thumbs: OrderedDict[str, tuple[str, bytes]] = OrderedDict()
+        self.requests = 0
+
+    # 密钥
+
+    def _key(self) -> str:
+        try:
+            text = self.key_path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return ""
+        return text if tmdb_key_ok(text) else ""
+
+    def configured(self) -> bool:
+        return bool(self._key())
+
+    def on(self) -> bool:
+        """填了密钥、TMDB 没拒过这个密钥、没在歇着。"""
+        return not self.bad_key and self.clock() >= self.blocked_until and self.configured()
+
+    def state(self) -> dict:
+        """给管理员看的（从不带密钥本身）：set 填了没有，error 大白话。"""
+        configured, error = self.configured(), ""
+        if configured and self.bad_key:
+            error = "TMDB 不认这个密钥，重新粘贴一个"
+        elif configured and self.clock() < self.blocked_until:
+            error = "TMDB 暂时连不上，过一会儿自动再试"
+        return {"set": configured, "error": error}
+
+    def set_key(self, text) -> dict:
+        """存密钥（"" 是清掉，不用 TMDB）：secrets/ 是 700，文件 600，整份换掉写。"""
+        text = "".join(str(text or "").split())
+        if text and not tmdb_key_ok(text):
+            return {"ok": False, "error": "这不像 TMDB 的密钥：粘贴「API 密钥」（32 位）或「API 读访问令牌」（eyJ 开头的一长串）"}
+        with self._lock:
+            try:
+                if not text:
+                    self.key_path.unlink(missing_ok=True)
+                else:
+                    self.key_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.chmod(self.key_path.parent, 0o700)
+                    tmp = self.key_path.with_name(self.key_path.name + ".tmp")
+                    tmp.unlink(missing_ok=True)
+                    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as out:
+                        out.write(text + "\n")
+                    os.replace(tmp, self.key_path)
+            except OSError:
+                return {"ok": False, "error": "存不下密钥（数据目录写不了）"}
+            self.bad_key = False
+            self.blocked_until = 0.0
+            self._down = 0
+        self.log("片库的 TMDB 密钥" + ("设好了" if text else "清掉了"))
+        return {"ok": True, "tmdb": self.state()}
+
+    # 请求
+
+    def _get(self, url: str, cap: int, image: bool = False) -> bytes:
+        headers = {"User-Agent": UA, "Accept": "image/*" if image else "application/json"}
+        if not image:
+            # 图片地址不带密钥（image.tmdb.org 不要）。
+            key = self._key()
+            if not key:
+                raise Failed("没有 TMDB 的密钥")
+            if _TMDB_V3_KEY.match(key):
+                url += ("&" if "?" in url else "?") + "api_key=" + key
+            else:
+                headers["Authorization"] = "Bearer " + key
+        with self._lock:
+            if self.bad_key:
+                raise Failed("TMDB 不认这个密钥")
+            if self.clock() < self.blocked_until:
+                raise Failed("TMDB 暂时连不上")
+            wait = self._last + TMDB_GAP_S - self.clock()
+            if wait > 0:
+                self.sleep(wait)
+            try:
+                self.requests += 1
+                status, body = self.fetch(url, headers, cap, TMDB_TIMEOUT_S, self.proxy() or "")
+                self._down = 0
+            except Failed:
+                self._down += 1
+                if self._down >= TMDB_DOWN_AFTER:
+                    self._down = 0
+                    self.blocked_until = self.clock() + TMDB_DOWN_S
+                    self.log(f"TMDB 连着几次连不上，歇 {int(TMDB_DOWN_S // 60)} 分钟（在国内可能要在「设置 → YouTube」里填代理）")
+                raise
+            finally:
+                self._last = self.clock()
+            if status == 401 and not image:
+                self.bad_key = True
+                self.log("TMDB 不认片库里填的密钥")
+                raise Failed("TMDB 不认这个密钥")
+            if status == 429:
+                self.blocked_until = self.clock() + TMDB_BACKOFF_S
+                self.log(f"TMDB 说请求太多，歇 {int(TMDB_BACKOFF_S // 60)} 分钟")
+                raise Failed("TMDB 让歇一会儿")
+        if status != 200:
+            raise Failed(f"TMDB 回答 {status}")
+        if len(body) > cap:
+            raise Failed("TMDB 的回答太大")
+        return body
+
+    def search(self, query: str, kind: str, year: int | None = None, language: str = "zh-CN") -> list[dict]:
+        """搜一种（tv / movie）；year 给了按首播 / 首映的年份筛。"""
+        query = " ".join(str(query or "").split())[:QUERY_MAX]
+        if not query or kind not in ("tv", "movie"):
+            return []
+        params = {"query": query, "language": language, "include_adult": "false", "page": "1"}
+        if year:
+            params["first_air_date_year" if kind == "tv" else "primary_release_year"] = str(year)
+        found = parse_tmdb_search(self._get(f"{self.api}/search/{kind}?" + urllib.parse.urlencode(params),
+                                            ANSWER_MAX), kind)
+        with self._lock:
+            for c in found:
+                self._seen[c["id"]] = c
+                self._seen.move_to_end(c["id"])
+            while len(self._seen) > CANDIDATES_KEPT:
+                self._seen.popitem(last=False)
+        return found
+
+    def seen(self, pick_id: str) -> dict | None:
+        with self._lock:
+            found = self._seen.get(pick_id)
+            return dict(found) if found else None
+
+    def details(self, kind: str, tid: str) -> dict:
+        if kind not in ("tv", "movie") or not _TMDB_ID.match(str(tid)):
+            raise Failed("TMDB 的编号不对")
+        params = urllib.parse.urlencode({"language": "zh-CN", "append_to_response": "credits"})
+        found = parse_tmdb_details(self._get(f"{self.api}/{kind}/{tid}?{params}", ANSWER_MAX), kind)
+        if found is None or found["id"] != str(tid):
+            raise Failed("TMDB 的资料看不懂")
+        return found
+
+    def image(self, path: str, size: str = TMDB_POSTER_SIZE, cap: int = POSTER_MAX) -> tuple[str, bytes]:
+        """取一张 TMDB 的图：(jpg / png / webp, 内容)。不是图片、太大抛 Failed。"""
+        if not _tmdb_path(path):
+            raise Failed("不是 TMDB 的图片地址")
+        data = self._get(f"{self.image_base}/{size}{path}", cap, image=True)
+        kind = image_kind(data)
+        if not kind:
+            raise Failed("TMDB 给的不是图片")
+        return kind, data
+
+    def thumb(self, pick_id: str) -> tuple[str, bytes] | None:
+        """搜索结果里一个候选的小图（只认最近搜到过的）；内存里留 THUMBS_KEPT 张。"""
+        with self._lock:
+            cached = self._thumbs.get(pick_id)
+            candidate = self._seen.get(pick_id)
+        if cached is not None:
+            return cached
+        if candidate is None or not candidate.get("img"):
+            return None
+        try:
+            found = self.image(candidate["img"], TMDB_THUMB_SIZE, THUMB_MAX)
+        except Failed:
+            return None
+        with self._lock:
+            self._thumbs[pick_id] = found
+            while len(self._thumbs) > THUMBS_KEPT:
+                self._thumbs.popitem(last=False)
+        return found
+
+
 # ---------------------------------------------------------------- 存
 
 class MetaStore:
     """library-meta.json：{"titles": {键: 资料}}。键是 s<剧名的哈希>（剧）或 m<条目 id>（电影、其他视频）。
     资料：state（matched / miss / none）、manual、q（自动查时用的片名，改了就重查）、at、豆瓣的 id、title、
     original、aka（又名，聚合搜索用，localsearch.py）、year、type、rating、votes、genres、directors、actors、countries、
-    plot、episodes、img（豆瓣的海报地址）、poster（library-art/ 里的文件名）、partial（详细资料没取全）。"""
+    plot、episodes、img（豆瓣的海报地址；TMDB 的是 poster_path）、poster（library-art/ 里的文件名）、partial（详细
+    资料没取全）、src（"tmdb" 是 TMDB 的条目，id 是 TMDB 的编号；没有就是豆瓣的）。没对上的（miss）还记 tmdb：
+    TMDB 也查过了（答了没有）；tmdb_failed：TMDB 没查成（过 PARTIAL_RETRY_S 再试）。"""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -512,9 +865,9 @@ class MetaStore:
 
 
 def entry_of(details: dict, query: str, manual: bool, now: float, partial: bool = False) -> dict:
-    """豆瓣的资料 → 存下来的一条（还没有海报文件）。"""
-    keep = ("id", "title", "original", "aka", "year", "type", "rating", "votes", "genres", "directors", "actors",
-            "countries", "plot", "episodes", "img")
+    """豆瓣（或 TMDB，src = "tmdb"）的资料 → 存下来的一条（还没有海报文件）。"""
+    keep = ("id", "src", "title", "original", "aka", "year", "type", "rating", "votes", "genres", "directors",
+            "actors", "countries", "plot", "episodes", "img")
     entry = {k: details.get(k) for k in keep if details.get(k) not in (None, "", [])}
     entry.update(state="matched", manual=bool(manual), q=query, at=int(now), partial=bool(partial))
     return entry
@@ -529,5 +882,6 @@ def public(entry: dict | None) -> dict | None:
     row = {k: entry.get(k) for k in ("id", "title", "original", "year", "type", "rating", "votes", "genres",
                                      "directors", "actors", "countries", "plot", "episodes")
            if entry.get(k) not in (None, "", [])}
-    row.update(state="matched", manual=bool(entry.get("manual")), partial=bool(entry.get("partial")))
+    row.update(state="matched", manual=bool(entry.get("manual")), partial=bool(entry.get("partial")),
+               src="tmdb" if entry.get("src") == "tmdb" else "douban")
     return row

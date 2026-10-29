@@ -1191,6 +1191,13 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .lfacts { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 12px 0 0; color: var(--label-2); font-size: 14px; }
 .lfacts i { font-style: normal; color: var(--label-4); }
 .lrate { color: var(--warn); font-weight: 700; }
+/* 资料来自哪儿（豆瓣 / TMDB）：事实那一行最后一个小标签；匹配小框里每个候选前面也有一个。 */
+.lfrom, .lsrctag { display: inline-block; padding: 0 6px; border-radius: 5px; background: var(--fill); color: var(--label-2); font: 600 12px/18px var(--sans); white-space: nowrap; }
+.lsrctag { margin-right: 6px; font-size: 11px; line-height: 16px; font-style: normal; }
+.lsrctag.t { background: var(--fill-2); color: var(--label); }
+.ltmdb { display: grid; gap: 6px; }
+.ltmdb .inline { margin: 4px 0 0; }
+.ltmdb input { flex: 1 1 260px; min-width: 0; }
 .lppl { margin: 8px 0 0; color: var(--label-2); font-size: 14px; line-height: 1.5; }
 .lppl span { color: var(--label-3); margin-right: 8px; }
 .lplot { margin: 14px 0 0; max-width: 720px; font: 15px/1.65 var(--sans); color: var(--label-2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }

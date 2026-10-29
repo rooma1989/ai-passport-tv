@@ -6350,7 +6350,7 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 // 和别的节目一样「播放到」：这台电脑上浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；小电视上
 // 中转缩好画面推过去（library.py 的 play_tv）。只有里面没有画面也没有声音的标「放不了」。家里人都能看，访客没有这一页。
 const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", kind: "webdav", form: false, timer: 0, failed: false,
-              match: null, more: false };
+              match: null, more: false, tmdbForm: false };
 async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
   lib.busy = true;
@@ -6367,8 +6367,8 @@ async function loadLib(force, poll) {
   lib.failed = false;
   if (answer.ok) lib.data = answer;
   // 正在填「添加来源」时不重画（扫描时每 3 秒问一次，重画会打断输入）。
-  const form = qs("#libAdd"), panel = qs("#libBox .ldrive"), box = qs("#libMatch");
-  if (!(poll && [form, panel, box].some((f) => f && f.contains(document.activeElement)))) renderLib();
+  const form = qs("#libAdd"), panel = qs("#libBox .ldrive"), box = qs("#libMatch"), key = qs("#libTmdb");
+  if (!(poll && [form, panel, box, key].some((f) => f && f.contains(document.activeElement)))) renderLib();
   // 正在扫描：过几秒再问一次，扫完了墙上就有了。
   clearTimeout(lib.timer);
   if (answer.ok && (answer.scan.running || answer.scan.queued)) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 3000);
@@ -6391,26 +6391,32 @@ function libShowCard(s) {
     <span class="t">${esc(s.title)}</span><span class="s">${esc(sub)}</span></button>`;
 }
 // ---- 片库的资料页（剧的选集页上面、电影点开）：海报、片名和原名、年份、评分、类型、导演、主演、简介（长的折起来）。
-// 资料来自豆瓣（library.py、libmeta.py，后台慢慢查；本地 .nfo 和海报优先）。管理员能「匹配豆瓣 / 改匹配」：
-// 小框里按片名搜豆瓣（GET api/admin/library/douban），选一个存下；「不匹配」不用豆瓣的资料。
+// 资料来自豆瓣（library.py、libmeta.py，后台慢慢查；本地 .nfo 和海报优先），管理员填了 TMDB 的密钥时豆瓣没对上的
+// 再查 TMDB（备用）；事实那一行标着资料来自哪儿。管理员能「匹配豆瓣 / 改匹配」：小框里按片名搜豆瓣和 TMDB
+// （GET api/admin/library/douban），每个候选标着来源，选一个存下；「不匹配」不用网上的资料。
 const libD = () => lib.data || {};
+const libTmdb = () => !!(libD().tmdb && libD().tmdb.set);
+const libSrc = (m) => m && m.src === "tmdb" ? "TMDB" : "豆瓣";
 function libInfoHTML(o, playHTML) {
   const m = o.meta && o.meta.state === "matched" ? o.meta : null, admin = isAdmin(), online = !!libD().online;
-  const facts = m ? [o.year || m.year, m.rating ? `<b class="lrate">豆瓣 ${esc(m.rating)}</b>` : "", (m.genres || []).join(" / "),
-    m.type === "tv" && m.episodes ? m.episodes + " 集" : "", (m.countries || []).slice(0, 2).join(" / ")].filter(Boolean)
+  const src = libSrc(m), web = libTmdb() ? "网上" : "豆瓣";
+  const facts = m ? [o.year || m.year, m.rating ? `<b class="lrate">${src} ${esc(m.rating)}</b>` : "", (m.genres || []).join(" / "),
+    m.type === "tv" && m.episodes ? m.episodes + " 集" : "", (m.countries || []).slice(0, 2).join(" / "),
+    `<span class="lfrom" title="片名、海报和简介来自${src}">资料：${src}</span>`].filter(Boolean)
     : [o.year, o.sub].filter(Boolean);
   const people = (label, list) => list && list.length ? `<p class="lppl"><span>${label}</span>${esc(list.join(" / "))}</p>` : "";
   let state = "";
-  if (!m && admin) state = o.meta && o.meta.state === "none" ? "设成了不用豆瓣的资料" : !online ? "在线资料关着" : o.meta ? "豆瓣上没找到有把握的条目，可以手动匹配"
-    : o.kind === "video" ? "其他视频不自动查豆瓣（名字不往外发），需要时手动匹配" : "还没查豆瓣（后台慢慢查）";
-  else if (m && m.partial) state = "豆瓣的详细资料还没取全，过一会儿再补";
+  if (!m && admin) state = o.meta && o.meta.state === "none" ? "设成了不用" + web + "的资料" : !online ? "在线资料关着"
+    : o.meta ? (libTmdb() ? "豆瓣和 TMDB 上都没找到有把握的条目，可以手动匹配" : "豆瓣上没找到有把握的条目，可以手动匹配")
+    : o.kind === "video" ? "其他视频不自动往" + web + "查（名字不往外发），需要时手动匹配" : "还没查" + web + "的资料（后台慢慢查）";
+  else if (m && m.partial) state = src + "的详细资料还没取全，过一会儿再补";
   const acts = admin && online ? (m
     ? `<button class="ghost sm" data-libmatch="${esc(o.key)}">改匹配</button><button class="ghost sm" data-librefresh="${esc(o.key)}">重新取资料</button><button class="ghost sm red" data-libunmatch="${esc(o.key)}">不匹配</button>`
-    : `<button class="ghost sm" data-libmatch="${esc(o.key)}">匹配豆瓣</button><button class="ghost sm" data-librefresh="${esc(o.key)}">自动找一次</button>`) : "";
+    : `<button class="ghost sm" data-libmatch="${esc(o.key)}">${libTmdb() ? "手动匹配" : "匹配豆瓣"}</button><button class="ghost sm" data-librefresh="${esc(o.key)}">自动找一次</button>`) : "";
   const plot = m && m.plot ? m.plot : o.plot || "";
   const box = lib.match && lib.match.key === o.key ? libMatchHTML() : "";
   return infoHTML({ title: o.title, art: o.art, orig: m && m.original && m.original !== o.title ? m.original : "",
-                    facts: facts.map((f) => String(f).startsWith("<b") ? f : esc(f)),
+                    facts: facts.map((f) => /^<(b|span) /.test(String(f)) ? f : esc(f)),
                     people: m ? people("导演", m.directors) + people("主演", (m.actors || []).slice(0, 5)) : "",
                     plot, more: lib.more, moreKey: "libmore", state, acts: (playHTML || "") + acts, box });
 }
@@ -6428,12 +6434,26 @@ function infoHTML(o) {
     ${o.acts ? `<div class="inline lacts">${o.acts}</div>` : ""}${o.box || ""}</div></div>`;
 }
 function libMatchHTML() {
-  const M = lib.match;
-  const rows = (M.list || []).map((c) => `<button class="lcand" type="button" data-libpick="${esc(c.id)}"${M.busy ? " disabled" : ""}><span class="lthumb">${art(c.title, "p")}${imgTag(c.thumb)}</span>
-    <span class="lctx"><b>${esc(c.title)}</b><small>${esc([c.year, c.type === "tv" ? "电视剧" + (c.episodes ? " · " + c.episodes + " 集" : "") : "电影", c.sub_title].filter(Boolean).join(" · "))}</small></span></button>`).join("");
-  return `<form class="lmatch" id="libMatch" autocomplete="off"><div class="inline"><input type="search" name="q" value="${esc(M.q)}" placeholder="豆瓣上的片名" aria-label="在豆瓣上搜片名"><button class="btn pri sm" type="submit"${M.busy ? " disabled" : ""}>${M.busy ? "正在查…" : "搜索"}</button><button class="ghost sm" type="button" data-libmatchx="1">取消</button></div>
-    ${M.error ? `<p class="hint bad">${esc(M.error)}</p>` : M.list && !M.list.length ? '<p class="hint">豆瓣上没搜到，换个写法试试（中文名、英文名、去掉季数）</p>' : ""}
+  const M = lib.match, both = libTmdb();
+  // 每个候选前面标着来源（豆瓣 / TMDB）：两边搜出来的同一部片子长得一样，要看得出选的是哪边的。
+  const rows = (M.list || []).map((c) => {
+    const src = c.src === "tmdb" ? "TMDB" : "豆瓣";
+    return `<button class="lcand" type="button" data-libpick="${esc(c.id)}" aria-label="${esc(src + "：" + c.title + (c.year ? "（" + c.year + "）" : ""))}"${M.busy ? " disabled" : ""}><span class="lthumb">${art(c.title, "p")}${imgTag(c.thumb)}</span>
+    <span class="lctx"><b>${esc(c.title)}</b><small><em class="lsrctag${c.src === "tmdb" ? " t" : ""}">${src}</em>${esc([c.year, c.type === "tv" ? "电视剧" + (c.episodes ? " · " + c.episodes + " 集" : "") : "电影", c.sub_title].filter(Boolean).join(" · "))}</small></span></button>`;
+  }).join("");
+  const notes = (M.notes || []).map((n) => `<p class="hint">${esc(n)}</p>`).join("");
+  return `<form class="lmatch" id="libMatch" autocomplete="off"><div class="inline"><input type="search" name="q" value="${esc(M.q)}" placeholder="${both ? "片名（豆瓣和 TMDB 一起搜）" : "豆瓣上的片名"}" aria-label="${both ? "在豆瓣和 TMDB 上搜片名" : "在豆瓣上搜片名"}"><button class="btn pri sm" type="submit"${M.busy ? " disabled" : ""}>${M.busy ? "正在查…" : "搜索"}</button><button class="ghost sm" type="button" data-libmatchx="1">取消</button></div>
+    ${M.error ? `<p class="hint bad">${esc(M.error)}</p>` : M.list && !M.list.length ? `<p class="hint">${both ? "豆瓣和 TMDB 上都" : "豆瓣上"}没搜到，换个写法试试（中文名、英文名、去掉季数）</p>` : ""}${notes}
     ${rows ? `<div class="lcands">${rows}</div>` : ""}</form>`;
+}
+// 备用资料 TMDB 的密钥（管理员；POST api/admin/library/settings {tmdb_key}）：存在中转的 secrets/ 里，页面从不拿回来，
+// 只知道填了没有（d.tmdb.set）和出没出错（d.tmdb.error）。
+function libTmdbHTML() {
+  const t = libD().tmdb || {};
+  return `<form class="ltmdb" id="libTmdb" autocomplete="off"><b>备用资料：TMDB</b>
+    <p class="hint">豆瓣没对上、拦着或连不上时，再到 TMDB（The Movie Database）查片名、海报、简介和演员；豆瓣永远先查。要一个免费的密钥：在 themoviedb.org 注册并登录 → 头像 → 设置 → API → 申请一个（个人用途）→ 复制「API 读访问令牌」（eyJ 开头的一长串）或「API 密钥」粘贴到这里。在国内连不上 TMDB 时，会走「设置 → YouTube」里填的代理。</p>
+    ${t.set ? `<p class="hint">${t.error ? `<span class="bad">${esc(t.error)}</span>` : "已设置（密钥存在这台电脑上，页面看不到）"}</p>` : ""}
+    <div class="inline"><input type="password" name="tmdb" placeholder="${t.set ? "换一个密钥" : "粘贴密钥"}" aria-label="TMDB 的密钥" autocomplete="off" spellcheck="false" maxlength="2000"><button class="btn pri sm" type="submit">保存</button>${t.set ? '<button class="ghost sm red" type="button" data-libtmdbclear="1">清掉</button>' : ""}<button class="ghost sm" type="button" data-libtmdb="0">取消</button></div></form>`;
 }
 async function libSearch(q) {
   const M = lib.match;
@@ -6444,7 +6464,7 @@ async function libSearch(q) {
   catch (error) { answer = { ok: false, error: error instanceof SignedOut ? "登录已失效" : "网络不通" }; }
   if (lib.match !== M) return;
   M.busy = false;
-  if (answer.ok) M.list = answer.candidates; else { M.list = null; M.error = answer.error || "没查成"; }
+  if (answer.ok) { M.list = answer.candidates; M.notes = answer.notes || []; } else { M.list = null; M.notes = []; M.error = answer.error || "没查成"; }
   renderLib();
   const f = qs("#libMatch input"); if (f && !answer.ok) f.focus();
 }
@@ -6680,8 +6700,12 @@ function renderLib() {
     o = `<div class="empty sm lempty"><div class="eic">${ic("lib", 40)}</div><b>还没有片库</b><p>${admin ? "加百度网盘、夸克（网盘组件），或电脑上的文件夹。" : "请管理员在这里添加网盘或文件夹。"}</p>${driveBtn}${drivePanel}${admin ? libFormHTML() : ""}</div>`;
   } else {
     // 在线资料（豆瓣）的开关：关了一个请求也不往豆瓣发，已经取到的照旧显示。
-    const onlineBtn = admin ? `<button class="ghost sm" data-libonline="${d.online ? "0" : "1"}" aria-pressed="${!!d.online}" title="从豆瓣取片名、海报、评分和简介（不登录，只发片名）">在线资料：${d.online ? "开" : "关"}</button>` : "";
-    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}${onlineBtn}</div>`;
+    const onlineBtn = admin ? `<button class="ghost sm" data-libonline="${d.online ? "0" : "1"}" aria-pressed="${!!d.online}" title="从豆瓣（填了密钥时还有备用的 TMDB）取片名、海报、评分和简介（不登录，只发片名）">在线资料：${d.online ? "开" : "关"}</button>` : "";
+    // 备用的 TMDB：按钮上只说「已设置 / 没设置」（出错时标红）；点开是填密钥的小框（libTmdbHTML）。
+    const tm = d.tmdb || {};
+    const tmdbBtn = admin && d.online ? `<button class="ghost sm${tm.error ? " red" : ""}" data-libtmdb="${lib.tmdbForm ? "0" : "1"}" aria-expanded="${!!lib.tmdbForm}" title="豆瓣没对上时再查 TMDB">备用资料 TMDB：${tm.set ? (tm.error ? "出错了" : "已设置") : "没设置"}</button>` : "";
+    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}${onlineBtn}${tmdbBtn}</div>`;
+    if (admin && d.online && lib.tmdbForm) o += `<div class="lformbox">${libTmdbHTML()}</div>`;
     o += drivePanel;
     if (admin && lib.form) o += `<div class="lformbox">${libFormHTML()}</div>`;
     if (d.scan.error && !d.scan.running) o += `<p class="hint bad">${esc(d.scan.error)}</p>`;
@@ -6756,24 +6780,30 @@ $("libBox").addEventListener("click", async (event) => {
   if (ds.libmatchx) { lib.match = null; renderLib(); return; }
   if (ds.libpick) {
     const answer = await libMetaCall("api/admin/library/match", { key: lib.match.key, id: ds.libpick }, t);
-    if (answer && answer.ok) toast("对上了豆瓣的「" + (answer.meta.title || "") + "」");
+    if (answer && answer.ok) toast("对上了" + libSrc(answer.meta) + "的「" + (answer.meta.title || "") + "」");
     return;
   }
   if (ds.libunmatch) {
     const answer = await libMetaCall("api/admin/library/match", { key: ds.libunmatch, none: true }, t);
-    if (answer && answer.ok) toast("不用豆瓣的资料了");
+    if (answer && answer.ok) toast("不用网上的资料了");
+    return;
+  }
+  if (ds.libtmdb) { lib.tmdbForm = ds.libtmdb === "1"; renderLib(); const f = qs("#libTmdb input"); if (f) f.focus(); return; }
+  if (ds.libtmdbclear) {
+    const answer = await libAdmin("api/admin/library/settings", { tmdb_key: "" }, t);
+    if (answer && answer.ok) { toast("清掉了 TMDB 的密钥：不再查 TMDB"); lib.tmdbForm = false; loadLib(true); }
     return;
   }
   if (ds.librefresh) {
     t.textContent = "正在查…";
     const answer = await libMetaCall("api/admin/library/meta/refresh", { key: ds.librefresh }, t);
-    if (answer && answer.ok) toast(answer.meta && answer.meta.state === "matched" ? "取到了「" + answer.meta.title + "」的资料" : "豆瓣上没找到有把握的条目，可以手动匹配");
+    if (answer && answer.ok) toast(answer.meta && answer.meta.state === "matched" ? "从" + libSrc(answer.meta) + "取到了「" + answer.meta.title + "」的资料" : (libTmdb() ? "豆瓣和 TMDB 上都" : "豆瓣上") + "没找到有把握的条目，可以手动匹配");
     else renderLib();
     return;
   }
   if (ds.libonline) {
     const answer = await libAdmin("api/admin/library/settings", { online: ds.libonline === "1" }, t);
-    if (answer && answer.ok) { toast(answer.online ? "在线资料开了：后台慢慢从豆瓣取" : "在线资料关了：不再往豆瓣发请求"); loadLib(true); }
+    if (answer && answer.ok) { toast(answer.online ? "在线资料开了：后台慢慢从豆瓣取" : "在线资料关了：不再往豆瓣" + (libTmdb() ? "和 TMDB" : "") + "发请求"); loadLib(true); }
     return;
   }
   if (ds.libkind) { lib.kind = ds.libkind; renderLib(); return; }
@@ -6846,6 +6876,16 @@ $("libBox").addEventListener("click", async (event) => {
 $("libBox").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (event.target.id === "libMatch") { libSearch(new FormData(event.target).get("q") || ""); return; }
+  if (event.target.id === "libTmdb") {
+    // 密钥只发这一次，存在中转的 secrets/ 里；发完马上清掉输入框。
+    const form = event.target, field = qs("input[name=tmdb]", form), btn = qs("button[type=submit]", form);
+    const key = field.value.trim();
+    if (!key) { field.focus(); return; }
+    const answer = await libAdmin("api/admin/library/settings", { tmdb_key: key }, btn);
+    field.value = "";
+    if (answer && answer.ok) { toast("TMDB 的密钥存好了：豆瓣没对上的会再查 TMDB"); lib.tmdbForm = false; loadLib(true); }
+    return;
+  }
   const form = event.target, btn = qs("button[type=submit]", form);
   const body = Object.assign({ kind: lib.kind }, Object.fromEntries(new FormData(form)));
   btn.textContent = lib.kind === "webdav" ? "正在连网盘…" : "正在添加…";
