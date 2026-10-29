@@ -129,6 +129,14 @@ def set_manifest(path: Path, edit) -> None:
     os.replace(tmp, path)
 
 
+def staged(root, timeout: float = 5.0) -> bool:
+    """The restore endpoint answers the page first and only then moves the staged copy into place (the
+    supervisor stops the relay as soon as it sees it), so the copy can land a moment after the answer."""
+    deadline = time.monotonic() + timeout
+    while not backup.pending(root) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    return backup.pending(root)
+
 class ExportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -552,7 +560,7 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(self.json("admin", "POST", "/api/admin/backup/restore", {"id": "wrong"})[1]["ok"], False)
         status, done = self.json("admin", "POST", "/api/admin/backup/restore", {"id": answer["id"]})
         self.assertEqual((done["ok"], done["restart"]), (True, "manual"), "no supervisor: applied on the next start")
-        self.assertTrue(backup.pending(self.root))
+        self.assertTrue(staged(self.root))
         self.assertTrue(self.audits("backup.restore"))
         view = self.json("admin", "GET", "/api/admin/backup")[1]
         self.assertTrue(view["available"])
@@ -570,7 +578,7 @@ class EndpointTests(unittest.TestCase):
         self.assertTrue(upload["supervised"])
         done = self.json("admin", "POST", "/api/admin/backup/restore", {"id": upload["id"]})[1]
         self.assertEqual(done["restart"], "auto")
-        self.assertTrue(backup.pending(self.root))
+        self.assertTrue(staged(self.root))
 
     def test_not_available_without_a_data_folder(self):
         self.relay.selfhost_data = None
