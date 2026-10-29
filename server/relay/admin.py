@@ -29,7 +29,7 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, clouddrive, console, epg, events, playlist, presets, qr, routecheck, settingsbackup, subscriptions, table
+from . import channeltable, clouddrive, console, epg, events, netcheck, playlist, presets, qr, routecheck, settingsbackup, subscriptions, table
 from . import library as library_api
 from .ytnode import MAX_STREAMS
 
@@ -146,6 +146,9 @@ def get(handler, relay, path: str) -> bool:
     elif path == "/api/admin/clouddrive/storages":
         # 网盘组件里加了哪些网盘、状态（clouddrive.storages）：没有令牌、Cookie、附加项。
         handler._json(clouddrive.storages(relay), headers={"Cache-Control": "no-store"})
+    elif path == "/api/admin/netcheck":
+        # 系统 → 网络检查（netcheck.py，自建 / 电脑客户端）：上次的结果和在不在测；只有主机名和大白话。
+        handler._json(netcheck.view(relay), headers={"Cache-Control": "no-store"})
     else:
         match = _USER.match(path)
         if match and match.group(2) == "sessions":
@@ -690,6 +693,11 @@ def post(handler, relay, path: str) -> bool:
         if action:
             relay.accounts.audit(action, caller.user, ip, "clouddrive", "", str(answer.get("mount_path") or "").strip("/")[:40])
         handler._json(answer, headers={"Cache-Control": "no-store"})
+        return True
+    if path == "/api/admin/netcheck":
+        # 系统 → 网络检查（netcheck.py）：开始测网盘、直播源、网站（后台线程，同时只有一次）。只读，不改任何设置，
+        # 也不读代理软件 rules: 以外的配置，所以不写操作记录。
+        handler._json(netcheck.start(relay), headers={"Cache-Control": "no-store"})
         return True
     if path in ("/api/admin/clouddrive", "/api/admin/clouddrive/reveal"):
         # 网盘组件（clouddrive.py）：安装、更新、检查、停用、启用、重设密码；reveal 只给这台电脑上打开的电脑版，

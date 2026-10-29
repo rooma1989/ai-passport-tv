@@ -79,6 +79,14 @@
 .kv .li { align-items: flex-start; }
 .kv .li > span.k { flex: 0 0 180px; padding-top: 1px; font: 600 14px var(--sans); color: var(--label-2); }
 .kv .li > span.tx b { font-weight: 500; overflow-wrap: anywhere; }
+/* 系统 → 网络检查（admNetBox）：✓ 绿、⚠ 黄；建议的规则用等宽字，可以整段选中复制 */
+.nck.ok > span.k { color: var(--ok); }
+.nck.warn > span.k { color: var(--warn); }
+:root[data-theme=light] .nck.warn > span.k { color: #9a5b00; }
+:root[data-theme=light] .nck.ok > span.k { color: #1c7c3f; }
+pre.nck-rules { margin: 4px 0 6px; padding: 10px 12px; border-radius: 8px; background: var(--fill-2); color: var(--label);
+                font: 500 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow-x: auto; max-width: 100%; user-select: all; }
+.netck .li > span.tx { min-width: 0; }
 
 /* 弹窗里：要紧的话、二维码下的倒计时、危险按钮 */
 #modal p.warn { color: var(--label); box-shadow: inset 3px 0 0 var(--bad); padding-left: 12px; }

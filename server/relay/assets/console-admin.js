@@ -2,7 +2,8 @@
    分区：概览（设备、主机负载曲线、进程、YouTube 节点）、用户（怎么来的、改名、封禁、导出后删除、邀请、一次性登录链接、
    他的登录）、设备（解绑、封禁、重连、重新配对、改名、固件版本）、频道表（导入、筛选、去重、试一下、改名分组排序、
    保存前检查和备份、节目单来源）、操作记录（筛选、往前翻）、系统（只读的规矩、共享配对令牌开关、版本；自建和电脑客户端的
-   备份和恢复：导出 zip、从 zip 恢复、每天的自动备份，接口在 server/relay/settingsbackup.py）。
+   备份和恢复：导出 zip、从 zip 恢复、每天的自动备份，接口在 server/relay/settingsbackup.py；网络检查：网盘、直播、
+   网站是不是经代理软件绕了远路，接口在 server/relay/netcheck.py）。
    接口都是 server/relay/admin.py 的 /api/admin/*：服务端只回答管理员，别人一律 404（这里的入口也只给管理员看）。
    用 console.js 的小工具（el、button、toast、modal、when …）；这里的全局名字都以 adm / ach 开头，免得和它撞上。
    在公网隧道上（server/front.py 默认拦 /tv/api/admin）回答 404 但登录还在：显示「这里打不开管理」，不当成退出登录。 */
@@ -794,9 +795,10 @@ function admAuditFilters() {
 
 async function admSystem() {
   const run = adm.run;
-  let s, bk;
+  let s, bk, nc = null;
   try {
     [s, bk] = await Promise.all([admCall("GET", "api/admin/system"), admCall("GET", "api/admin/backup")]);
+    if (s.selfhost) nc = await admCall("GET", "api/admin/netcheck");
   } catch (error) { admFail(error); return; }
   if (!admStill(run, "system")) return;
   const rows = [];
@@ -844,7 +846,94 @@ async function admSystem() {
   list.append(...rows);
   const hint = admHint("这里大多只是显示：注册方式、未绑定设备的规矩和限额写在代码里" + (s.selfhost ? "，服务的设置在数据目录的 config.toml 里" : "（见运维手册），改了要重新部署") + "。");
   hint.style.margin = "-12px 0 22px";
-  admSec(list, hint, ...(bk && bk.available ? [admBackupList(bk)] : []));
+  admSec(list, hint, ...(bk && bk.available ? [admBackupList(bk)] : []), ...(nc && nc.ok ? [admNetBox(nc)] : []));
+  if (nc && nc.running) admNetPoll(run);
+}
+
+// ----------------------------------------------------------------------- 网络检查（自建、电脑客户端）
+// 接口在 server/relay/netcheck.py：POST 开始测（后台线程，同时只有一次），GET 是上次的结果；测的时候每 1.5 秒问一次，
+// 只重画这一块。结果里只有主机名、毫秒、Mbit/s 和大白话；建议的直连规则可以复制，小鼠电视从不改代理软件的配置。
+const ADM_NET_MARK = { ok: "✓", warn: "⚠", skip: "–" };
+function admNetBox(nc) {
+  const box = el("div", "netck");
+  box.id = "admNet";
+  const r = nc.result;
+  const head = el("div", "list kv");
+  head.appendChild(el("h3", "", "网络检查"));
+  const row = el("div", "li");
+  row.appendChild(el("span", "k", "网盘、直播、网站"));
+  const tx = el("span", "tx");
+  const state = nc.running ? (nc.step || "正在检查…")
+    : r ? when(r.at) + " 测过：" + (r.error || (r.warn ? r.warn + " 项要注意" : "都正常")) : "还没测过";
+  tx.appendChild(el("b", "", state));
+  tx.appendChild(el("small", "", "片库放得卡、直播起得慢时点一下：量每个网盘的下载速度，看网盘、直播源、YouTube / B 站 / 豆瓣的域名" +
+    "是不是被电脑上的代理软件（Clash 这类，TUN 模式的 198.18 假 IP）接管、绕到了国外，再看 Clash Verge 的规则里有没有给它们直连" +
+    "（只读 rules: 那一段，不改任何配置）。大约要半分钟，测网盘时会占满一会儿网速。"));
+  row.appendChild(tx);
+  const go = admBtn(nc.running ? "正在检查…" : r ? "再测一次" : "开始检查", "linkbtn", "adm-net-run", () => admNetRun(go));
+  go.disabled = !!nc.running;
+  const acts = el("span", "acts");
+  acts.appendChild(go);
+  row.appendChild(acts);
+  head.appendChild(row);
+  box.appendChild(head);
+  if (!r) return box;
+  for (const sec of r.sections) {
+    const list = el("div", "list kv");
+    list.appendChild(el("h3", "", "网络检查 · " + sec.title));
+    for (const item of sec.rows) {
+      const li = el("div", "li nck " + item.state);
+      li.appendChild(el("span", "k", (ADM_NET_MARK[item.state] || "") + " " + item.name));
+      const t = el("span", "tx");
+      t.appendChild(el("b", "", item.text));
+      for (const note of item.notes) t.appendChild(el("small", "", note));
+      if (item.rules.length) t.appendChild(el("small", "warn", "建议加的直连规则：" + item.rules.join("、")));
+      li.appendChild(t);
+      list.appendChild(li);
+    }
+    box.appendChild(list);
+  }
+  if (r.rules.length) {
+    const list = el("div", "list kv");
+    list.appendChild(el("h3", "", "建议加的直连规则"));
+    const li = el("div", "li");
+    li.appendChild(el("span", "k", "Clash 规则"));
+    const t = el("span", "tx");
+    t.appendChild(el("pre", "nck-rules", r.rules.map((x) => "- " + x).join("\n")));
+    t.appendChild(el("small", "", r.advice));
+    li.appendChild(t);
+    const a = el("span", "acts");
+    a.appendChild(admBtn("复制", "linkbtn", "adm-net-copy", () => copyText(r.rules.map((x) => "- " + x).join("\n"))));
+    li.appendChild(a);
+    list.appendChild(li);
+    box.appendChild(list);
+  }
+  return box;
+}
+function admNetShow(nc) {
+  const old = $("admNet");
+  if (!old) return;
+  const k = focusKey();
+  old.replaceWith(admNetBox(nc));
+  restoreFocus(k);
+}
+async function admNetRun() {
+  const run = adm.run;
+  const answer = await admAct("api/admin/netcheck", {});
+  if (!answer || !admStill(run, "system")) return;
+  admNetShow(answer);
+  if (answer.running) admNetPoll(run);
+}
+async function admNetPoll(run) {
+  while (admStill(run, "system")) {
+    await sleep(1500);
+    if (!admStill(run, "system")) return;
+    let nc;
+    try { nc = await admCall("GET", "api/admin/netcheck"); } catch (error) { admFail(error); return; }
+    if (!admStill(run, "system")) return;
+    admNetShow(nc);
+    if (!nc.running) return;
+  }
 }
 
 // ----------------------------------------------------------------------- 备份和恢复（自建、电脑客户端）
