@@ -369,7 +369,7 @@ class ScheduleTests(unittest.TestCase):
         self.lib.freshen()
         self.assertEqual(queued, [], "scanned a moment ago")
         self.now += 1
-        self.lib.freshen()
+        self.assertTrue(self.lib.freshen())
         self.assertEqual(queued, ["aaaaaaaa", "bbbbbbbb"])
 
 

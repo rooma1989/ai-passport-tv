@@ -2072,12 +2072,15 @@ class Library:
             return RETRY_S
         return DAV_EVERY_S if src.get("kind") == "webdav" else EVERY_S
 
-    def freshen(self) -> None:
-        """打开片库页时：上次扫描已经过了 OPEN_FRESH_S 的来源排上扫描（正在扫、已经排上的不重复排）。"""
+    def freshen(self) -> bool:
+        """打开片库页时：上次扫描已经过了 OPEN_FRESH_S 的来源排上扫描（正在扫、已经排上的不重复排）。排了就 True。"""
         now = self.clock()
+        queued = False
         for src in self._load_sources():
             if now - (src.get("last_scan") or 0) >= OPEN_FRESH_S:
                 self.scan(src["id"])
+                queued = True
+        return queued
 
     def run_forever(self, sleep=time.sleep) -> None:
         sleep(START_DELAY_S)
@@ -2944,9 +2947,11 @@ def get(handler, relay, caller, path: str) -> bool:
         handler._not_found()
         return True
     if path == "/api/library":
-        if handler._query().get("open") == "1":
-            library.freshen()
+        fresh = handler._query().get("open") == "1" and library.freshen()
         answer = library.view()
+        if fresh:
+            # 后台线程可能刚把它从队里取走、还没标「正在扫」：照样告诉页面「排上了」，页面才会接着刷新。
+            answer["scan"]["queued"] = max(1, answer["scan"].get("queued") or 0)
         answer["admin"] = caller.role == "admin"
         handler._json(answer)
         return True
