@@ -6539,7 +6539,7 @@ function driveRow(s) {
   const again = s.state !== "ok" && s.state !== "off" && s.relogin
     ? `<button class="ghost sm" data-drvre="${esc(s.relogin)}" data-m="${esc(s.mount_path)}">${s.relogin === "baidu" ? "重新登录" : "扫码登录"}</button>` : "";
   return `<div class="ldrv"><span class="lstx"><b>${esc(s.name)}</b><small class="${tone}">${esc(s.kind + " · " + s.label + why)}</small></span>
-    <span class="ldrvacts">${again}<button class="ghost sm red" data-drvdel="${esc(s.mount_path)}">删除</button></span></div>`;
+    <span class="ldrvacts">${again}<button class="ghost sm" data-drvconn="${esc(s.mount_path)}" title="让网盘组件重新登录这个网盘（会员升级后速度没上来、或者一直出错时点）">重新连接</button><button class="ghost sm red" data-drvdel="${esc(s.mount_path)}">删除</button></span></div>`;
 }
 function drivesHTML(docs) {
   const L = drive.list;
@@ -6837,6 +6837,16 @@ $("libBox").addEventListener("click", async (event) => {
   if (ds.drvscan) {
     const answer = await libAdmin("api/admin/clouddrive/rescan", {}, t);
     if (answer && answer.ok) { toast("开始扫描"); loadLib(true); }
+    return;
+  }
+  if (ds.drvconn) {
+    // 网盘组件丢掉这个网盘的会话、重新登录（会员升级后它还按以前的等级限速时用）；Cookie、令牌不动。
+    const answer = await libAdmin("api/admin/clouddrive/storages/reconnect", { mount_path: ds.drvconn }, t);
+    if (answer && answer.ok) {
+      const name = ds.drvconn.replace(/^\//, "");
+      toast(answer.state === "ok" ? "「" + name + "」重新连接好了" : "「" + name + "」" + answer.label + (answer.reason ? "：" + answer.reason : ""), answer.state !== "ok");
+      loadDriveList();
+    }
     return;
   }
   if (ds.drvdel) {

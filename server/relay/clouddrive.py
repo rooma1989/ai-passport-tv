@@ -645,6 +645,21 @@ def delete(relay, body: dict) -> dict:
     return {"ok": True, "mount_path": mount}
 
 
+def reconnect(relay, body: dict) -> dict:
+    """POST /api/admin/clouddrive/storages/reconnect：让组件重新登录这个网盘（丢掉、重跑一遍 Init）。
+    网盘的会员升级以后组件还拿着以前的会话、照旧按以前的等级限速时点它：2026-10-29 夸克开了 SVIP，单条连接
+    还是 4 Mbit/s，重新加载以后 40 多。附加项（Cookie、令牌）原样不动。"""
+    mount = _mount_arg(body)
+    if not mount:
+        raise DriveError("请求格式不对")
+    client = api(relay)
+    with _API_LOCK:
+        after = _reinit(client, _find(client.storages(), mount))
+    state, reason = _state(after)
+    relay.log(f"网盘：重新连接了「{mount.strip('/')}」，{LABELS.get(state, state)}")
+    return {"ok": True, "mount_path": mount, "state": state, "label": LABELS.get(state, ""), "reason": reason}
+
+
 def rescan(relay) -> dict:
     """POST /api/admin/clouddrive/rescan：片库的「网盘」来源跟上组件，再扫一遍。"""
     library = getattr(relay, "library", None)
@@ -658,11 +673,12 @@ def rescan(relay) -> dict:
 
 ROUTES = {"/api/admin/clouddrive/quark/start": quark_start, "/api/admin/clouddrive/quark/check": quark_check,
           "/api/admin/clouddrive/baidu": baidu_add, "/api/admin/clouddrive/storages/delete": delete,
+          "/api/admin/clouddrive/storages/reconnect": reconnect,
           "/api/admin/clouddrive/rescan": lambda relay, _body: rescan(relay)}
 
 
 def drives(relay, path: str, body: dict) -> tuple[dict, str]:
-    """admin.py 转来的 POST → (回答, 操作记录的动作；不用记时 "")。只在真加上、删掉、出了二维码、扫描时记。"""
+    """admin.py 转来的 POST → (回答, 操作记录的动作；不用记时 "")。只在真加上、删掉、重新连接、出了二维码、扫描时记。"""
     if not enabled_here(relay):
         return {"ok": False, "error": NOT_HERE}, ""
     work = ROUTES.get(path)
@@ -678,6 +694,8 @@ def drives(relay, path: str, body: dict) -> tuple[dict, str]:
         return answer, "clouddrive.drive_delete"
     if path.endswith("/rescan"):
         return answer, "clouddrive.rescan"
+    if path.endswith("/reconnect"):
+        return answer, "clouddrive.reconnect"
     if answer.get("state") == "done":
         return answer, "clouddrive.drive_add"
     return answer, "clouddrive.drive_qr" if path.endswith("/start") else ""

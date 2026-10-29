@@ -345,6 +345,15 @@ class DriveApiTests(lib_base.ApiTests):
         self.state["tokens"].clear()
         self.assertEqual(len(self.drive("storages")["storages"]), 1)
         self.assertTrue(self.drive("rescan", {})["ok"])
+        # Reconnect: the component drops the drive's session and runs Init again, with the stored login untouched.
+        stored = lambda: json.loads(next(iter(self.state["storages"].values()))["addition"])
+        before, calls = stored(), len(self.state["calls"])
+        again = self.drive("storages/reconnect", {"mount_path": "/百度网盘"})
+        self.assertEqual((again["ok"], again["state"], again["label"]), (True, "ok", "正常"), again)
+        self.assertIn(("POST", "/api/admin/storage/update"), self.state["calls"][calls:], "Init runs again")
+        self.assertEqual(stored(), before, "the stored login is untouched")
+        self.assertFalse(self.drive("storages/reconnect", {"mount_path": "/nope"})["ok"])
+        self.assertFalse(self.drive("storages/reconnect", {})["ok"])
         self.assertFalse(self.drive("storages/delete", {"mount_path": "/nope"})["ok"])
         self.assertFalse(self.drive("storages/delete", {"mount_path": 3})["ok"])
         gone = self.drive("storages/delete", {"mount_path": "/百度网盘"})
@@ -353,6 +362,7 @@ class DriveApiTests(lib_base.ApiTests):
         actions = [r["action"] for r in self.accounts.audit_rows(100) if r["action"].startswith("clouddrive.")]
         self.assertIn("clouddrive.drive_delete", actions)
         self.assertIn("clouddrive.rescan", actions)
+        self.assertIn("clouddrive.reconnect", actions)
         self.assert_no_secrets()
 
     def test_scanning_the_drive_refreshes_every_folder_first(self):
@@ -369,7 +379,7 @@ class DriveApiTests(lib_base.ApiTests):
     def test_admin_only_self_host_only_and_not_running(self):
         for who in ("alice", "guest", None):
             self.assertEqual(self.request("GET", "/tv/api/admin/clouddrive/storages", who)[0], 404, who)
-            for path in ("quark/start", "quark/check", "baidu", "storages/delete", "rescan"):
+            for path in ("quark/start", "quark/check", "baidu", "storages/delete", "storages/reconnect", "rescan"):
                 self.assertEqual(self.request("POST", "/tv/api/admin/clouddrive/" + path, who, {})[0], 404, (who, path))
         self.assertEqual(self.state["calls"], [])
         self.paths.status.write_text(json.dumps({"state": "stopped", "port": self.ol.server_address[1]}))
