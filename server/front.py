@@ -49,6 +49,9 @@ IMPORT_PATH = "/api/admin/channels/import"
 IMPORT_BODY_MAX = 3 * 1024 * 1024
 CHANNELS_PATH = "/api/admin/channels"
 CHANNELS_BODY_MAX = 2 * 1024 * 1024
+# 「从备份恢复」上传的 zip（中转那边是 server/selfhost/backup.py 的 UPLOAD_MAX，同样大）：不先读进内存，边收边转。
+RESTORE_PATH = "/api/admin/backup/restore/upload"
+RESTORE_BODY_MAX = 256 * 1024 * 1024
 # 电脑版登录的长轮询最多等 25 秒；留足余量。
 UPSTREAM_TIMEOUT_S = 65
 CHUNK = 64 * 1024
@@ -304,12 +307,16 @@ def _handler(options: Options, public: bool):
 
         def _proxy(self, method: str, port: int, path: str, query: str) -> None:
             length = self._length()
-            limit = {IMPORT_PATH: IMPORT_BODY_MAX, CHANNELS_PATH: CHANNELS_BODY_MAX}.get(path, BODY_MAX)
+            limit = {IMPORT_PATH: IMPORT_BODY_MAX, CHANNELS_PATH: CHANNELS_BODY_MAX,
+                     RESTORE_PATH: RESTORE_BODY_MAX}.get(path, BODY_MAX)
             if length is None or length > limit:
                 self.close_connection = True
                 self._reply(411 if length is None else 413, b"", "text/plain")
                 return
-            body = self.rfile.read(length) if length else None
+            if path == RESTORE_PATH and length:
+                body = _Limited(self.rfile, length)
+            else:
+                body = self.rfile.read(length) if length else None
             headers = {k: v for k, v in self.headers.items() if k.lower() not in _DROPPED_IN}
             if public:
                 # 中转的密钥只在本机用（电视服务的语音命令直接连中转），从隧道来的不转。
@@ -319,7 +326,7 @@ def _handler(options: Options, public: bool):
             if from_this_computer(self.headers, self.client_address[0], public):
                 headers[LOCAL_HEADER] = "1"
             if body is not None:
-                headers["Content-Length"] = str(len(body))
+                headers["Content-Length"] = str(length)
             upstream = http.client.HTTPConnection("127.0.0.1", port, timeout=UPSTREAM_TIMEOUT_S)
             try:
                 upstream.request(method, path + ("?" + query if query else ""), body=body, headers=headers)
@@ -369,6 +376,23 @@ NOT_FOUND = ("<!doctype html><meta charset=utf-8><meta name=viewport content='wi
 UNAVAILABLE = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
                "<body style='background:#1c1915;color:#e6dcc8;font:16px/1.6 serif;padding:24px'>"
                "<p>服务还没准备好，过几秒再刷新一下。</p>").encode()
+
+
+class _Limited:
+    """请求体的前 length 个字节当作一个文件给 http.client 边读边发（keep-alive 的连接上读不到文件尾）。"""
+
+    def __init__(self, stream, length: int):
+        self.stream, self.left = stream, length
+
+    def read(self, size: int = -1) -> bytes:
+        if self.left <= 0:
+            return b""
+        size = self.left if size is None or size < 0 else min(size, self.left)
+        chunk = self.stream.read(size)
+        self.left -= len(chunk)
+        if not chunk:
+            self.left = 0
+        return chunk
 
 
 def make_server(bind: str, port: int, options: Options, public: bool = False) -> ThreadingHTTPServer:

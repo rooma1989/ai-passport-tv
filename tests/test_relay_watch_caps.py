@@ -104,8 +104,11 @@ class BudgetTests(unittest.TestCase):
 
     def test_copy_falling_back_to_transcode_takes_a_transcode_slot_then(self):
         stream = self.service.open("pc1-aaaaaaaa", live(1, hevc=True), user=1)
-        self.assertFalse(stream.encoding, "admitted as copy: nothing says it needs transcoding yet")
         self.assertTrue(stream.wait_ready(5))
+        # Admitted as copy (nothing said it needs transcoding yet). The stream's thread may already have
+        # fallen back by the time open returns, so look at what the first ffmpeg was asked to do.
+        first = self.popen.procs[0].args
+        self.assertEqual(first[first.index("-c:v") + 1], "copy", "admitted as copy")
         self.assertTrue(stream.encoding)
         self.assertEqual(len(self.popen.procs), 2, "restarted once, transcoding")
         args = self.popen.procs[1].args
