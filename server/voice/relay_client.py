@@ -178,3 +178,16 @@ class RelayClient:
 
     def recast(self, step: int = 0, resume: bool = False) -> dict:
         return self.post("/api/voice/recast", {"step": step, "resume": resume})
+
+    # ---- 语音点播片库（server/relay/voicelib.py） ----
+
+    def library(self, title: str = "", episode: int = 0, season: int = 0, resume: bool = False) -> dict:
+        """放片库里的一部（title 是目录里的 id）：episode 为 0 时电影接着放、剧接着看；resume：放「继续观看」里最近的。"""
+        if resume:
+            return self.post("/api/voice/library", {"continue": True})
+        body = {"id": title}
+        if episode:
+            body["episode"] = episode
+        if season:
+            body["season"] = season
+        return self.post("/api/voice/library", body)

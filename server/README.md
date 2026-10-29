@@ -599,6 +599,40 @@ the `playing` fields above and each series' `position`. In multi-user mode a rem
 only from the media server (the key, naming the device) or the owner's own phone, never from a
 guest phone.
 
+### Playing the library by voice
+
+The "pian ku" section of `intent.py`; the relay's side is `server/relay/voicelib.py`, the
+phrasings `tests/test_voice_library.py` and `tests/test_relay_voice_library.py`.
+
+- **A title**: "fang Su Li Nan", "bo fang Shen Tan Zhi Hen Ji", "wo yao kan Tie Quan Jiao Yu".
+  The catalogue's `library` section lists the owner's titles (a show with all its episodes, a
+  movie, another video) with their shown name and other names (the file-name guess, the English
+  name, Douban's original title and aka), matched like channel names (characters and toneless
+  pinyin, so "Su Li Nan" misheard with other characters still matches). A movie resumes from the
+  owner's saved position; a show carries on: the latest watched episode when unfinished, else the
+  next one, else episode 1 (all watched: episode 1 again, said so).
+- **An episode**: "Su Li Nan di san ji", "Su Li Nan di er ji di san ji", "Su Li Nan zui xin yi
+  ji"; while My cast shows a library show, "di san ji" alone, and "xia yi ji" / "shang yi ji"
+  (the relay's next / previous already step through the show's episodes). Episodes are found by
+  their number (within the season when one is said; the playing season first), else counted.
+- **Carry on**: "ji xu kan Tie Quan Jiao Yu" plays that title as above; "jie zhe kan" alone plays
+  the latest item of the owner's Continue watching (the home page's rule), unless something is
+  paused (then it resumes as before).
+- **Channels first**: the library is used only when a title scores higher than the best channel
+  (or series channel), so "fang CCTV5" or a title that is also a channel name still switches.
+- **Several close titles** are listed (rows `lb:<title>[:<episode>[:<season>]]`) and the reply
+  asks about the first, "yao fang 'Jia You Er Nü' ma?"; "shi de", "fang ba", "jiu zhe ge" within
+  30 s plays it.
+- **Who**: the relay lists the library only to the media server (with the key) or a signed-in
+  family member, for a device whose owner is an active account; a guest's phone, an unbound
+  device or a banned owner gets no section, so no library result. It plays through
+  `library.play_tv` (the cast slot, progress under `lib:<id>` in `pc-progress.json`, as "Play
+  to" does) for the owner. Untested on a real device and with real speech.
+
+Relay endpoint: `POST /api/voice/library {device, id, episode, season}` or
+`{device, continue: true}`; the answer adds `name`, `kind`, `episode`, `total` (and `resume`,
+`note`). The catalogue adds `library: {titles, continue, playing}`, at most 64 KB of titles.
+
 Relay actions always carry `device`, so they act on the device that spoke, not
 on the one the phone is driving (`Relay.target()`). Which device that is depends
 on the relay's mode:
@@ -614,7 +648,7 @@ key (`X-Key`) that names a device on a single-device endpoint (`switch`, `seek`,
 `next`, `previous`, `pause`, `resume`, `device`, `audio`, `pet`,
 `series/<id>/play`, `series/<id>/episodes`, `voice/catalog`, `voice/search`,
 `voice/cast`, `voice/creator`, `voice/timer`, `voice/subscribe`, `voice/unsubscribe`,
-`voice/recast`) is served as that device's **guest**: that one
+`voice/recast`, `voice/library`) is served as that device's **guest**: that one
 device, its owner's series and progress, no account data except a voice
 subscription to the owner's creators and a confirmed voice removal of one. Names are not accepted there (users choose them, so they are not unique),
 and an unknown or unbound id answers 404. Phones (cookie sessions) keep their

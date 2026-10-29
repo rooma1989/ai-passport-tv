@@ -363,6 +363,31 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
 `timer`、`casts`、上面说的 `playing` 字段和每部剧的 `position`。多用户时删台只接受媒体服务（带密钥、点名设备）
 或设备主人自己的手机，扫码的访客手机不行。
 
+### 语音点播片库
+
+规则在 `intent.py` 的「片库」一节，中转那边在 `server/relay/voicelib.py`，说法在 `tests/test_voice_library.py`
+和 `tests/test_relay_voice_library.py`。
+
+- **说片名**：「放苏里南」「播放神探之痕迹」「我要看铁拳教育」。目录的 `library` 一段列出设备主人的片子（一部剧
+  连同各集、一部电影、一个其他视频），带显示的名字和别的叫法（文件名猜的片名、英文名、豆瓣的原名和又名），
+  和台名一样按字和无声调拼音匹配（「苏利南」「书里南」也认）。电影从主人上次看到的地方接着放；剧接着看：
+  最近看的那一集没看完接着放，看完了放下一集，没看过从第 1 集（全看完了从第 1 集重看，回答里说）。
+- **说第几集**：「苏里南第三集」「苏里南第二季第三集」「苏里南最新一集」；投屏台上放着片库的剧时单说「第三集」，
+  以及「下一集」「上一集」（中转的 next / previous 本来就会换片库的集）。按集号找（说了第几季只在那一季里找，
+  没说时先找正在放的那一季），集号对不上时按顺序数。
+- **接着看**：「继续看铁拳教育」按上面的规则放那一部；单说「接着看」放主人「继续观看」里最近的那一个（和首页
+  那一排同一个规则），有东西暂停着时照旧是继续播放。
+- **台名优先**：片子比最像的台（或剧集台）分数更高才放片库，「放CCTV5」、和台同名的片子仍是换台。
+- **几部都像**时列出来（选项 `lb:<片子>[:<集>[:<季>]]`），回答问第一个「要放《家有儿女》吗？」，30 秒内说
+  「是的」「放吧」「就这个」就放它。
+- **谁能用**：中转只给媒体服务（带密钥）或登录的家里人列片库，而且设备主人是正常的账号；访客手机、没绑定的设备、
+  主人被停用时没有这一段，也就不会放片库。放走 `library.play_tv`（投屏位，进度记在 `pc-progress.json` 的
+  `lib:<id>`，和「播放到」一样），记在主人名下。没在真设备、真语音上试过。
+
+中转接口：`POST /api/voice/library {device, id, episode, season}` 或 `{device, continue: true}`；回答加上
+`name`、`kind`、`episode`、`total`（还有 `resume`、`note`）。目录加上 `library: {titles, continue, playing}`，
+片子至多 64 KB。
+
 调中转时总带 `device`，作用在说话的那台设备上，而不是手机正在遥控的那台（`Relay.target()`）。是哪一台，看中转的模式：
 
 | 中转模式 | 媒体服务发的 `device` | 从哪来 |
@@ -373,7 +398,7 @@ muse-asr（SenseVoice）识别，理解意思后回答。设计和用户的决�
 多用户时中转密钥就是管理员，只能遥控管理员自己的设备，而一个媒体单元可能服务任何人的设备。所以带密钥
 （`X-Key`）、在单设备接口上（`switch`、`seek`、`next`、`previous`、`pause`、`resume`、`device`、`audio`、
 `pet`、`series/<id>/play`、`series/<id>/episodes`、`voice/catalog`、`voice/search`、`voice/cast`、
-`voice/creator`、`voice/timer`、`voice/subscribe`、`voice/unsubscribe`、`voice/recast`）点名设备的请求，
+`voice/creator`、`voice/timer`、`voice/subscribe`、`voice/unsubscribe`、`voice/recast`、`voice/library`）点名设备的请求，
 按那台设备的**访客**处理：只能动那一台，剧集和进度按设备主人的来，除了用语音给主人订阅 UP 主、确认后删掉
 一个，碰不到账号数据。这里不认名字（名字是用户起的，不唯一），
 不认识或未绑定的 id 回 404。手机（cookie 会话）的规则不变。未绑定的设备 CONFIG 里没有 `voice`，也没有中转

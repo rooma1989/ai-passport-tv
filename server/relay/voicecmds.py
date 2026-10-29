@@ -19,6 +19,8 @@
 - POST /api/voice/subscribe {device, wait}     订阅正在放的投屏视频的 UP 主（YouTube 是频道）
 - POST /api/voice/unsubscribe {device, id}     删掉设备主人的一个 UP 主或剧集台（设备上先确认过）
 - POST /api/voice/recast {device, step, resume} 从这台设备的投屏历史再投一次
+- POST /api/voice/library {device, id, episode, season, continue} 语音点播片库（voicelib.py），目录里的
+  library 一段也在那里
 电脑版遥控面板的「定时关」用同一个定时：POST /api/sleep {device, minutes}（home.sleep → set_timer），
 /api/state 的 sleep 是 timer_of() 给的还剩多少。
 """
@@ -29,7 +31,7 @@ import math
 import threading
 import time
 
-from . import table, voice
+from . import table, voice, voicelib
 from .bilibili import SourceError
 from .state import Video
 from .tenants import LEGACY, Caller
@@ -134,9 +136,9 @@ def back_channels(rec: dict, current: str) -> list[str]:
 
 # ---- 目录（GET /api/voice/catalog 的补充） ----
 
-def catalog(relay, key, caller: Caller = LEGACY) -> dict:
+def catalog(relay, key, caller: Caller = LEGACY, keyed: bool = False) -> dict:
     """voice.catalog 加上：正在放的视频（标题、进度、时长、共几集）、刚才的台、定时、投屏历史、
-    每部剧看到第几集的哪里。"""
+    每部剧看到第几集的哪里；电视服务（keyed）或家里人问时还有设备主人的片库（voicelib.catalog）。"""
     answer = voice.catalog(relay, key, caller)
     if not answer.get("ok"):
         return answer
@@ -167,6 +169,7 @@ def catalog(relay, key, caller: Caller = LEGACY) -> dict:
     answer["back"] = back_channels(rec, cid)
     answer["timer"] = _timer_view(relay, rec["timer"])
     answer["casts"] = [c.get("title") or "" for c in _casts(relay, dev, rec)[:3]]
+    answer.update(voicelib.catalog(relay, dev, caller, keyed))
     return answer
 
 
@@ -562,15 +565,16 @@ def unsubscribe(relay, key, caller: Caller = LEGACY, body: dict | None = None, k
 # ---- 管理网页的 POST 分派（web.py 只调这一个） ----
 
 PATHS = {"/api/voice/timer": set_timer, "/api/voice/subscribe": subscribe,
-         "/api/voice/unsubscribe": unsubscribe, "/api/voice/recast": recast}
+         "/api/voice/unsubscribe": unsubscribe, "/api/voice/recast": recast,
+         "/api/voice/library": voicelib.play}
 
 
 def post(relay, path: str, device, caller: Caller, body: dict, keyed: bool = False) -> dict | None:
     handler = PATHS.get(path)
     if handler is None:
         return None
-    if handler is unsubscribe:
-        return unsubscribe(relay, device, caller, body, keyed=keyed)
+    if handler in (unsubscribe, voicelib.play):
+        return handler(relay, device, caller, body, keyed=keyed)
     try:
         return handler(relay, device, caller, body)
     except SourceError as error:

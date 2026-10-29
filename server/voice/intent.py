@@ -16,6 +16,9 @@ docs/superpowers/specs/2026-10-12-voice-control-design.md 第 3 节。
 - 第二批（见「第二批」一节）：问现在播什么（中转报的标题和进度，只回答不动作）、定时暂停
   （`relay` 的 timer）、回到刚才的台和随机换台（`do` 换台，刚才的台由中转记）、继续看某部剧、
   订阅正在放的视频的作者、删掉一个 UP 主或剧集台（先确认，ref `rm:…`）、从投屏历史再放（recast）。
+- 片库（见「片库」一节）：「放苏里南」「苏里南第三集」「继续看铁拳教育」「接着看」放设备主人片库里的片子
+  （`relay` 的 library，中转 server/relay/voicelib.py）；几部都像时让用户选（ref `lb:…`），面板上问着
+  「要放《X》吗？」时说「是的」也行。台名说得一样清楚时换台优先。
 """
 
 from __future__ import annotations
@@ -89,6 +92,30 @@ class Series:
     position: int = 0
 
 
+@dataclass(frozen=True)
+class LibraryTitle:
+    """设备主人片库里的一部（中转的语音目录 library.titles，server/relay/voicelib.py）。"""
+
+    id: str             # s<剧名哈希>（一部剧）或 m<条目 id>（电影、其他视频）
+    name: str
+    kind: str = "movie"     # show / movie / video
+    # 别的叫法：文件名猜的片名、英文名、豆瓣的原名和又名。
+    aka: tuple[str, ...] = ()
+    # 剧有几集；电影为 0。
+    total: int = 0
+
+
+@dataclass(frozen=True)
+class LibraryPlace:
+    """片库里的一个视频是哪一部的第几集（「继续观看」里最近的、投屏位里正在放的）。"""
+
+    id: str
+    name: str
+    kind: str = "movie"
+    episode: int = 0
+    total: int = 0
+
+
 @dataclass
 class Catalog:
     """一次请求的全部背景：频道表、剧集、正在播什么、设备的音量亮度。"""
@@ -120,6 +147,11 @@ class Catalog:
     casts: list[str] = field(default_factory=list)
     # 随机换台用的；测试里给一个定了种子的。
     rand: random.Random | None = None
+    # 设备主人的片库（只有家里人的设备才有，中转给的顺序：看过的、新加的在前）、「继续观看」里最近的
+    # 片库视频、投屏台上正在放的片库视频。
+    library: list[LibraryTitle] = field(default_factory=list)
+    library_continue: LibraryPlace | None = None
+    library_playing: LibraryPlace | None = None
 
     def channel(self, cid: str) -> Channel | None:
         return next((c for c in self.channels if c.id == cid), None)
@@ -134,7 +166,7 @@ class Decision:
     # 单个结果在面板上显示成一行：名字和序号。
     label: str = ""
     lead: str = ""
-    # (动作, 参数)：episode / pause / resume / next / previous / seek。
+    # (动作, 参数)：episode / pause / resume / next / previous / seek / library……
     relay: tuple[str, dict] | None = None
     # 选集后设备不在这部剧的台上时要换过去的台。
     then_channel: str = ""
@@ -666,14 +698,25 @@ def _series_episode(text: str, catalog: Catalog) -> Decision | None:
     named = (found or latest).group(1)
     named = "" if named in _VERBS else _strip_verbs(named)
     series = _series_list(catalog)
-    if not named:
+    n = 0 if latest else int(found.group(2))
+    season = _SEASON.match(named)
+    if not named or (season and not season.group(1)):
         current = next((s for s in series if s.id == catalog.current), None)
+        # 投屏台上放着片库的剧：「第 3 集」「第二季第三集」「最新一集」是它的。
+        decision = _library_episode(named, catalog, [], n, bool(latest)) if current is None else None
+        if decision is not None:
+            return decision
         if current is None:
             return Decision("episode", reply="现在不是在看剧，先说剧名，比如：熊出没第3集")
         chosen = [current]
     else:
         index = [Channel(s.id, s.name, n) for n, s in enumerate(series, 1)]
-        kind, picked = _pick(rank_channels([named, _strip_tail(named)], index))
+        ranked = rank_channels([named, _strip_tail(named)], index)
+        # 片库里的剧比剧集台更像：放片库的（「苏里南第三集」）。
+        decision = _library_episode(named, catalog, ranked, n, bool(latest))
+        if decision is not None:
+            return decision
+        kind, picked = _pick(ranked)
         if kind == "none":
             # 「X3集」也可能是频道名的一部分，交给后面的频道匹配；「X第3集」就是在找剧。
             return None if found is not None and full is None else _not_found(named)
@@ -710,6 +753,12 @@ def _relay_playing(catalog: Catalog) -> bool:
     return bool(_RELAY_ID.match(catalog.current or ""))
 
 
+def _library_show_playing(catalog: Catalog) -> bool:
+    """投屏台上放着片库里的一部剧（不止一集）：「上一集」「下一集」换的是它的集（中转的 tv_step）。"""
+    playing = catalog.library_playing
+    return catalog.current == "cast" and playing is not None and playing.kind == "show" and playing.total > 1
+
+
 def _playback(text: str, catalog: Catalog, transcript: str = "") -> Decision | None:
     """暂停、继续、跳转、上一集、下一集：交给中转；直播台做不了。"""
     kind = ("pause" if _PAUSE.match(text) else "resume" if _RESUME.match(text)
@@ -722,7 +771,7 @@ def _playback(text: str, catalog: Catalog, transcript: str = "") -> Decision | N
         kind = "next" if _NEXT_EP.match(text) else "previous" if _PREV_EP.match(text) else None
     if kind is None:
         return None
-    series = bool(_SERIES_ID.match(catalog.current or ""))
+    series = bool(_SERIES_ID.match(catalog.current or "")) or _library_show_playing(catalog)
     if not _relay_playing(catalog):
         if kind == "next" and not text.endswith("集"):
             return None                         # 「下一个」在直播台上是换台
@@ -1680,7 +1729,14 @@ def _continue(text: str, catalog: Catalog) -> Decision | None:
     if _EPISODE.match(named) or _LATEST.match(named):
         return _series_episode(named, catalog)
     named = _strip_tail(named).removesuffix("的")
-    kind, picked = _pick(rank_channels([named], catalog.channels))
+    scored = rank_channels([named], catalog.channels)
+    # 片库里的片子比台更像（「继续看铁拳教育」）：接着放它（中转按设备主人的进度挑集、从哪放）。
+    library = rank_library([named, found.group(1)], catalog)
+    if _beats(library, scored):
+        decision = _library_pick(library, catalog, verb="接着看")
+        if decision is not None:
+            return decision
+    kind, picked = _pick(scored)
     if kind == "some":
         return _choices(picked, f"找到 {len(picked)} 个，选一个")
     if kind == "none":
@@ -1804,6 +1860,223 @@ def _recast(text: str, catalog: Catalog) -> Decision | None:
 REPLY_CASTING = "投屏中…"
 
 
+# ---- 片库：「放苏里南」「播放神探之痕迹」「苏里南第三集」「继续看铁拳教育」「接着看」 ----
+#
+# 片子来自中转的语音目录（library，只有设备主人是家里人时才有，server/relay/voicelib.py）：一部剧、一部电影
+# 或一个其他视频，名字和别的叫法（英文名、豆瓣的原名和又名）。和台名一样按字和拼音模糊匹配（match.score，
+# 识别错的同音字也认）；一字不差的最可信。台名优先：片库的分数比最像的台高才放片库（「放CCTV5」「猫和老鼠」
+# 这样台名和片名一样清楚的仍是换台）。放是中转做的（relay 的 library）：电影从上次看到的地方接着放，剧没说第几集
+# 时接着看（中转按设备主人的进度挑那一集），说了第几集就放那一集。几部都像时列出来让用户选（ref lb:片子[:集[:季]]），
+# 回答问「要放《X》吗？」，30 秒内说「是的」「放吧」就放第一个（session.py）。投屏台上放着片库的剧时，
+# 「第 3 集」「下一集」「上一集」作用在这部剧上（中转的 next / previous 已经会换片库的集）。
+
+LIB_AKA_WEIGHT = 0.95
+_LIB_KINDS = {"show": "剧集", "movie": "电影", "video": "片库"}
+_LIB_REF = re.compile(r"^lb:(s[0-9a-f]{12}|m[0-9a-f]{16})(?::(\d{1,4})(?::(\d{1,2}))?)?$")
+_SEASON = re.compile(r"^(.*?)(?:的)?第(\d{1,2})季$")
+# 只说「接着看」：放「继续观看」里最近的片库视频（暂停着时照旧是继续播放）。
+_LIB_RESUME = _rx(r"^(?:继续看|接着看|接著看|继续往下看|接着往下看)$")
+_PLAY_YES = re.compile(r"^(?:确定|确认|是的?|对|对的|好的?|可以|没错|嗯|行|要|放吧|播吧|放|播放|就它|就这个|就是它|"
+                       r"就这部|这个|这部|第1个|第一个)$")
+
+
+def library_ref(title_id: str, episode: int = 0, season: int = 0) -> str:
+    """选项的 ref：lb:片子[:第几集[:第几季]]（设备限 31 个字符，最长 24 个）。"""
+    ref = f"lb:{title_id}"
+    if episode:
+        ref += f":{episode}" + (f":{season}" if season else "")
+    return ref
+
+
+def parse_library_ref(ref: str) -> tuple[str, int, int] | None:
+    found = _LIB_REF.match(ref or "")
+    if not found:
+        return None
+    return found.group(1), int(found.group(2) or 0), int(found.group(3) or 0)
+
+
+def _sounds(text: str) -> frozenset:
+    """一串字所有的模糊读音。"""
+    return frozenset().union(*(fuzzy for _, fuzzy in match.syllables(text))) if text else frozenset()
+
+
+@lru_cache(maxsize=8)
+def _library_index(titles: tuple[LibraryTitle, ...]) -> tuple[tuple[LibraryTitle, tuple[tuple[str, float], ...],
+                                                                 frozenset, frozenset], ...]:
+    """每部片子：(片子, 各个叫法和权重, 所有叫法的模糊读音, 所有叫法的字)。"""
+    rows = []
+    for title in titles:
+        names: dict[str, float] = {}
+        for name, weight in [(title.name, 1.0)] + [(a, LIB_AKA_WEIGHT) for a in title.aka]:
+            alias = match.normalize(match.strip_parens(name))
+            if len(alias) >= 2 and names.get(alias, 0) < weight:
+                names[alias] = weight
+        if names:
+            rows.append((title, tuple(names.items()), frozenset().union(*(_sounds(a) for a in names)),
+                         frozenset("".join(names))))
+    return tuple(rows)
+
+
+def _close(query: str, sounds: frozenset, chars: frozenset) -> bool:
+    """query 和片名至少有两个音节读音相同（模糊读音也算），或者至少有两个字相同（一串外文字母只算一个音节，
+    「inception」要按字比）。"""
+    return sum(1 for _, fuzzy in match.syllables(query) if fuzzy & sounds) >= 2 or \
+        sum(1 for ch in query if ch in chars) >= 2
+
+
+def rank_library(queries: list[str], catalog: Catalog, shows: bool = False) -> list[tuple[float, LibraryTitle]]:
+    """片库里像这句话的片子，按分数从高到低（一样像的按中转给的顺序：看过的、新加的在前）；shows：只要剧。
+
+    只有一个字的话不找片子。和片名相同的音节、相同的字都不到两个的不算分：那样字和拼音的相似度都到不了
+    CANDIDATE_SCORE，包含关系也要两个字以上，所以跳过它们不会漏掉候选（几百部片子时快很多）。"""
+    queries = [q for q in queries if len(q) >= 2]
+    if not catalog.library or not queries:
+        return []
+    scored = []
+    for order, (title, names, sounds, chars) in enumerate(_library_index(tuple(catalog.library))):
+        if shows and title.kind != "show":
+            continue
+        value = max((_channel_score(q, names) for q in queries if _close(q, sounds, chars)), default=0.0)
+        if value > 0:
+            scored.append((value, order, title))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [(value, title) for value, _, title in scored]
+
+
+def _beats(library: list, others: list) -> bool:
+    """片库最像的比台（或剧集台）最像的更像：一样像时台优先。"""
+    return bool(library) and library[0][0] >= CANDIDATE_SCORE and library[0][0] > (others[0][0] if others else 0.0)
+
+
+def _episode_words(title: LibraryTitle | LibraryPlace, episode: int, season: int = 0) -> str:
+    if title.kind != "show" or not episode:
+        return ""
+    return f"第 {season} 季第 {episode} 集" if season else f"第 {episode} 集"
+
+
+def _library_play(title: LibraryTitle, catalog: Catalog, episode: int = 0, season: int = 0,
+                  verb: str = "播放") -> Decision:
+    """放片库里的一部：中转挑集、从哪接着放；这里先给一句话（中转回答后 session 按回答改写）。"""
+    name = _label(title.name)
+    if title.kind == "show" and episode and not season and title.total and episode > title.total:
+        return Decision("library", reply=f"《{name}》只有 {title.total} 集")
+    playing = catalog.library_playing
+    if catalog.current == "cast" and playing is not None and playing.id == title.id \
+            and (not episode or (episode == playing.episode and not season)):
+        # 放的就是它（同一集）：暂停着就继续，不然只回答。
+        if catalog.paused:
+            return Decision("resume", reply="继续播放", relay=("resume", {}))
+        return Decision("library", reply=f"正在播《{name}》{_episode_words(playing, playing.episode)}",
+                        label=name)
+    params = {"id": title.id}
+    if title.kind == "show" and episode:
+        params["episode"] = episode
+        if season:
+            params["season"] = season
+    return Decision("library", reply=f"{verb}《{name}》{_episode_words(title, episode, season)}", label=name,
+                    relay=("library", params))
+
+
+def _library_choices(picked: list[LibraryTitle], episode: int = 0, season: int = 0) -> Decision:
+    """几部都像：列出来（行首写是剧还是电影），问要不要放第一个。"""
+    rows = []
+    for title in picked[:CHOICES_MAX]:
+        n = episode if title.kind == "show" else 0
+        words = f" 第{n}集" if n else ""
+        rows.append({"label": row_label(_label(title.name) + words, (_LIB_KINDS.get(title.kind, ""),)),
+                     "lead": "", "ref": library_ref(title.id, n, season if n else 0)})
+    top = picked[0]
+    return Decision("choices", reply=f"要放《{_label(top.name)}》{_episode_words(top, episode, season)}吗？",
+                    choices=rows)
+
+
+def _library_pick(scored: list, catalog: Catalog, episode: int = 0, season: int = 0, latest: bool = False,
+                  verb: str = "播放") -> Decision | None:
+    kind, picked = _pick(scored)
+    if kind == "none":
+        return None
+    if kind == "one":
+        title = picked[0]
+        n = title.total if latest else episode
+        if latest and not n:
+            return Decision("library", reply="不知道这部有几集，说第几集吧")
+        return _library_play(title, catalog, n, season, verb)
+    if latest:
+        rows = [t for t in picked if t.total]
+        if not rows:
+            return Decision("library", reply="不知道这部有几集，说第几集吧")
+        decision = _library_choices(rows)
+        for row, title in zip(decision.choices, rows):
+            row["ref"] = library_ref(title.id, title.total)
+            row["label"] = row_label(f"{_label(title.name)} 第{title.total}集", (_LIB_KINDS["show"],))
+        return decision
+    return _library_choices(picked, episode, season)
+
+
+def _library_episode(named: str, catalog: Catalog, others: list, episode: int, latest: bool) -> Decision | None:
+    """「苏里南第三集」「苏里南第二季第三集」「第 3 集」（投屏台上放着片库的剧时）：片库的剧比剧集台更像时放它。"""
+    season = 0
+    split = _SEASON.match(named)
+    if split:
+        named, season = _strip_verbs(split.group(1)) if split.group(1) else "", int(split.group(2))
+    if not named:
+        playing = catalog.library_playing
+        if catalog.current != "cast" or playing is None or playing.kind != "show":
+            return None
+        title = LibraryTitle(playing.id, playing.name, "show", total=playing.total)
+        n = playing.total if latest else episode
+        return _library_play(title, catalog, n, season) if n else None
+    scored = rank_library([named, _strip_tail(named)], catalog, shows=True)
+    if not _beats(scored, others):
+        return None
+    return _library_pick(scored, catalog, episode, season, latest)
+
+
+def _library_resume(text: str, catalog: Catalog) -> Decision | None:
+    """只说「接着看」：「继续观看」里最近的片库视频；暂停着、或放的就是它时交给后面（继续播放）。"""
+    if not _LIB_RESUME.match(text) or catalog.paused or catalog.library_continue is None:
+        return None
+    last, playing = catalog.library_continue, catalog.library_playing
+    if catalog.current == "cast" and playing is not None and (playing.id, playing.episode) == (last.id, last.episode):
+        return None
+    name = _label(last.name)
+    return Decision("library", reply=f"接着看《{name}》{_episode_words(last, last.episode)}", label=name,
+                    relay=("library", {"resume": True}))
+
+
+def library_choice(ref: str) -> Decision | None:
+    """设备选了片库的一行（lb:…）：放它；不是片库的 ref 为 None。"""
+    parsed = parse_library_ref(ref)
+    if parsed is None:
+        return None
+    title_id, episode, season = parsed
+    params = {"id": title_id}
+    if episode:
+        params["episode"] = episode
+        if season:
+            params["season"] = season
+    return Decision("library", reply="播放中…", relay=("library", params))
+
+
+def confirms_play(transcript: str) -> bool:
+    """面板上问着「要放《X》吗？」时说的「是的」「放吧」「就这个」。"""
+    return bool(_PLAY_YES.match(_said(transcript)))
+
+
+def library_reply(answer: dict) -> str:
+    """中转放好以后给设备看的话：「播放《苏里南》第 2 集」「接着放《盗梦空间》，从 1:02:03 起」。"""
+    name = _label(_plain(str(answer.get("name") or answer.get("title") or "")))
+    episode = answer.get("episode") if isinstance(answer.get("episode"), int) else 0
+    what = f"《{name}》" + (f"第 {episode} 集" if answer.get("kind") == "show" and episode else "")
+    note = answer.get("note")
+    if isinstance(note, str) and note:
+        return f"{what}{note}"
+    resume = answer.get("resume")
+    if isinstance(resume, (int, float)) and not isinstance(resume, bool) and resume > 0:
+        return f"接着放{what}，从 {_clock(int(resume))} 起"
+    return f"播放{what}"
+
+
 def decide(transcript: str, catalog: Catalog) -> Decision:
     """识别出来的一句话 → 决定。"""
     raw = match.normalize(transcript)
@@ -1845,6 +2118,10 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
         decision = handler(text, catalog)
         if decision is not None:
             return decision
+    # 只说「接着看」：「继续观看」里最近的片库视频（暂停着时还是继续播放）。
+    decision = _library_resume(text, catalog)
+    if decision is not None:
+        return decision
     decision = _playback(text, catalog, transcript)
     if decision is not None:
         return decision
@@ -1876,7 +2153,16 @@ def decide(transcript: str, catalog: Catalog) -> Decision:
         if category is not None and not _named_exactly(said, catalog):
             return list_decision(category, catalog, kind="choices")
     queries = list(dict.fromkeys(q for q in (text, _strip_verbs(text), bare) if q))
-    kind, picked = _pick(rank_channels(queries, catalog.channels))
+    scored = rank_channels(queries, catalog.channels)
+    # 片库里的片子比最像的台更像（「放苏里南」「我要看铁拳教育」）：放片库的；一样像时换台。台名一字不差
+    # （分数已经是最高的 1 + EXACT_BONUS）时片库不可能更像，不必再找。
+    exact = bool(scored) and scored[0][0] >= 1.0 + EXACT_BONUS
+    library = [] if exact else rank_library(queries, catalog)
+    if _beats(library, scored):
+        decision = _library_pick(library, catalog)
+        if decision is not None:
+            return decision
+    kind, picked = _pick(scored)
     if kind == "one":
         return _channel_decision(picked[0], catalog)
     if kind == "some":
