@@ -16,7 +16,7 @@
 - 别的容器的文件尾：最后 TAIL 字节里第一次被读的地方起存到文件尾（MKV 的 Cues、文件尾的 Tags；TS 的时长
   ffmpeg 也读文件尾）。只认第一次：ffmpeg 跳转前先读 Cues，所以第一次落进文件尾的请求是 Cues。
 
-怎么存：不另外去网盘取（不和放片子抢带宽）。ffmpeg 自己读到这些地方时边放边存（tee）：一段从它的起点往后
+怎么存：放片子的时候不另外去网盘取（不和放片子抢带宽）。ffmpeg 自己读到这些地方时边放边存（tee）：一段从它的起点往后
 连续地存，请求正好从一段已存到的地方起、这一段还没存满时才接着存（同一段同时只有一个在写）。下回请求的起点落在
 已存的一段里：先从这里给，给完了要是还要更多，接着从网盘的那个位置读（同一个回答里接着发，ffmpeg 看不出来），
 顺手把这一段存得更长（还在这一段的范围里时）。
@@ -26,6 +26,8 @@
 - 每个文件至多 FILE_MAX，总共至多 CACHE_MAX，超了按最后用过的时间删最旧的（整个文件删）；索引里没有了的条目
   （删了来源、重新扫描后不见了）也删。文件都是 600、文件夹 700。
 - 本机文件夹的来源不用：本来就在本机。直接在浏览器里放的（/api/library/file）也不用：只有 ffmpeg 每次重读。
+- 预热（library.py 的 warm_step）：扫描找到新的网盘片子以后，没人在放时后台一个一个先读一遍这几段（todo 说从哪接着读，
+  MKV 的 Cues 在哪看 cues_at），走的还是 tee，存法和上限一样；room 说不挤掉最近用过的还能存多少。
 
 只用标准库。
 """
@@ -144,6 +146,62 @@ def mkv_layout(read: Callable[[int, int], bytes], have: int, size: int):
                 return UNKNOWN
             off += a + b + length
     return UNKNOWN
+
+
+def _ebml_children(body: bytes):
+    """一个 EBML 元素里面的一个一个子元素：(ID, 内容)；走到认不出的地方就停。"""
+    at = 0
+    while at < len(body):
+        ident = _vint(body, at, True)
+        if ident is None or ident[1] == 0:
+            return
+        length = _vint(body, at + ident[1], False)
+        if length is None or length[1] == 0:
+            return
+        start = at + ident[1] + length[1]
+        yield ident[0], body[start:start + length[0]]
+        at = start + length[0]
+
+
+def mkv_cues(read: Callable[[int, int], bytes], have: int, size: int) -> int | None:
+    """MKV / WebM 的 Cues 在文件的哪（SeekHead 里记的位置 + Segment 内容的起点）：ffmpeg 第一次跳转时从这里读。
+    Cues 在第一个 Cluster 前面（已经在开头那段里）、SeekHead 里没记、开头这段不够认、不像 MKV 时 None。"""
+    off, level, segment = 0, 0, 0
+    for _ in range(WALK_MAX):
+        if off >= min(have, size):
+            return None
+        data = read(off, min(12, have - off))
+        found = _vint(data, 0, True)
+        if found is None or found[1] == 0 or found[1] > 4:
+            return None
+        ident, a = found
+        found = _vint(data, a, False)
+        if found is None or found[1] == 0:
+            return None
+        length, b = found
+        if level == 0:
+            if ident != 0x1A45DFA3:                                 # EBML 头
+                return None
+            off, level = off + a + b + length, 1
+        elif level == 1:
+            if ident != 0x18538067:                                 # Segment：进去
+                return None
+            off = segment = off + a + b
+            level = 2
+        elif ident in (0x1F43B675, 0x1C53BB6B) or length == (1 << (7 * b)) - 1:
+            return None                                             # 到了 Cluster、Cues 在前面、不知道多长
+        elif ident == 0x114D9B74:                                   # SeekHead
+            if off + a + b + length > have:
+                return None
+            for kind, seek in _ebml_children(read(off + a + b, length)):
+                fields = dict(_ebml_children(seek)) if kind == 0x4DBB else {}
+                if fields.get(0x53AB) == b"\x1c\x53\xbb\x6b" and fields.get(0x53AC):
+                    where = segment + int.from_bytes(fields[0x53AC], "big")
+                    return where if where < size else None
+            return None
+        else:
+            off += a + b + length
+    return None
 
 
 # ---------------------------------------------------------------- 缓存
@@ -361,6 +419,46 @@ class IndexCache:
             for entry in [e for e in self._entries.values() if e.iid == iid]:
                 self._forget(entry)
 
+    # ---- 预热（library.py 的 warm_step）----
+
+    def todo(self, iid: str, size: int, mtime: int, ext: str) -> list[int]:
+        """预热时还要从哪些地方接着读（升序）：一点都还没存时是文件开头；每一段还没存满的、没有别的在写的，从它存到的
+        地方接着读（MP4 认出 moov 在文件尾以后就多了那一段）。这个文件已经存到 FILE_MAX 时没有。"""
+        with self._lock:
+            entry = self._entry(iid, size, mtime, ext, False)
+            if entry is None:
+                return [0] if size > 0 else []
+            if entry.stored() >= self.file_max:
+                return []
+            return [r.start + r.length for r in entry.regions if not r.busy and r.length < r.end - r.start]
+
+    def cues_at(self, iid: str, size: int, mtime: int, ext: str) -> int | None:
+        """MKV / WebM：开头那段认得出 SeekHead 里记的 Cues、在最后 TAIL 字节里、文件尾那段还没起时，Cues 从哪起
+        （预热从这里读，存成文件尾那段，和 ffmpeg 第一次跳转时读的地方一样）。"""
+        if ext not in MKV_EXTS:
+            return None
+        with self._lock:
+            entry = self._entry(iid, size, mtime, ext, False)
+            head = next((r for r in entry.regions if r.start == 0), None) if entry is not None else None
+            if head is None or head.busy or any(r.start > 0 for r in entry.regions):
+                return None
+            path, have = self._data(entry, head), head.length
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(have)
+        except OSError:
+            return None
+        found = mkv_cues(lambda offset, count: data[offset:offset + count], len(data), size)
+        return found if found is not None and found >= max(have, size - TAIL) else None
+
+    def room(self, keep_s: float) -> int:
+        """还能再存多少字节而不挤掉 keep_s 秒内用过的（超了上限按最后用过的时间删最旧的，所以先删的是更早的）。"""
+        with self._lock:
+            now = self.clock()
+            total = sum(e.stored() for e in self._entries.values())
+            old = sum(e.stored() for e in self._entries.values() if not e.busy() and now - e.used >= keep_s)
+            return self.total_max - total + old
+
     # ---- 上限 ----
 
     def total(self) -> int:
@@ -394,6 +492,14 @@ class _Tee:
     def __init__(self, cache: IndexCache, entry: _Entry, region: _Region, fd: int):
         self.cache, self.entry, self.region, self.fd = cache, entry, region, fd
         self.stopped = False
+
+    def room(self) -> int:
+        """这一段还能再存多少字节（预热按它读，不多读）。"""
+        cache, entry, region = self.cache, self.entry, self.region
+        with cache._lock:
+            if self.stopped or cache._entries.get(entry.key) is not entry:
+                return 0
+            return max(0, min(region.end - region.start - region.length, cache.file_max - entry.stored()))
 
     def write(self, chunk: bytes) -> None:
         if self.stopped or not chunk:
