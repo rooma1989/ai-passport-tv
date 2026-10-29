@@ -17,7 +17,8 @@
   网盘上的文件从不截图（网盘会限速）；这一步本机的也不截，没海报的用页面自己画的图。
 - 在线资料（libmeta.py）：扫描完了后台慢慢从豆瓣查电影和剧的片名、海报、评分、导演演员、简介（不登录、一次一个
   请求、被拦了歇一个小时），存在 library-meta.json，按剧 / 电影记；本地的 .nfo 片名和海报优先，管理员手动选的、
-  「不匹配」的不被自动的盖掉。片库的设置里能关（关了一个请求也不往豆瓣发）。
+  「不匹配」的不被自动的盖掉。片库的设置里能关（关了一个请求也不往豆瓣发）。管理员填了 TMDB 的密钥时，豆瓣没把握、
+  拦着或连不上的再查 TMDB（libmeta.Tmdb，备用；豆瓣永远先查），资料上标着来源。
 - 网盘上小的 .nfo 扫描时可以取（每个至多 NFO_MAX 字节，一次扫描至多 NFO_PER_SCAN 个）；海报扫描时不取，只记路径，
   页面要时才取一次，存在 library-art/（总共至多 ART_CACHE_MAX 字节，超了删最旧的）。
 - 扫描在后台线程里一个一个来（管理员点「扫描」，另外每 EVERY_S 秒自动一次）；为了不和给小电视推流抢，每列一个
@@ -124,7 +125,7 @@ META_TICK_S = 600.0
 META_START_S = 60.0
 META_FAIL_S = 3600.0
 _META_KEY = re.compile(r"^(?:s[0-9a-f]{12}|m[0-9a-f]{16})$")
-_POSTER_FILE = re.compile(r"^douban-\d{1,12}\.(?:jpg|png|webp)$")
+_POSTER_FILE = re.compile(r"^(?:douban-\d{1,12}|tmdb-(?:tv|movie)-\d{1,10})\.(?:jpg|png|webp)$")
 # 网盘组件（OpenList）的来源：clouddrive.py 维护，页面不能删。
 MANAGED = "openlist"
 MANAGED_NAME = "网盘"
@@ -1169,6 +1170,8 @@ class Library:
         # 在线资料（libmeta.py）：存在 library-meta.json；豆瓣一次一个请求，被拦了歇一个小时。
         self.meta = libmeta.MetaStore(self.dir / "library-meta.json")
         self.douban = libmeta.Douban(clock=clock, log=log)
+        # 备用的 TMDB：密钥在数据目录的 secrets/tmdb-key（600）；代理由 attach 接上「设置 → YouTube」的。
+        self.tmdb = libmeta.Tmdb(self.dir / "secrets", clock=clock, log=log)
         self._meta_wake = threading.Event()
         self._meta_failed: dict[str, float] = {}
         self._meta_lock = threading.Lock()
@@ -1283,7 +1286,7 @@ class Library:
                 row.update(url=src.get("url") or "", user=src.get("user") or "", has_password=bool(src.get("password")))
             rows.append(row)
         return {"ok": True, "max": SOURCES_MAX, "every_h": int(EVERY_S // 3600), "sources": rows, "scan": self.status(),
-                "online": self.online()}
+                "online": self.online(), "tmdb": self.tmdb.state()}
 
     def item(self, iid: str) -> dict | None:
         if not isinstance(iid, str) or not _ID.match(iid):
@@ -1381,7 +1384,7 @@ class Library:
         return {"ok": True, "sources": [self._public_source(s, counts.get(s["id"], 0)) for s in sources],
                 "scan": self.status(), "movies": movies, "shows": show_rows, "videos": videos,
                 "total": sum(counts.values()), "more": more, "online": self.online(),
-                "pending": len(self.meta_due()) if not self.douban.blocked() else 0}
+                "pending": len(self.meta_due()) if self._meta_can() else 0}
 
     def recent(self, limit: int = RECENT_MAX) -> list[dict]:
         """首页「我的片库」：最近加进来的（剧只放一张，按剧）。"""
@@ -1397,11 +1400,23 @@ class Library:
                 break
         return rows
 
-    # ---- 在线资料（libmeta.py，豆瓣） ----
+    # ---- 在线资料（libmeta.py，豆瓣；备用的 TMDB） ----
 
     @staticmethod
     def _meta_art_url(key: str, entry: dict) -> str:
-        return f"api/library/meta-art/{key}?v={entry.get('id') or ''}"
+        return f"api/library/meta-art/{key}?v={'t' if entry.get('src') == 'tmdb' else ''}{entry.get('id') or ''}"
+
+    def _meta_can(self) -> bool:
+        """后台现在能往外查：豆瓣没拦着，或者 TMDB 能用。"""
+        return not self.douban.blocked() or self.tmdb.on()
+
+    def set_tmdb_key(self, text) -> dict:
+        """管理员粘贴（或清掉）TMDB 的密钥：存进 secrets/tmdb-key；回答里只有「设了没有」，从不带密钥。"""
+        answer = self.tmdb.set_key(text)
+        if answer.get("ok") and self.tmdb.configured():
+            self._meta_failed.clear()
+            self._meta_wake.set()
+        return answer
 
     def _dress(self, card: dict, item: dict, entry: dict | None) -> dict | None:
         """电影 / 其他视频的卡片加上豆瓣的资料：片名（.nfo 里写了的不换）、年份、简介和海报（本地有的优先）。"""
@@ -1468,13 +1483,15 @@ class Library:
 
     def meta_due(self, titles: dict[str, dict] | None = None) -> list[str]:
         """后台要查的（新加的先查）：电影和剧（其他视频多半是自己拍的，名字不自动往外发，要管理员手动匹配）。
-        没查过的、自动查时的片名变了的、没对上又过了 MISS_RETRY_S 的、详细资料没取全又过了 PARTIAL_RETRY_S 的。
+        没查过的、自动查时的片名变了的、没对上又过了 MISS_RETRY_S 的、详细资料没取全又过了 PARTIAL_RETRY_S 的；
+        TMDB 能用时还有豆瓣没对上、TMDB 还没问过的，和当时豆瓣拦着才对上 TMDB、又过了 MISS_RETRY_S 的。
         手动选的、手动「不匹配」的不动（手动选的只补没取全的详细资料）。"""
         if not self.online():
             return []
         titles = self.titles() if titles is None else titles
         entries = self.meta.all()
         now = self.clock()
+        tmdb_on = self.tmdb.on()
         due = []
         for key, title in sorted(titles.items(), key=lambda kv: (-kv[1]["added"], kv[0])):
             failed = self._meta_failed.get(key)
@@ -1487,8 +1504,9 @@ class Library:
                     due.append(key)
                 continue
             age = now - (entry.get("at") or 0)
+            tmdb = entry.get("src") == "tmdb"
             if entry.get("state") == "matched" and entry.get("partial"):
-                if age >= libmeta.PARTIAL_RETRY_S:
+                if age >= libmeta.PARTIAL_RETRY_S and (not tmdb or self.tmdb.on()):
                     due.append(key)
             elif entry.get("manual"):
                 continue
@@ -1497,11 +1515,18 @@ class Library:
                     due.append(key)
             elif entry.get("state") == "miss" and age >= libmeta.MISS_RETRY_S:
                 due.append(key)
+            elif entry.get("state") == "miss" and not entry.get("tmdb") and tmdb_on \
+                    and (not entry.get("tmdb_failed") or now - (entry.get("tmdb_at") or 0) >= libmeta.PARTIAL_RETRY_S):
+                # 豆瓣答了没有、TMDB 还没问过（刚填了密钥）或上次没问成：只问 TMDB（_auto 不再问豆瓣）。
+                due.append(key)
+            elif tmdb and entry.get("douban_skipped") and age >= libmeta.MISS_RETRY_S and not self.douban.blocked():
+                # 当时豆瓣拦着才用了 TMDB 的：过几天再问一次豆瓣（豆瓣先）。
+                due.append(key)
         return due
 
     def meta_step(self) -> bool:
         """后台查一部（返回 True 时还有要查的，歇一会儿再来）；关着、被拦着、没有要查的 False。"""
-        if not self.online() or self.douban.blocked():
+        if not self.online() or not self._meta_can():
             return False
         titles = self.titles()
         due = self.meta_due(titles)
@@ -1511,7 +1536,10 @@ class Library:
         try:
             self._lookup(key, titles[key])
         except libmeta.Blocked:
-            return False
+            if not self.tmdb.on():
+                return False
+            # 豆瓣拦着、TMDB 也没对上：这一部过一会儿再来，别的接着问 TMDB。
+            self._meta_failed[key] = self.clock()
         except libmeta.Failed as error:
             self._meta_failed[key] = self.clock()
             self.log(f"片库资料没查成：{error}")
@@ -1521,16 +1549,68 @@ class Library:
         """查一部：对上了的（手动的、片名没变的、或者 force）补 / 重新取详细资料，别的按片名自动找。"""
         with self._meta_lock:
             entry = self.meta.get(key)
-            if entry and entry.get("state") == "matched" and (entry.get("manual") or force
-                                                               or entry.get("q") == self._query(title)):
+            retry_douban = bool(entry and entry.get("douban_skipped") and not entry.get("manual") and not force
+                                and self.clock() - (entry.get("at") or 0) >= libmeta.MISS_RETRY_S)
+            if entry and entry.get("state") == "matched" and not retry_douban \
+                    and (entry.get("manual") or force or entry.get("q") == self._query(title)):
                 return self._complete(key, entry)
             return self._auto(key, title)
 
     def _auto(self, key: str, title: dict) -> dict:
-        """按片名（再按英文名）找豆瓣的条目，有把握才认（libmeta.pick）；没把握记「没对上」。"""
+        """先按片名找豆瓣（_find_douban），没把握、拦着、连不上时再找 TMDB（_find_tmdb，填了密钥才有）；都没把握
+        记「没对上」。豆瓣拦着（连不上）、TMDB 也没对上时把豆瓣的错抛出去（以后再来，豆瓣先）。"""
+        query = self._query(title)
+        before = self.meta.get(key)
+        # 豆瓣不久前刚答过「没有」（同一个片名）：这次是来问 TMDB 的，不再问豆瓣。
+        douban_said_no = bool(before and before.get("state") == "miss" and before.get("q") == query
+                              and self.clock() - (before.get("at") or 0) < libmeta.MISS_RETRY_S)
+        problem = None
+        if not douban_said_no:
+            try:
+                chosen, details = self._find_douban(title)
+            except (libmeta.Blocked, libmeta.Failed) as error:
+                chosen, details, problem = None, None, error
+            if chosen is not None:
+                entry = self._save_match(key, chosen, query, manual=False, details=details)
+                self.log(f"片库「{title['title']}」对上了豆瓣的「{entry.get('title')}」")
+                return entry
+        asked = failed = False
+        if self.tmdb.on():
+            try:
+                chosen = self._find_tmdb(title)
+                asked = True
+            except libmeta.Failed:
+                chosen, failed = None, True
+            if chosen is not None:
+                entry = self._save_match(key, chosen, query, manual=False, douban_skipped=problem is not None)
+                self.log(f"片库「{title['title']}」对上了 TMDB 的「{entry.get('title')}」")
+                return entry
+        if problem is not None:
+            raise problem
+        entry = {"state": "miss", "manual": False, "q": query,
+                 "at": int(before["at"]) if douban_said_no else int(self.clock())}
+        if asked or failed:
+            entry.update(tmdb=asked, tmdb_failed=failed, tmdb_at=int(self.clock()))
+        self.meta.put(key, entry)
+        return entry
+
+    def _find_tmdb(self, title: dict) -> dict | None:
+        """TMDB 的候选（规矩和豆瓣一样，libmeta.pick）：中文名（zh-CN）查一次，对不上再用英文名（en-US）查一次。"""
+        want = {"show": "tv", "movie": "movie"}.get(title["kind"])
+        if want is None:
+            return None
+        names = [title["title"], title["alt"]]
+        chosen = None
+        if title["title"]:
+            chosen = libmeta.pick(self.tmdb.search(title["title"], want, title["year"]), names, title["year"], want)
+        if chosen is None and title["alt"] and libmeta.norm(title["alt"]) != libmeta.norm(title["title"]):
+            chosen = libmeta.pick(self.tmdb.search(title["alt"], want, title["year"], "en-US"), names, title["year"], want)
+        return chosen
+
+    def _find_douban(self, title: dict) -> tuple[dict | None, dict | None]:
+        """按片名（再按英文名）找豆瓣的条目，有把握才认（libmeta.pick）：(候选, 已经取到的详细资料或 None)。"""
         want = {"show": "tv", "movie": "movie"}.get(title["kind"])
         names = [title["title"], title["alt"]]
-        query = self._query(title)
         chosen, details = None, None
         if title["title"]:
             suggested = self.douban.suggest(title["title"])
@@ -1548,16 +1628,14 @@ class Library:
                 aka = {libmeta.norm(a) for a in [found.get("title"), found.get("original"), *found.get("aka", [])]}
                 if libmeta.norm(title["alt"]) in aka:
                     chosen, details = near[0], found
-        if chosen is None:
-            entry = {"state": "miss", "manual": False, "q": query, "at": int(self.clock())}
-            self.meta.put(key, entry)
-            return entry
-        entry = self._save_match(key, chosen, query, manual=False, details=details)
-        self.log(f"片库「{title['title']}」对上了豆瓣的「{entry.get('title')}」")
-        return entry
+        return chosen, details
 
-    def _save_match(self, key: str, chosen: dict, query: str, manual: bool, details: dict | None = None) -> dict:
-        """认定一个条目：取详细资料（被拦、出错时先用搜索结果里的，标 partial，以后补）和海报，存下。"""
+    def _save_match(self, key: str, chosen: dict, query: str, manual: bool, details: dict | None = None,
+                    douban_skipped: bool = False) -> dict:
+        """认定一个条目（豆瓣的，或 src = "tmdb" 的）：取详细资料（被拦、出错时先用搜索结果里的，标 partial，以后补）
+        和海报，存下。douban_skipped：当时豆瓣拦着才用的 TMDB（过几天再问豆瓣）。"""
+        if chosen.get("src") == "tmdb":
+            return self._save_tmdb(key, chosen, query, manual, details, douban_skipped)
         if details is None:
             try:
                 details = self.douban.details(chosen["id"])
@@ -1575,10 +1653,37 @@ class Library:
         self.meta.put(key, entry)
         return entry
 
+    def _save_tmdb(self, key: str, chosen: dict, query: str, manual: bool, details: dict | None,
+                   douban_skipped: bool) -> dict:
+        if details is None:
+            try:
+                details = self.tmdb.details(chosen["type"], chosen["tid"])
+            except libmeta.Failed:
+                details = None
+        partial = details is None or details.get("id") != chosen["tid"]
+        if partial:
+            details = {"id": chosen["tid"], "src": "tmdb", "title": chosen.get("title"),
+                       "original": chosen.get("sub_title"), "year": chosen.get("year"), "type": chosen.get("type"),
+                       "img": chosen.get("img") or ""}
+        elif not details.get("img") and chosen.get("img"):
+            details = dict(details, img=chosen["img"])
+        entry = libmeta.entry_of(details, query, manual, self.clock(), partial)
+        if douban_skipped and not manual:
+            entry["douban_skipped"] = True
+        entry["poster"] = self._poster(entry)
+        self.meta.put(key, entry)
+        return entry
+
     def _complete(self, key: str, entry: dict) -> dict:
-        """补（或重新取）一个对上了的条目的详细资料和海报；手动的、自动的标记照旧。被拦、出错时抛出去，存的不动。"""
-        details = self.douban.details(entry["id"])
+        """补（或重新取）一个对上了的条目的详细资料和海报（豆瓣的找豆瓣、TMDB 的找 TMDB）；手动的、自动的标记照旧。
+        被拦、出错时抛出去，存的不动。"""
+        if entry.get("src") == "tmdb":
+            details = self.tmdb.details(entry.get("type") or "", entry["id"])
+        else:
+            details = self.douban.details(entry["id"])
         fresh = libmeta.entry_of(details, entry.get("q") or "", bool(entry.get("manual")), self.clock())
+        if entry.get("douban_skipped"):
+            fresh["douban_skipped"] = True
         if not fresh.get("img") and entry.get("img"):
             fresh["img"] = entry["img"]
         fresh["poster"] = self._poster(fresh, entry.get("poster") or "")
@@ -1586,21 +1691,26 @@ class Library:
         return fresh
 
     def _poster(self, entry: dict, have: str = "") -> str:
-        """豆瓣的海报取一次存进 library-art/（douban-<id>.jpg）；已经有了不再取。取不到 ""（以后要时再取）。"""
+        """海报取一次存进 library-art/（豆瓣的 douban-<id>.jpg，TMDB 的 tmdb-tv-<id>.jpg）；已经有了不再取。
+        取不到 ""（以后要时再取）。"""
         if have and _POSTER_FILE.match(have) and (self.art_dir / have).is_file():
             return have
         url = entry.get("img") or ""
-        if not url or not self.online() or not re.fullmatch(r"\d{1,12}", str(entry.get("id") or "")):
+        tmdb = entry.get("src") == "tmdb"
+        if tmdb and entry.get("type") not in ("tv", "movie"):
+            return ""
+        stem = f"tmdb-{entry.get('type')}-{entry.get('id')}" if tmdb else f"douban-{entry.get('id')}"
+        if not url or not self.online() or not re.fullmatch(r"\d{1,10}" if tmdb else r"\d{1,12}", str(entry.get("id") or "")):
             return ""
         for ext in ("jpg", "png", "webp"):
-            name = f"douban-{entry['id']}.{ext}"
+            name = f"{stem}.{ext}"
             if (self.art_dir / name).is_file():
                 return name
         try:
-            kind, data = self.douban.image(url)
+            kind, data = self.tmdb.image(url) if tmdb else self.douban.image(url)
         except (libmeta.Blocked, libmeta.Failed):
             return ""
-        name = f"douban-{entry['id']}.{kind}"
+        name = f"{stem}.{kind}"
         try:
             self.art_dir.mkdir(parents=True, exist_ok=True)
             tmp = self.art_dir / (name + ".tmp")
@@ -1631,22 +1741,47 @@ class Library:
         return self.titles().get(key)
 
     def search(self, query) -> dict:
-        """GET /api/admin/library/douban?q=：豆瓣的候选（小图经中转取）。"""
+        """GET /api/admin/library/douban?q=：豆瓣的候选，填了 TMDB 的密钥时后面跟着 TMDB 的（剧、电影各搜一次，
+        交错排）；每个候选标着来源（src）。小图经中转取。一边没查成时 notes 里说一句，两边都没查成才算出错。"""
         if not self.online():
             return {"ok": False, "error": "在线资料关着（在片库上面打开）"}
         query = " ".join(str(query or "").split())[:libmeta.QUERY_MAX]
         if not query:
             return {"ok": False, "error": "写一个片名"}
+        notes, rows = [], []
         try:
             found = self.douban.suggest(query)
         except libmeta.Blocked:
-            return {"ok": False, "error": "豆瓣暂时不让查了，过一个小时再试"}
+            found, douban_error = [], "豆瓣暂时不让查了，过一个小时再试"
         except libmeta.Failed as error:
-            return {"ok": False, "error": str(error)}
-        return {"ok": True, "candidates": [
-            {"id": c["id"], "title": c["title"], "sub_title": c["sub_title"], "year": c["year"], "type": c["type"],
-             "episodes": c["episodes"], "thumb": f"api/admin/library/douban/thumb/{c['id']}" if c["img"] else ""}
-            for c in found]}
+            found, douban_error = [], str(error)
+        else:
+            douban_error = ""
+        rows += [{"id": c["id"], "src": "douban", "title": c["title"], "sub_title": c["sub_title"], "year": c["year"],
+                  "type": c["type"], "episodes": c["episodes"],
+                  "thumb": f"api/admin/library/douban/thumb/{c['id']}" if c["img"] else ""} for c in found]
+        tmdb_error = ""
+        if self.tmdb.configured():
+            lists = []
+            for kind in ("tv", "movie"):
+                try:
+                    lists.append(self.tmdb.search(query, kind))
+                except libmeta.Failed as error:
+                    tmdb_error = str(error)
+                    break
+            mixed = [c for pair in zip(*[lst + [None] * (libmeta.CANDIDATES_MAX - len(lst)) for lst in lists])
+                     for c in pair if c is not None][:libmeta.CANDIDATES_MAX] if lists else []
+            rows += [{"id": c["id"], "src": "tmdb", "title": c["title"], "sub_title": c["sub_title"], "year": c["year"],
+                      "type": c["type"], "episodes": None,
+                      "thumb": f"api/admin/library/tmdb/thumb/{c['type']}-{c['tid']}" if c["img"] else ""}
+                     for c in mixed]
+        if douban_error and (tmdb_error or not self.tmdb.configured()):
+            return {"ok": False, "error": douban_error + ("；" + tmdb_error if tmdb_error else "")}
+        if douban_error:
+            notes.append(douban_error + "，下面只有 TMDB 的")
+        if tmdb_error:
+            notes.append(tmdb_error + "，下面只有豆瓣的")
+        return {"ok": True, "candidates": rows, "notes": notes, "tmdb": self.tmdb.configured()}
 
     def match(self, key, did) -> dict:
         """管理员选了一个豆瓣的条目（手动的，自动的从不盖掉它）。"""
@@ -1656,6 +1791,9 @@ class Library:
         if not self.online():
             return {"ok": False, "error": "在线资料关着（在片库上面打开）"}
         did = str(did or "")
+        picked = libmeta.tmdb_pick_id(did)
+        if picked is not None:
+            return self._match_tmdb(key, title, did, picked)
         if not re.fullmatch(r"\d{1,12}", did):
             return {"ok": False, "error": "请求格式不对"}
         chosen = self.douban.seen(did) or {"id": did}
@@ -1669,6 +1807,23 @@ class Library:
                 details = None
             entry = self._save_match(key, chosen, self._query(title), manual=True, details=details)
         self.log(f"片库「{title['title']}」手动对上了豆瓣的「{entry.get('title')}」")
+        return {"ok": True, "meta": libmeta.public(entry)}
+
+    def _match_tmdb(self, key: str, title: dict, did: str, picked: tuple[str, str]) -> dict:
+        """管理员选了一个 TMDB 的候选（「tmdb:tv:<编号>」）。"""
+        if not self.tmdb.configured():
+            return {"ok": False, "error": "还没填 TMDB 的密钥"}
+        kind, tid = picked
+        chosen = self.tmdb.seen(did) or {"id": did, "tid": tid, "type": kind, "src": "tmdb"}
+        with self._meta_lock:
+            try:
+                details = self.tmdb.details(kind, tid)
+            except libmeta.Failed as error:
+                if not chosen.get("title"):
+                    return {"ok": False, "error": str(error)}
+                details = None
+            entry = self._save_match(key, chosen, self._query(title), manual=True, details=details)
+        self.log(f"片库「{title['title']}」手动对上了 TMDB 的「{entry.get('title')}」")
         return {"ok": True, "meta": libmeta.public(entry)}
 
     def unmatch(self, key) -> dict:
@@ -1726,6 +1881,15 @@ class Library:
             return
         kind, data = found
         handler._send(200, data, IMAGE_TYPES["." + kind], {"Cache-Control": "private, max-age=3600"})
+
+    def serve_tmdb_thumb(self, handler, kind: str, tid: str) -> None:
+        """GET /api/admin/library/tmdb/thumb/<tv|movie>-<编号>：TMDB 候选的小图（只认刚搜到的）。"""
+        found = self.tmdb.thumb(f"tmdb:{kind}:{tid}") if self.online() else None
+        if found is None:
+            handler._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "no-store"})
+            return
+        image, data = found
+        handler._send(200, data, IMAGE_TYPES["." + image], {"Cache-Control": "private, max-age=3600"})
 
     # ---- 管理员：加、删、扫描 ----
 
@@ -2905,6 +3069,7 @@ _SUBS = re.compile(r"^/api/library/subs/([0-9a-f]{16})/(\d{1,3})\.vtt$")
 _RAW = re.compile(r"^/api/library/raw/([0-9a-f]{16})$")
 _META_ART = re.compile(r"^/api/library/meta-art/((?:s[0-9a-f]{12}|m[0-9a-f]{16}))$")
 _THUMB = re.compile(r"^/api/admin/library/douban/thumb/(\d{1,12})$")
+_TMDB_THUMB = re.compile(r"^/api/admin/library/tmdb/thumb/(tv|movie)-(\d{1,10})$")
 
 
 def wired(relay) -> "Library | None":
@@ -2953,6 +3118,9 @@ def get(handler, relay, caller, path: str) -> bool:
             # 后台线程可能刚把它从队里取走、还没标「正在扫」：照样告诉页面「排上了」，页面才会接着刷新。
             answer["scan"]["queued"] = max(1, answer["scan"].get("queued") or 0)
         answer["admin"] = caller.role == "admin"
+        if answer["admin"]:
+            # 备用的 TMDB：只说填了没有、有没有出错，从不带密钥。
+            answer["tmdb"] = library.tmdb.state()
         handler._json(answer)
         return True
     match = _FILE.match(path)
@@ -2998,11 +3166,24 @@ def home_rows(relay, caller) -> list[dict]:
     return rows
 
 
+def _proxy(relay) -> str:
+    """TMDB 经「设置 → YouTube」里填的代理（和网盘组件的下载一样，clouddrive._proxy）；没填、读不了设置是 ""。"""
+    if getattr(relay, "selfhost_data", None) is None:
+        return ""
+    try:
+        from . import ytsettings
+        config, _ = ytsettings._config(relay)
+    except Exception:  # noqa: BLE001 —— 读不了设置就不经代理，TMDB 连不上也只是没有备用的资料
+        return ""
+    return config.youtube_proxy or ""
+
+
 def attach(relay, start: bool = True) -> Library | None:
     """自建 / 电脑客户端：挂在 relay.library 上，开定时扫描。云端不建。"""
     if relay.selfhost is None or relay.accounts is None:
         return None
     library = Library(Path(relay.accounts.path).parent, log=lambda message: relay.log(message))
+    library.tmdb.proxy = lambda: _proxy(relay)
     relay.library = library
     wired(relay)
     if start:

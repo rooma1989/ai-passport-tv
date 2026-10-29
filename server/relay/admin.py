@@ -140,6 +140,9 @@ def get(handler, relay, path: str) -> bool:
     elif library_api._THUMB.match(path) and getattr(relay, "library", None) is not None:
         # 候选的小图：经中转取（豆瓣的图要 Referer，浏览器从不直接连豆瓣），只认刚搜到的候选。
         relay.library.serve_thumb(handler, library_api._THUMB.match(path).group(1))
+    elif library_api._TMDB_THUMB.match(path) and getattr(relay, "library", None) is not None:
+        # 备用的 TMDB 候选的小图：一样经中转取，只认刚搜到的。
+        relay.library.serve_tmdb_thumb(handler, *library_api._TMDB_THUMB.match(path).groups())
     elif path == "/api/admin/clouddrive":
         # 网盘组件（clouddrive.py、server/selfhost/openlist.py）：装了没有、在不在跑；没有密码。
         handler._json(clouddrive.status(relay, handler), headers={"Cache-Control": "no-store"})
@@ -661,13 +664,20 @@ def post(handler, relay, path: str) -> bool:
         return True
     if path in ("/api/admin/library/match", "/api/admin/library/meta/refresh", "/api/admin/library/settings"):
         # 片库的在线资料（library.py、libmeta.py）：手动选豆瓣的条目或「不匹配」（手动的从不被自动的盖掉）、
-        # 重新取一部、打开 / 关掉在线资料（关了一个请求也不往豆瓣发）。
+        # 重新取一部、打开 / 关掉在线资料（关了一个请求也不往豆瓣发）、粘贴 / 清掉备用的 TMDB 密钥（tmdb_key，
+        # 存进 secrets/，回答和操作记录里从不带密钥本身）。
         library = getattr(relay, "library", None)
         if library is None:
             handler._json({"ok": False, "error": LIBRARY_OFF})
             return True
         key = body.get("key") if isinstance(body.get("key"), str) else ""
-        if path == "/api/admin/library/settings":
+        if path == "/api/admin/library/settings" and "tmdb_key" in body:
+            if not isinstance(body["tmdb_key"], str) or len(body["tmdb_key"]) > 2000:
+                handler._json({"ok": False, "error": "请求格式不对"}, 400)
+                return True
+            answer, action, detail = library.set_tmdb_key(body["tmdb_key"]), "library.settings", \
+                "TMDB 密钥设好" if body["tmdb_key"].strip() else "TMDB 密钥清掉"
+        elif path == "/api/admin/library/settings":
             if not isinstance(body.get("online"), bool):
                 handler._json({"ok": False, "error": "请求格式不对"}, 400)
                 return True
