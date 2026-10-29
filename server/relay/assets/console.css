@@ -764,7 +764,9 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .follow { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 #pcwin .note { flex-basis: 100%; }
 /* 宽屏：小窗停在右边，页面让出它的实际宽度（console.js 的 pcDock、pcLayout 写的 --pcw）；标题栏可以拖动 */
-@media (min-width: 1200px) { .d#app.pcdock #view { padding-right: calc(var(--pcw, 520px) + 36px); transition: padding-right .28s var(--ease); } }
+@media (min-width: 1200px) { .d#app.pcdock #view { padding-right: calc(var(--pcw, 520px) + 36px); transition: padding-right .28s var(--ease); }
+  /* 贴边的大图、横排的卡片、筛选条平时伸进两边的留白（负的 margin）；小窗停在右边时右边不伸，不然钻到小窗底下 */
+  .d#app.pcdock .hero, .d#app.pcdock .shelf, .d#app.pcdock .cfil { margin-right: 0; } }
 #pcwin .pchead { cursor: grab; touch-action: none; }
 #pcwin[data-moved] .pchead { cursor: grabbing; }
 #pcwin.big { left: var(--g); right: var(--g); top: calc(var(--topH) + 6px); bottom: 104px; width: auto !important; }
