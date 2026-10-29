@@ -31,6 +31,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -536,7 +537,10 @@ class RealRemuxTests(_Relay):
         iid = self.ids["剧/剧 S01E01.mkv"]
         answer, master, init, playlist, base = self.play(iid)
         self.assertRegex(master, r'CODECS="hvc1\.2\.4\.L\d+\.[0-9A-F.]+,mp4a\.40\.2"')
-        self.assertIn(f"#EXT-X-RTV-ORIGIN:{watch.EXACT_TS_OFFSET:.3f}", playlist)
+        # 起点是文件里的时间：随 ffmpeg 版本差几毫秒（CI 上的 ffmpeg 给 9.995，这台 Mac 上的给 10.000）。
+        origin = re.search(r"#EXT-X-RTV-ORIGIN:([0-9.]+)", playlist)
+        self.assertIsNotNone(origin, playlist)
+        self.assertAlmostEqual(float(origin.group(1)), watch.EXACT_TS_OFFSET, delta=0.05)
         self.assertEqual(answer["duration"], 6)
         media = self.relay.library.item(iid)["media"]
         self.assertEqual([x["c"] for x in media["streams"]], ["hevc", "eac3", "ass", "mjpeg"], "probed once, cached")
@@ -566,7 +570,10 @@ class RealRemuxTests(_Relay):
                 break
             time.sleep(0.3)
         self.assertGreaterEqual(len(cues), 3, cues)
-        self.assertEqual(cues[0], (0.0, 1.5, "第0秒"), "times are the file's own, not shifted")
+        # 文件自己的时间，不平移（不同版本的 ffmpeg 起点差几毫秒）。
+        self.assertEqual(cues[0][2], "第0秒")
+        self.assertAlmostEqual(cues[0][0], 0.0, delta=0.05, msg="times are the file's own, not shifted")
+        self.assertAlmostEqual(cues[0][1], 1.5, delta=0.05)
 
 
 if __name__ == "__main__":
