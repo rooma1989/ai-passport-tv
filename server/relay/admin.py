@@ -29,7 +29,7 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, clouddrive, console, epg, events, playlist, presets, qr, routecheck, settingsbackup, subscriptions, table
+from . import channelmerge, channeltable, clouddrive, console, epg, events, logoset, playlist, presets, qr, routecheck, settingsbackup, subscriptions, table
 from . import library as library_api
 from .ytnode import MAX_STREAMS
 
@@ -371,10 +371,16 @@ def channels(relay) -> dict:
     lines = channeltable.routes_view(path, current["rows"])
     # 台标、节目单编号（tvg-id）、节目单里的台名（tvg-name）：频道表里能直接改，没有时是空串。
     meta = channeltable.meta_of(path)
+    # 表里没写台标的台用的是哪来的（logos.LogoCache.sources）："epg" 节目单的、"set" 公开台标库的、"" 没有。
+    cache = getattr(relay, "logos", None)
+    origin = cache.sources() if cache is not None else {}
     rows = [dict(row, group=groups.get(row["id"], ""), auto=channel_groups.classify(row["id"], row["name"]),
                  **{field: meta.get(row["id"], {}).get(field, "") for field in channeltable.META_FIELDS},
+                 logo_from=origin.get(row["id"], "") if origin.get(row["id"]) in ("epg", "set") else "",
                  **lines[row["id"]])
             for row in current["rows"]]
+    found = sum(1 for row in current["rows"] if logoset.url_for(row["name"], meta.get(row["id"], {}).get("tvg_name", ""),
+                                                               meta.get(row["id"], {}).get("tvg_id", "")))
     backups = sorted(p.name for p in path.parent.glob(path.name + ".bak-*"))
     return {"ok": True, "configured": True, "version": current["version"], "rows": rows, "bad": current["bad"],
             "groups": list(channel_groups.GROUPS[2:]), "limits": {"channels": channel_groups.CHANNEL_MAX,
@@ -387,13 +393,20 @@ def channels(relay) -> dict:
             "auto": relay.linecheck.status() if getattr(relay, "linecheck", None) is not None else None,
             # 「清理」：连续 STALE_DAYS 天每次检测都连不上的线路和台（channeltable.stale），管理员勾了再走保存。
             "stale": channeltable.stale(path, current["rows"], relay.clock()), "stale_days": channeltable.STALE_DAYS,
+            # 「合并重复的台」：名字（规整后）或节目单编号相同的几组（channelmerge.duplicates），管理员挑了再合并。
+            "dups": channelmerge.duplicates(path, current["rows"]),
+            # 「台标补齐」：没有台标的台按台名用公开台标库的（logoset.py）；hits 是表里多少个台在库里找得到。
+            "logoset": {"on": cache is not None and cache.public is not None and logoset.enabled(relay),
+                        "available": cache is not None and cache.public is not None,
+                        "name": logoset.NAME, "home": logoset.HOME, "hits": found},
             # 网上公开的第三方播放列表（只有列表地址）：和导入一样只在自建 / 电脑客户端里有。
             "presets": presets.public() if relay.selfhost is not None else []}
 
 
-def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
+def save_channels(relay, body: dict, caller, ip: str = "", after=None) -> dict:
     """检查（dry）或保存频道表。body: {version, rows: [id 或 {id?, name, url, agent, group, logo?, tvg_id?, tvg_name?}], dry}。
-    留下的台给了 logo / tvg_id / tvg_name 就改成给的（空串是清掉），没给的照旧（channeltable.merge_meta）。"""
+    留下的台给了 logo / tvg_id / tvg_name 就改成给的（空串是清掉），没给的照旧（channeltable.merge_meta）。
+    after(rows)：真保存了以后、还拿着锁的时候再做的事（合并重复的台搬线路记录和分组，merge_channels）。"""
     path = relay.main_channels
     if path is None:
         return {"ok": False, "error": "中转没有配置 --main-channels，没有全局频道表"}
@@ -447,6 +460,8 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
         _save_meta(path, body["rows"], rows)
         _ops(relay).set_global_groups(groups)
         relay._admin_groups = groups
+        if after is not None:
+            after(rows)
     detail = (f"{len(current['rows'])}→{len(rows)} 个台，+{len(added)} −{len(removed)} 改{len(changed)}"
               f"{' 换序' if moved else ''}；备份 {backup or '无'}")
     relay.accounts.audit("channels.save", caller.user, ip, "channels", path.name, detail)
@@ -455,6 +470,93 @@ def save_channels(relay, body: dict, caller, ip: str = "") -> dict:
     relay.sync_devices(force=True)
     return {"ok": True, "version": channeltable.version_of(text), "backup": backup, "summary": summary,
             "warnings": warnings, "fit": fit}
+
+
+def merge_channels(relay, body: dict, caller, ip: str = "") -> dict:
+    """「合并重复的台」：检查（dry）或合并。body: {version, groups: [{keep, drop: [台 id…]}], dry}。
+    怎么并见 channelmerge.py；改表走 save_channels（先备份 channels.txt 和 meta，再用电视服务的解析器查），保存以后
+    把删掉的台的线路记录搬到留下的台，总后台的分组（留下的台没设时）、每个人调的分组、「常看」、节目单的手动对台
+    也从删掉的台搬到留下的台。"""
+    path = relay.main_channels
+    if path is None:
+        return {"ok": False, "error": "中转没有配置 --main-channels，没有全局频道表"}
+    current = channeltable.read(path)
+    if body.get("version") != current["version"]:
+        return {"ok": False, "stale": True, "error": "频道表在你编辑的时候被改过了（别处保存或手动改了文件）：请刷新后重新改"}
+    old_meta = routes.read_meta(path)
+    try:
+        plan = channelmerge.plan(path, current["rows"], body.get("groups"), old_meta)
+    except ValueError as error:
+        return {"ok": False, "error": str(error)}
+    groups = global_groups(relay)
+    items = {item["id"]: item for item in plan["edits"] if isinstance(item, dict)}
+    for keep, drops in plan["carry"].items():
+        given = next((groups[d] for d in drops if groups.get(d)), "")
+        if not groups.get(keep) and given:
+            items[keep]["group"] = given
+    moved = {}
+
+    def after(rows: list[dict]) -> None:
+        primary = {row["id"]: row["url"] for row in rows if row["id"] in plan["carry"]}
+        routes.update_meta(path, lambda data: channelmerge.carry_meta(data, old_meta, plan["carry"], primary))
+        moved.update(_move_refs(relay, plan["carry"], {row["id"]: row["name"] for row in rows}))
+
+    answer = save_channels(relay, {"version": body.get("version"), "rows": plan["edits"], "dry": body.get("dry") is True},
+                           caller, ip, after=after)
+    answer["merged"] = plan["merged"]
+    if answer.get("ok") and not answer.get("dry"):
+        answer["moved"] = moved
+        names = "、".join(m["name"] for m in plan["merged"])
+        removed = sum(len(m["drop"]) for m in plan["merged"])
+        relay.accounts.audit("channels.merge", caller.user, ip, "channels", path.name,
+                             f"{len(plan['merged'])} 组，删掉 {removed} 个重复的台：{names}"[:200])
+    return answer
+
+
+def _move_refs(relay, carry: dict[str, list[str]], names: dict[str, str]) -> dict:
+    """合并以后：每个人调的分组、「常看」（livetally）、节目单的手动对台从删掉的台搬到留下的台（留下的台自己有的不换）。
+    回答搬了多少：{groups: 几个人的分组, frequent: 几个人的常看, pins: 几个手动对台}。"""
+    found = {"groups": 0, "frequent": 0, "pins": 0}
+    accounts = getattr(relay, "accounts", None)
+    if accounts is not None and getattr(relay, "tenant", False):
+        for user in _ops(relay).users():
+            state = relay.user_state(user["id"])
+            with state.lock:
+                own = dict(state.group_overrides)
+                changed = False
+                for keep, drops in carry.items():
+                    for cid in drops:
+                        if cid in own:
+                            value = own.pop(cid)
+                            own.setdefault(keep, value)
+                            changed = True
+                if changed:
+                    state.group_overrides = own
+            if changed:
+                state.save()
+                found["groups"] += 1
+    tally = getattr(relay, "tally", None)
+    if tally is not None:
+        for keep, drops in carry.items():
+            for cid in drops:
+                found["frequent"] += tally.move(cid, keep)
+    guide = getattr(relay, "guide", None)
+    if guide is not None and accounts is not None:
+        manual = epg.load_manual(accounts)
+        changed = False
+        for keep, drops in carry.items():
+            for cid in drops:
+                pin = manual.pop(cid, None)
+                if pin is None:
+                    continue
+                changed = True
+                if keep not in manual:
+                    manual[keep] = dict(pin, name=names.get(keep, pin.get("name", "")))
+                    found["pins"] += 1
+        if changed:
+            accounts.set_meta(epg.MANUAL_KEY, json.dumps(manual, ensure_ascii=False))
+            guide.configure(guide.sources, manual=manual)
+    return found
 
 
 def _meta_changes(items: list, rows: list[dict], old: dict) -> int:
@@ -595,6 +697,19 @@ def post(handler, relay, path: str) -> bool:
     if path == "/api/admin/channels/logo":
         # 频道表里改台标：先看一眼这个地址的图片（logo_preview）。云端和自建都有，只给管理员。
         handler._json(logo_preview(relay, body))
+        return True
+    if path == "/api/admin/channels/merge":
+        # 「合并重复的台」（channelmerge.py）：管理员挑了留哪个，先检查再合并；从不自动合并。
+        handler._json(merge_channels(relay, body, caller, ip))
+        return True
+    if path == "/api/admin/channels/logoset":
+        # 「台标补齐」的开关（logoset.py）：关了一个请求也不往公开台标库发；频道表里写的、节目单的台标照旧。
+        if not isinstance(body.get("on"), bool) or relay.accounts is None:
+            handler._json({"ok": False, "error": "请求格式不对"}, 400)
+            return True
+        logoset.set_enabled(relay, body["on"])
+        relay.accounts.audit("channels.logoset", caller.user, ip, "channels", "", "开" if body["on"] else "关")
+        handler._json({"ok": True, "on": body["on"]})
         return True
     if selfhost and path == IMPORT_PATH:
         # 自建：读一份 M3U（地址、上传的内容或一个公开列表），列出里面的台给页面勾选；不存地址、不改频道表。

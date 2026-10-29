@@ -10,6 +10,8 @@
 - 取到的按地址的散列存成 <散列>.<扩展名>：地址改了就是新文件，旧文件留着不碍事。取不到的记下来，
   RETRY_S 内不再去（重启后再试一次）；同时最多 PARALLEL 个在取，目录里最多 MAX_FILES 个文件。
 - 频道表里没写台标的台，用节目单里对上的那个台的 <icon src>（extra，epg.Guide.icons）：取的规矩一样。
+- 节目单也没有的，按台名到公开的台标库里找（public，logoset.py：fanmingming/live 经 jsDelivr）：取的规矩一样；
+  总后台频道表里能关掉。顺序：频道表里写的 > 节目单的 > 台标库的。
 - 没有台标、取不到：404，页面画一个用台名生成的徽标。
 - 唯一的例外是总后台频道表里改台标时的「看一眼」（preview，只有管理员能用，admin.logo_preview）：地址是管理员
   填的，规矩和上面完全一样，取到的存进同一个缓存。
@@ -28,7 +30,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import channeltable
+from . import channeltable, logoset
 
 MAX_BYTES = 256 * 1024
 TIMEOUT_S = 6.0
@@ -110,10 +112,13 @@ def fetch(url: str, check=allowed_url, timeout: float = TIMEOUT_S) -> bytes:
 
 class LogoCache:
     def __init__(self, folder: Path, table: Path | None, fetcher=fetch, clock=time.monotonic, log=lambda _m: None,
-                 extra=None):
+                 extra=None, public=None):
         self.folder = Path(folder)
         # 兜底的台标 {台 id: 地址}（节目单的 <icon src>）：频道表里写了台标的台不用它。
         self.extra = extra
+        # 最后一层：公开台标库开着没有（() -> bool，logoset.enabled）；None 是不用。
+        self.public = public
+        self._set: tuple[tuple, dict] | None = None
         self.table = Path(table) if table is not None else None
         self.fetcher = fetcher
         self.clock = clock
@@ -124,12 +129,52 @@ class LogoCache:
         self._meta: tuple[float, dict] | None = None
 
     def _logos(self) -> dict[str, str]:
-        """{台 id: 台标地址}：频道表 meta 里写的，没写的台用 extra 给的；meta 文件改了才重读。"""
+        """{台 id: 台标地址}：频道表 meta 里写的，没写的台用 extra 给的，再没有的用台标库的；meta 文件改了才重读。"""
         own = self._own()
         extra = self.extra() if self.extra is not None else None
-        if not extra:
+        found = self._public()
+        if not extra and not found:
             return own
-        return {**extra, **own}
+        return {**found, **(extra or {}), **own}
+
+    def sources(self) -> dict[str, str]:
+        """{台 id: 台标从哪来}："table"（频道表里写的）、"epg"（节目单的）、"set"（台标库的）。总后台频道表看。"""
+        own = self._own()
+        extra = self.extra() if self.extra is not None else None
+        found = {cid: "set" for cid in self._public()}
+        found.update({cid: "epg" for cid in extra or {}})
+        found.update({cid: "table" for cid in own})
+        return found
+
+    def _public(self) -> dict[str, str]:
+        """{台 id: 台标库里的地址}：按台名、节目单里的台名、节目单编号找（logoset.url_for）；关着时 {}。
+        频道表或旁边的 meta 改了才重新对。"""
+        if self.public is None or self.table is None or not self.public():
+            return {}
+        try:
+            stamp = (self.table.stat().st_mtime, self._mtime(channeltable.meta_path(self.table)))
+        except OSError:
+            return {}
+        with self.lock:
+            if self._set is not None and self._set[0] == stamp:
+                return self._set[1]
+        meta = channeltable.meta_of(self.table)
+        found = {}
+        for row in channeltable.read(self.table)["rows"]:
+            extra = meta.get(row["id"], {})
+            url = logoset.url_for(row["name"], extra.get("tvg_name", ""), extra.get("tvg_id", ""))
+            if url:
+                found[row["id"]] = url
+        with self.lock:
+            self._set = (stamp, found)
+        return found
+
+    @staticmethod
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
 
     def _own(self) -> dict[str, str]:
         if self.table is None:

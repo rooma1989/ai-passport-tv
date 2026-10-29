@@ -64,6 +64,26 @@ class LiveTally:
                     del mine[old]
             self._dirty = True
 
+    def move(self, old: str, new: str) -> int:
+        """总后台合并了重复的台（channelmerge.py）：每个人在 old 上看的秒数（衰减到现在的）加到 new 上，去掉 old。
+        返回改了几个人的；马上存。"""
+        if not _LIVE_ID.match(old or "") or not _LIVE_ID.match(new or "") or old == new:
+            return 0
+        now, moved = self.clock(), 0
+        with self.lock:
+            for mine in self._data.values():
+                item = mine.pop(old, None)
+                if item is None:
+                    continue
+                have = mine.get(new)
+                mine[new] = [self._decayed(item, now) + (self._decayed(have, now) if have else 0.0), now]
+                moved += 1
+            if moved:
+                self._dirty = True
+        if moved:
+            self.save(force=True)
+        return moved
+
     def top(self, user: int | None, n: int = FAVS_MAX) -> list[str]:
         """这个人最常看的台（台 id，从多到少），累计不到 MIN_S 秒的不算。"""
         now = self.clock()

@@ -56,7 +56,10 @@ def channel_key(name: str) -> str:
     found = re.match(r"cctv(5\+|\d{1,2})", key)
     if found:
         number = found.group(1)
-        return "cctv" + (number if number.endswith("+") else str(int(number))) + ("4k" if four else "")
+        # CCTV4 的欧洲、美洲版和 CCTV8K 是别的台（和节目单的 epg.key_of 一样各算各的）。
+        region = next((r for r in ("欧洲", "美洲", "亚洲") if r in key), "")
+        uhd = "8k" if number == "8" and key[found.end():].startswith("k") else "4k" if four else ""
+        return "cctv" + (number if number.endswith("+") else str(int(number))) + region + uhd
     while True:
         trimmed = re.sub(r"(超高清|高清|超清|标清|uhd|fhd|hd|频道)$", "", key)
         if trimmed == key or not trimmed:

@@ -240,6 +240,8 @@ label.ghost { cursor: pointer; }
 .cleanline { display: flex; align-items: flex-start; gap: 10px; padding: 4px 0; cursor: pointer; }
 .cleanline input { margin-top: 3px; flex: none; }
 .cleanline > span { display: grid; gap: 2px; min-width: 0; word-break: break-all; }
+.logoset { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.logoset input { margin-top: 3px; flex: none; }
 .cleanline .tag { margin-left: 4px; }
 .cleanbox .subtext p.hint { margin: 0; word-break: break-all; }
 
