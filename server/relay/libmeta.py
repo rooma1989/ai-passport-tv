@@ -375,17 +375,32 @@ class Douban:
         found = parse_suggest(self._get(SUGGEST_URL + urllib.parse.quote(query), REFERER,
                                         "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
         if not found:
-            try:
-                found = parse_search(self._get(SEARCH_URL + urllib.parse.quote(query), SEARCH_REFERER,
-                                               "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
-            except Failed:
-                found = []
+            found = self.search(query, remember=False)
         with self._lock:
             for c in found:
                 self._seen[c["id"]] = c
                 self._seen.move_to_end(c["id"])
             while len(self._seen) > CANDIDATES_KEPT:
                 self._seen.popitem(last=False)
+        return found
+
+    def search(self, query: str, remember: bool = True) -> list[dict]:
+        """手机版的影视搜索（parse_search）：候选比 subject_suggest 全（「龙」查得到 2013 年的电影）。出错时 []。"""
+        query = " ".join(str(query or "").split())[:QUERY_MAX]
+        if not query:
+            return []
+        try:
+            found = parse_search(self._get(SEARCH_URL + urllib.parse.quote(query), SEARCH_REFERER,
+                                           "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+        except Failed:
+            return []
+        if remember:
+            with self._lock:
+                for c in found:
+                    self._seen[c["id"]] = c
+                    self._seen.move_to_end(c["id"])
+                while len(self._seen) > CANDIDATES_KEPT:
+                    self._seen.popitem(last=False)
         return found
 
     def seen(self, did: str) -> dict | None:

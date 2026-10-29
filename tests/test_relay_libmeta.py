@@ -377,6 +377,15 @@ class MatcherTests(unittest.TestCase):
         self.assertEqual([c["id"] for c in libmeta.parse_search(json.dumps(search))], ["1000099", "1000001"])
         self.assertEqual(libmeta.parse_search(b"<html>"), [])
 
+    def test_unrelated_suggestions_fall_back_to_the_mobile_search(self):
+        """subject_suggest gives a few popular hits ("龙" gave "欢迎来龙餐馆"); the fuller mobile search is tried next."""
+        import urllib.parse
+        self.fake.suggest("苏里南", json.dumps([{"id": "1000098", "title": "苏里南之子", "type": "movie", "year": "2001"}]))
+        search = {"items": [{"target_type": "tv", "target": {"id": "1000001", "title": "苏里南", "year": "2022"}}]}
+        self.fake.add(libmeta.SEARCH_URL + urllib.parse.quote("苏里南"), json.dumps(search))
+        self.run_all()
+        self.assertEqual(self.view()[2]["苏里南"]["meta"]["rating"], 6.9)
+
     def test_english_title_through_aka(self):
         # 中文名查不到（文件夹里是另一个写法）：英文名查出来的候选又名里有 Narco-Saints 才认。
         os.rename(self.root / SURINAM, self.root / "夸克/来自：分享/毒枭圣徒 (2022)")

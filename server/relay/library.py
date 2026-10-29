@@ -1533,7 +1533,11 @@ class Library:
         query = self._query(title)
         chosen, details = None, None
         if title["title"]:
-            chosen = libmeta.pick(self.douban.suggest(title["title"]), names, title["year"], want)
+            suggested = self.douban.suggest(title["title"])
+            chosen = libmeta.pick(suggested, names, title["year"], want)
+            if chosen is None and suggested:
+                # subject_suggest 只给几个最热的（「龙」给的是「欢迎来龙餐馆」）：再用手机版的搜索找一次。
+                chosen = libmeta.pick(self.douban.search(title["title"]), names, title["year"], want)
         if chosen is None and title["alt"] and libmeta.norm(title["alt"]) != libmeta.norm(title["title"]):
             candidates = self.douban.suggest(title["alt"])
             chosen = libmeta.pick(candidates, names, title["year"], want)
