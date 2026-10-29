@@ -32,7 +32,8 @@
   能放就只换封装，HEVC 写成 hvc1，放不了才转成 H.264；声音有 AAC 就直接用，没有就把默认的那一路转成 AAC 立体声；
   字幕和附件从不放进去）。ffmpeg 读的是只给本机的 /api/library/raw/<id>?t=<令牌>（raw）：网盘的地址和密码从不在
   ffmpeg 的命令行上，本机的文件也不用 file: 协议。网盘的文件每次起 ffmpeg 都要再读的「目录」（MP4 的 moov、MKV 的头、
-  附件和 Cues）存在 library-cache/（librarycache.py，_serve_cached），只给 raw 用。
+  附件和 Cues）存在 library-cache/（librarycache.py，_serve_cached），只给 raw 用。扫描找到新的（或变了的）网盘片子
+  以后，没人在放时后台先把这几段读进缓存、探测一次（预热，warm_step），第一次放也和第二次一样快。
 - 字幕（第二步）：内嵌的文字字幕（ass、srt、mov_text、webvtt）和视频旁边的字幕文件（<名字>.srt、<名字>.zh.ass…，
   本机和网盘）按需转成 WebVTT（/api/library/subs/<id>/<n>.vtt，只给家里人，缓存在 library-subs/）。图片字幕（PGS、
   DVD）列出来但放不了。网盘上的内嵌字幕不整个再读一遍文件，而是在放的那一路边转边抽（watch_source 的 subs_out）。
@@ -123,6 +124,22 @@ META_GAP_S = 20.0
 META_TICK_S = 600.0
 META_START_S = 60.0
 META_FAIL_S = 3600.0
+# 预热（warm_step）：扫描找到新的网盘片子以后，后台一个一个（新的先）把索引区读进缓存（librarycache 的 tee）、
+# 探测一次。每轮至多从网盘读 WARM_BUDGET 字节、每个文件只读索引区；读的时候至多 WARM_RATE 字节 / 秒。有人在看、
+# 在放（片库的文件正在给出去、WARM_QUIET_S 秒内给过）、在扫描时不做，做到一半有人开始放就停下（下一轮接着读）。
+# 网盘出错了停下、歇 WARM_BACKOFF_S（接连出错翻倍，至多 WARM_BACKOFF_MAX_S）；同一个文件失败 WARM_TRIES 次不再预热。
+# 缓存里 WARM_KEEP_S 内用过的从不为了预热挤掉（不够地方就不预热）。中转启动时 WARM_NEW_S 内加进来、还没探测过的
+# 也算新的。启动后先等 WARM_START_S，之后每 WARM_TICK_S 看一眼（扫描完了马上看）。
+WARM_BUDGET = 300 * 1024 * 1024
+WARM_RATE = 4 * 1024 * 1024
+WARM_QUIET_S = 120.0
+WARM_BACKOFF_S = 600.0
+WARM_BACKOFF_MAX_S = 6 * 3600.0
+WARM_TRIES = 2
+WARM_KEEP_S = 14 * 86400.0
+WARM_NEW_S = 3 * 86400.0
+WARM_START_S = 120.0
+WARM_TICK_S = 180.0
 _META_KEY = re.compile(r"^(?:s[0-9a-f]{12}|m[0-9a-f]{16})$")
 _POSTER_FILE = re.compile(r"^douban-\d{1,12}\.(?:jpg|png|webp)$")
 # 网盘组件（OpenList）的来源：clouddrive.py 维护，页面不能删。
@@ -1172,6 +1189,19 @@ class Library:
         self._meta_wake = threading.Event()
         self._meta_failed: dict[str, float] = {}
         self._meta_lock = threading.Lock()
+        # 预热（warm_step）：正在给出去的片库文件（不算预热自己的探测）、最后一次给完的时间；有人在看（attach 设成
+        # 看 relay.watch 的）；要预热的条目、每个文件失败了几次、歇到什么时候。
+        self._serving = 0
+        self._served_at = 0.0
+        self.watching: Callable[[], bool] | None = None
+        self._warm_wanted: set[str] = set()
+        self._warm_seeded = False
+        self._warm_tries: dict[str, int] = {}
+        self._warm_after = 0.0
+        self._warm_backoff = 0.0
+        self._warm_read = 0
+        self._warm_wake = threading.Event()
+        self._warm_lock = threading.Lock()
 
     # ---- 文件 ----
 
@@ -2054,6 +2084,14 @@ class Library:
                                                     count=len(items)))
         fresh = sum(1 for i in items if i["id"] not in old)
         self._meta_wake.set()                      # 新加的片子去查在线资料（后台慢慢来）
+        if src["kind"] == "webdav":
+            # 新的、变了的网盘片子排上预热（后台没人在放时先把索引区读进缓存、探测一次）。
+            changed = [i["id"] for i in items if i["id"] not in old
+                       or (old[i["id"]].get("size"), old[i["id"]].get("mtime")) != (i["size"], i["mtime"])]
+            if changed:
+                with _LOCK:
+                    self._warm_wanted.update(changed)
+                self._warm_wake.set()
         self.log(f"片库「{name}」扫完了：{len(items)} 个视频（新的 {fresh} 个）" + (f"，{note}" if note else ""))
         return {"ok": True, "count": len(items), "new": fresh, "note": note}
 
@@ -2091,6 +2129,189 @@ class Library:
             except Exception as error:  # noqa: BLE001
                 self.log(f"片库定时扫描出错：{type(error).__name__}")
             sleep(TICK_S)
+
+    # ---- 预热：新片第一次打开也快 ----
+
+    def warm_blocked(self) -> str:
+        """现在不该预热的原因（大白话）；能预热时空串。"""
+        with _LOCK:
+            if self._serving > 0 or self.clock() - self._served_at < WARM_QUIET_S:
+                return "有人在放片库里的片子"
+            if self._status["running"] or self._queue:
+                return "在扫描"
+        if self.watching is not None and self.watching():
+            return "有人在看"
+        return ""
+
+    def _warm_tally(self, count: int) -> None:
+        with _LOCK:
+            self._warm_read += count
+
+    # 预热的探测只数从网盘读的（_serve_cached 从缓存给的那部分不数）：一轮的 WARM_BUDGET 和日志说的是网盘的字节。
+    _warm_tally.drive_only = True
+
+    @staticmethod
+    def _probed(item: dict) -> bool:
+        media = item.get("media")
+        return isinstance(media, dict) and media.get("v") == PROBE_VERSION and media.get("size") == item.get("size") \
+            and media.get("mtime") == item.get("mtime")
+
+    def warm_due(self) -> list[dict]:
+        """要预热的条目（新的先）：扫描找到的新的、变了的网盘片子；中转刚起来时另外算上 WARM_NEW_S 内加进来、
+        还没探测过的。本机文件夹的、来源没了的、失败了 WARM_TRIES 次的不算。"""
+        remote = {s["id"] for s in self._load_sources() if s["kind"] == "webdav"}
+        now = self.clock()
+        with _LOCK:
+            if not self._warm_seeded:
+                self._warm_seeded = True
+                self._warm_wanted.update(i["id"] for i in self._items.values() if i["source"] in remote
+                                         and now - (i.get("added") or 0) < WARM_NEW_S and not self._probed(i))
+            for iid in [i for i in self._warm_wanted
+                        if i not in self._items or self._items[i]["source"] not in remote]:
+                self._warm_wanted.discard(iid)
+            due = [dict(self._items[i]) for i in self._warm_wanted
+                   if int(self._items[i].get("size") or 0) > 0
+                   and self._warm_tries.get(self._warm_key(self._items[i]), 0) < WARM_TRIES]
+        return sorted(due, key=lambda i: (i.get("added") or 0, i.get("mtime") or 0), reverse=True)
+
+    @staticmethod
+    def _warm_key(item: dict) -> str:
+        return IndexCache.key_of(item["id"], int(item.get("size") or 0), int(item.get("mtime") or 0))
+
+    def warm_step(self) -> dict:
+        """预热一轮（一个文件一个文件来，新的先）：每个文件把索引区读进缓存（_warm_one），再探测一次存进索引。
+        有人在放、在看时不做，做到一半有人开始了就停下；一轮至多读 WARM_BUDGET；缓存不挤掉 WARM_KEEP_S 内用过的；
+        网盘出错了停下、歇一会儿。返回 {"files": 预热好了几个, "bytes": 读了多少, "stopped": 为什么停下（做完了是空串）}。
+        做了点什么时记一行日志（不带地址）。"""
+        result = {"files": 0, "bytes": 0, "stopped": ""}
+        if not self._warm_lock.acquire(blocking=False):
+            return dict(result, stopped="已经在预热")
+        try:
+            if self.clock() < self._warm_after:
+                return dict(result, stopped="网盘刚出过错，歇一会儿")
+            why = self.warm_blocked()
+            if why:
+                return dict(result, stopped=why)
+            failed = False
+            for item in self.warm_due():
+                left = WARM_BUDGET - result["bytes"]
+                if left <= 0:
+                    result["stopped"] = "这一轮读够了"
+                    break
+                if self.cache.room(WARM_KEEP_S) < self.cache.file_max:
+                    result["stopped"] = "索引缓存快满了"
+                    break
+                try:
+                    read, done = self._warm_one(item, left)
+                except (urllib.error.HTTPError, LibraryError, OSError, ValueError) as error:
+                    if isinstance(error, urllib.error.HTTPError):
+                        error.close()
+                    key = self._warm_key(item)
+                    with _LOCK:
+                        self._warm_tries[key] = self._warm_tries.get(key, 0) + 1
+                    self._warm_backoff = min(WARM_BACKOFF_MAX_S, self._warm_backoff * 2 or WARM_BACKOFF_S)
+                    self._warm_after = self.clock() + self._warm_backoff
+                    result["stopped"] = str(error) if isinstance(error, LibraryError) else _dav_reason(error)
+                    failed = True
+                    break
+                result["bytes"] += read
+                if not done:
+                    result["stopped"] = self.warm_blocked() or "这一轮读够了"
+                    break
+                result["files"] += 1
+                with _LOCK:
+                    self._warm_wanted.discard(item["id"])
+            if not failed:
+                self._warm_backoff = 0.0
+        finally:
+            self._warm_lock.release()
+        if result["files"] or result["bytes"] or failed:
+            line = f"片库预热：{result['files']} 个新片子，读了 {result['bytes'] // (1024 * 1024)} MB"
+            self.log(line + (f"，停下了：{result['stopped']}" if result["stopped"] else ""))
+        return result
+
+    def _warm_one(self, item: dict, left: int) -> tuple[int, bool]:
+        """预热一个网盘文件：缓存还缺的索引区（IndexCache.todo、MKV 的 Cues 看 cues_at）一段一段从网盘读，经 tee
+        存进去（和 ffmpeg 读到时一样的存法、一样的上限）；再探测一次（media_of，读的多半已经在缓存里）。
+        返回 (读了多少字节, 做完了没有)；有人开始放了、这一轮读够了时没做完（下一轮接着读）。网盘出错时抛。"""
+        src = next((s for s in self._load_sources() if s["id"] == item["source"]), None)
+        if src is None or src["kind"] != "webdav":
+            return 0, True
+        dav = self._source(src)
+        iid, size, mtime, ext = item["id"], int(item["size"]), int(item.get("mtime") or 0), item.get("ext") or ""
+        read = 0
+        for _ in range(8):                          # 开头、MP4 的 moov / MKV 的 Cues，没存满的再接着读
+            if self.warm_blocked() or read >= left:
+                return read, False
+            starts = self.cache.todo(iid, size, mtime, ext)
+            cues = self.cache.cues_at(iid, size, mtime, ext)
+            if cues is not None:
+                starts.append(cues)
+            if not starts:
+                break
+            got = self._fill(dav, item, starts[0], left - read)
+            read += got
+            if got == 0:
+                break
+        if self.warm_blocked():
+            return read, False
+        if self.ffmpeg and self.secret is not None and self.port is not None:
+            with _LOCK:
+                before = self._warm_read
+            media = self.media_of(iid, warm=True)
+            with _LOCK:
+                read += self._warm_read - before
+            if media is None:
+                raise LibraryError("探测不了")
+        return read, True
+
+    def _fill(self, dav: WebDav, item: dict, start: int, left: int) -> int:
+        """从网盘 start 起读一段、经 tee 存进索引缓存（每次只读这一段还存得下的），存满了（这一段到头、到了 FILE_MAX）、读了 left、
+        有人开始放了时停下。返回读了多少字节；这里存不了（别的在写）时 0。网盘的回答对不上（文件变了）时这个文件的
+        缓存作废、抛 LibraryError。"""
+        iid, size, mtime, ext = item["id"], int(item["size"]), int(item.get("mtime") or 0), item.get("ext") or ""
+        tee = self.cache.tee(iid, size, mtime, ext, start)
+        if tee is None:
+            return 0
+        got = 0
+        try:
+            upstream = dav.open(item["path"], f"bytes={start}-{min(size, start + self.cache.file_max) - 1}")
+            try:
+                span = self._answer_span(upstream, size)
+                if span is None or span[0] != start:
+                    tee.stopped = True
+                    if span is None:
+                        self.cache.drop(iid)
+                    raise LibraryError("网盘上的文件变了（重新扫描一下片库）")
+                read = getattr(upstream, "read1", None) or upstream.read
+                began = time.monotonic()
+                while got < left and not self.warm_blocked():
+                    want = min(CHUNK, tee.room(), left - got)
+                    chunk = read(want) if want > 0 else b""
+                    if not chunk:
+                        break
+                    tee.write(chunk)
+                    got += len(chunk)
+                    if self.pace:                   # 低优先级：至多 WARM_RATE 字节 / 秒
+                        ahead = got / WARM_RATE - (time.monotonic() - began)
+                        if ahead > 0:
+                            time.sleep(ahead)
+            finally:
+                upstream.close()
+        finally:
+            tee.close()
+        return got
+
+    def run_warm(self, sleep=time.sleep) -> None:
+        """后台的预热：启动后先等 WARM_START_S，之后每 WARM_TICK_S（扫描找到新片子时马上）做一轮。"""
+        sleep(WARM_START_S)
+        while True:
+            try:
+                self.warm_step()
+            except Exception as error:  # noqa: BLE001 —— 后台线程不能悄悄死
+                self.log(f"片库预热出错：{type(error).__name__}")
+            self._warm_wake.wait(WARM_TICK_S)
+            self._warm_wake.clear()
 
     # ---- 放文件 ----
 
@@ -2133,9 +2354,9 @@ class Library:
             handler.close_connection = True
         return total
 
-    def serve_file(self, handler, iid: str, raw: bool = False) -> None:
+    def serve_file(self, handler, iid: str, raw: bool = False, warm: bool = False) -> None:
         """GET /api/library/file/<id>：按 Range 给文件的字节（只认 id）。raw：给中转自己的 ffmpeg 的（/api/library/raw），
-        记下给了多少字节（起播时的进度）。"""
+        记下给了多少字节（起播时的进度）。warm：预热自己的探测（不算「有人在放」，字节记进这一轮预热）。"""
         item = self.item(iid)
         src = next((s for s in self._load_sources() if item and s["id"] == item["source"]), None)
         if item is None or src is None:
@@ -2144,9 +2365,12 @@ class Library:
         if not self._files.acquire(blocking=False):
             handler._send(503, "同时在放的太多了，过一会儿再试".encode(), "text/plain; charset=utf-8")
             return
+        with _LOCK:
+            if not warm:
+                self._serving += 1
         try:
             kind = VIDEO_TYPES.get(item.get("ext") or "", "application/octet-stream")
-            tally = self._tally(iid) if raw else None
+            tally = self._warm_tally if warm else self._tally(iid) if raw else None
             if src["kind"] == "local":
                 self._serve_local(handler, LocalFolder(src.get("path") or ""), item, kind, tally)
             else:
@@ -2155,6 +2379,10 @@ class Library:
             handler.close_connection = True        # 浏览器断开（跳转、关窗口）
         finally:
             self._files.release()
+            with _LOCK:
+                if not warm:
+                    self._serving -= 1
+                    self._served_at = self.clock()
 
     def _serve_local(self, handler, folder: LocalFolder, item: dict, kind: str, tally=None) -> None:
         path = folder.path_of(item["path"])
@@ -2272,7 +2500,8 @@ class Library:
         first = min(have, end - start + 1)
         with handle:
             self._send_head(handler, 206, kind, end - start + 1, {"Content-Range": f"bytes {start}-{end}/{size}"})
-            if self._pump(handler, handle.read, first, tally, close=False) < first:
+            cached_tally = None if getattr(tally, "drive_only", False) else tally
+            if self._pump(handler, handle.read, first, cached_tally, close=False) < first:
                 handler.close_connection = True
                 return True
         at = start + first
@@ -2326,10 +2555,11 @@ class Library:
         from ..listen import check_token
         return self.secret is not None and check_token(self.secret, f"libraw/{iid}", token, now=time.time())
 
-    def raw_url(self, iid: str) -> str:
+    def raw_url(self, iid: str, warm: bool = False) -> str:
         """中转自己的 ffmpeg 取这个文件的地址：只在本机（127.0.0.1）、带短期令牌。网盘的地址和密码从不给 ffmpeg，
-        本机的文件也不用 file: 协议（watch.py 只许网络协议）。"""
-        return f"http://127.0.0.1:{int(self.port())}/tv/api/library/raw/{iid}?t={self.raw_token(iid)}"
+        本机的文件也不用 file: 协议（watch.py 只许网络协议）。warm：预热的探测（带 w=1，不算「有人在放」）。"""
+        return f"http://127.0.0.1:{int(self.port())}/tv/api/library/raw/{iid}?t={self.raw_token(iid)}" \
+            + ("&w=1" if warm else "")
 
     def bytes_read(self, iid: str) -> int:
         """经 /api/library/raw 给出去的这个文件一共多少字节（起播时说「已读 12 MB」）。"""
@@ -2346,9 +2576,10 @@ class Library:
         src = next((s for s in self._load_sources() if s["id"] == item.get("source")), None)
         return src is not None and src["kind"] == "webdav"
 
-    def media_of(self, iid: str) -> dict | None:
+    def media_of(self, iid: str, warm: bool = False) -> dict | None:
         """这个条目探测到的各路流（缓存在索引里，大小和修改时间变了才重新探测）；探测不了时 None（不缓存，
-        PROBE_RETRY_S 内不再试）。在请求的线程里做（网盘上的要几秒），同一个条目同时只探测一次。"""
+        PROBE_RETRY_S 内不再试）。在请求的线程里做（网盘上的要几秒），同一个条目同时只探测一次。warm：预热时探测
+        （经 raw_url(warm=True)；失败了不记，真放的时候照样再探测）。"""
         item = self.item(iid)
         if item is None:
             return None
@@ -2367,10 +2598,11 @@ class Library:
             if isinstance(cached, dict) and cached.get("v") == PROBE_VERSION \
                     and cached.get("size") == item.get("size") and cached.get("mtime") == item.get("mtime"):
                 return cached
-            found = self.probe(iid)
+            found = self.probe(iid, warm=True) if warm else self.probe(iid)
             if found is None:
-                with _LOCK:
-                    self._probe_failed[iid] = self.clock()
+                if not warm:
+                    with _LOCK:
+                        self._probe_failed[iid] = self.clock()
                 return None
             found.update(v=PROBE_VERSION, size=item.get("size"), mtime=item.get("mtime"))
             with _LOCK:
@@ -2379,12 +2611,12 @@ class Library:
                     self._save_index()
             return found
 
-    def probe(self, iid: str) -> dict | None:
+    def probe(self, iid: str, warm: bool = False) -> dict | None:
         """探测一次（ffprobe，没有时用 ffmpeg 自己打的输入信息），读的是 raw_url。出错、超时时 None。"""
         if not self.ffmpeg or self.secret is None or self.port is None:
             return None
         from ..proxyenv import loopback_bypass
-        url = self.raw_url(iid)
+        url = self.raw_url(iid, warm)
         probe = _ffprobe_of(self.ffmpeg)
         whitelist = ["-protocol_whitelist", "http,tcp"]
         if probe:
@@ -2934,7 +3166,7 @@ def raw(handler, relay, path: str) -> bool:
             or not library.raw_ok(match.group(1), handler._query().get("t")):
         handler._not_found()
         return True
-    library.serve_file(handler, match.group(1), raw=True)
+    library.serve_file(handler, match.group(1), raw=True, warm=handler._query().get("w") == "1")
     return True
 
 
@@ -3005,7 +3237,15 @@ def attach(relay, start: bool = True) -> Library | None:
     library = Library(Path(relay.accounts.path).parent, log=lambda message: relay.log(message))
     relay.library = library
     wired(relay)
+    library.watching = lambda: _watching(relay)
     if start:
         threading.Thread(target=library.run_forever, name="library", daemon=True).start()
         threading.Thread(target=library.run_meta, name="library-meta", daemon=True).start()
+        threading.Thread(target=library.run_warm, name="library-warm", daemon=True).start()
     return library
+
+
+def _watching(relay) -> bool:
+    """电脑上有人在看（或正在起播）：直播、B 站、片库，watch.py 的哪一路都算（预热不和它抢网）。"""
+    watch = getattr(relay, "watch", None)
+    return watch is not None and any(stream.alive for stream in watch.streams())
