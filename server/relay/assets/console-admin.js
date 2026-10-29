@@ -1127,7 +1127,7 @@ async function achLoad(keepMessage) {
     return;
   }
   ach.rows = data.rows.map((r) => ({ id: r.id, name: r.name, url: r.url, agent: r.agent, group: r.group,
-                                     logo: r.logo || "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "",
+                                     logo: r.logo || "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo_from: r.logo_from || "",
                                      routes: (r.routes || []).map((x) => ({ ...x })), checks: { ...(r.checks || {}) }, good: r.good || "",
                                      quality: { ...(r.quality || {}) }, orig: r }));
   if (!keepMessage) ach.problems = null;
@@ -1155,9 +1155,11 @@ function achShell() {
         <button class="ghost" id="achAddToggle">${ic("plus", 16)}加一个台</button>
         <button class="ghost" id="achCheckAll">检测全部线路</button>
         <button class="ghost" id="achCleanToggle" hidden>清理</button>
+        <button class="ghost" id="achMergeToggle" hidden>合并重复的台</button>
         <span class="hint" id="achCheckState"></span>
       </div>
       <div class="subsbox cleanbox" id="achClean" hidden></div>
+      <div class="subsbox cleanbox" id="achMerge" hidden></div>
       <div class="addrow" id="achAddRow" hidden>
         <input type="text" id="achNewName" placeholder="名字，例如 CCTV13" maxlength="40" autocomplete="off">
         <input type="text" id="achNewUrl" placeholder="地址 http(s)://…" autocomplete="off" spellcheck="false">
@@ -1166,6 +1168,7 @@ function achShell() {
       </div>
       <div class="tbl chedit" id="achTable"></div>
       <p class="hint" id="achFitLine"></p>
+      <label class="hint logoset" id="achLogoSetRow" hidden><input type="checkbox" id="achLogoSet" aria-label="台标补齐：没有台标的台用公开台标库的"><span id="achLogoSetText"></span></label>
       <details class="more-info">
         <summary>说明</summary>
         <p>名字、分组、节目单编号（tvg-id，节目单按它对台，空着就按台名对）直接在表里改，点台标换台标地址，改完点下面的「保存」；顺序就是设备上换台的顺序。一个台可以有几条线路（主线路 + 备用），放不起来时自动换下一条。「检测」只连一下，不解码，很轻；能连上不等于一定能放。</p>
@@ -1258,6 +1261,9 @@ function achShell() {
   $("achCheckAll").onclick = achCheckAll;
   $("achCleanToggle").onclick = achCleanOpen;
   achCleanButton();
+  $("achMergeToggle").onclick = achMergeOpen;
+  achMergeButton();
+  achLogoSetLine();
   achAutoLine();
   achWireImport();
   achWireEpg();
@@ -1366,14 +1372,17 @@ function achRender() {
 // 表里的小图：保存过的台标从本站取（api/art/logo/<id>，页面不能直接显示别的网站的图片）；改过还没保存的用「看一眼」
 // 取回来的图（r.logoPreview，data: 地址）；图片盖在台名的第一个字上面，取不到时（console.js 的全局 error 处理
 // 会把坏图删掉）露出下面的字。点它改台标地址、节目单编号和节目单里的台名。
+// 表里没写台标、也没改过的台：服务端说节目单或公开台标库有它的台标（r.logo_from），一样从本站取。
 function achLogoSrc(r) {
   const saved = r.id && r.logo && r.orig && r.logo === r.orig.logo;
-  return r.logo && r.logoPreview && r.logoPreview.url === r.logo ? r.logoPreview.image : saved ? "api/art/logo/" + encodeURIComponent(r.id) : "";
+  const auto = r.id && !r.logo && r.orig && !r.orig.logo && r.logo_from;
+  return r.logo && r.logoPreview && r.logoPreview.url === r.logo ? r.logoPreview.image : saved || auto ? "api/art/logo/" + encodeURIComponent(r.id) : "";
 }
+const ACH_LOGO_FROM = { epg: "节目单", set: "公开台标库" };
 function achLetter(r) { return el("span", "", (r.name || "?").trim().slice(0, 1) || "?"); }
 function achLogoButton(r, key) {
   const b = admBtn("", "logo", "ch-" + key + "-logo", () => achLogoEditor(r));
-  b.title = r.logo ? "台标：" + r.logo : "没有台标：点一下填地址";
+  b.title = r.logo ? "台标：" + r.logo : r.logo_from ? "台标来自" + ACH_LOGO_FROM[r.logo_from] + "（自动补上的）：点一下填地址换掉" : "没有台标：点一下填地址";
   b.setAttribute("aria-label", "「" + r.name + "」的台标");
   const src = achLogoSrc(r);
   b.appendChild(achLetter(r));
@@ -1772,6 +1781,145 @@ async function achCleanApply() {
   achProblems(["已清理：" + achDescribe(answer.summary) + "。" + (answer.backup ? "原文件备份为 " + answer.backup + "（线路记录也备份了）。" : "")], true);
   $("achClean").hidden = true;
   achLoad(true);
+}
+// ---------- 合并重复的台（服务端 channelmerge.py） ----------
+// 服务端按规整过的台名（「CCTV-5 体育」「CCTV5 HD」算同一个）或节目单编号找出几组重复的台，每组默认留线路最好的那个。
+// 管理员勾哪几组、每组留哪个；「合并选中的」先检查、再确认，走和「保存」一样的路（先备份频道表和线路记录）：
+// 别的台的线路并进留下的台当备用线路（最多 routes_max 条，留好的），空着的台标、节目单编号补上，再删掉别的台。
+// 只是节目单编号相同、名字不一样的组默认不勾。从不自动合并。
+const ACH_MERGE_WHY = { name: "名字相同", tvg: "节目单编号相同", both: "名字和节目单编号都相同" };
+const ACH_MERGE_FIELD = { logo: "台标", tvg_id: "节目单编号", tvg_name: "节目单里的台名" };
+function achMergeButton() {
+  const b = $("achMergeToggle");
+  if (!b) return;
+  const n = ((ach.data && ach.data.dups) || []).length;
+  b.hidden = !n;
+  b.textContent = "合并重复的台（" + n + "）";
+  b.title = n + " 组名字或节目单编号相同的台";
+  if (!n && $("achMerge")) $("achMerge").hidden = true;
+}
+function achMergeOpen() {
+  const box = $("achMerge");
+  if (!box.hidden) { box.hidden = true; return; }
+  ach.mergePick = {};
+  for (const g of ach.data.dups || []) ach.mergePick[g.channels[0].id] = { tick: !!g.tick, keep: g.keep };
+  box.hidden = false;
+  achRenderMerge();
+}
+function achMergeFacts(c) {
+  const facts = ["第 " + c.n + " 个", c.id, c.lines + " 条线路"];
+  if (c.good) facts.push(c.good + " 条能用");
+  else if (c.ok) facts.push(c.ok + " 条能连上");
+  if (c.bad) facts.push(c.bad + " 条连不上");
+  facts.push(c.logo ? "有台标" : "没台标");
+  if (c.tvg_id) facts.push("节目单编号 " + c.tvg_id);
+  return facts.join(" · ");
+}
+function achMergeCount() {
+  const n = Object.values(ach.mergePick || {}).filter((p) => p.tick).length, b = $("achMergeGo");
+  if (b) { b.disabled = !n; b.textContent = n ? "合并选中的（" + n + " 组）" : "合并选中的"; }
+}
+function achRenderMerge() {
+  const box = $("achMerge"), max = achRoutesMax();
+  const head = el("b", "", "合并重复的台");
+  const hint = admHint("下面几组是名字（规整以后，「CCTV-5 体育」和「CCTV5 HD」算同一个）或节目单编号相同的台。每组留一个：别的台的线路并进来当备用线路" +
+                       "（一共最多 " + max + " 条，留能用的、快的），空着的台标和节目单编号补上，再把别的台删掉；每个人调的分组、常看的台也挪到留下的台。" +
+                       "默认留线路最好的那个，可以换。合并前先备份频道表和线路记录，不会自动合并。");
+  const rows = (ach.data.dups || []).map((g, k) => {
+    const pick = ach.mergePick[g.channels[0].id];
+    const row = el("div", "subrow cleanrow");
+    const text = el("div", "subtext");
+    const title = el("label", "cleanline");
+    const check = el("input");
+    check.type = "checkbox"; check.checked = pick.tick; check.setAttribute("aria-label", "合并「" + g.key + "」这一组");
+    check.onchange = () => { pick.tick = check.checked; achMergeCount(); };
+    title.append(check, el("b", "", g.key), admTag(ACH_MERGE_WHY[g.why] || "", g.why === "tvg" ? "" : "ok"));
+    text.appendChild(title);
+    if (g.why === "tvg") text.appendChild(el("p", "hint", "名字不一样，只是节目单编号相同：确认是同一个台再勾。"));
+    for (const c of g.channels) {
+      const label = el("label", "cleanline");
+      const radio = el("input");
+      radio.type = "radio"; radio.name = "achMergeKeep" + k; radio.checked = pick.keep === c.id;
+      radio.setAttribute("aria-label", "留下「" + c.name + "」（" + c.id + "）");
+      radio.onchange = () => { if (radio.checked) pick.keep = c.id; };
+      const words = el("span", "");
+      const name = el("span", "", c.name);
+      if (c.id === g.keep) name.append(" ", admTag("推荐留下", "ok"));
+      words.append(name, el("small", "hint", achMergeFacts(c)));
+      label.append(radio, words);
+      text.appendChild(label);
+    }
+    row.appendChild(text);
+    return row;
+  });
+  const go = button("合并选中的", "go", () => admBusy(go, achMergeApply));
+  go.id = "achMergeGo";
+  const bar = el("div", "inline");
+  bar.append(go, button("收起", "ghost", () => { box.hidden = true; }));
+  box.replaceChildren(head, hint, ...rows, bar);
+  achMergeCount();
+}
+async function achMergeCall(groups, dry) {
+  $("achState").textContent = dry ? "正在检查…" : "正在合并…";
+  let answer;
+  try { answer = await admCall("POST", "api/admin/channels/merge", { version: ach.data.version, groups, dry }); } finally { achState(); }
+  if (!answer.ok) {
+    achProblems(answer.problems || [answer.error]);
+    if (answer.stale) toast("频道表被别处改过了，请刷新", true);
+    return null;
+  }
+  return answer;
+}
+async function achMergeApply() {
+  if (achDirty()) { toast("表里还有别的没保存的修改：先保存或放弃，再合并", true); return; }
+  const groups = [];
+  for (const g of ach.data.dups || []) {
+    const pick = ach.mergePick[g.channels[0].id];
+    if (pick && pick.tick) groups.push({ keep: pick.keep, drop: g.channels.map((c) => c.id).filter((id) => id !== pick.keep) });
+  }
+  if (!groups.length) { toast("没有勾选要合并的", true); return; }
+  const dry = await achMergeCall(groups, true);
+  if (!dry) return;
+  const say = dry.merged.slice(0, 12).map((m) => "「" + m.name + "」留下 " + m.keep + "，并入 " +
+    m.drop.map((d) => d.name + "（" + d.id + "）").join("、") + "：合并后 " + m.lines + " 条线路" +
+    (m.lost ? "，较差的 " + m.lost + " 条放不下不要了" : "") +
+    (m.filled.length ? "，补上" + m.filled.map((f) => ACH_MERGE_FIELD[f] || f).join("、") : "") + "。");
+  if (dry.merged.length > 12) say.push("……一共 " + dry.merged.length + " 组。");
+  const removed = dry.merged.reduce((n, m) => n + m.drop.length, 0);
+  say.unshift("!删掉 " + removed + " 个重复的台；正在看它们的设备下次换台时会回到别的台。");
+  say.push("合并前会先备份频道表和线路记录（和频道表在同一个目录，.bak-日期）。合并后一共 " + dry.summary.total + " 个台。");
+  if (!await admConfirm("合并重复的台", say.concat(dry.warnings || []), "合并", null, true)) return;
+  const answer = await achMergeCall(groups, false);
+  if (!answer) return;
+  toast("已合并 " + answer.merged.length + " 组" + (answer.backup ? "，原文件备份为 " + answer.backup : ""));
+  const moved = answer.moved || {}, extra = [];
+  if (moved.groups) extra.push(moved.groups + " 个人调的分组");
+  if (moved.frequent) extra.push(moved.frequent + " 个人的常看");
+  if (moved.pins) extra.push(moved.pins + " 个手动对的节目单");
+  achProblems(["已合并：" + achDescribe(answer.summary) + "。" +
+               (answer.backup ? "原文件备份为 " + answer.backup + "（线路记录也备份了）。" : "") +
+               (extra.length ? "挪到留下的台：" + extra.join("、") + "。" : "")], true);
+  $("achMerge").hidden = true;
+  achLoad(true);
+}
+// 台标补齐（服务端 logoset.py）：表里和节目单都没有台标的台，按台名用公开台标库的；点一下马上生效（不用点「保存」）。
+function achLogoSetLine() {
+  const s = ach.data && ach.data.logoset, row = $("achLogoSetRow");
+  if (!row) return;
+  row.hidden = !s || !s.available;
+  if (row.hidden) return;
+  const box = $("achLogoSet");
+  box.checked = !!s.on;
+  $("achLogoSetText").textContent = "没有台标的台按台名用公开台标库（" + s.name + "）的补上：表里 " + ach.rows.length + " 个台有 " + s.hits +
+    " 个在库里找得到。表里写的、节目单给的台标优先；关了就不再去取。";
+  row.title = s.home;
+  box.onchange = async () => {
+    box.disabled = true;
+    const answer = await admAct("api/admin/channels/logoset", { on: box.checked }, box.checked ? "已打开台标补齐" : "已关掉台标补齐");
+    box.disabled = false;
+    if (!answer) { box.checked = !box.checked; return; }
+    achLoad(true);
+  };
 }
 // 检测完了：有台的备用线路比主线路快很多（或主线路不通）时，给一个「把最快的设为主线路」，一下子换好，
 // 和线路编辑里的「设为主线路」一样，要点「保存」才生效。
