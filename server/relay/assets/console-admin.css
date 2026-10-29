@@ -242,3 +242,10 @@ label.ghost { cursor: pointer; }
 .cleanline > span { display: grid; gap: 2px; min-width: 0; word-break: break-all; }
 .cleanline .tag { margin-left: 4px; }
 .cleanbox .subtext p.hint { margin: 0; word-break: break-all; }
+
+/* 系统 → 备份和恢复：导出时选带不带登录信息、恢复前的对照表里登录信息那几行 */
+#modal .bkopt { display: flex; align-items: flex-start; margin: 12px 0; }
+#modal .bkopt input { flex: none; margin-top: 1px; }
+#modal .bkopt span { color: var(--label); }
+#modal .bkopt small { display: block; margin-top: 3px; font: 400 12px/1.5 var(--sans); color: var(--label-3); }
+#modal td.bklog { color: var(--warn); }

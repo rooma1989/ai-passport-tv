@@ -250,6 +250,23 @@ class FrontServerTests(unittest.TestCase):
                                 {"Content-Length": str(front.CHANNELS_BODY_MAX + 1)}, b"")
         self.assertEqual(response.status, 413)
 
+    def test_restore_upload_is_streamed_with_its_own_limit(self):
+        # A settings backup (server/selfhost/backup.py) is far bigger than any JSON body: passed
+        # through as it arrives, never read into memory first, with the relay's own cap.
+        from server.selfhost import backup
+        self.assertEqual(front.RESTORE_BODY_MAX, backup.UPLOAD_MAX)
+        body = b"z" * (3 * front.CHUNK + 17)
+        response, raw = self.call(self.lan, "POST", "/tv/api/admin/backup/restore/upload",
+                                  {"Content-Length": str(len(body)), "Content-Type": "application/zip"}, body)
+        seen = json.loads(raw)
+        self.assertEqual((response.status, len(seen["body"]), seen["headers"]["Content-Length"]),
+                         (200, len(body), str(len(body))))
+        response, _ = self.call(self.lan, "POST", "/tv/api/admin/backup/restore/upload",
+                                {"Content-Length": str(front.RESTORE_BODY_MAX + 1)}, b"")
+        self.assertEqual(response.status, 413)
+        self.assertEqual(self.call(self.public, "POST", "/tv/api/admin/backup/restore/upload",
+                                   {"Content-Length": "4"}, b"abcd")[0].status, 404, "never over the tunnel")
+
     def test_health(self):
         response, raw = self.call(self.lan, "GET", "/healthz")
         self.assertEqual(response.status, 503, "no status from the supervisor yet")

@@ -327,6 +327,9 @@ def main(argv: list[str] | None = None) -> int:
     layout = bootstrap.Layout(data)
     try:
         bootstrap.prepare(layout)
+        # 「从备份恢复」准备好了、还没替换（上次没有监督进程在跑，或替换前被停了）：在打开数据库、读设置之前换。
+        from . import backup as settings_backup
+        settings_backup.apply_pending(layout.root, log)
         if config_module.ensure(layout.config):
             log(f"写好了默认设置：{layout.config}")
         config = config_module.load(layout.config)

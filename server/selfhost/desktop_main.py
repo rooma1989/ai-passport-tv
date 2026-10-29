@@ -65,6 +65,13 @@ def run(args) -> int:
     for message in moved:
         log(message)
     try:
+        # 「从备份恢复」准备好了、还没替换：拿到锁以后、读设置和打开数据库之前换（backup.py）。
+        from . import backup as settings_backup
+        try:
+            settings_backup.apply_pending(layout.root, log)
+        except Exception as error:      # noqa: BLE001 —— 换不了也照常启动（apply_pending 自己会换回去）
+            log(f"恢复设置出错：{type(error).__name__}: {error}")
+            settings_backup.cancel(layout.root)
         return _run_locked(args, layout, logs_dir, log)
     finally:
         log.close()

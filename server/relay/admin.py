@@ -29,7 +29,7 @@ from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
 from ..tenancy.manage import AdminOps
-from . import channeltable, clouddrive, console, epg, events, playlist, presets, qr, routecheck, subscriptions, table
+from . import channeltable, clouddrive, console, epg, events, playlist, presets, qr, routecheck, settingsbackup, subscriptions, table
 from . import library as library_api
 from .ytnode import MAX_STREAMS
 
@@ -114,6 +114,9 @@ def get(handler, relay, path: str) -> bool:
         _audit(handler, relay, query)
     elif path == "/api/admin/system":
         handler._json(system(relay))
+    elif settingsbackup.get(handler, relay, path, caller):
+        # 系统 → 备份和恢复（settingsbackup.py、server/selfhost/backup.py）：自建 / 电脑客户端。
+        pass
     elif path == "/api/admin/channels":
         handler._json(channels(relay))
     elif path == "/api/admin/epg":
@@ -544,6 +547,9 @@ def peek(relay, body: dict) -> dict:
 def post(handler, relay, path: str) -> bool:
     if not path.startswith("/api/admin/"):
         return False
+    # 导出 / 恢复设置（settingsbackup.py）：上传的备份不是 JSON、比这里的上限大得多，请求体由它自己读。
+    if settingsbackup.post(handler, relay, path):
+        return True
     selfhost = relay.selfhost is not None
     limit = BODY_MAX
     if selfhost and path == IMPORT_PATH:

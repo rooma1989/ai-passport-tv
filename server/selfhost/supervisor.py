@@ -15,6 +15,10 @@
 电脑版「设置 → YouTube」（server/relay/ytsettings.py）改了 config.toml 后在 run/ 里放一个 refresh-request 文件
 （Docker 和电脑客户端都一样）：监督进程先调 reload（电脑客户端重读设置；没有时 pending 自己读），再用 pending
 重新造子进程，只重启参数变了的（加上新出现的、停掉不再要的）：只改了代理就只重启 ytnode，电视不断。
+
+「管理 → 系统 → 从备份恢复」（backup.py）：中转把备份解到 run/restore/，写好 ready.json。监督进程看到它就停掉所有
+子进程（数据库、网盘组件的文件这时没人开着），替换文件（出错全部换回去），再按新的设置重新造子进程、起来。
+每晚的数据库备份之外，每天还做一份设置备份（backup.daily，不含登录信息，留 7 天）。
 """
 
 from __future__ import annotations
@@ -28,7 +32,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import bootstrap
+from . import backup as settings_backup, bootstrap
 from .ytlocal import REFRESH_REQUEST
 
 # 子进程退出后等多久再起：越来越长，最多 RESTART_MAX_S；跑够 STABLE_S 秒才算好了，下次从头算。
@@ -255,14 +259,45 @@ class Supervisor:
         os.replace(tmp, self.layout.status)
 
     def _maybe_backup(self) -> None:
-        if not bootstrap.nightly_due(self.layout):
-            return
+        if bootstrap.nightly_due(self.layout):
+            try:
+                made = bootstrap.backup(self.layout)
+                removed = bootstrap.prune_backups(self.layout, self.keep_days)
+                self.log(f"已备份数据库：backups/{made.name}" + (f"，删掉了 {len(removed)} 份旧备份" if removed else ""))
+            except Exception as error:      # noqa: BLE001 —— 备份失败不能让服务器停下
+                self.log(f"备份数据库失败：{type(error).__name__}: {error}")
+        if settings_backup.daily_due(self.layout.root):
+            try:
+                outcome = settings_backup.daily(self.layout.root)
+                if outcome == "made":
+                    self.log("已备份设置（不含登录信息）：backups/" + settings_backup.DAILY_PREFIX + "….zip")
+            except Exception as error:      # noqa: BLE001 —— 同上
+                self.log(f"备份设置失败：{type(error).__name__}: {error}")
+
+    def _restore(self) -> None:
+        """run/restore/ready.json 在：停掉所有子进程，替换文件，按新的设置重新造子进程再起（中转起来后页面
+        读 run/restore-result.json 说结果）。"""
+        self.log("从备份恢复设置：先停掉所有子进程…")
+        if self.started:
+            self._stop_children()
         try:
-            made = bootstrap.backup(self.layout)
-            removed = bootstrap.prune_backups(self.layout, self.keep_days)
-            self.log(f"已备份数据库：backups/{made.name}" + (f"，删掉了 {len(removed)} 份旧备份" if removed else ""))
-        except Exception as error:      # noqa: BLE001 —— 备份失败不能让服务器停下
-            self.log(f"备份数据库失败：{type(error).__name__}: {error}")
+            settings_backup.apply_pending(self.layout.root, self.log)
+        except Exception as error:      # noqa: BLE001 —— apply_pending 自己会换回去；这里只保证服务器接着跑
+            self.log(f"恢复设置出错：{type(error).__name__}: {error}")
+            settings_backup.cancel(self.layout.root)
+        if not self.started:
+            return
+        if self.reload is not None:
+            try:
+                self.reload()
+            except Exception as error:      # noqa: BLE001 —— 重读失败也照常按原来的参数起
+                self.log(f"重读设置失败：{type(error).__name__}")
+        ready = self.pending() if self.pending is not None else None
+        if ready is not None:
+            self.children = list(ready)
+        for child in self.children:
+            child.delay, child.next_start = RESTART_MIN_S, 0.0
+            child.start()
 
     def _install_signals(self) -> None:
         if threading.current_thread() is not threading.main_thread():
@@ -308,6 +343,8 @@ class Supervisor:
                     for child in self.children:
                         child.delay, child.next_start = RESTART_MIN_S, 0.0
                         child.start()
+            if settings_backup.pending(self.layout.root):
+                self._restore()
             if self.refresh_file.exists():
                 self._take_refresh_request()
             if self.refresh_requested.is_set():

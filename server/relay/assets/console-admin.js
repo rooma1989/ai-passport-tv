@@ -1,7 +1,8 @@
 /* 小鼠电视 RooTV 电脑版 ·「管理」：原来的总后台（/tv/admin、admin.html）搬进新电脑版，地址 #/admin/<分区>。
    分区：概览（设备、主机负载曲线、进程、YouTube 节点）、用户（怎么来的、改名、封禁、导出后删除、邀请、一次性登录链接、
    他的登录）、设备（解绑、封禁、重连、重新配对、改名、固件版本）、频道表（导入、筛选、去重、试一下、改名分组排序、
-   保存前检查和备份、节目单来源）、操作记录（筛选、往前翻）、系统（只读的规矩、共享配对令牌开关、版本）。
+   保存前检查和备份、节目单来源）、操作记录（筛选、往前翻）、系统（只读的规矩、共享配对令牌开关、版本；自建和电脑客户端的
+   备份和恢复：导出 zip、从 zip 恢复、每天的自动备份，接口在 server/relay/settingsbackup.py）。
    接口都是 server/relay/admin.py 的 /api/admin/*：服务端只回答管理员，别人一律 404（这里的入口也只给管理员看）。
    用 console.js 的小工具（el、button、toast、modal、when …）；这里的全局名字都以 adm / ach 开头，免得和它撞上。
    在公网隧道上（server/front.py 默认拦 /tv/api/admin）回答 404 但登录还在：显示「这里打不开管理」，不当成退出登录。 */
@@ -32,10 +33,11 @@ const ADM_ACTIONS = {
   "channels.import": "导入播放列表", "channels.subscribe": "订阅直播源", "channels.subscription_refresh": "更新订阅的直播源", "channels.unsubscribe": "取消订阅直播源", "library.add": "加片库来源", "library.delete": "删片库来源", "library.scan": "扫描片库", "clouddrive.install": "安装网盘组件", "clouddrive.update": "更新网盘组件", "clouddrive.enable": "启用网盘组件", "clouddrive.disable": "停用网盘组件", "clouddrive.repair": "重设网盘管理密码", "clouddrive.reveal": "查看网盘管理密码", "clouddrive.drive_qr": "出网盘登录二维码", "clouddrive.drive_add": "添加网盘", "clouddrive.drive_delete": "删除网盘", "clouddrive.rescan": "重新扫描网盘", "epg.save": "节目单设置", "epg.refresh": "更新节目单", "epg.dismiss": "不要推荐的节目单", "epg.assign": "节目单手动指定台", "user.setup": "第一次设置（成为管理员）", "user.setup_refused": "设置码不对",
   "wifi.add": "给设备加 Wi-Fi", "wifi.remove": "删设备的 Wi-Fi", "wifi.up": "调 Wi-Fi 顺序", "wifi.switch": "让设备换 Wi-Fi",
   "login.pc.confirm": "手机确认电脑登录", "login.pc.deny": "手机拒绝电脑登录", "migrate": "从单用户迁移",
+  "backup.export": "导出设置备份", "backup.restore": "从备份恢复设置", "backup.restored": "设置已从备份恢复", "backup.restore_cancel": "取消从备份恢复",
 };
 const ADM_PREFIX = { "user.": "用户…", "device.": "设备…", "login.": "登录…", "session.": "退出登录…", "invite.": "邀请…",
   "phone_link.": "登录链接…", "admin.": "管理员退出别人…", "channels.": "频道表…", "epg.": "节目单…", "legacy_token.": "共享令牌…",
-  "wifi.": "设备 Wi-Fi…", "bind.": "绑定…", "library.": "片库…", "clouddrive.": "网盘组件…" };
+  "wifi.": "设备 Wi-Fi…", "bind.": "绑定…", "library.": "片库…", "clouddrive.": "网盘组件…", "backup.": "备份和恢复…" };
 
 const adm = { primed: false, on: false, sec: "", run: 0, timer: 0, me: 0, users: [], devices: [], review: 0, history: [], historyAt: 0, auNext: null };
 
@@ -792,8 +794,10 @@ function admAuditFilters() {
 
 async function admSystem() {
   const run = adm.run;
-  let s;
-  try { s = await admCall("GET", "api/admin/system"); } catch (error) { admFail(error); return; }
+  let s, bk;
+  try {
+    [s, bk] = await Promise.all([admCall("GET", "api/admin/system"), admCall("GET", "api/admin/backup")]);
+  } catch (error) { admFail(error); return; }
   if (!admStill(run, "system")) return;
   const rows = [];
   const item = (label, value, note, acts) => {
@@ -840,7 +844,169 @@ async function admSystem() {
   list.append(...rows);
   const hint = admHint("这里大多只是显示：注册方式、未绑定设备的规矩和限额写在代码里" + (s.selfhost ? "，服务的设置在数据目录的 config.toml 里" : "（见运维手册），改了要重新部署") + "。");
   hint.style.margin = "-12px 0 22px";
-  admSec(list, hint);
+  admSec(list, hint, ...(bk && bk.available ? [admBackupList(bk)] : []));
+}
+
+// ----------------------------------------------------------------------- 备份和恢复（自建、电脑客户端）
+// 导出：服务器打一个 zip（清单带每个文件的 sha256），这里收成 blob 下载。恢复：先上传、服务器检查后列出会替换哪些，
+// 确认了才解到 run/restore/；有监督进程时它停掉所有子进程、替换（出错全部换回去）、再起来，这里等它回来。
+
+function admMb(bytes) { return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(bytes / 1024)) + " KB"; }
+function admBackupList(bk) {
+  const list = el("div", "list kv");
+  list.appendChild(el("h3", "", "备份和恢复"));
+  const item = (label, value, notes, acts) => {
+    const row = el("div", "li");
+    row.appendChild(el("span", "k", label));
+    const tx = el("span", "tx");
+    tx.appendChild(el("b", "", value));
+    for (const note of notes) if (note) tx.appendChild(typeof note === "string" ? el("small", "", note) : note);
+    row.appendChild(tx);
+    if (acts) { const box = el("span", "acts"); box.append(...acts); row.appendChild(box); }
+    list.appendChild(row);
+  };
+  item("导出备份", "把设置和数据打成一个 zip 下载到这台电脑", [
+    "账号、设备、订阅、频道表和线路、节目单设置、片库来源和豆瓣资料、观看进度……；不带能重新生成的缓存（封面、台标、节目单文件、片库缓存）和组件。",
+    "可以选带不带登录信息（密钥、网盘登录、cookies）。"], [admBtn("导出备份", "linkbtn", "adm-bk-export", () => admBackupExport())]);
+  const input = el("input");
+  input.type = "file"; input.accept = ".zip,application/zip"; input.hidden = true;
+  input.onchange = () => { const file = input.files[0]; input.value = ""; if (file) admBackupUpload(file, bk); };
+  const pick = admBtn("从备份恢复", "linkbtn", "adm-bk-restore", () => input.click());
+  item("从备份恢复", "选一个导出的 zip：先检查、列出会替换哪些，确认了才动", [
+    "恢复前先把现在的设置存一份到数据目录的 backups/pre-restore-<时间>/；中间出错会全部换回去，不会只恢复一半。",
+    "备份文件最大 " + bk.limit_mb + " MB。"], [pick, input]);
+  const latest = bk.daily[0];
+  item("每天自动备份", latest ? latest.name + " · " + admMb(latest.bytes) : "还没有（每天凌晨 3 点以后做）",
+       ["不含登录信息，存在数据目录的 backups/ 里，留 " + bk.keep_days + " 天（最新的一份总留着）；那天什么都没改就不另存。"]);
+  if (bk.pending) {
+    const drop = admBtn("不恢复了", "linkbtn red", "adm-bk-cancel", async () => {
+      if (await admAct("api/admin/backup/restore/cancel", {}, "已取消，现在的设置不动")) admSystem();
+    });
+    item("等着恢复", (bk.pending.created_at ? when(bk.pending.created_at) + " 的备份" : "一份备份") + "已经准备好",
+         [bk.supervised ? "马上就会替换。" : "重启 RooTV（退出再打开）时替换；在那之前什么都没动。"], [drop]);
+  }
+  const last = bk.last;
+  if (last) {
+    const note = el("small", last.ok ? "" : "bad", last.ok
+      ? "原来的设置存在数据目录的 backups/" + last.backup + "/。" + (last.logins ? "" : "这份备份不含登录信息：密钥、网盘登录、cookies 用的是这台原来的。")
+      : last.error);
+    item("上次恢复", when(last.at) + (last.ok ? "：已从" + (last.created_at ? " " + when(last.created_at) + " 的" : "") + "备份恢复" : "：没有恢复"), [note]);
+  }
+  return list;
+}
+
+async function admBackupExport() {
+  let logins = false;
+  const warn = el("p", "warn", "这个文件里会有密码、网盘的登录和 cookies，而且没有加密：只存在自己的电脑或移动硬盘上，别发给别人、别传到网盘或群里。");
+  warn.hidden = true;
+  const pick = (value, title, note) => {
+    const label = el("label", "chk bkopt");
+    const radio = el("input");
+    radio.type = "radio"; radio.name = "bkLogins"; radio.checked = value === logins;
+    radio.onchange = () => { logins = value; warn.hidden = !logins; };
+    const text = el("span", "", title);
+    text.appendChild(el("small", "", note));
+    label.append(radio, text);
+    return label;
+  };
+  const ok = el("button", "btn sm pri", "导出");
+  const row = el("div", "row");
+  row.append(button("取消", "ghost", closeOverlays), ok);
+  modal("导出备份", pick(false, "不含登录信息（推荐）", "密钥、网盘登录、B 站登录、YouTube cookies 都不带，片库网络来源的密码也清空；恢复到这台电脑时，这些用现在的。"),
+        pick(true, "含登录信息", "连 secrets/、网盘组件的数据库、cookies 一起带上：换电脑时不用重新登录。"), warn, row);
+  ok.onclick = () => admBusy(ok, async () => {
+    const response = await fetch("api/admin/backup/export", { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ logins }) });
+    if (response.status === 404) { closeOverlays(); throw new AdminGone("这里打不开管理"); }
+    if ((response.headers.get("Content-Type") || "").includes("json")) {
+      const answer = await response.json();
+      toast(answer.error || "没导出", true);
+      return;
+    }
+    const blob = await response.blob();
+    const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "");
+    const a = el("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name ? name[1] : "RooTV-backup.zip";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    closeOverlays();
+    toast("已导出 " + admMb(blob.size) + (logins ? "：含登录信息，保管好这个文件" : ""), false, 5000);
+  });
+}
+
+async function admBackupUpload(file, bk) {
+  if (file.size > bk.limit_mb * 1048576) { toast("备份文件太大（最多 " + bk.limit_mb + " MB）", true); return; }
+  toast("正在检查备份…", false, 60000);
+  let answer;
+  try {
+    const response = await fetch("api/admin/backup/restore/upload", { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/zip" }, body: file });
+    if (response.status === 404) throw new AdminGone("这里打不开管理");
+    if (response.status === 413) throw new Error("备份文件太大");
+    answer = await response.json();
+  } catch (error) { untoast(); admFail(error); return; }
+  untoast();
+  if (!answer.ok) { toast(answer.error || "这个文件用不了", true, 6000); return; }
+  const sum = answer.summary;
+  const rows = sum.groups.map((g) => {
+    const tr = el("tr");
+    tr.append(admTd(g.logins ? "bklog" : "", g.label), admTd("n", g.files ? g.files + " 个 · " + admMb(g.bytes) : "—"),
+              admTd("n", g.current_files ? g.current_files + " 个 · " + admMb(g.current_bytes) : "—"));
+    return tr;
+  });
+  const nodes = [el("p", "", when(sum.created_at) + " 导出的备份" + (sum.app_version ? "（RooTV " + sum.app_version + "）" : "") + "，" +
+                    sum.files + " 个文件，" + admMb(sum.bytes) + "。下面这些会换成备份里的：")];
+  nodes.push(admTable("", "", ["内容", "#备份里", "#现在"], rows));
+  nodes.push(el("p", "", "现在的这些先存到数据目录的 backups/pre-restore-<时间>/，中间出错会全部换回去。"));
+  nodes.push(el("p", sum.logins ? "warn" : "", sum.logins
+    ? "这份备份含登录信息：这台现在的密钥、网盘登录、cookies 会换成备份里的。"
+    : "这份备份不含登录信息：这台现在的密钥、网盘登录、B 站登录、cookies 原样留着；片库网络来源的密码按现在的补上（换了电脑要重新填）。"));
+  nodes.push(el("p", "warn", answer.supervised
+    ? "确认后 RooTV 会停下、替换、再自动起来：小电视会断开十几秒，这个页面之后可能要重新登录。"
+    : "确认后要重启 RooTV（退出再打开）才会替换，在那之前什么都不动。"));
+  const ok = el("button", "btn sm danger", "恢复");
+  const row = el("div", "row");
+  let done = false;
+  const drop = () => { if (!done) { done = true; admAct("api/admin/backup/restore/cancel", {}); } };
+  row.append(button("取消", "ghost", () => { drop(); closeOverlays(); }), ok);
+  modal("从备份恢复", ...nodes, row);
+  $("modal").classList.add("wide");
+  admWatchClose(drop);
+  ok.onclick = () => admBusy(ok, async () => {
+    const result = await admCall("POST", "api/admin/backup/restore", { id: answer.id });
+    if (!result.ok) { toast(result.error || "没恢复", true, 6000); return; }
+    done = true;
+    if (result.restart === "auto") { admBackupWait(); return; }
+    closeOverlays();
+    toast("已准备好：重启 RooTV 时替换", false, 6000);
+    admSystem();
+  });
+}
+
+// 等监督进程停下、替换、再起来：先等它断开（或 15 秒），再等它回来；回来时登录还在就重画「系统」，不在就整页重新打开。
+async function admBackupWait() {
+  const msg = el("p", "", "正在停下、替换文件、重新启动 RooTV…");
+  modal("正在恢复设置", msg);
+  const start = Date.now();
+  let down = false;
+  while (Date.now() - start < 120000) {
+    await sleep(1500);
+    let status = null;
+    try {
+      const response = await fetch("api/login/status", { credentials: "same-origin", cache: "no-store" });
+      if (response.ok) status = await response.json();
+    } catch (error) { /* 正在重启 */ }
+    if (!status) { down = true; msg.textContent = "正在替换文件、重新启动 RooTV…"; continue; }
+    if (!down && Date.now() - start < 15000) continue;
+    closeOverlays();
+    if (!status.signed_in) { location.reload(); return; }
+    admSystem();
+    return;
+  }
+  msg.textContent = "等了两分钟还没好：看一下 RooTV 是不是还在运行（托盘图标），或者退出再打开。";
 }
 
 // ======================================================================= 频道表
