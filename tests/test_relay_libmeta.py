@@ -139,6 +139,14 @@ class OwnerPathTests(unittest.TestCase):
         self.assertEqual((found["kind"], found["title"], found["year"]), ("movie", "10间敢死队", 2026))
         found = library.parse_name(PROMO)
         self.assertEqual((found["kind"], found["title"], found["year"]), ("video", "夸克网盘能干什么", None))
+        # Saved later the same day: tags and a stray repeated character before the year, an English scene name.
+        found = library.parse_name("夸克/来自：分享/铁拳教育 4K高清完整版.育（2026）NF DV&HDR/Teach.You.S01E01.mkv")
+        self.assertEqual((found["kind"], found["show"], found["year"], found["alt"]), ("episode", "铁拳教育", 2026, "Teach You"))
+        # A garbled file name in a folder named after the film (a copy number "(2)" from saving twice).
+        found = library.parse_name("夸克/来自：分享/神探之痕迹(2)/SHEN-碳.TC1080P.mp4")
+        self.assertEqual((found["kind"], found["title"], found["year"]), ("movie", "神探之痕迹", None))
+        self.assertTrue(library.junk_only("TC1080P"))
+        self.assertEqual(library.clean_title("什么意思夫妇(2)(1)"), "什么意思夫妇")
 
     def test_cleaning(self):
         self.assertEqual(library.unmask("苏.里.南 (2022)"), "苏里南 (2022)")

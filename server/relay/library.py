@@ -206,12 +206,12 @@ _DI_JI_SEASON = re.compile(r"第\s*([0-9零〇一二两三四五六七八九十]
 _YEAR = re.compile(r"(?i)(?<![0-9a-z])[(\[（【]?((?:19|20)\d{2})[)\]）】]?(?![0-9a-z])")
 # 没有年份时，标题到第一个这类标记为止（分辨率、片源、编码、声音、HDR、发布的网站，还有中文的「高码版」「内封」
 # 「字幕」「收藏版」「片源」这些）。中文的前后不看挨着什么（「NF高码版」「内封精修官译简中字幕」）。
-_JUNK = re.compile(r"(?i)(?<![0-9a-z])(2160p|1080[pi]|720p|480p|4k|8k|uhd|fhd|hq|blu-?ray|bdrip|brrip|bdremux|remux|"
+_JUNK = re.compile(r"(?i)(?<![0-9a-z])((?:hd)?(?:tc|ts|cam)?(?:2160p|1080[pi]|720p|480p)|4k|8k|uhd|fhd|hq|blu-?ray|bdrip|brrip|bdremux|remux|"
                    r"web-?dl|webrip|hdtv|dvdrip|x26[45]|h\.?26[45]|hevc|avc|aac|e?ac3|ddp?(?:\d(?:\.\d)?)?|"
                    r"dd\+|dts(?:-?hd)?|truehd|atmos|flac|hdr(?:10\+?)?|sdr|dovi|10bit|8bit|60fps|120fps|nf|amzn|"
                    r"dsnp|hmax|atvp|itunes)(?![0-9a-z])|"
                    r"(高码率|高码版|高码|内封|内嵌|外挂|精修|官译|简中|繁中|简繁|中字|中英|双语|国语|粤语|字幕|收藏版|"
-                   r"片源|蓝光|原盘|无删减|未删减|完整版|修复版|特效|杜比视界|杜比|全景声|60帧|高帧率)")
+                   r"片源|蓝光|原盘|无删减|未删减|完整版|修复版|特效|杜比视界|杜比|全景声|60帧|高帧率|高清|超清)")
 # 一段名字里的这些也算「只有标记」：声道（5.1）、单个数字、发布组前的横线。
 _JUNK_REST = re.compile(r"(?i)(?<![0-9a-z])(?:\d(?:\.\d)?|ma|x|h)(?![0-9a-z])")
 _CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
@@ -226,7 +226,7 @@ GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "�
                 "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
                 "downloads", "download", "media", "quark", "baidu"}
 # 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
-PARSE_VERSION = 2
+PARSE_VERSION = 3
 # 文件名开头的字幕组标签：[字幕组]、【xxx】。
 _TAG = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)\s*")
 
@@ -244,12 +244,18 @@ def clean_title(text: str) -> str:
             break
         text = trimmed
     text = re.sub(r"[\[(（【]\s*[\])）】]", "", text)
+    # 网盘里重复转存出来的副本编号：「神探之痕迹(2)」「什么意思夫妇(2)(1)」。
+    text = re.sub(r"(?:\s*[(（]\d{1,2}[)）])+\s*$", "", text)
     text = " ".join(text.split()).strip(" -–—·._[(（【")
     return text[:TITLE_MAX]
 
 
 def _has_cjk(text: str) -> bool:
     return re.search(f"[{_CJK}]", text or "") is not None
+
+
+def _cjk_count(text: str) -> int:
+    return len(re.findall(f"[{_CJK}]", text or ""))
 
 
 def unmask(name: str) -> str:
@@ -281,7 +287,10 @@ def _title_folder(folder: str) -> bool:
 def _movie_title(stem: str) -> tuple[str, int | None]:
     """(标题, 年份)：年份前面的就是标题；没有年份时到第一个画质标记为止。"""
     for match in _YEAR.finditer(stem):
-        title = clean_title(stem[:match.start()])
+        # 年份前面也可能夹着画质标记（「铁拳教育 4K高清完整版.育（2026）」）：到第一个标记为止。
+        head = stem[:match.start()]
+        junk = _JUNK.search(head)
+        title = clean_title(head[:junk.start()] if junk and junk.start() > 0 else head)
         if title:
             return title, int(match.group(1))
     junk = _JUNK.search(stem)
@@ -351,17 +360,24 @@ def parse_name(rel: str) -> dict:
         return found
     title, year = _movie_title(stem)
     alt = ""
+    from_folder = False
     if junk_only(stem):
         # 文件名只有标记：用最近的像片名的上层文件夹（至多往上看三层）。
         folder = next((f for f in reversed(parts[-4:-1]) if _title_folder(f)), "")
         if folder:
             title, year = _movie_title(folder)
-    elif parent and not _has_cjk(title) and _title_folder(parent):
-        # 只有英文名、所在的文件夹是带年份的中文名，年份对得上：片名用中文的，英文名留着查。
+            from_folder = True
+    elif parent and _title_folder(parent):
         folder_title, folder_year = _movie_title(parent)
-        if folder_year and _has_cjk(folder_title) and (year is None or year == folder_year):
+        if not _has_cjk(title) and folder_year and _has_cjk(folder_title) and (year is None or year == folder_year):
+            # 只有英文名、所在的文件夹是带年份的中文名，年份对得上：片名用中文的，英文名留着查。
             title, alt, year = folder_title, title, folder_year
-    found.update(kind="movie" if year else "video", title=title, year=year, alt=alt)
+        elif _cjk_count(title) == 1 and _cjk_count(folder_title) >= 2:
+            # 文件名是乱的、只夹着一个汉字（「神探之痕迹/SHEN-碳.TC1080P.mp4」），文件夹是正经的中文片名：用文件夹的。
+            title, year = folder_title, folder_year or year
+            from_folder = True
+    # 片名取自它自己的文件夹的（一部片一个文件夹）没有年份也算电影：查豆瓣时按电影找。
+    found.update(kind="movie" if year or from_folder else "video", title=title, year=year, alt=alt)
     return found
 
 
