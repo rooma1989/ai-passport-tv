@@ -898,6 +898,7 @@ function setTarget(id, quiet) {
   if (me) lsSet("rootv.target:" + me.name, id);
   if (id && id !== PC && id !== chosen) pick(id);
   renderChips();
+  renderLib();      // 片库详情的播放按钮写着播到哪（renderLib 只在片库页才画）
   if (!quiet) toast("以后播放到「" + targetName(id) + "」");
 }
 function chipHTML() {
@@ -6720,7 +6721,9 @@ function renderLib() {
     } else if (item) {
       const id = reg({ id: "lib:" + item.id, title: item.title, subtitle: item.year ? String(item.year) : "", art: { url: item.art, ratio: "poster" },
                        play: { kind: "library", id: item.id, playable: item.playable } });
-      const play = item.playable ? `<button class="btn pri" data-play="${esc(id)}" data-k="li-play">${ic("play", 17)}在这台电脑上放</button>` : '<span class="hint">这个文件放不了</span>';
+      // 和首页大图一样：播到「播放到」选的地方（按钮上写着是哪），▾ 换地方。
+      const to = currentTarget();
+      const play = item.playable ? splitHTML(id, "播放", to ? (to === PC ? "在这台电脑上" : "到" + targetName(to)) : "") : '<span class="hint">这个文件放不了</span>';
       o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
       o += libInfoHTML(Object.assign({}, item, { sub: [(item.ext || "").toUpperCase(), item.source].filter(Boolean).join(" · ") }), play);
     } else {
