@@ -6355,7 +6355,8 @@ async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
   lib.busy = true;
   let answer;
-  try { answer = await call("GET", "api/library"); }
+  // 打开这一页时（不是轮询）带 open=1：上次扫描过了十分钟的来源顺手再扫一遍（library.py 的 freshen）。
+  try { answer = await call("GET", poll ? "api/library" : "api/library?open=1"); }
   catch (error) {
     lib.busy = false;
     if (error instanceof SignedOut) { lib.failed = true; renderLib(); } else toast("网络不通", true);
@@ -6462,7 +6463,7 @@ function libEpisode(c) {
 function libSourceRow(s, admin, scan) {
   const busy = scan && scan.running && scan.source === s.id;
   const state = busy ? "正在扫描… 已经看了 " + (scan.walked || 0) + " 个"
-    : s.ok === false ? "没扫成：" + (s.error || "出错了") : s.last_scan ? s.count + " 个视频 · " + ago(s.last_scan) + "扫描" : "还没扫描";
+    : s.ok === false ? "没扫成：" + (s.error || "出错了") : s.last_scan ? s.count + " 个视频 · " + ago(s.last_scan) + "扫描" + (s.kind === "webdav" ? " · 每小时自动扫" : "") : "还没扫描";
   // 网盘组件的来源（library.py 的 managed）：不能删，「网盘」打开组件的面板。
   const second = s.managed ? `<button class="ghost sm" data-libdrive="1" data-k="ld-open">网盘</button>` : `<button class="ghost sm red" data-libdel="${esc(s.id)}">删除</button>`;
   const acts = admin ? `<button class="ghost sm" data-libscan="${esc(s.id)}"${busy ? " disabled" : ""}>扫描</button>${second}` : "";

@@ -94,8 +94,11 @@ ART_MAX = 8 * 1024 * 1024
 ART_CACHE_MAX = 200 * 1024 * 1024
 # 取海报失败了，这么久以内不再去网盘取同一张。
 ART_RETRY_S = 600.0
-# 定时扫描：成功的隔 EVERY_S，失败的隔 RETRY_S 再试；每 TICK_S 看一眼；启动后先等 START_DELAY_S。
+# 定时扫描：成功的隔 EVERY_S（网盘的隔 DAV_EVERY_S：在手机上存进网盘的片子一小时内就出现），失败的隔 RETRY_S
+# 再试；每 TICK_S 看一眼；启动后先等 START_DELAY_S。打开片库页时，上次扫描已经过了 OPEN_FRESH_S 的来源也扫一遍。
 EVERY_S = 12 * 3600.0
+DAV_EVERY_S = 3600.0
+OPEN_FRESH_S = 600.0
 RETRY_S = 3600.0
 TICK_S = 600.0
 START_DELAY_S = 300.0
@@ -226,7 +229,7 @@ GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "�
                 "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
                 "downloads", "download", "media", "quark", "baidu"}
 # 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
-PARSE_VERSION = 3
+PARSE_VERSION = 4
 # 文件名开头的字幕组标签：[字幕组]、【xxx】。
 _TAG = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)\s*")
 
@@ -365,7 +368,10 @@ def parse_name(rel: str) -> dict:
         # 文件名只有标记：用最近的像片名的上层文件夹（至多往上看三层）。
         folder = next((f for f in reversed(parts[-4:-1]) if _title_folder(f)), "")
         if folder:
+            # 年份可能只写在文件名里（「龙/2026.WEB-DL.mp4」）：留着，查豆瓣时靠它分清同名的片子。
+            stem_year = _YEAR.search(stem)
             title, year = _movie_title(folder)
+            year = year or (int(stem_year.group(1)) if stem_year else None)
             from_folder = True
     elif parent and _title_folder(parent):
         folder_title, folder_year = _movie_title(parent)
@@ -1368,9 +1374,10 @@ class Library:
                     show["art"] = self._meta_art_url("s" + key, entry)
             del show["nfo"]
             show_rows.append(show)
-        movies.sort(key=lambda c: c["title"].casefold())
-        videos.sort(key=lambda c: c["title"].casefold())
-        show_rows.sort(key=lambda s: s["title"].casefold())
+        # 新加进来的在前（剧按最新加进来的那一集），一样新的按名字。
+        movies.sort(key=lambda c: (-(c["added"] or 0), c["title"].casefold()))
+        videos.sort(key=lambda c: (-(c["added"] or 0), c["title"].casefold()))
+        show_rows.sort(key=lambda s: (-(s["added"] or 0), s["title"].casefold()))
         return {"ok": True, "sources": [self._public_source(s, counts.get(s["id"], 0)) for s in sources],
                 "scan": self.status(), "movies": movies, "shows": show_rows, "videos": videos,
                 "total": sum(counts.values()), "more": more, "online": self.online(),
@@ -2053,7 +2060,20 @@ class Library:
         # 索引里还有按旧写法解析的条目（升级以后）的来源马上扫一遍，好让在线资料按新的片名查。
         stale = {i["source"] for i in self.items() if i.get("pv") != PARSE_VERSION}
         return [s["id"] for s in self._load_sources()
-                if s["id"] in stale or now - (s.get("last_scan") or 0) >= (RETRY_S if s.get("ok") is False else EVERY_S)]
+                if s["id"] in stale or now - (s.get("last_scan") or 0) >= self._every(s)]
+
+    @staticmethod
+    def _every(src: dict) -> float:
+        if src.get("ok") is False:
+            return RETRY_S
+        return DAV_EVERY_S if src.get("kind") == "webdav" else EVERY_S
+
+    def freshen(self) -> None:
+        """打开片库页时：上次扫描已经过了 OPEN_FRESH_S 的来源排上扫描（正在扫、已经排上的不重复排）。"""
+        now = self.clock()
+        for src in self._load_sources():
+            if now - (src.get("last_scan") or 0) >= OPEN_FRESH_S:
+                self.scan(src["id"])
 
     def run_forever(self, sleep=time.sleep) -> None:
         sleep(START_DELAY_S)
@@ -2920,6 +2940,8 @@ def get(handler, relay, caller, path: str) -> bool:
         handler._not_found()
         return True
     if path == "/api/library":
+        if handler._query().get("open") == "1":
+            library.freshen()
         answer = library.view()
         answer["admin"] = caller.role == "admin"
         handler._json(answer)

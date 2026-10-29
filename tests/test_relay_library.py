@@ -331,6 +331,48 @@ DAV_FILES = {
 }
 
 
+class ScheduleTests(unittest.TestCase):
+    """Newest first, the year kept from a file name that is only a year and tags, cloud drives scanned hourly and
+    when the library page is opened."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "videos"
+        self.now = 2_000_000_000.0
+        self.lib = quiet(Path(self.tmp.name) / "data")
+        self.lib.clock = lambda: self.now
+
+    def test_year_from_a_tags_only_file_name(self):
+        found = library.parse_name("夸克/来自：分享/龙/2026.WEB-DL.mp4")
+        self.assertEqual((found["kind"], found["title"], found["year"]), ("movie", "龙", 2026))
+
+    def test_newest_first(self):
+        touch(self.root / "Alpha (2001)" / "Alpha.2001.mp4", MP4)
+        self.assertTrue(self.lib.add({"kind": "local", "path": str(self.root)})["ok"])
+        self.now += 100
+        touch(self.root / "Zulu (2002)" / "Zulu.2002.mp4", MP4)
+        self.lib.scan()
+        self.assertEqual([m["title"] for m in self.lib.view()["movies"]], ["Zulu", "Alpha"])
+
+    def test_cloud_hourly_and_on_opening_the_page(self):
+        self.lib._save_sources([{"id": "aaaaaaaa", "kind": "webdav", "name": "网盘", "url": "http://127.0.0.1:1/dav",
+                                 "last_scan": self.now, "ok": True},
+                                {"id": "bbbbbbbb", "kind": "local", "name": "本机", "path": str(self.root),
+                                 "last_scan": self.now, "ok": True}])
+        self.assertEqual(self.lib.due(), [])
+        self.now += library.DAV_EVERY_S
+        self.assertEqual(self.lib.due(), ["aaaaaaaa"], "a cloud drive hourly, a local folder twice a day")
+        queued = []
+        self.lib.scan = lambda sid=None: queued.append(sid)
+        self.now = 2_000_000_000.0 + library.OPEN_FRESH_S - 1
+        self.lib.freshen()
+        self.assertEqual(queued, [], "scanned a moment ago")
+        self.now += 1
+        self.lib.freshen()
+        self.assertEqual(queued, ["aaaaaaaa", "bbbbbbbb"])
+
+
 class DavTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
