@@ -174,6 +174,11 @@ class OwnerPathTests(unittest.TestCase):
 # ---------------------------------------------------------------- parsing and matching
 
 class ParseTests(unittest.TestCase):
+    def test_invisible_marks_are_dropped(self):
+        found = libmeta.parse_search(json.dumps({"items": [{"target_type": "movie", "target": {
+            "id": "1000123", "title": "神探之痕迹\u200e", "year": "2026"}}]}))
+        self.assertEqual(found[0]["title"], "神探之痕迹")
+
     def test_suggest(self):
         found = libmeta.parse_suggest(SUGGEST_SURINAM)
         self.assertEqual([(c["id"], c["type"], c["year"], c["episodes"]) for c in found],

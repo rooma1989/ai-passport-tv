@@ -117,7 +117,9 @@ def poster_url(url: str) -> str:
 
 
 def _text(value, cap: int = TEXT_MAX) -> str:
-    return " ".join(unescape(str(value or "")).split())[:cap]
+    # 豆瓣的片名有时夹着看不见的方向标记（U+200E 之类）：显示、搜索、比片名时都碍事，去掉格式字符。
+    text = "".join(c for c in unescape(str(value or "")) if unicodedata.category(c) != "Cf")
+    return " ".join(text.split())[:cap]
 
 
 def _year(value) -> int | None:
