@@ -350,7 +350,7 @@ class BoundedStreamTests(unittest.TestCase):
         started = time.time()
         watch.get(handler, relay, f"/watch/{'0' * 16}/1.{'a' * 20}/index.m3u8")
         self.assertLess(time.time() - started, watch.READY_WAIT_S)
-        self.assertEqual(sent, [(503, "正在读取文件…已读 12 MB", {"X-RTV-Notice": "1"})])
+        self.assertEqual(sent, [(503, "正在读取文件…已读 12 MB", {"X-RTV-Notice": "1", "X-RTV-Progress": "1"})])
 
 
 class HevcCodecTests(unittest.TestCase):

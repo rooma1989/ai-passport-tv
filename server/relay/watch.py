@@ -1971,9 +1971,10 @@ def get(handler, relay, path: str) -> bool:
         progress = stream.source.progress
         if not stream.wait_ready(READY_WAIT_S if progress is None else PROGRESS_WAIT_S):
             if stream.alive and progress is not None and not stream.notice:
-                # 片库起播：说说读到哪了（网盘上的大文件第一段要好几秒），页面显示出来再来取。
+                # 片库起播：说说读到哪了（网盘上的大文件第一段要好几秒），页面显示出来马上再来取（X-RTV-Progress：
+                # 这里已经等过 PROGRESS_WAIT_S 了，页面不必再睡，第一段一出来下一次就拿到）。
                 handler._send(503, (progress() or "正在打开…").encode(), "text/plain; charset=utf-8",
-                              {"X-RTV-Notice": "1"})
+                              {"X-RTV-Notice": "1", "X-RTV-Progress": "1"})
             elif stream.alive:
                 # 换线路时正文是「CCTV2 线路 1 失效（…），正在换线路 2…」，带 X-RTV-Notice：播放器显示出来、
                 # 接着等（不算进它「503 至多等几次」的次数，线路有几条就可能要等几轮）。

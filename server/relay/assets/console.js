@@ -1577,7 +1577,8 @@ class WatchPlayer {
         return response[kind]();
       }
       const notice = response.status === 503 && response.headers.get("X-RTV-Notice");
-      if (notice && round < 120) { const text = await response.text(); if (this.alive) this.notice(text); await sleep(1000); continue; }
+      // 片库起播的进度（X-RTV-Progress）：中转那边已经等过两秒，马上再来取，第一段一出来就开始放。
+      if (notice && round < 120) { const text = await response.text(); if (this.alive) this.notice(text); await sleep(response.headers.get("X-RTV-Progress") ? 50 : 1000); continue; }
       if (response.status === 503 && round < 8) { await sleep(1000); continue; }
       if (response.status === 410) {
         const error = new Error((await response.text()) || "片源断了");
