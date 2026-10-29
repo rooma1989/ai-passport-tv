@@ -1139,6 +1139,9 @@ class Library:
         self._read: dict[str, int] = {}
         self._sub_lock = threading.Lock()
         self._partial: dict[tuple, dict] = {}
+        # 网盘组件的来源：列每个目录之前先让组件重新向网盘要一次（clouddrive.attach 设成 clouddrive.refresh_dir）。
+        # 组件把目录列表缓存半小时，不刷新的话刚放进网盘的片子要过半小时才扫得到。
+        self.refresh_dir: Callable[[str], None] | None = None
         # 网盘文件的索引区（MP4 的 moov、MKV 的头和 Cues）：只给 ffmpeg 读的 raw 用（librarycache.py）。
         self.cache = IndexCache(self.dir / "library-cache", alive=self._now_of, log=log, clock=clock)
         # 在线资料（libmeta.py）：存在 library-meta.json；豆瓣一次一个请求，被拦了歇一个小时。
@@ -1858,14 +1861,20 @@ class Library:
         if self.pace and source.pace_s:
             time.sleep(source.pace_s)
 
-    def walk(self, source) -> tuple[list[Entry], bool]:
-        """一层一层（广度优先）走一遍：(文件, 是不是到了上限)。根列不出来抛 LibraryError。"""
+    def walk(self, source, refresh: Callable[[str], None] | None = None) -> tuple[list[Entry], bool]:
+        """一层一层（广度优先）走一遍：(文件, 是不是到了上限)。根列不出来抛 LibraryError。refresh：列一个目录之前
+        先叫它刷新这个目录（网盘组件的来源，见 refresh_dir）；刷新不了就照旧列。"""
         files: list[Entry] = []
         queue: deque[tuple[str, int]] = deque([("", 0)])
         walked = skipped = 0
         truncated = False
         while queue and not truncated:
             rel, depth = queue.popleft()
+            if refresh is not None:
+                try:
+                    refresh(rel)
+                except Exception:  # noqa: BLE001 —— 刷新不了就读组件缓存着的列表（可能旧一点）
+                    pass
             try:
                 listing = source.list_dir(rel)
             except LibraryError:
@@ -1989,7 +1998,7 @@ class Library:
             self._status.update(running=True, source=sid, name=name, walked=0, videos=0, error="")
         source = self._source(src)
         try:
-            files, truncated = self.walk(source)
+            files, truncated = self.walk(source, self.refresh_dir if src.get("managed") == MANAGED else None)
             with _LOCK:
                 old = {i: dict(item) for i, item in self._items.items() if item["source"] == sid}
             items = self.build(sid, source, files, old)

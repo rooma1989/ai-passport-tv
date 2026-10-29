@@ -132,8 +132,19 @@ def attach(relay, start: bool = True) -> None:
     """自建 / 电脑客户端：在后台维护片库里的「网盘」来源。"""
     if not enabled_here(relay) or getattr(relay, "library", None) is None:
         return
+    relay.library.refresh_dir = lambda rel: refresh_dir(relay, rel)
     if start:
         threading.Thread(target=_loop, args=(relay,), name="clouddrive", daemon=True).start()
+
+
+def refresh_dir(relay, rel: str) -> None:
+    """片库扫「网盘」来源时，列一个目录之前先让组件重新向网盘要这个目录（/api/fs/list 的 refresh）。组件把目录列表
+    缓存 cache_expiration 分钟（夸克默认 30），不刷新的话刚放进网盘的片子要过半小时才扫得到。WebDAV 的根就是组件的根。
+    刷新只重列这一个目录，之后的 PROPFIND 读的就是新的，所以总共并不多要网盘几次。"""
+    answer = api(relay).call("POST", "/api/fs/list", {"path": "/" + rel.strip("/"), "refresh": True,
+                                                      "page": 1, "per_page": 1})
+    if answer.get("code") != 200:
+        raise DriveError("网盘组件刷新不了这个目录")
 
 
 def status(relay, handler) -> dict:

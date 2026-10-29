@@ -138,6 +138,9 @@ class FakeOpenList(ol_base.PingDav):
         elif url.path == "/api/admin/storage/delete":
             storages.pop(int(query.get("id", 0)), None)
             self._json({"code": 200, "message": "success"})
+        elif url.path == "/api/fs/list":
+            self.state["refreshed"].append((body.get("path"), body.get("refresh")))
+            self._json({"code": 200, "message": "success", "data": {"content": [], "total": 0}})
         else:
             self._json({"code": 404, "message": "not found"})
 
@@ -174,7 +177,7 @@ class FakeOpenList(ol_base.PingDav):
 
 
 def fake_openlist(password, files):
-    state = {"storages": {}, "tokens": set(), "n": 0, "calls": [], "created": [], "scanned": False, "expired": False}
+    state = {"storages": {}, "tokens": set(), "n": 0, "calls": [], "created": [], "scanned": False, "expired": False, "refreshed": []}
     handler = type("OL", (FakeOpenList,), {"files": dict(files), "redirect": set(), "seen": [], "user": "admin",
                                            "password": password, "state": state})
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -351,6 +354,17 @@ class DriveApiTests(lib_base.ApiTests):
         self.assertIn("clouddrive.drive_delete", actions)
         self.assertIn("clouddrive.rescan", actions)
         self.assert_no_secrets()
+
+    def test_scanning_the_drive_refreshes_every_folder_first(self):
+        """OpenList caches a folder's listing for 30 minutes: without a refresh, a video just saved to Quark is missed."""
+        clouddrive.attach(self.relay, start=False)
+        self.drive("baidu", {"refresh_token": BAIDU_RT})
+        self.relay.library.scan_now(self.relay.library.managed()["id"])
+        self.assertEqual(self.state["refreshed"][:3], [("/", True), ("/夸克", True), ("/夸克/电影", True)])
+        self.assertIn("Inception", json.dumps(self.relay.library.view(), ensure_ascii=False))
+        # The component refusing a refresh never stops the scan: the cached listing is read as before.
+        self.relay.library.refresh_dir = lambda rel: (_ for _ in ()).throw(clouddrive.DriveError("x"))
+        self.assertTrue(self.relay.library.scan_now(self.relay.library.managed()["id"])["ok"])
 
     def test_admin_only_self_host_only_and_not_running(self):
         for who in ("alice", "guest", None):
