@@ -9,7 +9,7 @@ Tauri shell of option B can replace this package without core changes.
 Nothing in this package imports `server`; the core is a separate program.
 """
 
-__version__ = "0.3.2-beta"
+__version__ = "0.3.3-beta"
 
 # Renamed from 小智电视 / Xiaozhi TV after 0.2.5-beta (spec 2026-10-24-media-center-ui-design,
 # section 15). The old names stay below only to find and replace what the old

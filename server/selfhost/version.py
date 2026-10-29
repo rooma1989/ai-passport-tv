@@ -5,4 +5,4 @@ The release workflow may replace this line with the tag it builds; from a checko
 worked towards.
 """
 
-VERSION = "0.3.2-beta.dev"
+VERSION = "0.3.3-beta.dev"
