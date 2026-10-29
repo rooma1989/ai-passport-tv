@@ -11,7 +11,7 @@
   登录信息  secrets/（relay-key、wifi-key、ytnode-key、openlist-admin、bilibili/、youtube-node.json；
             一次性的 setup-code 从不带）、openlist/data/（网盘组件自己的数据库和 config.json，里面是网盘的登录；
             数据库同样用在线备份拷）、youtube/*.txt（YouTube cookies）
-  从不带    library-cache/、library-subs/、covers/、logos/、epg/（下载的节目单，设置在 tv.db 里）、firmware/、
+  从不带    library-cache/、library-full/（整集缓存）、library-subs/、covers/、logos/、epg/（下载的节目单，设置在 tv.db 里）、firmware/、
             bin/、youtube/bin/、openlist/bin/、openlist/data/temp|log/、run/、backups/、exports/、logs/、
             *.bak-*、desktop.json 和 tray.json（这台电脑自己的：开机启动、家里网络的身份）
 

@@ -783,7 +783,7 @@ def post(handler, relay, path: str) -> bool:
     if path in ("/api/admin/library/match", "/api/admin/library/meta/refresh", "/api/admin/library/settings"):
         # 片库的在线资料（library.py、libmeta.py）：手动选豆瓣的条目或「不匹配」（手动的从不被自动的盖掉）、
         # 重新取一部、打开 / 关掉在线资料（关了一个请求也不往豆瓣发）、粘贴 / 清掉备用的 TMDB 密钥（tmdb_key，
-        # 存进 secrets/，回答和操作记录里从不带密钥本身）。
+        # 存进 secrets/，回答和操作记录里从不带密钥本身）、整集缓存的上限（full_gb）。
         library = getattr(relay, "library", None)
         if library is None:
             handler._json({"ok": False, "error": LIBRARY_OFF})
@@ -795,6 +795,13 @@ def post(handler, relay, path: str) -> bool:
                 return True
             answer, action, detail = library.set_tmdb_key(body["tmdb_key"]), "library.settings", \
                 "TMDB 密钥设好" if body["tmdb_key"].strip() else "TMDB 密钥清掉"
+        elif path == "/api/admin/library/settings" and "full_gb" in body:
+            # 整集缓存的上限（libraryfull.py）：关 / 10 / 30 / 100 GB；关了已经缓存的全删。
+            answer = library.set_full_gb(body["full_gb"])
+            if not answer.get("ok"):
+                handler._json(answer, 400)
+                return True
+            action, detail = "library.settings", f"整集缓存 {body['full_gb']} GB" if body["full_gb"] else "整集缓存关"
         elif path == "/api/admin/library/settings":
             if not isinstance(body.get("online"), bool):
                 handler._json({"ok": False, "error": "请求格式不对"}, 400)

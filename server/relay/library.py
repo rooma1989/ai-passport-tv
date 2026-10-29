@@ -34,7 +34,8 @@
   字幕和附件从不放进去）。ffmpeg 读的是只给本机的 /api/library/raw/<id>?t=<令牌>（raw）：网盘的地址和密码从不在
   ffmpeg 的命令行上，本机的文件也不用 file: 协议。网盘的文件每次起 ffmpeg 都要再读的「目录」（MP4 的 moov、MKV 的头、
   附件和 Cues）存在 library-cache/（librarycache.py，_serve_cached），只给 raw 用。扫描找到新的（或变了的）网盘片子
-  以后，没人在放时后台先把这几段读进缓存、探测一次（预热，warm_step），第一次放也和第二次一样快。
+  以后，没人在放时后台先把这几段读进缓存、探测一次（预热，warm_step），第一次放也和第二次一样快。正在看的那一集
+  另外边看边整个下到本机（整集缓存，libraryfull.py，_serve_full）：跳到下好的地方从本机读，几乎马上就有画面。
 - 字幕（第二步）：内嵌的文字字幕（ass、srt、mov_text、webvtt）和视频旁边的字幕文件（<名字>.srt、<名字>.zh.ass…，
   本机和网盘）按需转成 WebVTT（/api/library/subs/<id>/<n>.vtt，只给家里人，缓存在 library-subs/）。图片字幕（PGS、
   DVD）列出来但放不了。网盘上的内嵌字幕不整个再读一遍文件，而是在放的那一路边转边抽（watch_source 的 subs_out）。
@@ -77,6 +78,8 @@ from pathlib import Path
 from typing import Callable
 
 from .librarycache import IndexCache
+from . import libraryfull
+from .libraryfull import FullCache
 from . import libmeta
 from .table import CAST_ID
 
@@ -743,6 +746,17 @@ def _client_gone(sock) -> bool:
 CONTINUE_WAIT_S = 0.1
 
 
+class _Tees:
+    """放片子从网盘读到的同时存进几个缓存（整集缓存、索引缓存）：write 给每一个。"""
+
+    def __init__(self, tees: list):
+        self.tees = tees
+
+    def write(self, chunk: bytes) -> None:
+        for tee in self.tees:
+            tee.write(chunk)
+
+
 def _client_left(sock, wait: float) -> bool:
     """至多等 wait 秒，看浏览器 / ffmpeg 那头是不是挂断了。"""
     if sock is None or not hasattr(sock, "fileno") or hasattr(sock, "getpeercert"):
@@ -1202,6 +1216,9 @@ class Library:
         self.refresh_dir: Callable[[str], None] | None = None
         # 网盘文件的索引区（MP4 的 moov、MKV 的头和 Cues）：只给 ffmpeg 读的 raw 用（librarycache.py）。
         self.cache = IndexCache(self.dir / "library-cache", alive=self._now_of, log=log, clock=clock)
+        # 正在看的网盘文件边看边整个下到本机（libraryfull.py）：上限是片库设置的 full_gb，0 是关。
+        self.full = FullCache(self.dir / "library-full", opener=self._full_open, alive=self._now_of, log=log,
+                              clock=clock, limit=self.full_gb() * libraryfull.GB, background=background)
         # 在线资料（libmeta.py）：存在 library-meta.json；豆瓣一次一个请求，被拦了歇一个小时。
         self.meta = libmeta.MetaStore(self.dir / "library-meta.json")
         self.douban = libmeta.Douban(clock=clock, log=log)
@@ -1244,7 +1261,7 @@ class Library:
         os.replace(tmp, path)
 
     def _save_sources(self, sources: list[dict]) -> None:
-        keep = {k: v for k, v in self._load_config().items() if k == "online"}
+        keep = {k: v for k, v in self._load_config().items() if k in ("online", "full_gb")}
         self._write(self.sources_path, {**keep, "sources": sources})
 
     def _load_config(self) -> dict:
@@ -1268,6 +1285,28 @@ class Library:
         if on:
             self._meta_wake.set()
         return {"ok": True, "online": bool(on)}
+
+    def full_gb(self) -> int:
+        """整集缓存总共至多多少 GB（libraryfull.CHOICES 之一，0 是关；默认 DEFAULT_GB）。"""
+        found = self._load_config().get("full_gb")
+        return found if type(found) is int and found in libraryfull.CHOICES else libraryfull.DEFAULT_GB
+
+    def set_full_gb(self, gb) -> dict:
+        """管理员改整集缓存的上限：关（0）时下载停下、已经存下的全删；改小了按最后用过的时间删到不超。"""
+        if type(gb) is not int or gb not in libraryfull.CHOICES:
+            return {"ok": False, "error": "只能选关、" + "、".join(f"{n} GB" for n in libraryfull.CHOICES if n)}
+        with _LOCK:
+            config = self._load_config()
+            config["full_gb"] = gb
+            config.setdefault("sources", [])
+            self._write(self.sources_path, config)
+        self.full.set_limit(gb * libraryfull.GB)
+        self.log(f"片库的整集缓存{'改成了 ' + str(gb) + ' GB' if gb else '关了，已经缓存的删掉了'}")
+        return {"ok": True, "full_gb": gb, "full_used": self.full.total()}
+
+    def close(self) -> None:
+        """中转关掉时：整集缓存的下载线程停下。"""
+        self.full.stop()
 
     def _load_index(self) -> dict[str, dict]:
         try:
@@ -1334,7 +1373,8 @@ class Library:
                 row.update(url=src.get("url") or "", user=src.get("user") or "", has_password=bool(src.get("password")))
             rows.append(row)
         return {"ok": True, "max": SOURCES_MAX, "every_h": int(EVERY_S // 3600), "sources": rows, "scan": self.status(),
-                "online": self.online(), "tmdb": self.tmdb.state()}
+                "online": self.online(), "tmdb": self.tmdb.state(), "full_gb": self.full_gb(),
+                "full_used": self.full.total()}
 
     def item(self, iid: str) -> dict | None:
         if not isinstance(iid, str) or not _ID.match(iid):
@@ -1389,8 +1429,12 @@ class Library:
         items = items[:VIEW_MAX]
         movies, videos, shows = [], [], {}
         entries = self.meta.all()
+        cached = self.full.fractions()
         for item in items:
             card = self.card(item, names.get(item["source"], ""))
+            part = cached.get(FullCache.key_of_item(item))
+            if part:
+                card["cached"] = math.floor(part * 1000) / 1000     # 整集缓存下好了多少（0..1，没下完不会是 1）
             if item["kind"] == "episode":
                 key = self.show_key(item.get("show") or "")
                 show = shows.setdefault(key, {"id": key, "title": item.get("show") or "", "count": 0, "art": "",
@@ -1432,6 +1476,7 @@ class Library:
         return {"ok": True, "sources": [self._public_source(s, counts.get(s["id"], 0)) for s in sources],
                 "scan": self.status(), "movies": movies, "shows": show_rows, "videos": videos,
                 "total": sum(counts.values()), "more": more, "online": self.online(),
+                "full_gb": self.full_gb(), "full_used": self.full.total(),
                 "pending": len(self.meta_due()) if self._meta_can() else 0}
 
     def recent(self, limit: int = RECENT_MAX) -> list[dict]:
@@ -2019,6 +2064,7 @@ class Library:
             except OSError:
                 pass
         self.cache.prune()
+        self.full.prune()
         self.log(f"片库删了来源「{found.get('name')}」（{len(gone)} 个视频）")
         return {"ok": True, "name": found.get("name") or ""}
 
@@ -2266,6 +2312,7 @@ class Library:
                                                     count=len(items)))
         fresh = sum(1 for i in items if i["id"] not in old)
         self._meta_wake.set()                      # 新加的片子去查在线资料（后台慢慢来）
+        self.full.prune()                          # 不见了、变了的片子的整集缓存不留
         if src["kind"] == "webdav":
             # 新的、变了的网盘片子排上预热（后台没人在放时先把索引区读进缓存、探测一次）。
             changed = [i["id"] for i in items if i["id"] not in old
@@ -2321,6 +2368,8 @@ class Library:
                 return "有人在放片库里的片子"
             if self._status["running"] or self._queue:
                 return "在扫描"
+        if self.full.busy():
+            return "在缓存整集"
         if self.watching is not None and self.watching():
             return "有人在看"
         return ""
@@ -2556,7 +2605,8 @@ class Library:
             if src["kind"] == "local":
                 self._serve_local(handler, LocalFolder(src.get("path") or ""), item, kind, tally)
             else:
-                self._serve_dav(handler, self._source(src), item, kind, src.get("name") or "", tally, cached=raw)
+                self._serve_dav(handler, self._source(src), item, kind, src.get("name") or "", tally, cached=raw,
+                                playback=raw and not warm)
         except (OSError, ValueError):
             handler.close_connection = True        # 浏览器断开（跳转、关窗口）
         finally:
@@ -2638,13 +2688,17 @@ class Library:
             upstream.close()
 
     def _serve_dav(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally=None,
-                   cached: bool = False) -> None:
+                   cached: bool = False, playback: bool = False) -> None:
         """网盘的文件：Range 带给上游，上游的状态、Content-Range、Content-Length 原样回。cached：给 ffmpeg 的
-        （raw），先看索引缓存（_serve_cached）。"""
+        （raw），先看索引缓存（_serve_cached）。playback：放片子的 ffmpeg 读的（不是预热的探测），整集缓存开着时
+        走 _serve_full。"""
         wanted = (handler.headers.get("Range") or "").strip()
         wanted = wanted if _RANGE.match(wanted) and wanted != "bytes=-" else None
         size = int(item.get("size") or 0)
         span = parse_range(wanted, size) if cached and wanted and size > 0 else None
+        if playback and isinstance(span, tuple) and self.full.enabled():
+            self._serve_full(handler, dav, item, kind, name, tally, *span)
+            return
         if isinstance(span, tuple) and self._serve_cached(handler, dav, item, kind, name, tally, *span):
             return
         upstream = self._open_dav(handler, dav, item, name, wanted)
@@ -2730,6 +2784,150 @@ class Library:
             if tee is not None:
                 tee.close()
         return True
+
+    # ---- 整集缓存（libraryfull.py）：边看边整个下到本机 ----
+
+    @staticmethod
+    def _full_name(item: dict) -> str:
+        """日志里说的名字：剧集是「剧名 第几集」，别的是片名（从不带路径）。"""
+        title = item.get("title") or ""
+        return f"{item['show']} {title}".strip() if item.get("kind") == "episode" and item.get("show") else title
+
+    def _full_open(self, item: dict, start: int, last: int):
+        """整集缓存的下载线程打开网盘上的 [start, last]。回答的总长对不上（文件在网盘上变了）时索引缓存也作废、
+        抛 libraryfull.Changed；别的错抛 LibraryError / OSError。"""
+        src = next((s for s in self._load_sources() if s["id"] == item.get("source")), None)
+        if src is None or src["kind"] != "webdav":
+            raise LibraryError("来源没了")
+        try:
+            upstream = self._source(src).open(item["path"], f"bytes={start}-{last}")
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise LibraryError(_dav_reason(error)) from None
+        span = self._answer_span(upstream, int(item.get("size") or 0))
+        if span is None or span[0] != start:
+            upstream.close()
+            if span is None:
+                self.cache.drop(item["id"])
+                raise libraryfull.Changed()
+            raise LibraryError("网盘没按要的那段给")
+        return upstream
+
+    def _send_local(self, handler, path: Path, at: int, count: int, tally, tee=None) -> int:
+        """从整集缓存的数据文件给 [at, at + count)，返回发了多少字节。"""
+        try:
+            handle = open(path, "rb")
+        except OSError:
+            return 0
+        with handle:
+            handle.seek(at)
+            return self._pump(handler, handle.read, count, tally, tee, close=False)
+
+    def _serve_full(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally, start: int,
+                    end: int) -> None:
+        """整集缓存开着时给 ffmpeg 的 Range 请求（libraryfull.py）。一段一段给，回答头只发一次（206、Content-Range），
+        中间换地方 ffmpeg 看不出来：索引缓存里有的从索引缓存给；已经下好的从本机给（下载线程边写边给）；都没有时，
+        下载线程正要写这里就等它写进来（STALL_S 内一点都没等到才自己读），不然自己从网盘读一阵（下载线程让开；
+        能交给它时至多读 BURST，读到的顺手存进两个缓存），读完了让下载线程从这里接着下。"""
+        full, iid = self.full, item["id"]
+        size, mtime, ext = int(item["size"]), int(item.get("mtime") or 0), item.get("ext") or ""
+        sock = getattr(handler, "connection", None)
+        cached_tally = None if getattr(tally, "drive_only", False) else tally
+        full.touch(item, start, self._full_name(item))
+        sent_head = []
+
+        def head() -> None:
+            if not sent_head:
+                sent_head.append(True)
+                self._send_head(handler, 206, kind, end - start + 1, {"Content-Range": f"bytes {start}-{end}/{size}"})
+
+        at, local = start, False
+        with full.reading(item):
+            while at <= end:
+                want = end - at + 1
+                # 索引缓存先看（它按最后用过的时间删，用到了要记一下，和整集缓存关着时一样）。
+                hit = self.cache.open(iid, size, mtime, ext, at)
+                if hit is not None:
+                    handle, have = hit
+                    head()
+                    count = min(have, want)
+                    with handle:
+                        sent = self._pump(handler, handle.read, count, cached_tally, close=False)
+                    at, local = at + sent, True
+                    if sent < count:
+                        break
+                    continue
+                found = full.local(item, at)
+                if found is not None:
+                    head()
+                    count = min(found[1], want)
+                    # 索引缓存要存这里时（文件开头、一段存到的地方……）照样存：整集的以后被删了，索引区还在。
+                    tee = self.cache.tee(iid, size, mtime, ext, at)
+                    try:
+                        sent = self._send_local(handler, found[0], at, count, cached_tally, tee)
+                    finally:
+                        if tee is not None:
+                            tee.close()
+                    at, local = at + sent, True
+                    if sent < count:
+                        break
+                    continue
+                # 本机没有：下载线程正要写这里就等它（不另开一个网盘的请求）。
+                if full.next_at(item) == at and full.wait(item, at, full.stall_s, lambda: _client_gone(sock)):
+                    continue
+                if _client_gone(sock) or (local and _client_left(sock, CONTINUE_WAIT_S)):
+                    break
+                last = min(end, at + full.burst - 1) if full.can_fill(item) else end
+                sent = self._full_drive(handler, dav, item, name, at, last, tally, head, bool(sent_head))
+                if sent is None:
+                    break
+                at, local = at + sent, False
+                if at <= last:
+                    break
+                full.seen(item, at)
+        if at <= end:
+            handler.close_connection = True
+
+    def _full_drive(self, handler, dav: WebDav, item: dict, name: str, at: int, last: int, tally, head,
+                    started: bool) -> int | None:
+        """放片子自己从网盘读 [at, last]（这时下载线程让开），读到的顺手存进整集缓存和索引缓存。返回发了多少字节；
+        网盘出错、文件变了时 None（回答头还没发时回 502 / 416）。"""
+        iid, size, mtime, ext = item["id"], int(item["size"]), int(item.get("mtime") or 0), item.get("ext") or ""
+        tees = [t for t in (self.full.tee(item, at), self.cache.tee(iid, size, mtime, ext, at)) if t is not None]
+        try:
+            with self.full.on_drive():
+                if not started:
+                    upstream = self._open_dav(handler, dav, item, name, f"bytes={at}-{last}")
+                    if upstream is None:
+                        return None
+                else:
+                    try:
+                        upstream = dav.open(item["path"], f"bytes={at}-{last}")
+                    except (urllib.error.HTTPError, LibraryError, OSError, ValueError) as error:
+                        if isinstance(error, urllib.error.HTTPError):
+                            error.close()
+                        self._note_failed(item, name, str(error) if isinstance(error, LibraryError)
+                                          else _dav_reason(error))
+                        return None
+                try:
+                    span = self._answer_span(upstream, size)
+                    if span is None or span[0] != at:
+                        if span is None:
+                            self.cache.drop(iid)
+                            self.full.drop(iid)
+                            self.log(f"片库「{name}」有个文件在网盘上变了，它的缓存不要了（重新扫描一下片库）")
+                        if not started:
+                            handler._send(502, "网盘上的文件变了（重新扫描一下片库）".encode(),
+                                          "text/plain; charset=utf-8")
+                        return None
+                    head()
+                    read = getattr(upstream, "read1", None) or upstream.read
+                    return self._pump(handler, read, last - at + 1, tally, _Tees(tees) if tees else None, close=False)
+                finally:
+                    upstream.close()
+        finally:
+            for tee in tees:
+                tee.close()
 
     # ---- 媒体（第二步）：探测、给中转自己的 ffmpeg 的地址、怎么放 ----
 

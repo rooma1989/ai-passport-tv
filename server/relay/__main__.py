@@ -257,6 +257,10 @@ def _serve_tenants(args, key: str, youtube) -> int:
         manage.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        # 片库的整集缓存（libraryfull.py）：下载线程停下（说明里只记写好了的，被直接杀掉也不坏）。
+        if getattr(relay, "library", None) is not None:
+            relay.library.close()
     return 0
 
 

@@ -6378,11 +6378,15 @@ async function loadLib(force, poll) {
   else if (answer.ok && answer.pending) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 20000);
 }
 const libKind = (k) => k === "webdav" ? "网盘" : "本机文件夹";
+// 整集缓存：能选的上限（GB，0 是关）、用了多少、一集下好了多少（c.cached，0..1；没下过的没有）。
+const LIB_FULL = [0, 10, 30, 100];
+const libGB = (n) => n < 1073741824 ? Math.round(n / 1048576) + " MB" : (n / 1073741824).toFixed(1) + " GB";
+const libCached = (c) => !c.cached ? "" : c.cached >= 1 ? "已缓存" : "已缓存 " + Math.floor(c.cached * 100) + "%";
 // 电影、其他视频的卡片：点开是资料页（libInfoHTML），在那里放；豆瓣的评分跟在年份后面。
 function libCard(c, wide) {
   const no = c.playable ? "" : '<span class="badge">放不了</span>';
   const m = c.meta && c.meta.state === "matched" ? c.meta : null;
-  const sub = [c.year, m && m.rating ? "★ " + m.rating : "", wide ? c.source : ""].filter(Boolean).join(" · ") || (c.ext || "").toUpperCase();
+  const sub = [c.year, m && m.rating ? "★ " + m.rating : "", wide ? c.source : "", libCached(c)].filter(Boolean).join(" · ") || (c.ext || "").toUpperCase();
   return `<button class="card${wide ? "" : " p"}${c.playable ? "" : " dead"}" data-libitem="${esc(c.id)}" data-k="lc-${esc(c.id)}" aria-label="${esc(c.title)}${c.playable ? "" : "（放不了）"}，详情" title="${esc(c.plot || c.title)}"><span class="art">${art(c.title, wide ? "w" : "p", wide ? {} : { title: c.title, kick: "片库" })}${imgTag(c.art)}${no}</span>
     <span class="t">${esc(c.title)}</span><span class="s">${esc(sub)}</span></button>`;
 }
@@ -6480,7 +6484,7 @@ function libEpisode(c) {
                    play: { kind: "library", id: c.id, playable: c.playable } });
   const se = c.season ? "第 " + c.season + " 季" : "";
   return `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
-    <span class="htx"><b>${esc(c.title)}</b><small>${esc([se, c.playable ? "" : "放不了", c.source].filter(Boolean).join(" · "))}</small></span></button>`;
+    <span class="htx"><b>${esc(c.title)}</b><small>${esc([se, c.playable ? "" : "放不了", c.source, libCached(c)].filter(Boolean).join(" · "))}</small></span></button>`;
 }
 function libSourceRow(s, admin, scan) {
   const busy = scan && scan.running && scan.source === s.id;
@@ -6706,7 +6710,12 @@ function renderLib() {
     // 备用的 TMDB：按钮上只说「已设置 / 没设置」（出错时标红）；点开是填密钥的小框（libTmdbHTML）。
     const tm = d.tmdb || {};
     const tmdbBtn = admin && d.online ? `<button class="ghost sm${tm.error ? " red" : ""}" data-libtmdb="${lib.tmdbForm ? "0" : "1"}" aria-expanded="${!!lib.tmdbForm}" title="豆瓣没对上时再查 TMDB">备用资料 TMDB：${tm.set ? (tm.error ? "出错了" : "已设置") : "没设置"}</button>` : "";
-    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}${onlineBtn}${tmdbBtn}</div>`;
+    // 整集缓存（library.py 的 full_gb，libraryfull.py）：边看边把网盘上的整集下到这台电脑，跳转快。按一下换上限
+    // （关 → 10 → 30 → 100 GB → 关）；换成「关」会删掉已经缓存的，要再按一下确认。只有网盘的来源时才有。
+    const fullGb = d.full_gb || 0;
+    const fullBtn = admin && d.sources.some((s) => s.kind === "webdav")
+      ? `<button class="ghost sm" data-libfull="${LIB_FULL[(LIB_FULL.indexOf(fullGb) + 1) % LIB_FULL.length]}" title="边看边把网盘上的这一集整个下到这台电脑，跳转更快（至多用这么多磁盘，最久没看的先删）；现在用了 ${esc(libGB(d.full_used || 0))}">整集缓存：${fullGb ? fullGb + " GB" : "关"}</button>` : "";
+    o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}${onlineBtn}${tmdbBtn}${fullBtn}</div>`;
     if (admin && d.online && lib.tmdbForm) o += `<div class="lformbox">${libTmdbHTML()}</div>`;
     o += drivePanel;
     if (admin && lib.form) o += `<div class="lformbox">${libFormHTML()}</div>`;
@@ -6808,6 +6817,19 @@ $("libBox").addEventListener("click", async (event) => {
   if (ds.libonline) {
     const answer = await libAdmin("api/admin/library/settings", { online: ds.libonline === "1" }, t);
     if (answer && answer.ok) { toast(answer.online ? "在线资料开了：后台慢慢从豆瓣取" : "在线资料关了：不再往豆瓣" + (libTmdb() ? "和 TMDB" : "") + "发请求"); loadLib(true); }
+    return;
+  }
+  if (ds.libfull !== undefined) {
+    const gb = Number(ds.libfull);
+    // 换成「关」会删掉已经缓存的：两步，4 秒内再按一下才关。
+    if (gb === 0 && (libD().full_used || 0) > 0 && t.dataset.sure !== "1") {
+      const was = t.textContent;
+      t.dataset.sure = "1"; t.textContent = "确定关掉？已缓存的会删掉";
+      setTimeout(() => { if (t.isConnected) { t.dataset.sure = ""; t.textContent = was; } }, 4000);
+      return;
+    }
+    const answer = await libAdmin("api/admin/library/settings", { full_gb: gb }, t);
+    if (answer && answer.ok) { toast(gb ? "整集缓存：至多用 " + gb + " GB，边看边下到这台电脑" : "整集缓存关了，已经缓存的删掉了"); loadLib(true); }
     return;
   }
   if (ds.libkind) { lib.kind = ds.libkind; renderLib(); return; }
