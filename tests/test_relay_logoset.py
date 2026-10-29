@@ -120,6 +120,17 @@ class CacheTests(unittest.TestCase):
         self.assertFalse(logos.allowed_url(logoset.BASE + "CCTV1.png", resolve=lambda *a, **k: [(0, 0, 0, "", ("10.0.0.2", 443))]),
                          "the set's host resolving to a private address is refused like any other")
 
+    def test_busy_is_not_the_same_as_no_logo(self):
+        """The Live page asks for dozens of logos at once; a request that waits too long for a free slot gets a
+        no-store 503 (pending), not the cacheable 404 that would keep the placeholder for an hour."""
+        self.assertTrue(self.cache.pending("ch000"), "has an address, not fetched yet")
+        self.assertFalse(self.cache.pending("ch002"), "no logo anywhere: a real 404")
+        self.cache.get("ch000")
+        self.assertFalse(self.cache.pending("ch000"), "stored")
+        self.cache.fetcher = lambda url: (_ for _ in ()).throw(OSError("down"))
+        self.assertIsNone(self.cache.get("ch003"))
+        self.assertFalse(self.cache.pending("ch003"), "failed just now: wait RETRY_S like before")
+
     def test_switched_off_asks_nothing(self):
         self.on = False
         self.assertEqual(self.cache.sources(), {"ch001": "table", "ch003": "epg"})

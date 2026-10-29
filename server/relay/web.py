@@ -3123,8 +3123,12 @@ def _manage_handler(relay: Relay):
                            else detail.up_detail(relay, caller, ident))
             elif _LOGO.match(path):
                 # 直播台的台标（logos.py）：登录了的（访客也算）都能看，和节目单一样。
-                found = relay.logos.get(_LOGO.match(path).group(1)) if relay.logos is not None else None
-                if found is None:
+                cid = _LOGO.match(path).group(1)
+                found = relay.logos.get(cid) if relay.logos is not None else None
+                if found is None and relay.logos is not None and relay.logos.pending(cid):
+                    # 有台标，只是排队没轮上：不让浏览器记住，下次打开页面再取。
+                    self._send(503, b"", "text/plain; charset=utf-8", {"Cache-Control": "no-store", "Retry-After": "5"})
+                elif found is None:
                     # 没有台标也缓存一会儿：直播页每个台都会来问一次。
                     self._send(404, b"", "text/plain; charset=utf-8", {"Cache-Control": "private, max-age=3600"})
                 else:

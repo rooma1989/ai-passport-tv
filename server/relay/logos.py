@@ -35,7 +35,9 @@ from . import channeltable, logoset
 MAX_BYTES = 256 * 1024
 TIMEOUT_S = 6.0
 RETRY_S = 6 * 3600
-PARALLEL = 2
+PARALLEL = 4
+# 排队等着取的至多等这么久（直播页一下要几十个台标，台标库的都是第一次取）；等不到不算失败，下次再取。
+GATE_WAIT_S = 30.0
 MAX_FILES = 2000
 MAX_REDIRECTS = 3
 USER_AGENT = "rootv-logo/1"
@@ -193,6 +195,18 @@ class LogoCache:
     def has(self, cid: str) -> bool:
         return cid in self._logos()
 
+    def pending(self, cid: str) -> bool:
+        """有台标地址、还没存下、最近也没取失败：get 回 None 只是这次没轮上（排队超时），不是没有台标。"""
+        url = self._logos().get(cid) if isinstance(cid, str) and _CID.match(cid) else None
+        if not url:
+            return False
+        name = self._name(url)
+        if self._cached(name) is not None:
+            return False
+        with self.lock:
+            failed = self._failed.get(name)
+        return failed is None or self.clock() - failed >= RETRY_S
+
     def known(self) -> set[str]:
         return set(self._logos())
 
@@ -224,7 +238,7 @@ class LogoCache:
             failed = self._failed.get(name)
             if failed is not None and self.clock() - failed < RETRY_S:
                 return None
-        if not self._gate.acquire(timeout=TIMEOUT_S):
+        if not self._gate.acquire(timeout=GATE_WAIT_S):
             return None
         try:
             found = self._cached(name)          # 别的请求刚取到
