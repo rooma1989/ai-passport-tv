@@ -763,6 +763,10 @@ PROBE_TIMEOUT_S = 25
 PROBE_TIMEOUT_REMOTE_S = 60
 # 探测读多少：文件头里就有各路流（mp4 的 moov 再大 ffmpeg 也会整个读，不受这个限制）。
 PROBE_ARGS = ("-probesize", "5000000", "-analyzeduration", "5000000")
+# ffprobe 要的各项（color_transfer、color_primaries：HDR 的片子在小电视上要色调映射，见 tonemap_for）。
+PROBE_ENTRIES = ("format=format_name,duration,start_time:stream=index,codec_type,codec_name,profile,pix_fmt,"
+                 "width,height,channels,color_transfer,color_primaries:stream_disposition=default,forced,attached_pic:"
+                 "stream_tags=language,title")
 # 探测失败了（网盘超时之类）这么久以内不再探测同一个，照扩展名猜着放。
 PROBE_RETRY_S = 600.0
 # 浏览器直接放（按 Range 取原文件）只认这些容器；第一路声音要是浏览器解得了的（Chrome 只放第一路）。
@@ -805,11 +809,13 @@ _CHANNEL_WORDS = {"mono": 1, "stereo": 2, "2.1": 3, "3.0": 3, "quad": 4, "4.0": 
 
 def _stream_row(index: int, kind: str, codec: str, profile: str = "", pix: str = "", width: int = 0, height: int = 0,
                 channels: int = 0, lang: str = "", title: str = "", default: bool = False, forced: bool = False,
-                pic: bool = False) -> dict:
+                pic: bool = False, trc: str = "", prim: str = "") -> dict:
     """索引里的一路流（只留用得上的几项，空的不写）：i 序号、t 种类、c 编码、p profile、pix、w / h、ch 声道、
-    lang、title、def 默认、forced 强制、pic 封面图。"""
+    lang、title、def 默认、forced 强制、pic 封面图、trc 传输特性（smpte2084 是 HDR10 / 杜比视界 8.1 的底层，
+    arib-std-b67 是 HLG）、prim 原色。"""
     row: dict = {"i": int(index), "t": kind, "c": (codec or "").lower()[:32]}
-    for key, value in (("p", profile), ("pix", pix), ("lang", lang), ("title", title)):
+    trc, prim = (x if x not in ("unknown", "unspecified", "reserved") else "" for x in (trc, prim))
+    for key, value in (("p", profile), ("pix", pix), ("lang", lang), ("title", title), ("trc", trc), ("prim", prim)):
         if value:
             row[key] = str(value)[:80]
     for key, value in (("w", width), ("h", height), ("ch", channels)):
@@ -842,7 +848,8 @@ def parse_probe_json(data: bytes | str) -> dict | None:
                                        int(s.get("width") or 0), int(s.get("height") or 0), int(s.get("channels") or 0),
                                        str(tags.get("language") or ""), str(tags.get("title") or ""),
                                        bool(flags.get("default")), bool(flags.get("forced")),
-                                       bool(flags.get("attached_pic"))))
+                                       bool(flags.get("attached_pic")), str(s.get("color_transfer") or ""),
+                                       str(s.get("color_primaries") or "")))
         except (TypeError, ValueError):
             continue
     return {"dur": _float(fmt.get("duration")), "start": _float(fmt.get("start_time")),
@@ -885,7 +892,15 @@ def parse_ffmpeg_dump(text: str) -> dict | None:
             rest = match.group(6) or ""
             extra = match.group(5) or ""
             profile = "" if " / 0x" in extra else extra       # 「(hev1 / 0x31766568)」是封装的标签，不是 profile
-            pix = re.search(r",\s*((?:yuv|yuvj|gray|rgb|bgr|nv|p0)[a-z0-9]*)", rest)
+            pix = re.search(r",\s*((?:yuv|yuvj|gray|rgb|bgr|nv|p0)[a-z0-9]*)(?:\(([^)]*)\))?", rest)
+            trc = prim = ""
+            # 「yuv420p10le(tv, bt2020nc/bt2020/smpte2084, progressive)」：矩阵 / 原色 / 传输特性；三个一样时只写一个
+            # （「yuv420p(tv, bt709)」）。
+            for word in (w.strip() for w in ((pix.group(2) or "") if pix else "").split(",")):
+                if word.count("/") == 2:
+                    _, prim, trc = word.split("/")
+                elif re.fullmatch(r"[a-z0-9-]+", word) and word not in ("tv", "pc", "progressive"):
+                    prim = trc = word
             size = re.search(r",\s*(\d{2,5})x(\d{2,5})", rest)
             channels = 0
             if kind == "audio":
@@ -897,7 +912,7 @@ def parse_ffmpeg_dump(text: str) -> dict | None:
                                   profile if kind != "subtitle" else "", pix.group(1) if pix else "",
                                   int(size.group(1)) if size else 0, int(size.group(2)) if size else 0, channels,
                                   match.group(2) or "", "", "(default)" in rest, "(forced)" in rest,
-                                  "(attached pic)" in rest)
+                                  "(attached pic)" in rest, trc if kind == "video" else "", prim if kind == "video" else "")
             info["streams"].append(current)
             continue
         title = re.match(r"^\s+title\s*:\s*(.+)$", line)
@@ -1176,6 +1191,7 @@ class Library:
         self.port: Callable[[], int] | None = None
         self._probing: dict[str, threading.Lock] = {}
         self._probe_failed: dict[str, float] = {}
+        self._color_failed: dict[str, float] = {}
         self._read: dict[str, int] = {}
         self._sub_lock = threading.Lock()
         self._partial: dict[tuple, dict] = {}
@@ -2768,12 +2784,42 @@ class Library:
                     with _LOCK:
                         self._probe_failed[iid] = self.clock()
                 return None
-            found.update(v=PROBE_VERSION, size=item.get("size"), mtime=item.get("mtime"))
-            with _LOCK:
-                if iid in self._items:
-                    self._items[iid]["media"] = found
-                    self._save_index()
-            return found
+            return self._keep_probe(iid, item, found)
+
+    def _keep_probe(self, iid: str, item: dict, found: dict) -> dict:
+        """探测的结果存进索引的条目（color：问过传输特性和原色了，见 with_color）。"""
+        found.update(v=PROBE_VERSION, size=item.get("size"), mtime=item.get("mtime"), color=True)
+        with _LOCK:
+            if iid in self._items:
+                self._items[iid]["media"] = found
+                self._save_index()
+        return found
+
+    def with_color(self, iid: str, media: dict | None) -> dict | None:
+        """要转码画面时用：media 里有没有画面的传输特性（HDR 要色调映射，is_hdr）。以前探测的（没有 color）不知道；
+        只有 10 位的画面（HDR 的片子都是）才重新探测一次补上——网盘上的文件头多半在索引区的缓存里（librarycache），
+        不必为这个加 PROBE_VERSION 让所有的片子都重新探测。探测不了时照旧用原来的（当 SDR），PROBE_RETRY_S 内不再试。"""
+        video = first_video(media)
+        if not isinstance(media, dict) or media.get("color") or video is None or not _deep(video):
+            return media
+        item = self.item(iid)
+        if item is None:
+            return media
+        with _LOCK:
+            lock = self._probing.setdefault(iid, threading.Lock())
+            failed = self._color_failed.get(iid)
+        if failed is not None and self.clock() - failed < PROBE_RETRY_S:
+            return media
+        with lock:
+            again = (self.item(iid) or {}).get("media")
+            if isinstance(again, dict) and again.get("color"):
+                return again
+            found = self.probe(iid)
+            if found is None:
+                with _LOCK:
+                    self._color_failed[iid] = self.clock()
+                return media
+            return self._keep_probe(iid, item, found)
 
     def probe(self, iid: str, warm: bool = False) -> dict | None:
         """探测一次（ffprobe，没有时用 ffmpeg 自己打的输入信息），读的是 raw_url。出错、超时时 None。"""
@@ -2785,9 +2831,7 @@ class Library:
         whitelist = ["-protocol_whitelist", "http,tcp"]
         if probe:
             args = [probe, "-v", "error", *whitelist, *PROBE_ARGS, "-show_entries",
-                    "format=format_name,duration,start_time:stream=index,codec_type,codec_name,profile,pix_fmt,"
-                    "width,height,channels:stream_disposition=default,forced,attached_pic:"
-                    "stream_tags=language,title", "-of", "json", url]
+                    PROBE_ENTRIES, "-of", "json", url]
         else:
             args = [self.ffmpeg, "-hide_banner", "-nostdin", *whitelist, *PROBE_ARGS, "-i", url]
         try:
@@ -2814,12 +2858,19 @@ class Library:
         iid = item["id"]
         video, audio = decision.get("video"), decision.get("audio")
         maps = tuple(f"0:{i}" for i in (video, audio) if i is not None)
+        tonemap = ""
         if decision.get("generic"):
             mode, copy = None, ("h264",)
         else:
             mode = watch_pc.Mode("copy" if decision["vcopy"] else "encode" if video is not None else None,
                                  ("copy" if decision["acopy"] else "encode") if audio is not None else None)
             copy = ("h264", decision["vcodec"]) if decision["vcopy"] else ("h264",)
+            if mode.video == "encode":
+                # 浏览器放不了、要转成 H.264 的 HDR 片子：缩放加色调映射（和小电视那一路一样，见 tonemap_for）。
+                media = self.with_color(iid, media)
+                stream = next((s for s in (media or {}).get("streams") or [] if s.get("i") == video), None)
+                hwaccel = tv_hwaccel(self.ffmpeg)
+                tonemap = tonemap_for(self.ffmpeg, stream, hwaccel)
         subs_out = ()
         if self.remote(item):
             texts = [t for t in subtitle_tracks(item, media) if t["kind"] == "embedded" and t["ok"]]
@@ -2832,12 +2883,14 @@ class Library:
             read = (self.bytes_read(iid) - base) // (1024 * 1024)
             return f"正在读取文件…已读 {read} MB" if read else "正在打开…"
 
-        tag = "-".join(str(x) for x in (video, audio, decision.get("vcopy"), decision.get("acopy")))
+        tag = "-".join(str(x) for x in (video, audio, decision.get("vcopy"), decision.get("acopy"), tonemap))
         return watch_pc.Source(("library", iid, tag), url=lambda: self.raw_url(iid), paced=False,
                                offset=max(0.0, float(offset)), start=max(0.0, float(offset)), label=label,
                                site="library", copy_video=copy, maps=maps, video_tag=decision.get("tag") or "",
                                exact=True, media_start=float((media or {}).get("start") or 0.0), bounded=True,
-                               audio_rate="192k", mode=mode, subs_out=subs_out, progress=progress)
+                               audio_rate="192k", mode=mode, subs_out=subs_out, progress=progress,
+                               video_filter=tonemap_vf(tonemap, watch_pc.ENCODE_SCALE, PC_VT_SIZE) if tonemap else "",
+                               video_input=tuple(tonemap_input(tonemap, hwaccel)) if tonemap else ())
 
     # ---- 字幕 ----
 
@@ -3034,8 +3087,10 @@ class Library:
         item = self.item(iid)
         if item is None or not self.ffmpeg or self.secret is None or self.port is None:
             return None
-        return tv_args(self.ffmpeg, self.raw_url(iid), offset, self.media_of(iid), item.get("ext") or "",
-                       hwaccel=tv_hwaccel(self.ffmpeg))
+        hwaccel = tv_hwaccel(self.ffmpeg)
+        media = self.with_color(iid, self.media_of(iid))
+        return tv_args(self.ffmpeg, self.raw_url(iid), offset, media, item.get("ext") or "", hwaccel=hwaccel,
+                       tonemap=tonemap_for(self.ffmpeg, first_video(media), hwaccel))
 
     def tv_title(self, item: dict) -> str:
         """小电视上显示的名字：电影是片名（对上豆瓣的用豆瓣的），剧集是「剧名 · 这一集」（这一集只是「第 n 集」时
@@ -3069,6 +3124,7 @@ class Library:
 # 画面：电视服务按设备的 320×180 再缩一次（server/live.py 的 source_graph），这里给它不超过 640×360、至多 30 帧
 # 的 H.264（ultrafast），4K HEVC Main 10 不整个推过去；H.264 8 位、不超过 1080 行的只换封装。macOS 上有
 # videotoolbox 时用它解码（4K HEVC 的 CPU 从约一个核降到四分之一个核，见 CHANGELOG），没有时 ffmpeg 自己用软解。
+# HDR 的片子（HDR10、杜比视界 8.1、HLG）缩小后做色调映射成 BT.709 的 SDR，不然发灰（见下面「HDR → SDR」）。
 # 声音一律转成 AAC 立体声（DTS、TrueHD、E-AC-3 在 MPEG-TS 里电视服务未必认）；没有声音的补一路静音（电视服务
 # 要画面和声音两路），没有画面的补黑场。
 
@@ -3105,16 +3161,125 @@ def tv_hwaccel(ffmpeg: str, platform: str = sys.platform) -> str:
     return "videotoolbox" if "videotoolbox" in hwaccels(ffmpeg) else ""
 
 
-def tv_args(ffmpeg: str, url: str, offset: float, media: dict | None, ext: str, hwaccel: str = "") -> list[str]:
+# ---- HDR → SDR（色调映射）
+#
+# 小电视（和电脑上转成 H.264 的那一路）是 8 位 BT.709 的 SDR。HDR10（PQ，杜比视界 8.1 的底层也是）和 HLG 的片子
+# 不做色调映射直接缩成 8 位，PQ 的码值被当成 BT.709 的：发灰、没颜色（4K HDR10 的样片一帧平均饱和度 25，映射后
+# 90 上下）。三种做法，按顺序挑这个 ffmpeg 做得了的（每个 ffmpeg 每种只实际跑一次小样试，tonemap_works）：
+# - vt：macOS 的 videotoolbox，scale_vt 带 color_transfer 等（VTPixelTransferSession 在 GPU 上缩放、映射，高光
+#   柔和地压下来）。硬件解码的帧直接进去，硬件解不了、ffmpeg 退回软解的经 hwupload 传上去（同一个设备的硬件帧
+#   hwupload 原样放过），所以两种情况都能放。4K HDR10 的样片按小电视的参数转 6 秒：CPU 0.5 秒（不映射的 1.6 秒，
+#   缩放也在 GPU 上了）。只用于 4:2:0 的 10 位画面（取回来的是 p010）。
+# - sws：ffmpeg 8 起 swscale 自己的色彩管理（scale 的 out_transfer 等，intent=perceptual 是按母版的峰值亮度
+#   压高光；默认的 relative_colorimetric 是剪掉）。先缩到 640×360 再映射；起来时建 3D 查找表要约 5 个 CPU 秒
+#   （半秒多），之后每秒视频多花不到 0.05 个 CPU 秒。
+# - zscale：带 zimg 的 ffmpeg（老一些的静态版本）的老办法，zscale 转成线性光 + tonemap=hable。
+# 都不行（ffmpeg 太老）时照旧不映射。只有探测到传输特性是 HDR 的（is_hdr）才映射：不知道的当 SDR。
+
+HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+# 电脑上转码的那一路（watch.ENCODE_SCALE：最高 720p）用 scale_vt 时的大小。
+PC_VT_SIZE = "w=-2:h='min(720,ih)'"
+TONEMAP_KINDS = ("vt", "sws", "zscale")
+VT_DEVICE = "rootvt"
+_TO_709 = "out_transfer=bt709:out_primaries=bt709:out_color_matrix=bt709:out_range=tv"
+_TONEMAPS: dict[tuple[str, str], bool] = {}
+_TONEMAPS_BASE: dict[str, float] = {}
+# 试用的小样：一块橙色，10 位、标成 BT.2020 / PQ。不映射时出来的饱和度约 45，映射的约 90–115。
+_TONEMAP_SAMPLE = ("color=c=0xa05030:s=64x64:r=1:d=1,format=yuv420p10le,"
+                   "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv")
+_TONEMAP_GAIN = 1.4
+
+
+def is_hdr(stream: dict | None) -> bool:
+    """这一路画面是 HDR 的（PQ / HLG）：探测到的传输特性说了算，没探测到的当 SDR。"""
+    return bool(stream) and stream.get("trc") in HDR_TRANSFERS
+
+
+def tonemap_vf(kind: str, sw_scale: str, vt_size: str) -> str:
+    """缩放加色调映射的 -vf（出来是 8 位 yuv420p 的 BT.709）。sw_scale 是软件缩放（scale=…），vt_size 是 scale_vt
+    的 w=…:h=…（两个缩出来一样大）；kind 不认识时空的。都是先缩小再映射。"""
+    if kind == "vt":
+        # hwdownload 取回的帧标着 BT.709，后面的 scale 只转成 8 位（不写 out_color_matrix 时它会照输入那一头
+        # 商量好的 bt2020nc 再转一次矩阵）。
+        return (f"hwupload,scale_vt={vt_size}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709,"
+                "hwdownload,format=p010le,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p")
+    if kind == "sws":
+        return f"{sw_scale},format=yuv420p10le,scale={_TO_709}:intent=perceptual,format=yuv420p"
+    if kind == "zscale":
+        return (f"{sw_scale},zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,"
+                "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+    return ""
+
+
+def tonemap_input(kind: str, hwaccel: str = "") -> list[str]:
+    """色调映射要在 -i 前面加的参数：vt 要一个 videotoolbox 设备给 hwupload / scale_vt，有硬件解码（hwaccel）时
+    解出来的帧留在 GPU 上（-hwaccel_output_format），不先取回来。"""
+    if kind != "vt":
+        return []
+    args = ["-init_hw_device", f"videotoolbox={VT_DEVICE}", "-filter_hw_device", VT_DEVICE]
+    if hwaccel == "videotoolbox":
+        args += ["-hwaccel", "videotoolbox", "-hwaccel_device", VT_DEVICE, "-hwaccel_output_format", "videotoolbox_vld"]
+    return args
+
+
+def _saturation(ffmpeg: str, kind: str, run) -> float | None:
+    """小样过 kind 的映射（kind 为空：不映射，只转成 8 位）后的平均饱和度；ffmpeg 出错、没有这个滤镜时 None。"""
+    chain = tonemap_vf(kind, "scale=64:64", "w=64:h=64") if kind else "format=yuv420p"
+    args = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", *tonemap_input(kind),
+            "-f", "lavfi", "-i", _TONEMAP_SAMPLE, "-frames:v", "1",
+            "-vf", chain + ",signalstats,metadata=print:file=-", "-f", "null", "-"]
+    try:
+        done = run(args, capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = b"".join(x for x in (done.stdout, done.stderr) if isinstance(x, bytes)).decode("utf-8", "replace")
+    found = re.search(r"SATAVG=([0-9.]+)", out)
+    return float(found.group(1)) if done.returncode == 0 and found else None
+
+
+def tonemap_works(ffmpeg: str, kind: str, run=subprocess.run) -> bool:
+    """这个 ffmpeg 做不做得了 kind 的色调映射：实际跑一次小样，出来的饱和度要比不映射的高出一截（不只是认得
+    这些选项）。每个 ffmpeg、每种只试一次。"""
+    key = (ffmpeg, kind)
+    found = _TONEMAPS.get(key)
+    if found is None:
+        base = _TONEMAPS_BASE.get(ffmpeg)
+        if base is None:
+            base = _TONEMAPS_BASE[ffmpeg] = _saturation(ffmpeg, "", run) or 0.0
+        mapped = _saturation(ffmpeg, kind, run) if base > 0 else None
+        found = _TONEMAPS[key] = mapped is not None and mapped >= base * _TONEMAP_GAIN
+    return found
+
+
+def tonemap_for(ffmpeg: str, video: dict | None, hwaccel: str = "", run=subprocess.run) -> str:
+    """HDR 的画面用哪种色调映射（"vt" / "sws" / "zscale"）；不是 HDR、这个 ffmpeg 哪种都做不了时空的。
+    vt 只在有 videotoolbox 硬件解码（tv_hwaccel，只在 macOS 上）、画面是 4:2:0 时用。"""
+    if not ffmpeg or not is_hdr(video):
+        return ""
+    pix = video.get("pix") or ""
+    for kind in TONEMAP_KINDS:
+        if kind == "vt" and (hwaccel != "videotoolbox" or (pix and "420" not in pix and pix != "p010le")):
+            continue
+        if tonemap_works(ffmpeg, kind, run=run):
+            return kind
+    return ""
+
+
+def tv_args(ffmpeg: str, url: str, offset: float, media: dict | None, ext: str, hwaccel: str = "",
+            tonemap: str = "") -> list[str]:
     """片库的视频推给电视服务的 ffmpeg 参数：按实时速度（-re）读 url（只给本机的 raw 地址），从 offset 秒起，
-    写 MPEG-TS 到标准输出（和 stream.py 的一样，由 stream.pump 转给电视服务）。"""
+    写 MPEG-TS 到标准输出（和 stream.py 的一样，由 stream.pump 转给电视服务）。tonemap：HDR 的画面用哪种色调映射
+    （tonemap_for；空的不映射）。"""
     video = first_video(media)
     audio, _ = audio_choice(media, ext)
     known = bool((media or {}).get("streams"))
     copy = video is not None and video.get("c") == "h264" and not _deep(video) \
         and 0 < int(video.get("h") or 0) <= TV_COPY_HEIGHT
+    tonemap = tonemap if video is not None and not copy and tonemap in TONEMAP_KINDS else ""
     args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
-    if hwaccel and not copy and (video is not None or not known):
+    if tonemap == "vt":
+        args += tonemap_input(tonemap, hwaccel)
+    elif hwaccel and not copy and (video is not None or not known):
         args += ["-hwaccel", hwaccel]
     args += ["-re", "-protocol_whitelist", "http,tcp", "-ss", f"{max(0.0, float(offset)):.3f}", "-i", url]
     if known and video is None:
@@ -3133,8 +3298,11 @@ def tv_args(ffmpeg: str, url: str, offset: float, media: dict | None, ext: str, 
     if copy:
         args += ["-c:v", "copy"]
     else:
-        args += ["-vf", f"scale={TV_WIDTH}:{TV_HEIGHT}:force_original_aspect_ratio=decrease:force_divisible_by=2"
-                        ":flags=bilinear,format=yuv420p",
+        scale = f"scale={TV_WIDTH}:{TV_HEIGHT}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear"
+        # scale_vt 没有 force_original_aspect_ratio：比 16:9 宽的按宽缩到 640，别的按高缩到 360（-2：偶数）。
+        fit = f"gte(iw*{TV_HEIGHT},ih*{TV_WIDTH})"
+        vt_size = f"w='if({fit},{TV_WIDTH},-2)':h='if({fit},-2,{TV_HEIGHT})'"
+        args += ["-vf", tonemap_vf(tonemap, scale, vt_size) if tonemap else f"{scale},format=yuv420p",
                  "-fpsmax", str(TV_FPS_MAX), "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
                  "-crf", "23", "-maxrate", "2M", "-bufsize", "4M", "-g", "60", "-threads", "2"]
     args += ["-c:a", "aac", "-ac", "2", "-ar", "48000", "-b:a", "128k", "-sn", "-dn",

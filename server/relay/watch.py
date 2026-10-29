@@ -14,7 +14,8 @@ UA，或者 YouTube 节点的流），起一个 ffmpeg 把它封装成分片 MP4
 要 Referer / UA，跨域也取不到。电脑版页面用浏览器自带的 MediaSource 放这些段（console.html 的
 WatchPlayer，几十行，不用第三方播放器）；没有 MediaSource 的浏览器（老 iPhone Safari）直接放 HLS。
 
-- 编码：画面是 H.264 就只换封装（-c:v copy）；别的（HEVC、MPEG-2……）才转码（libx264 veryfast，最高 720p）。
+- 编码：画面是 H.264 就只换封装（-c:v copy）；别的（HEVC、MPEG-2……）才转码（libx264 veryfast，最高 720p；
+  片库 HDR 的片子同时做色调映射，Source.video_filter）。
   片库（library.py）的文件例外：浏览器说放得了 HEVC 时 HEVC 也只换封装（Source.copy_video，写成 hvc1），
   -map 按探测好的流（第一路真画面、挑好的声音，不带字幕和附件），有 AAC 的声音直接复制（Mode.audio "copy"），
   时间轴照原样（Source.exact）；不按实时读，跑在播放器前面但至多攒 VOD_AHEAD_*（WatchStream._hold）。
@@ -89,6 +90,8 @@ WINDOW_SEGMENTS = 12
 WINDOW_BYTES = 64 * 1024 * 1024
 # 一段至少多长：短 GOP 的源合并成 2 秒左右一段；只有声音的源按这个时长切。
 FRAGMENT_US = 2_000_000
+# 转码的画面最高 720p（宽按比例，偶数）；片库 HDR 的片子换成缩放加色调映射的（Source.video_filter）。
+ENCODE_SCALE = "scale=-2:'min(720,ih)'"
 # 取列表时最多等多久（片源要几秒才连上、出第一段）；没好就回 503，页面再来取。要比 IDLE_S 短：
 # 等的时候没有新的请求，太长会被当作没人看停掉。
 READY_WAIT_S = 15.0
@@ -215,6 +218,10 @@ class Source:
     bounded: bool = False
     # 声音转码的码率（片库 192k）。
     audio_rate: str = "128k"
+    # 片库：转码画面时的 -vf（HDR 的片子缩放加色调映射，library.tonemap_vf）和要加在 -i 前面的参数
+    # （library.tonemap_input）；空的照旧 ENCODE_SCALE。只换封装时都不用。
+    video_filter: str = ""
+    video_input: tuple = ()
     # 先按哪种转法起（片库按探测的结果定好；直播台按 LiveMemory，别的先试只换封装）。
     mode: "Mode | None" = field(default=None, compare=False)
     # 网盘上的内嵌文字字幕：边转边抽成 WebVTT ((流的序号, 文件路径), …)，和画面同一个 ffmpeg、另一个输出。
@@ -318,6 +325,8 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool
         args += LIVE_PROBE
     if lenient and not piped:
         args += live_routes.LENIENT_OPTION
+    if mode.video == "encode":
+        args += list(source.video_input)
     args += ["-i", "pipe:0" if piped else url]
     if source.maps:
         for spec in source.maps:
@@ -340,7 +349,7 @@ def ffmpeg_args(ffmpeg: str, source: Source, url: str, mode: Mode, lenient: bool
             args += ["-bsf:v", "hevc_mp4toannexb"]
     elif mode.video == "encode":
         args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "4M", "-bufsize", "8M",
-                 "-pix_fmt", "yuv420p", "-vf", "scale=-2:'min(720,ih)'",
+                 "-pix_fmt", "yuv420p", "-vf", source.video_filter or ENCODE_SCALE,
                  "-force_key_frames", "expr:gte(t,n_forced*2)"]
     if mode.audio == "encode":
         args += ["-c:a", "aac", "-b:a", source.audio_rate or "128k", "-ac", "2"]
