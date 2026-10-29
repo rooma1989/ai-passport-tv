@@ -20,6 +20,10 @@ server/relay/voice.py。
 （server/relay/voicecmds.py）；删台先在面板上确认（「删除」选项的 ref 是 rm:…，或 30 秒内说「确定」）。
 「你能做什么」的几类说法是 hp:N 的选项。
 
+语音点播片库（intent.py 的「片库」一节）：片子来自中转目录的 library（设备主人是家里人时才有），放由中转做
+（server/relay/voicelib.py，和电脑版「播放到」同一条路）。几部都像时面板上列出来（ref lb:…），问「要放《X》吗？」，
+30 秒内说「是的」「放吧」就放第一个。
+
 另见 asr.py（识别）、intent.py（理解）、relay_client.py（中转）。
 """
 
@@ -363,10 +367,11 @@ class VoiceService:
             return
         removal = intent.removal_ref(ref)
         topic = intent.help_topic(ref)
-        if removal is not None or topic is not None:
-            # 确认删台（「删除」），或「你能做什么」的一类。
+        chosen = intent.library_choice(ref)
+        if removal is not None or topic is not None or chosen is not None:
+            # 确认删台（「删除」）、「你能做什么」的一类，或片库里的一部。
             catalog, _ = self._catalog(context, None)
-            decision = topic or self._removal(removal)
+            decision = topic or chosen or self._removal(removal)
             self.logger(f"voice id={uid} pick intent={decision.kind}")
             self._push(generation, uid, self._execute(uid, "", decision, catalog, relay))
             return
@@ -466,7 +471,38 @@ class VoiceService:
             timer = relay_data.get("timer")
             catalog.timer = timer if isinstance(timer, dict) else None
             catalog.casts = [t for t in relay_data.get("casts") or [] if isinstance(t, str)]
+        self._library(catalog, relay_data.get("library"))
         return catalog, note
+
+    @staticmethod
+    def _library(catalog: intent.Catalog, data) -> None:
+        """中转目录里的片库一段（server/relay/voicelib.py）：片子、「继续观看」里最近的、投屏台上正在放的。"""
+        if not isinstance(data, dict):
+            return
+
+        def text(value) -> str:
+            return value if isinstance(value, str) else ""
+
+        def whole(value) -> int:
+            return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+        def place(row) -> intent.LibraryPlace | None:
+            if not isinstance(row, dict) or not text(row.get("id")):
+                return None
+            return intent.LibraryPlace(row["id"], text(row.get("name")), text(row.get("kind")) or "movie",
+                                       whole(row.get("episode")), whole(row.get("total")))
+
+        titles = []
+        for row in data.get("titles") or []:
+            if not isinstance(row, dict) or not text(row.get("id")) or not text(row.get("name")):
+                continue
+            aka = tuple(a for a in row.get("aka") or [] if isinstance(a, str) and a) \
+                if isinstance(row.get("aka"), list) else ()
+            titles.append(intent.LibraryTitle(row["id"], row["name"], text(row.get("kind")) or "movie", aka,
+                                              whole(row.get("total"))))
+        catalog.library = titles
+        catalog.library_continue = place(data.get("continue"))
+        catalog.library_playing = place(data.get("playing"))
 
     def _execute(self, uid: int, heard: str, decision: intent.Decision, catalog: intent.Catalog,
                  relay: RelayClient | None) -> dict:
@@ -486,6 +522,9 @@ class VoiceService:
                     answer = relay.unsubscribe(params["id"])
                 elif action == "recast":
                     answer = relay.recast(params["step"], params["resume"])
+                elif action == "library":
+                    answer = relay.library(params.get("id", ""), params.get("episode", 0), params.get("season", 0),
+                                           resume=bool(params.get("resume")))
                 elif action == "seek":
                     extra = {k: params[k] for k in ("fraction", "from_end") if k in params}
                     answer = relay.seek(params.get("delta"), params.get("position"), **extra)
@@ -522,8 +561,10 @@ class VoiceService:
                 self._refs = {c["ref"]: {"label": c.get("label", "")}
                               for c in decision.choices if "ref" in c}
                 removals = [c["ref"] for c in decision.choices if intent.removal_ref(c.get("ref", ""))]
-                # 只有一个「删除」时，30 秒内说「确定」也算确认。
-                self._confirm = {"ref": removals[0], "at": self.clock()} if len(removals) == 1 else None
+                first = decision.choices[0].get("ref", "")
+                # 只有一个「删除」时，30 秒内说「确定」也算确认；片库的几部（「要放《X》吗？」）说「是的」放第一个。
+                self._confirm = ({"ref": removals[0], "at": self.clock()} if len(removals) == 1 else
+                                 {"ref": first, "at": self.clock()} if intent.parse_library_ref(first) else None)
         if decision.label:
             result["label"] = decision.label
         if decision.lead:
@@ -547,6 +588,9 @@ class VoiceService:
         if action == "unsubscribe":
             name = intent.row_label(str(answer.get("name") or ""))[:12]
             return (f"已删除「{name}」" if name else "已删除"), ""
+        if action == "library":
+            title = answer.get("title")
+            return intent.library_reply(answer), intent.row_label(title) if isinstance(title, str) else ""
         if action == "recast":
             title = intent.row_label(answer.get("title")) if isinstance(answer.get("title"), str) else ""
             if answer.get("note"):
@@ -559,11 +603,15 @@ class VoiceService:
         return intent.Decision("unsubscribe", reply="已删除", relay=("unsubscribe", {"id": channel}))
 
     def _confirmed(self, text: str) -> intent.Decision | None:
-        """面板上问着「确定删除？」时说了「确定」：删。说了别的就不再等这个回答。"""
+        """面板上问着「确定删除？」时说了「确定」：删；问着「要放《X》吗？」时说了「是的」：放第一个。
+        说了别的就不再等这个回答。"""
         with self._lock:
             pending, self._confirm = self._confirm, None
         if pending is None or self.clock() - pending["at"] > FOLLOW_UP_S:
             return None
+        chosen = intent.library_choice(pending["ref"])
+        if chosen is not None:
+            return chosen if intent.confirms_play(text) else None
         if not intent.confirms(text):
             return None
         return self._removal(intent.removal_ref(pending["ref"]))

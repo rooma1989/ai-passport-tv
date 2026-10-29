@@ -3086,7 +3086,9 @@ def _manage_handler(relay: Relay):
             elif _EPISODES.match(path):
                 self._json(relay.episodes(_EPISODES.match(path).group(1), caller, device))
             elif path == "/api/voice/catalog":
-                self._json(voicecmds.catalog(relay, device, caller))
+                # keyed：电视服务替设备问的，目录里才有设备主人的片库（voicelib.py；访客手机没有）。
+                self._json(voicecmds.catalog(relay, device, caller,
+                                             keyed=relay.key_ok(self.headers.get("X-Key"))))
             elif path == "/api/voice/search":
                 # 语音搜索视频或 UP 主（server/relay/voice.py）。
                 query = self._query()
