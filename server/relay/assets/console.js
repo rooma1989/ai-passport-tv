@@ -2932,7 +2932,7 @@ function pcActive() {
 }
 
 // 进度条：点、拖、键盘（← → 10 秒，Home / End）。拖的时候只动滑块、时间和上面的时间气泡（seekPreview，一帧画一次），
-// 松手才真跳一次（点播是浏览器另开一个 Range 请求，HLS 是中转从那里重起一路，停手 0.45 秒后才发）。
+// 松手才真跳一次，松手就发（点播是浏览器另开一个 Range 请求，HLS 是中转从那里重起一路）。
 (function seekBar() {
   const bar = $("pcSeek"), tip = $("pcTip");
   let drag = false;
@@ -2972,7 +2972,7 @@ function pcActive() {
     watching.preview = null;
     if (target == null) { if (watching.seeking != null) seekRestart(watching.seeking); else renderPc(); return; }
     skipAt = performance.now();
-    pcSeek(target);
+    pcSeek(target, true);     // 松手了，要去的地方定了：马上跳（450 毫秒的等是给连着来的跳转用的）
   };
   bar.addEventListener("pointerup", (event) => end(event, false));
   bar.addEventListener("pointercancel", (event) => end(event, true));
