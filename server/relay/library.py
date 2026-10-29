@@ -1193,6 +1193,8 @@ class Library:
         self._probe_failed: dict[str, float] = {}
         self._color_failed: dict[str, float] = {}
         self._read: dict[str, int] = {}
+        # 每个文件最近一次从网盘读失败的时刻（time.monotonic）：小电视上一集「提前放完」时据此分清是断了还是放完了。
+        self._drive_failed: dict[str, float] = {}
         self._sub_lock = threading.Lock()
         self._partial: dict[tuple, dict] = {}
         # 网盘组件的来源：列每个目录之前先让组件重新向网盘要一次（clouddrive.attach 设成 clouddrive.refresh_dir）。
@@ -2584,6 +2586,16 @@ class Library:
             self._send_head(handler, 206, kind, end - start + 1, {"Content-Range": f"bytes {start}-{end}/{size}"})
             self._pump(handler, handle.read, end - start + 1, tally)
 
+    def _note_failed(self, item: dict, name: str, reason: str) -> None:
+        self.log(f"片库「{name}」放不了一个文件：{reason}")
+        with _LOCK:
+            self._drive_failed[item["id"]] = time.monotonic()
+
+    def drive_failed_since(self, iid: str, since: float) -> bool:
+        """这个文件从 since（time.monotonic）以来从网盘读失败过。"""
+        with _LOCK:
+            return self._drive_failed.get(iid, float("-inf")) >= since
+
     def _open_dav(self, handler, dav: WebDav, item: dict, name: str, wanted: str | None):
         """GET 网盘上的这个文件；出错时已经回了浏览器（416 / 502），返回 None。"""
         try:
@@ -2598,12 +2610,12 @@ class Library:
             reason = _dav_reason(error)
             if error.code == 403:
                 reason = "网盘拒绝了（在 OpenList 里把这个存储的 WebDAV 策略改成「本地代理」再试）"
-            self.log(f"片库「{name}」放不了一个文件：{reason}")
+            self._note_failed(item, name, reason)
             handler._send(502, reason.encode(), "text/plain; charset=utf-8")
             return None
         except (LibraryError, OSError, ValueError) as error:
             reason = str(error) if isinstance(error, LibraryError) else _dav_reason(error)
-            self.log(f"片库「{name}」放不了一个文件：{reason}")
+            self._note_failed(item, name, reason)
             handler._send(502, reason.encode(), "text/plain; charset=utf-8")
             return None
 
@@ -2700,7 +2712,7 @@ class Library:
             if isinstance(error, urllib.error.HTTPError):
                 error.close()
             reason = str(error) if isinstance(error, LibraryError) else _dav_reason(error)
-            self.log(f"片库「{name}」放不了一个文件：{reason}")
+            self._note_failed(item, name, reason)
             handler.close_connection = True
             return True
         try:
@@ -3135,6 +3147,8 @@ TV_COPY_HEIGHT = 1080
 # 开头这么多秒内就「放完」的照旧算放完（时长报错的文件不能一直在结尾重开）。
 TV_END_SLACK_S = 60.0
 TV_SHORT_S = 15.0
+# 网盘读失败的记录比这一路开始早这么多秒以内也算这一路的（ffmpeg 起来之前的那次读）。
+TV_FAIL_GRACE_S = 5.0
 _GENERIC_EPISODE = re.compile(r"^第 \d+ 集$")
 _HWACCELS: dict[str, frozenset] = {}
 
@@ -3406,14 +3420,18 @@ def tv_finished(relay, dev: dict, video, offset: float, outcome: str, elapsed: f
     """小电视上片库的这一路停了（web.py 的 finish_cast）：记进度；放完一集、有下一集时换成下一集（"next"，电视服务
     重新打开投屏台就是它，不切回原来的台）。离结尾还远就「放完」的当作断了（"failed"）。返回 finish_cast 接着用的结果。"""
     position = offset + elapsed
-    if outcome == "ended" and video.duration and position < video.duration - TV_END_SLACK_S and elapsed >= TV_SHORT_S:
+    library = getattr(relay, "library", None)
+    early = outcome == "ended" and video.duration and position < video.duration - TV_END_SLACK_S
+    # 一开头就「放完」的照旧算放完（见 TV_SHORT_S），除非这一路里网盘明说读不了（组件还没起来、断网）：
+    # 那是断了，不是放完了，不能一集一集往下跳。
+    broken = early and library is not None and library.drive_failed_since(video.bvid, time.monotonic() - elapsed - TV_FAIL_GRACE_S)
+    if early and (elapsed >= TV_SHORT_S or broken):
         relay.log(f"片库的一路在 {int(position)} 秒提前结束了（共 {int(video.duration)} 秒），从那里接着放")
         outcome = "failed"
     if outcome != "ended":
         tv_progress(relay, dev, video, position)
         return outcome
     tv_progress(relay, dev, video, position, done=True)
-    library = getattr(relay, "library", None)
     item = library.item(video.bvid) if library is not None else None
     upcoming = library.neighbor(item, 1) if item is not None else None
     if upcoming is None:

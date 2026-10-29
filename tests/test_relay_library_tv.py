@@ -21,6 +21,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -269,6 +270,12 @@ class TvTests(play_base._Relay):
         self.assertEqual((self.cast().cast.bvid, self.cast().cast_done), (second, False))
         self.assertNotEqual(self.events()[-1].action, "return")
         self.assertAlmostEqual(self.saved(second)["position"], 100.0, delta=home.PROGRESS_STEP_S)
+        # The drive cannot be read at all (the cloud-drive component still starting after a restart): the run
+        # "ends" within seconds. That is broken, not watched: it stays on this episode instead of skipping on.
+        self.relay.library._drive_failed[second] = time.monotonic()
+        self.open_cast(run_s=2.0, outcome="ended")
+        self.assertEqual((self.cast().cast.bvid, self.cast().cast_done), (second, False))
+        self.assertNotIn(second, self.relay.pc_progress.done(self.alice, "lib:" + second))
         # Continue watching shows the show once (its latest episode).
         self.relay.pc_progress.put(self.alice, "lib:" + first, dict(self.saved(first), position=600.0))
         self.now += 10
