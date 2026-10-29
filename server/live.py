@@ -283,6 +283,17 @@ def channel_routes(channel_id: str, url: str, agent: str = "") -> tuple[list[tup
         return [(url, agent)], "", {}, set(), set()
 
 
+def allowed_url(url: str) -> bool:
+    """频道表里的地址：某个台的主线路，或它在 meta 里的备用线路（channel_routes 给的那些）。
+    电视上先试上次好用的线路，常常是备用的；只认主线路时这些台在电视上全打不开。"""
+    if url in CHANNELS.values():
+        return True
+    meta = routes.read_meta(_LOADED.get("main"))
+    return any(route["url"] == url
+               for cid, primary in CHANNELS.items()
+               for route in routes.clean_routes(meta.get(cid, {}).get("routes"), primary))
+
+
 def mark_route(channel_id: str, url: str, ok: bool, why: str = "") -> None:
     """电视上放的结果记进 meta 的检测结果（routes.mark_ok / mark_failed）：放起来了、或者源站明说 403 / 404。
     写不了不要紧。"""
@@ -592,7 +603,7 @@ class LiveChannel:
     """单个频道会话：调色板、解码器进程，以及它与发送端之间的有界队列。"""
 
     def __init__(self, url: str, ffmpeg: str = "ffmpeg", user_agent: str = ""):
-        if url not in CHANNELS.values():
+        if not allowed_url(url):
             raise ValueError("channel URL is not in the local allowlist")
         self.url = url
         self.ffmpeg = ffmpeg

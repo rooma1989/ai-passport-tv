@@ -891,6 +891,26 @@ class TvServerTests(unittest.TestCase):
                 with unittest.mock.patch.dict(tv_server.CHANNELS, {"ch003": "https://z/3.m3u8"}):
                     self.assertEqual(tv_server.AVServer.make_channel(fake)[0], "https://z/3.m3u8")
 
+    def test_the_tv_channel_accepts_a_backup_line_and_nothing_else(self):
+        """LiveChannel's allowlist: the main line, a backup line from the sidecar (the TV starts with the one
+        that worked last time), and nothing that is in neither."""
+        from server import live
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "channels.txt"
+            table.write_text("ch002 | CCTV2 | https://a/2.m3u8\n", encoding="utf-8")
+            routes.write_meta(table, {"ch002": {"routes": [{"url": "https://b/2.m3u8"}],
+                                                "good": routes.fingerprint("https://b/2.m3u8")}})
+            with unittest.mock.patch.dict(live._LOADED, {"main": table}), \
+                    unittest.mock.patch.dict(live.CHANNELS, {"ch002": "https://a/2.m3u8"}, clear=True):
+                self.assertEqual(live.LiveChannel("https://a/2.m3u8").url, "https://a/2.m3u8")
+                self.assertEqual(live.LiveChannel("https://b/2.m3u8").url, "https://b/2.m3u8")
+                with self.assertRaises(ValueError):
+                    live.LiveChannel("https://evil/2.m3u8")
+            with unittest.mock.patch.dict(live._LOADED, {"main": None}), \
+                    unittest.mock.patch.dict(live.CHANNELS, {"ch002": "https://a/2.m3u8"}, clear=True):
+                with self.assertRaises(ValueError, msg="no sidecar: only the main line"):
+                    live.LiveChannel("https://b/2.m3u8")
+
     def test_hold_moves_to_the_next_line_and_gives_up(self):
         """reconnect.hold with a source that never starts: every failed restart asks the server to move on,
         and the session still ends at the (extended) deadline."""
