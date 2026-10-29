@@ -458,5 +458,27 @@ class NetcheckApiTests(lib_base.ApiTests):
         self.assertEqual([(r["state"], r["name"]) for r in drives], [("skip", "网盘组件")])
 
 
+
+class LivePathTests(unittest.TestCase):
+    """Live lines are checked the way ffmpeg plays them: only environment proxies, never macOS's system proxy."""
+
+    def test_env_only_open_ignores_the_system_proxy(self):
+        seen = {}
+        real_build, real_env, real_sys = urllib.request.build_opener, urllib.request.getproxies_environment, \
+            urllib.request.getproxies
+        def build(*handlers):
+            seen["proxies"] = next(h.proxies for h in handlers if isinstance(h, urllib.request.ProxyHandler))
+            return types.SimpleNamespace(open=lambda request, timeout=None: "opened")
+        urllib.request.build_opener = build
+        urllib.request.getproxies_environment = lambda: {}
+        urllib.request.getproxies = lambda: {"https": "http://127.0.0.1:7897"}
+        try:
+            self.assertEqual(netcheck._env_only_open("https://example.com/a.m3u8", timeout=1), "opened")
+        finally:
+            urllib.request.build_opener, urllib.request.getproxies_environment = real_build, real_env
+            urllib.request.getproxies = real_sys
+        self.assertEqual(seen["proxies"], {}, "the system proxy (Clash's 7897) is not used")
+
+
 if __name__ == "__main__":
     unittest.main()

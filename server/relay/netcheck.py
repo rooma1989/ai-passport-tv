@@ -258,6 +258,12 @@ def system_proxy(url: str) -> str:
     return _hostport(found)
 
 
+def _env_only_open(request, timeout=None):
+    """只认环境变量里的代理打开（像 ffmpeg 那样，不经 macOS 的系统代理）。"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(urllib.request.getproxies_environment()))
+    return opener.open(request, timeout=timeout)
+
+
 def env_proxy(url: str, environ=None) -> str:
     """只看环境变量（网盘组件是 Go 写的，只认环境变量里的代理，不认 macOS 的系统代理）。"""
     environ = os.environ if environ is None else environ
@@ -623,7 +629,8 @@ class NetCheck:
             lines = routes.table_routes(path, row["id"], row["url"], row["agent"], routecheck.DEFAULT_USER_AGENT)
             good = routes.good_of(path, row["id"])
             url, agent = next(((u, a) for u, a in lines if good and routes.fingerprint(u) == good), lines[0])
-            found = routecheck.probe(url, agent, self.opener or urllib.request.urlopen, self.monotonic)
+            # 和真正放的时候一样：ffmpeg 只认环境变量里的代理，不认 macOS 的系统代理（Clash 的「系统代理」）。
+            found = routecheck.probe(url, agent, self.opener or _env_only_open, self.monotonic)
             results[n] = self._live_row(row["name"], url, found, clash)
 
         threads = [threading.Thread(target=one, args=(n, row), daemon=True) for n, row in enumerate(chosen)]
@@ -636,10 +643,10 @@ class NetCheck:
     def _live_row(self, name: str, url: str, found: dict, clash) -> dict:
         host = (urllib.parse.urlsplit(url).hostname or "").lower()
         dns = dns_of(host, self.resolve)
-        via = self.proxies(url)
+        via = env_proxy(url)
         notes = [f"源站：{host}"]
         if via:
-            notes.append(f"经代理 {via}（系统或环境变量里设的）")
+            notes.append(f"经代理 {via}（环境变量里设的；ffmpeg 放直播时也走它）")
         elif dns["ip"]:
             notes.append("地址直接是 IP：开着 TUN 的代理软件按 IP 规则（比如 GEOIP,CN）决定走哪条线")
         else:
@@ -654,7 +661,9 @@ class NetCheck:
         rules = []
         if (dns["fake"] or via) and not (found_rule is not None and _direct(found_rule["policy"])):
             rules = direct_rules([host])
-        return _row("warn", name, text + "，偏慢" + ("：可能经代理绕了远路，试试给它加直连规则" if rules else ""), notes, rules)
+        # 源站在国内时直连才快；在国外的走代理反而可能更快（这里分不出在哪，只能说清楚）。
+        hint = "：要是这个源站在国内，给它加直连规则多半会快；在国外的源站走代理反而可能更快" if rules else ""
+        return _row("warn", name, text + "，偏慢" + hint, notes, rules)
 
     # ---- 网站 ----
 
