@@ -1788,7 +1788,7 @@ class Library:
     @staticmethod
     def _query(title: dict) -> str:
         query = f"{title['title']}|{title['alt']}|{title['year'] or ''}|{title['kind']}"
-        return query + f"|{title['season']}" if title.get("season") else query
+        return query + f"|第{title['season']}季" if title.get("season") else query
 
     def meta_due(self, titles: dict[str, dict] | None = None) -> list[str]:
         """后台要查的（新加的先查）：电影和剧（其他视频多半是自己拍的，名字不自动往外发，要管理员手动匹配）。
@@ -1949,18 +1949,31 @@ class Library:
     def _find_douban_season(self, title: dict) -> dict | None:
         """一季：豆瓣上叫「剧名 第3季」或「剧名 第三季」（第一季也可能就叫剧名）。按「剧名 第N季」找，名字完全一样
         才认；季的年份（各季的文件夹里写着时）也要一样。"""
-        n, name = title["season"], title["title"]
-        names = [f"{name} 第{n}季", f"{name} 第{_cn_digits(n)}季", f"{name}第{n}季", f"{name}第{_cn_digits(n)}季"]
-        if n == 1:
-            names.append(name)
+        n = title["season"]
+        # 剧名：这部剧在豆瓣上对上的名字（「风骚律师 第一季」去掉季），再是文件名里的（中文的那一半：
+        # 「绝命毒师 Breaking Bad」→「绝命毒师」），都试。
+        show = self.meta.get(title["key"].rsplit("-", 1)[0]) or {}
+        bases = []
+        if show.get("state") == "matched" and show.get("title"):
+            bases.append(clean_title(_SEASON_WORD.sub(" ", show["title"])))
+        bases += [_split_scripts(title["title"])[0], title["title"]]
+        bases = [b for i, b in enumerate(bases) if b and b not in bases[:i]]
+        names = []
+        for name in bases:
+            names += [f"{name} 第{n}季", f"{name} 第{_cn_digits(n)}季", f"{name}第{n}季", f"{name}第{_cn_digits(n)}季"]
+            if n == 1:
+                names.append(name)
         if title["alt"]:
             names += [f"{title['alt']} Season {n}", f"{title['alt']} 第{n}季"]
-        query = f"{name} 第{n}季"
-        suggested = self.douban.suggest(query)
-        chosen = libmeta.pick(suggested, names, title["year"], "tv")
-        if chosen is None:
-            chosen = libmeta.pick(self.douban.search(query), names, title["year"], "tv")
-        return chosen
+        for name in bases:
+            query = f"{name} 第{n}季"
+            suggested = self.douban.suggest(query)
+            chosen = libmeta.pick(suggested, names, title["year"], "tv")
+            if chosen is None:
+                chosen = libmeta.pick(self.douban.search(query), names, title["year"], "tv")
+            if chosen is not None:
+                return chosen
+        return None
 
     def _save_match(self, key: str, chosen: dict, query: str, manual: bool, details: dict | None = None,
                     douban_skipped: bool = False) -> dict:

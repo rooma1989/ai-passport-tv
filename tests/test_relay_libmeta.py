@@ -602,6 +602,22 @@ class SeasonTests(unittest.TestCase):
         self.assertEqual((show["now_season"], show["seasons"]), (2, 2))
         self.assertNotIn("now_season", self.lib.view()["shows"][0], "nothing watched: no season of one's own")
 
+    def test_seasons_use_the_shows_douban_name(self):
+        """The files say "绝命毒师 Breaking Bad"; Douban says "绝命毒师 第三季": the season is looked up under the name the
+        show matched on Douban (season dropped), then under the Chinese half of the file's name."""
+        for rel in ("Breaking Bad/S01/绝命毒师 Breaking Bad S01E01.mkv", "Breaking Bad/S03/绝命毒师 Breaking Bad S03E01.mkv"):
+            lib_base.touch(self.root / rel, lib_base.MP4)
+        self.lib.scan()
+        self.fake.suggest("绝命毒师 Breaking Bad", json.dumps([_tv("3000001", "绝命毒师 第一季", 2008, 7)]))
+        self.fake.suggest("绝命毒师 第3季", json.dumps([_tv("3000003", "绝命毒师 第三季", 2010, 13)]))
+        self.fake.suggest("绝命毒师 第1季", json.dumps([_tv("3000001", "绝命毒师 第一季", 2008, 7)]))
+        key = "s" + self.lib.show_key("绝命毒师 Breaking Bad")
+        self.lib.meta.put(key, {"state": "matched", "manual": True, "id": "3000001", "title": "绝命毒师 第一季",
+                                "q": "", "at": 1})
+        self.run_all()
+        self.assertEqual(self.lib.meta.get(key + "-3")["title"], "绝命毒师 第三季")
+        self.assertEqual(self.lib.meta.get(key + "-1")["title"], "绝命毒师 第一季")
+
     def test_a_single_season_show_has_no_season_rows(self):
         lib_base.touch(self.root / "某剧 (2020)/S01E01.mkv", lib_base.MP4)
         self.lib.scan()
