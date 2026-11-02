@@ -1463,22 +1463,205 @@ const UPNEXT_S = 5;           // 放完以后几秒自动放下一集
 
 function watchKey(now) { return [now.channel, now.title, now.episode].join("|"); }
 
-function watchSay(text, bad, retry) {
+// 画面上的提示。bad：出错了（红字）；retry：给一个按钮（true 是「重试」→ retryWatch，也可以给一个函数），label 是按钮上的字。
+// 出错的话记下当时的媒体时间（badAt）：之后画面又往前走了（lostTick），那句话就过时了，收起来。
+let badAt = null;
+function watchSay(text, bad, retry, label) {
   if (bad || text) switched();
   const box = $("watchMsg");
   box.className = "watchmsg" + (bad ? " bad" : "");
   box.replaceChildren();
+  badAt = bad && text ? $("watchVideo").currentTime : null;
   if (!text) return;
   box.appendChild(el("div", "", text));
-  if (retry) box.appendChild(button("重试", "ghost", retryWatch));
+  if (retry) box.appendChild(button(label || "重试", "ghost", typeof retry === "function" ? retry : retryWatch));
 }
 function retryWatch() {
   if (!watching) return;
-  // 视频放到一半断了：从断的地方重起；别的（直播、还没开始放）重新要一次。
-  if (watching.seekable && watching.player && watching.player.origin != null && pcPos() > 1) { seekRestart(pcPos()); return; }
-  if (watching.mode === "direct") startDirect(watching.again, { group: watching.group, again: true });
-  else startWatch(false, true);
+  // 这一路没了（sourceGone）：和「重连」一样，从现在的位置、同一集重连。
+  if (lost.gone) { lostManual(); return; }
+  // 视频：从现在的位置重起（还没放起来时 pcPos 就是这次要的起点，不从 0、不换一集）；别的（直播）重新要一次。
+  if (watching.seekable && watching.player) { seekRestart(pcPos()); return; }
+  if (watching.mode === "direct") startDirect(watching.again, { group: watching.group, again: true, hls: watching.hls });
+  else startWatch(false, true, undefined, watching.hls);
 }
+
+// ---- 片源断了：缓存接着放，后台重连（RECONNECT、reconnectWait、reconnectStep、lostState） ----
+// 播放器发现这一路没了（WatchPlayer 的 gone、DashPlayer 的 gone / broken、VodPlayer 的 broken、视频提前放完）就叫
+// sourceGone。lost：gone（正在放的这一路没了）、attempts（重连了几次，换过去以后放稳 CALM_S 秒才清零）、trying（在连
+// 或在等下一次）、failed（次数用完了）、deferred（用户暂停着：等按播放再连，不在暂停时自己放起来）、manual（用户点了
+// 「重连」：连上就换过去）、why（最近一次没连上的原因）、gen（每次重来加一，过时的回答不要）、kind / text（画面上现在
+// 说的是什么）、msg（画面中间那句话的节点：被别的话盖掉了就重画）、okAt（换过去以后从哪一秒起算放稳）。
+const lost = { gone: false, attempts: 0, trying: false, failed: false, deferred: false, manual: false, why: "", gen: 0, timer: 0,
+               kind: "", text: "", msg: null, okAt: null };
+function lostReset() {
+  clearTimeout(lost.timer);
+  lost.gen++;
+  Object.assign(lost, { gone: false, attempts: 0, trying: false, failed: false, deferred: false, manual: false, why: "", timer: 0,
+                        kind: "", text: "", okAt: null });
+  lostUnsay();
+  $("pcLost").hidden = true;
+}
+function lostSay(text, bad, retry, label) { watchSay(text, bad, retry, label); lost.msg = $("watchMsg").firstChild; }
+function lostUnsay() { if (lost.msg && lost.msg.isConnected) watchSay(""); lost.msg = null; }
+// 缓存从现在的位置往前还有几秒；播放器出错放不动了（点播的 <video> 出错）算 0。
+function lostAhead() {
+  const v = $("watchVideo"), b = v.buffered;
+  if (v.error) return 0;
+  for (let i = 0; i < b.length; i++) if (v.currentTime >= b.start(i) - 0.05 && v.currentTime <= b.end(i)) return b.end(i) - v.currentTime;
+  return 0;
+}
+// 用户自己暂停的：HLS 看播放器的 wantPlay（为缓冲停着不算），点播、DASH 看 <video>（放完了、出错停下的不算）。
+function lostUserPaused() {
+  const p = watching && watching.player, v = $("watchVideo");
+  if (!p) return false;
+  return p.vod ? v.paused && !v.ended && !v.error : !p.wantPlay;
+}
+// 没连上的原因值得说的才说（中转、B 站说的话；「这一路已经停了」和浏览器的英文报错不说）。
+function lostWhy() {
+  const why = lost.why || "";
+  return /[\u4e00-\u9fff]/.test(why) && why !== "这一路已经停了" && why !== "片源断了" ? why : "";
+}
+function sourceGone(player, why) {
+  if (!watching || watching.player !== player) return;
+  const first = !lost.gone;
+  lost.gone = true;
+  if (why) lost.why = why;
+  if (first && !lost.trying) {
+    if (lostUserPaused() && !lost.manual) lost.deferred = true; else lostTry();
+  }
+  lostRender();
+}
+// 直播（和不能拖的）没有「现在的位置」：重开一次（LIVE_TRIES），从直播的现在起。
+function lostLive() { return !watching || watching.kind === "live" || !watching.seekable; }
+function lostTry() {
+  if (!watching || lost.trying) return;
+  const wait = reconnectWait(lost.attempts, lostLive(), lostAhead());
+  if (wait < 0) { lost.failed = true; lost.manual = false; lostRender(); return; }
+  lost.trying = true; lost.failed = false;
+  const gen = lost.gen;
+  lost.timer = setTimeout(() => { if (gen === lost.gen) lostAttempt(gen); }, wait);
+}
+// 重连一次：同一集（watching.again / 跟着小电视时小电视还在放的那个）、同一种放法（watching.hls，片库的 remux 在 again
+// 里，清晰度是存着的那个）、从现在的位置（pcPos）。新的一路好了才换过去，换的时候和跳转一样（openDirect 换播放器）。
+async function lostAttempt(gen) {
+  const w = watching;
+  if (!w) return;
+  lost.attempts++;
+  if (w.mode === "follow") {
+    // 跟着小电视：先问一次小电视在放什么；换了（下一集、换台）就交给 renderWatch 去接，不按旧的位置重连。
+    await refresh();
+    if (gen !== lost.gen) return;
+    if (watching !== w || watchKey(data.now) !== w.key || w.device !== deviceId()) { lostReset(); if (data) renderWatch(); return; }
+  }
+  const at = w.seekable ? { start: Math.round(pcPos() * 10) / 10 } : {};
+  const request = w.mode === "direct" ? vodAsk(Object.assign({ viewer }, w.again, at), w.hls) : vodAsk(withDevice(Object.assign({ viewer }, at)), w.hls);
+  if (w.mode === "direct" && request.channel === "cast" && deviceId()) request.device = deviceId();
+  let answer = null, why = "";
+  try { answer = await call("POST", "api/watch", request); }
+  catch (error) {
+    if (gen !== lost.gen) return;
+    if (error instanceof SignedOut) { lostReset(); signedOut(); return; }
+    why = "网络不通";
+  }
+  if (gen !== lost.gen || watching !== w) return;
+  if (answer && !answer.ok) why = answer.error || "";
+  if (answer && answer.ok && await lostReady(answer, gen)) {
+    if (gen !== lost.gen || watching !== w) return;
+    // 等的时候用户暂停了：先不换（换过去新的播放器会自己放起来），等按播放再连；这一次不算。
+    if (lostUserPaused() && !lost.manual) { lost.trying = false; lost.deferred = true; lost.attempts--; lostRender(); return; }
+    lostSwitch(w, answer);
+    return;
+  }
+  if (gen !== lost.gen || watching !== w) return;
+  if (why) lost.why = why;
+  lost.trying = false;
+  lostTry();
+  lostRender();
+}
+// 等新的一路好了（HLS 的列表里有 READY_S 秒了：换过去马上有画面）；点播、DASH 是按 Range 转发的，马上就好。
+// 缓存快放完了、等太久了也换过去（新的播放器自己等，说「正在打开…」）；新的一路也没了是 false。
+async function lostReady(answer, gen) {
+  if (answer.mode === "vod" || answer.mode === "dash") return true;
+  const t0 = Date.now();
+  for (;;) {
+    let status = 0, secs = 0, done = false;
+    try {
+      const r = await fetch(answer.url + "index.m3u8", { credentials: "same-origin", cache: "no-store" });
+      status = r.status;
+      if (r.ok) {
+        const text = await r.text();
+        for (const m of text.matchAll(/#EXTINF:([\d.]+)/g)) secs += Number(m[1]);
+        done = text.includes("#EXT-X-ENDLIST");
+      }
+    } catch (error) { status = 0; }
+    if (gen !== lost.gen) return false;
+    const step = reconnectStep(status, secs, done, lostAhead(), Date.now() - t0);
+    if (step !== "wait") return step === "switch";
+    await sleep(500);
+  }
+}
+function lostSwitch(w, answer) {
+  const attempts = lost.attempts;
+  lostReset();
+  lost.attempts = attempts;            // 换过去以后放稳了（CALM_S）才清零：一连上就又断的，次数照算
+  if (w.mode === "direct") openDirect(answer, { group: w.group, seek: true, again: true, hls: w.hls, reconnect: true });
+  else followOpen(answer, w.device, w.key, w.hls, true);
+}
+// 用户点了「重连」（小条上的、「播放已中断」下面的、「重试」）：次数从头算，马上连，连上就换过去（暂停着也换）。
+function lostManual() {
+  if (!watching) return;
+  clearTimeout(lost.timer);
+  lost.gen++;
+  Object.assign(lost, { gone: true, attempts: 0, trying: false, failed: false, deferred: false, manual: true });
+  lostTry();
+  lostRender();
+}
+// 用户开始看别的、跳转等自己要了一路以后没要成：正在放的那一路早就没了的话，接着走重连。
+function lostAgain(why) {
+  const p = watching && watching.player;
+  if (p && (p.gone || (p.failed && p.started)) && !lost.gone) sourceGone(p, why);
+}
+// 按 lostState 画：小条（缓存接着放 / 暂停着）在左上角，不挡画面、点画面照常暂停；「正在重新连接…」「播放已中断」在中间。
+function lostRender() {
+  if (!watching) return;
+  const s = lostState({ gone: lost.gone, failed: lost.failed, ahead: lostAhead(), userPaused: lostUserPaused(), deferred: lost.deferred });
+  const middle = s.kind === "reconnecting" || s.kind === "interrupted";
+  if (s.kind === lost.kind && s.text === lost.text && (!middle || (lost.msg && lost.msg.isConnected))) return;
+  lost.kind = s.kind; lost.text = s.text;
+  const banner = s.kind === "cached" || s.kind === "paused";
+  $("pcLost").hidden = !banner;
+  if (banner) { $("pcLostText").textContent = s.text; $("pcResume").hidden = true; }
+  if (s.kind === "reconnecting") lostSay(s.text, false);
+  else if (s.kind === "interrupted") { const why = lostWhy(); lostSay(s.text + (why ? "（" + why + "）" : ""), true, lostManual, "重连"); }
+  else lostUnsay();
+}
+$("pcLostGo").onclick = (event) => { event.stopPropagation(); lostManual(); };
+// <video> 的事件：断了时跟着缓存、暂停改说的话；按了播放就接着连；换过去以后放稳了把次数清零；
+// 别的出错的话（不归这里管的）画面又往前走了 LOST_STALE_S 秒就收起来（不留着「出错了」却在放；留几秒看得清）。
+const LOST_STALE_S = 3;
+function lostTick(event) {
+  if (!watching) return;
+  const v = $("watchVideo");
+  if (lost.gone) {
+    if (event.type === "play" && !lost.trying) {
+      lost.deferred = false;
+      if (lost.failed) { lost.attempts = 0; lost.failed = false; }
+      lostTry();
+    }
+    // 晚一拍再画：WatchPlayer 自己的 pause / play 监听（记 wantPlay）在这个之后才跑。
+    setTimeout(lostRender, 0);
+    return;
+  }
+  if (event.type !== "timeupdate" || v.paused) return;
+  if (lost.attempts) {
+    const at = pcPos();
+    if (lost.okAt == null || at < lost.okAt) lost.okAt = at;
+    else if (at - lost.okAt >= RECONNECT.CALM_S) { lost.attempts = 0; lost.okAt = null; }
+  }
+  if (badAt != null && v.readyState >= 3 && Math.abs(v.currentTime - badAt) > LOST_STALE_S && $("watchMsg").classList.contains("bad")) watchSay("");
+}
+for (const name of ["timeupdate", "play", "pause", "waiting", "playing", "ended", "error"]) $("watchVideo").addEventListener(name, lostTick);
 
 // ---- 直播起播的几个纯函数（tests/console_live_test.mjs 截出这一段单独测）----
 // 直播源常常几秒才来一大段：第一段一到就开始放，先放慢一点（LIVE.SLOW）把缓冲攒到 LIVE.OK 秒，攒够了再恢复原速；
@@ -1547,6 +1730,46 @@ function mediaDone(playerEnded, videoEnded, currentTime, duration) {
   return !!playerEnded && (!!videoEnded || (isFinite(duration) && duration > 0 && duration - currentTime < VOD_GATE.END_NEAR_S));
 }
 // ---- 视频缓冲的纯函数到此 ----
+
+// ---- 片源断了自动重连的几个纯函数（tests/console_reconnect_test.mjs 截出这一段单独测）----
+// 放着放着中转那边没了这一路（列表、初始化段 404：空闲 IDLE_S 秒被收了、中转重启了；410 不带 X-RTV-Reopen：
+// ffmpeg 停了；点播、DASH 放到一半出错）：缓存里的接着放，后台从现在的位置（同一集、同一种放法）重要一路
+// （lostAttempt）。视频至多 TRIES 次、直播 LIVE_TRIES 次，第 n 次之前等 WAIT_MS[n]；视频次数用完了缓存却还多
+// （中转重启要十几秒，缓存有一分钟）：缓存放着的时候每 WAIT_MS 最后那么久再试一次，缓存放完了才算没连上。新的一路好了（HLS 的
+// 列表里已经有 READY_S 秒，或者整个都出完了）才换过去，换过去马上有画面；缓存快放完（不到 SWITCH_S 秒）或等了
+// READY_MS 还没好也换过去（新的播放器自己等）。
+// 换过去以后放了 CALM_S 秒，次数清零。
+const RECONNECT = { TRIES: 3, LIVE_TRIES: 1, WAIT_MS: [0, 3000, 10000], LOW_S: 0.5, SWITCH_S: 2, READY_S: 6, READY_MS: 20000, CALM_S: 15 };
+// 第 attempt 次（从 0 数）重连之前等几毫秒；次数用完了是 -1。ahead：缓存往前还有几秒（视频次数用完了以后，
+// 缓存还有 SWITCH_S 秒以上就隔 WAIT_MS 最后那么久再试，不算次数）。
+function reconnectWait(attempt, live, ahead) {
+  const last = RECONNECT.WAIT_MS[RECONNECT.WAIT_MS.length - 1];
+  if (attempt < (live ? RECONNECT.LIVE_TRIES : RECONNECT.TRIES)) return RECONNECT.WAIT_MS[Math.min(attempt, RECONNECT.WAIT_MS.length - 1)];
+  return !live && ahead > RECONNECT.SWITCH_S ? last : -1;
+}
+// 等新的一路时下一步：status 是取 index.m3u8 的回答（0 是没连上中转），secs 是列表里已经有几秒，done 是整个都出完了；
+// "switch" 换过去，"fail" 这一次不行（新的一路也没了），"wait" 再等一会儿（缓存还够、没等太久）。
+function reconnectStep(status, secs, done, ahead, waitedMs) {
+  if (status === 404 || status === 410) return "fail";
+  if (status >= 200 && status < 300 && (secs >= RECONNECT.READY_S || done)) return "switch";
+  return ahead < RECONNECT.SWITCH_S || waitedMs >= RECONNECT.READY_MS ? "switch" : "wait";
+}
+// 片源断了以后画面上说什么。s：gone（这一路没了）、failed（重连的次数用完了还没连上）、ahead（缓存往前还有几秒；
+// 播放器出错放不动了算 0）、userPaused（用户自己暂停的；为缓冲停着不算）、deferred（用户暂停着，等按播放再重连）。
+// 回答 {kind, text}：kind 是 ""（不归这里管：没断，或者是「正在缓冲」那些）、"cached"（小条，缓存接着放、后台在重连）、
+// "paused"（小条：用户暂停着，说缓存还有多少，给一个「重连」）、"reconnecting"（缓存放完了还在连：画面中间，不吓人）、
+// "interrupted"（缓存放完了、几次都没连上：画面中间「播放已中断」和「重连」）。
+function lostState(s) {
+  if (!s.gone) return { kind: "", text: "" };
+  const left = s.ahead > RECONNECT.LOW_S;
+  if (s.userPaused || s.deferred) {
+    return { kind: "paused", text: left ? "片源断开了，已缓存的 " + Math.floor(s.ahead) + " 秒还能接着放" : "片源断开了，继续播放时会重新连接" };
+  }
+  if (left) return { kind: "cached", text: "当前线路暂时不可用，正在播放已缓存内容" };
+  if (!s.failed) return { kind: "reconnecting", text: "正在重新连接…" };
+  return { kind: "interrupted", text: "播放已中断" };
+}
+// ---- 片源断了自动重连的纯函数到此 ----
 // 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
 // opts：say（画面上的提示）、ended（放完了）、live（直播：落后太多时追到最新附近）、gap（视频落到中转的窗口外了）、
 // notice（换线路时中转说的话）、reopen（直播放了一阵断了、中转说还有别的线路：页面重开一次，返回 true 表示接手了）。
@@ -1554,6 +1777,8 @@ class WatchPlayer {
   constructor(video, base, opts) {
     this.video = video; this.base = base; this.say = opts.say; this.live = !!opts.live; this.gap = opts.gap || (() => {});
     this.notice = opts.notice || this.say; this.reopen = opts.reopen || (() => false);
+    // 这一路没了（gone）：交给页面重连（sourceGone），缓存里的接着放；没给时照旧在画面上说。
+    this.lost = opts.gone || null; this.gone = false;
     this.line = opts.line || (() => {});
     this.slow = opts.slow || (() => {});
     this.opening = opts.opening || "正在连片源…（要几秒钟）";
@@ -1620,9 +1845,25 @@ class WatchPlayer {
       await this.append(await this.fetch("init.mp4", "arrayBuffer"));
       await this.loop();
     } catch (error) {
-      if (this.alive && error.reopen && this.reopen(error.message)) return;
-      if (this.alive) this.say(error.message || "放不了", true, true);
+      if (!this.alive) return;
+      if (error.reopen && this.reopen(error.message)) return;
+      // 这一路没了、连不上中转（TypeError：中转在重启），或者视频放到一半取不下去了：缓存接着放，页面在后台重连
+      // （不说「这一路已经停了」）。
+      if (this.lost && (error.gone || error instanceof TypeError || (this.started && !this.live))) { this.lose(error.gone ? error.why || "" : error.message || ""); return; }
+      this.say(error.message || "放不了", true, true);
     }
+  }
+  // 不再取了：为缓冲停着的不再等（等不来了），用户要放就把缓存放完（起播前攒着的那几秒也放）；说什么、什么时候
+  // 重连归页面（sourceGone）。
+  lose(why) {
+    this.gone = true;
+    if (this.hold) {
+      this.hold = 0;
+      this.unsay();
+      if (this.started && this.wantPlay) this.video.play().catch(() => {});
+    }
+    if (!this.started) this.kick();
+    this.lost(why);
   }
   // 取一个文件：503（还在连片源）过一会儿再来；410 是这一路停了，正文是原因（B 站连不上之类）；404 是地址失效了。
   // 直播台有备用线路时（server/routes.py）：503 带 X-RTV-Notice 是在换线路（正文「CCTV2 线路 1 失效…正在换线路 2…」），
@@ -1645,12 +1886,12 @@ class WatchPlayer {
       if (notice && round < 120) { const text = await response.text(); if (this.alive) this.notice(text); await sleep(response.headers.get("X-RTV-Progress") ? 50 : 1000); continue; }
       if (response.status === 503 && round < 8) { await sleep(1000); continue; }
       if (response.status === 410) {
-        const error = new Error((await response.text()) || "片源断了");
-        error.reopen = !!response.headers.get("X-RTV-Reopen");
-        throw error;
+        const why = await response.text();
+        throw Object.assign(new Error(why || "片源断了"), { reopen: !!response.headers.get("X-RTV-Reopen"), gone: true, why });
       }
       if (response.status === 404 && name.endsWith(".m4s")) return null;      // 落在窗口外了，跳过
-      throw new Error(response.status === 404 ? "这一路已经停了" : "片源还没准备好");
+      if (response.status === 404) throw Object.assign(new Error("这一路已经停了"), { gone: true });
+      throw new Error("片源还没准备好");
     }
   }
   append(buffer) {
@@ -1753,12 +1994,15 @@ class WatchPlayer {
       ? [...Array(b.length).keys()].find((i) => this.origin >= b.start(i) && this.origin < b.end(i) - 0.1) : undefined;
     if (at !== undefined && Math.abs(v.currentTime - this.origin) > 0.2) v.currentTime = this.origin;
     else if (inside < 0) {
+      // 停在一个空档里：跳到后面那一截。后面没有了时只有起播才回到第一截；放起来以后是放到了缓存的末尾
+      // （画面和声音两条轨不一样长，位置会比缓冲多出一点），往回跳就是把放过的一大截再放一遍（片源没了时尤其如此）。
       const ahead = [...Array(b.length).keys()].map((i) => b.start(i)).find((t) => t > v.currentTime);
-      v.currentTime = (ahead !== undefined ? ahead : b.start(0)) + 0.05;
+      if (ahead !== undefined) v.currentTime = ahead + 0.05;
+      else if (!this.started) v.currentTime = b.start(0) + 0.05;
     } else if (this.live && end - v.currentTime > 30) v.currentTime = end - 12;
     if (!this.started) {
       // 视频：取得不够快时先攒一截（vodHold）；用户在这时暂停了就停在要的那一秒，不自己放。
-      const wait = this.prebuffer ? vodHold(this.gateState()) : 0;
+      const wait = this.prebuffer && !this.gone ? vodHold(this.gateState()) : 0;
       if (wait) { this.waitFor(wait); return; }
       this.started = true;
       this.hold = 0;
@@ -1784,7 +2028,7 @@ class WatchPlayer {
   // 视频放着放着断粮（缓冲不到 VOD_GATE.LOW_S 秒、还没取完）：停下攒到 RESUME_S 秒，再从同一个位置自己接着放。
   // 不跳、不重起、不算放完；用户这时暂停了（userPause）就不自己放。
   gate() {
-    if (this.live || !this.alive || !this.started || !this.sb) return;
+    if (this.live || !this.alive || !this.started || !this.sb || this.gone) return;
     const v = this.video;
     if (!this.hold && (v.paused || v.seeking)) return;
     const wait = vodHold(this.gateState());
@@ -1871,8 +2115,8 @@ class VodPlayer {
     });
     on("seeking", () => { if (this.alive) { this.ended = false; this.seekT = performance.now(); } });
     on("seeked", () => { if (this.alive && video.paused && this.seekT) { this.stats.seeks.push(Math.round(performance.now() - this.seekT)); this.seekT = 0; } });
-    on("waiting", () => { if (this.alive && this.started) this.slow = setTimeout(() => { if (this.alive && video.readyState < 3) this.say("缓冲中…"); }, 1500); });
-    on("canplay", () => { clearTimeout(this.slow); if (this.alive && this.started) this.say(""); });
+    on("waiting", () => { if (this.alive && this.started) this.slow = setTimeout(() => { if (this.alive && !this.failed && video.readyState < 3) this.say("缓冲中…"); }, 1500); });
+    on("canplay", () => { clearTimeout(this.slow); if (this.alive && this.started && !this.failed) this.say(""); });
     on("ended", () => { if (this.alive) { this.ended = true; opts.ended(); } });
     on("error", () => {
       if (!this.alive || this.failed) return;
@@ -2007,9 +2251,9 @@ class DashPlayer {
     on("waiting", () => {
       if (!this.alive) return;
       this.kick(); this.pump();
-      if (this.started) this.slow = setTimeout(() => { if (this.alive && video.readyState < 3) this.say("缓冲中…"); }, 1500);
+      if (this.started) this.slow = setTimeout(() => { if (this.alive && !this.failed && video.readyState < 3) this.say("缓冲中…"); }, 1500);
     });
-    on("canplay", () => { clearTimeout(this.slow); if (this.alive && this.started) this.say(""); });
+    on("canplay", () => { clearTimeout(this.slow); if (this.alive && this.started && !this.failed) this.say(""); });
     on("timeupdate", () => this.pump());
     on("ended", () => { if (this.alive) { this.ended = true; opts.ended(); } });
     on("error", () => { if (this.alive && this.ms) this.fail("浏览器解不了这个视频"); });
@@ -2023,7 +2267,7 @@ class DashPlayer {
       const r = await fetch(this.base + "manifest", { credentials: "same-origin", cache: "no-store" });
       if (!r.ok) throw Object.assign(new Error((await r.text()) || "取不到视频的索引"), { gone: r.status === 404 });
       m = await r.json();
-    } catch (error) { if (this.alive) this.fail(error.message || "取不到视频的索引", error.gone); return; }
+    } catch (error) { if (this.alive) this.fail(error.message || "取不到视频的索引", error.gone || error instanceof TypeError); return; }
     if (!this.alive) return;
     this.stats.manifest = Math.round(performance.now() - this.t0);
     const kinds = ["v", "a"];
@@ -2059,7 +2303,12 @@ class DashPlayer {
       t.ctl = new AbortController();
       let r;
       try { r = await fetch(this.base + t.k, { credentials: "same-origin", cache: "no-store", headers: { Range: range }, signal: t.ctl.signal }); }
-      catch (error) { if (error.name === "AbortError" || round >= 2) throw error; await sleep(600); continue; }
+      catch (error) {
+        if (error.name === "AbortError") throw error;
+        // 连着几次连不上中转（中转在重启）：和这一路没了一样，按现在的位置重连，不换成 360p。
+        if (round >= 2) throw Object.assign(error, { gone: true });
+        await sleep(600); continue;
+      }
       if (r.ok) return whole ? r.arrayBuffer() : r;
       if (r.status === 404 || r.status === 410) throw Object.assign(new Error("这一路已经停了"), { gone: true });
       const text = await r.text();
@@ -2132,7 +2381,7 @@ class DashPlayer {
     for (const [a, b] of dashEvict(rangesOf(t.sb.buffered), this.video.currentTime)) await this.op(t, (sb) => sb.remove(a, b));
   }
   pump() {
-    if (!this.alive || !this.ready) return;
+    if (!this.alive || !this.ready || this.failed) return;
     const now = this.video.currentTime;
     for (const t of this.tracks) if (!t.busy && dashWant(t.t, t.next, now)) this.fill(t);
     this.maybeEnd();
@@ -2197,7 +2446,9 @@ class DashPlayer {
   fail(text, gone) {
     if (!this.alive || this.failed) return;
     this.failed = true;
-    if (!this.started) this.opts.fallback(text, gone); else this.opts.broken(text, gone);
+    // 这一路没了（中转重启、空闲被收了）：不是浏览器放不了，照原样从现在的位置重连（sourceGone），不换成 360p。
+    if (gone && this.opts.gone) { this.gone = true; this.opts.gone(text); }
+    else if (!this.started) this.opts.fallback(text, gone); else this.opts.broken(text, gone);
   }
   seek(target) { if (this.alive) this.video.currentTime = Math.max(0, target); }
   stop() {
@@ -2226,7 +2477,8 @@ function playerFor(answer) {
         if (watching && watching.player === player && isFinite(d) && d > 0) { watching.duration = d; renderPc(); }
       },
       fallback: (why) => { if (watching && watching.player === player) dashFallback(why); },
-      broken: () => { if (watching && watching.player === player) vodBroken(); },
+      broken: (why) => sourceGone(player, why),
+      gone: (why) => sourceGone(player, why),
     });
     return player;
   }
@@ -2239,13 +2491,14 @@ function playerFor(answer) {
         if (watching && watching.player === player && isFinite(d) && d > 0) { watching.duration = d; renderPc(); }
       },
       fallback: () => { if (watching && watching.player === player) vodFallback(); },
-      broken: () => { if (watching && watching.player === player) vodBroken(); },
+      broken: () => sourceGone(player, ""),
     });
     return player;
   }
   $("watchSlow").hidden = true;
   const player = new WatchPlayer($("watchVideo"), answer.url, {
     say: watchSay, ended: watchEnded, live, opening: answer.library ? "正在打开…" : "", prebuffer: !!answer.library,
+    gone: (why) => sourceGone(player, why),
     // 离结尾还有几秒（起播、断粮时攒的不超过它）；接上一段就重画进度条上的缓冲（为缓冲停着时没有 timeupdate）。
     left: () => (watching && watching.player === player && watching.duration ? Math.max(0, watching.duration - pcPos()) : Infinity),
     fed: () => { if (watching && watching.player === player) renderPc(); },
@@ -2515,8 +2768,8 @@ async function seekRestart(target) {
   // 点播的播放器坏了（地址过期、这一路被收了）才会走到这里：同一路也要换一个新的播放器（again）。
   const again = !!watching.player.vod;
   const ok = watching.mode === "direct"
-    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10 }), { group: watching.group, seek: true, again })
-    : await startWatch(false, true, Math.round(target * 10) / 10);
+    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10 }), { group: watching.group, seek: true, again, hls: watching.hls })
+    : await startWatch(false, true, Math.round(target * 10) / 10, watching.hls);
   if (!ok && watching) { watching.seeking = null; watchSay(""); renderPc(); }
 }
 // 进度条上显示的位置：拖着、连按方向键时是要去的地方（watching.preview，还没真跳），否则是 pcPos。
@@ -2691,7 +2944,8 @@ function watchEnded() {
   if (!watching) return;
   if (watching.kind === "live") { watchSay("直播断了", false, true); return; }
   const pos = pcPos(), dur = watching.duration;
-  if (dur && pos < dur - 30) { watchSay("片源断了", true, true); return; }
+  // 离结尾还远就「放完了」：中转那边的一路半路停了，和这一路没了一样从这里重连（sourceGone）。
+  if (dur && pos < dur - 30) { sourceGone(watching.player, ""); return; }
   if (watching.mode !== "direct") { watchSay("这一段放完了", false, true); return; }
   pcReport({ ended: true, position: dur || pos });
   if (watching.parts) {
@@ -2950,14 +3204,6 @@ function vodFallback() {
   if (watching.mode === "direct") startDirect(Object.assign({}, watching.again, { start: Math.round((watching.start || 0) * 10) / 10 }), { group: watching.group, seek: true, again: true, hls: true });
   else startWatch(false, true, undefined, true);
 }
-// 放到一半出错（地址过期、这一路空闲太久被收了）：从现在的位置重要一路；30 秒内又坏了就让人点「重试」。
-let vodBrokenAt = 0;
-function vodBroken() {
-  const pos = pcPos();
-  if (Date.now() - vodBrokenAt < 30000) { watchSay("片源断了", true, true); return; }
-  vodBrokenAt = Date.now();
-  seekRestart(pos);
-}
 
 // ---- 片库的字幕（library.py 的 subs、/api/library/subs/<id>/<n>.vtt）：菜单里选一条，取来 WebVTT，放进 <video> 的
 // 一条字幕轨（浏览器自己画，全屏也在）。经中转封装着放的（WatchPlayer）媒体时间和视频里的位置差 origin − start
@@ -3201,6 +3447,7 @@ addEventListener("keydown", (event) => {
 // 跟随小电视：看它正在播的台。start 给了是在电脑上跳转（只动电脑：这个页面另起一路）。
 async function startWatch(auto, again, start, hls) {
   const device = deviceId(), key = watchKey(data.now);
+  lostReset();
   if (watching) watching.busy = true;
   let answer;
   const body = vodAsk(withDevice({ viewer }), hls);
@@ -3208,23 +3455,29 @@ async function startWatch(auto, again, start, hls) {
   try { answer = await call("POST", "api/watch", body); }
   catch (error) {
     if (watching) watching.busy = false;
-    if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
+    if (error instanceof SignedOut) signedOut(); else { toast("网络不通", true); lostAgain("网络不通"); }
     return false;
   }
   if (!answer.ok) {
     if (watching && auto) { watching.key = key; watching.busy = false; watchSay(answer.error, true, true); }
-    else { if (watching) watching.busy = false; toast(answer.error, true); }
+    else { if (watching) watching.busy = false; toast(answer.error, true); lostAgain(answer.error); }
     return false;
   }
   if (watching && watching.mode === "follow" && watching.sid === answer.sid && watching.device === device && !again) {
     watching.key = key; watching.busy = false; return true;       // 还是同一个片源，接着放
   }
+  followOpen(answer, device, key, hls);
+  return true;
+}
+// 跟着小电视看的一路接上播放器（startWatch，或者断了以后重连：reconnect 为真时不清重连的次数）。
+function followOpen(answer, device, key, hls, reconnect) {
+  if (!reconnect) lostReset();
   const player = playerFor(answer);
   miniWho = "pc";
   watching = { mode: "follow", device, sid: answer.sid, key, player, busy: false, channel: answer.channel, kind: answer.kind,
                name: data.now.name || answer.channel, title: answer.title || data.now.name,
                start: answer.start || 0, duration: answer.duration || 0, seekable: !!answer.seekable, seeking: null,
-               parts: null, own: !!answer.own, quality: answer.quality || null };
+               parts: null, own: !!answer.own, quality: answer.quality || null, hls };
   $("watchFollow").checked = true;
   watching.label = deviceName() + " · " + (data.now.name || answer.channel) + (answer.title && answer.title !== data.now.name ? " · " + answer.title : "");
   $("pcResume").hidden = true;
@@ -3234,13 +3487,13 @@ async function startWatch(auto, again, start, hls) {
   renderMini();
   renderPc();
   player.start();
-  return true;
 }
 
 // 直接看：body 是 {channel[, episode | step]}、{url}（投到电脑）或 {video: {site, id}}（投屏历史），
 // 再可以带 part（第几集）、start（从第几秒起：跳转、从头播放）。
 async function startDirect(body, ctx) {
   ctx = ctx || {};
+  lostReset();
   if (watching) watching.busy = true;
   let answer;
   const request = vodAsk(Object.assign({ viewer }, body), ctx.hls);
@@ -3249,13 +3502,14 @@ async function startDirect(body, ctx) {
   catch (error) {
     if (watching) watching.busy = false;
     switched();
-    if (error instanceof SignedOut) signedOut(); else toast("网络不通", true);
+    if (error instanceof SignedOut) signedOut(); else { toast("网络不通", true); lostAgain("网络不通"); }
     return false;
   }
   if (!answer.ok) {
     if (watching) watching.busy = false;
     switched();
     toast(answer.error, true);
+    lostAgain(answer.error);
     return false;
   }
   openDirect(answer, ctx);
@@ -3264,6 +3518,7 @@ async function startDirect(body, ctx) {
 // 「在电脑上看」开始了（POST /api/watch 或 /api/play 的回答）：接上播放器。
 function openDirect(answer, ctx) {
   ctx = ctx || {};
+  if (!ctx.reconnect) lostReset();
   const same = watching && watching.mode === "direct" && watching.sid === answer.sid && !ctx.again;
   if (same) switched();      // 还是正在放的那一路（又点了同一个台）
   const player = same ? watching.player : playerFor(answer);
@@ -3280,7 +3535,7 @@ function openDirect(answer, ctx) {
                parts: answer.parts || null, part: answer.part || answer.index || 0, video: answer.video || null,
                quality: answer.quality || null,
                routes: answer.routes || 1, route: answer.route || 0, lines: answer.lines || [],
-               subs: answer.subs || null, subsUrl: answer.subs_url || "" };
+               subs: answer.subs || null, subsUrl: answer.subs_url || "", hls: ctx.hls };
   miniWho = "pc";
   $("watchFollow").checked = false;
   const parts = answer.parts;
@@ -3322,6 +3577,7 @@ function stopWatch() {
   clearTimeout(seekTimer);
   clearTimeout(skipTimer);
   clearTimeout(warmTimer);
+  lostReset();
   switched();
   hideUpNext();
   closeParts();

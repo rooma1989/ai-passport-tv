@@ -833,6 +833,10 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcbanner { position: absolute; left: 12px; top: 12px; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 6px 6px 12px; border-radius: 12px;
                    background: rgba(20,20,24,.82); font-size: 13px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
 #pcwin .pcbanner span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 片源断了、缓存还在放：小一点，前面一个琥珀色的点（不是红字：画面和声音还在） */
+#pcwin .pclost { padding: 4px 4px 4px 10px; font-size: 12px; color: rgba(245,245,247,.92); }
+#pcwin .pclost::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+#pcwin .pclost .pctxt { height: 26px; padding: 0 9px; font-size: 12px; }
 #pcwin .pcupnext { position: absolute; right: 14px; bottom: 74px; width: min(300px, calc(100% - 28px)); display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center;
                    padding: 12px 14px; border-radius: 14px; background: rgba(20,20,24,.9); box-shadow: 0 12px 30px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.12); }
 #pcwin .pcupnext small { grid-column: 1; color: rgba(235,235,245,.6); font-size: 12px; }
