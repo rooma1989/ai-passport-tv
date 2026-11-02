@@ -13,14 +13,20 @@ const source = readFileSync(join(ROOT, 'server/relay/assets/console.js'), 'utf8'
 const begin = source.indexOf('// ---- 视频缓冲的几个纯函数');
 const end = source.indexOf('// ---- 视频缓冲的纯函数到此');
 assert.ok(begin > 0 && end > begin, 'the pure block is marked in console.js');
-const { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, mediaDone } = new Function(
-  source.slice(begin, end) + '\nreturn { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, mediaDone };')();
+const { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, mediaDone, endedEarly } = new Function(
+  source.slice(begin, end) + '\nreturn { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, mediaDone, endedEarly };')();
 
 // The VOD buffer cap in console.js lets the player fetch at least as far as it waits for.
 const cap = source.match(/const VOD_BUFFER = \{ AHEAD_S: (\d+), BEHIND_S: \d+, MIN_AHEAD_S: (\d+)/);
 assert.ok(cap, 'VOD_BUFFER is where it was');
 assert.ok(Number(cap[1]) - 1 >= VOD_GATE.START_S && Number(cap[1]) - 1 >= VOD_GATE.RESUME_S, 'the time cap is above both targets');
 assert.ok(VOD_GATE.START_S >= VOD_GATE.RESUME_S && VOD_GATE.RESUME_S > VOD_GATE.LOW_S * 4, 'hysteresis, not flapping');
+
+// ---- a stream that "ends" far from the real end was cut off (relay restarting), not finished ----
+assert.equal(endedEarly(2480, 4.17), true, 'restart 4 s into a fresh stream at 10 min of a 47 min episode');
+assert.equal(endedEarly(60, 45), false, 'the last minute: the data reaches within 30 s of the end');
+assert.equal(endedEarly(20, 0), false, 'near the end anyway');
+assert.equal(endedEarly(Infinity, 3), false, 'unknown duration: trust the relay');
 
 // ---- "really ended": the media element played to its end, not "every segment was appended" ----
 assert.equal(mediaDone(true, true, 1500, 1500), true);

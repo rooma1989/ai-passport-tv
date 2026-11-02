@@ -1696,7 +1696,7 @@ const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 
 // - 放着放着缓冲不到 LOW_S 秒（还没取完）：先停下，攒到 RESUME_S 秒自己接着放。
 // 两个目标都不超过离结尾还有多少、也不超过 aheadLimit 让取到的那么远（码率高时按字节封顶，少 1 秒的余量），
 // 全都取完了（ended）就不等。
-const VOD_GATE = { START_S: 12, RESUME_S: 10, LOW_S: 0.5, FAST: 1.3, FAST_AHEAD_S: 2, MEASURE_S: 2, WINDOW: 8, END_NEAR_S: 0.5 };
+const VOD_GATE = { START_S: 12, RESUME_S: 10, LOW_S: 0.5, FAST: 1.3, FAST_AHEAD_S: 2, MEASURE_S: 2, WINDOW: 8, END_NEAR_S: 0.5, EARLY_END_S: 30 };
 // 要攒到几秒：want 秒，不超过离结尾的 left 秒和取得到的 cap 秒（少 1 秒余量）。
 function vodTarget(want, left, cap) { return Math.max(0, Math.min(want, left, cap - 1)); }
 // 取得多快：feed 是接上的段 [{t: 接上的时刻（毫秒）, secs: 这段几秒}]，第一项只当起点（它自己的等待里有中转起播、
@@ -1722,6 +1722,9 @@ function vodHold(s) {
   if (s.holding) return s.ahead >= target ? 0 : target;
   return s.ahead < VOD_GATE.LOW_S && s.left > VOD_GATE.LOW_S && target > s.ahead ? target : 0;
 }
+// 中转说这一路完了（#EXT-X-ENDLIST），接到的数据末尾离片尾却还有 EARLY_END_S 秒以上：是半路断了，不是放完了。
+// left：现在的位置离片尾几秒（不知道时 Infinity）；fed：现在的位置往后还接到了几秒。
+function endedEarly(left, fed) { return isFinite(left) && left - Math.max(0, fed) > VOD_GATE.EARLY_END_S; }
 // 画面上的「正在缓冲 6/12 秒」。
 function vodBufferText(ahead, target) { return "正在缓冲 " + Math.min(Math.floor(Math.max(0, ahead)), Math.ceil(target)) + "/" + Math.ceil(target) + " 秒"; }
 // 真的放完了：播放器说完了（HLS 是数据都接完了，点播、DASH 是 <video> 的 ended），而且 <video> 也放到了结尾
@@ -1964,9 +1967,16 @@ class WatchPlayer {
       if (ended && this.next >= first + count) {
         // 直播放了一阵断了、中转还有别的线路（#EXT-X-RTV-REOPEN）：马上重开，不等缓冲放完。
         if (this.live && text.includes("#EXT-X-RTV-REOPEN") && this.reopen("线路断了，正在换线路…")) return;
+        // 列表说完了、接到的数据却离片尾还远（中转关掉、重启时先杀了 ffmpeg，这一路被当成放完了）：不是放完，是这一路
+        // 没了，交给页面从现在的位置重连（sourceGone）。不然还没放起来的会一直「正在缓冲 1/12 秒」等不来的数据。
+        if (!this.live && this.lost && endedEarly(this.left(), this.started ? this.ahead() : this.gotSecs)) {
+          this.lose("");
+          return;
+        }
         this.ended = true;
         if (this.ms.readyState === "open") this.ms.endOfStream();
         this.gate();                       // 正为缓冲停着：全都取完了，接着放
+        if (!this.started) this.kick();    // 还没放起来、在攒：攒不到了，有多少放多少
         return;
       }
       this.pace();
