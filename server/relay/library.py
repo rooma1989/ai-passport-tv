@@ -145,7 +145,8 @@ WARM_KEEP_S = 14 * 86400.0
 WARM_NEW_S = 3 * 86400.0
 WARM_START_S = 120.0
 WARM_TICK_S = 180.0
-_META_KEY = re.compile(r"^(?:s[0-9a-f]{12}|m[0-9a-f]{16})$")
+# 资料的键：剧 s + 剧名的哈希（有好几季的剧每季另有一条：s…-<季>），电影和其他视频 m + 条目 id。
+_META_KEY = re.compile(r"^(?:s[0-9a-f]{12}(?:-\d{1,2})?|m[0-9a-f]{16})$")
 _POSTER_FILE = re.compile(r"^(?:douban-\d{1,12}|tmdb-(?:tv|movie)-\d{1,10})\.(?:jpg|png|webp)$")
 # 网盘组件（OpenList）的来源：clouddrive.py 维护，页面不能删。
 MANAGED = "openlist"
@@ -199,6 +200,15 @@ def _ext(name: str) -> str:
 _CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
+def _cn_digits(n: int) -> str:
+    """1..99 → 「一」「十二」「二十三」（豆瓣的「第三季」）。"""
+    digits = "零一二三四五六七八九"
+    if n < 10:
+        return digits[n]
+    tens, ones = divmod(n, 10)
+    return ("" if tens == 1 else digits[tens]) + "十" + (digits[ones] if ones else "")
+
+
 def cn_number(text: str) -> int | None:
     """「12」「十二」「二十三」「一百零五」→ 数字；认不出 None。"""
     text = text.strip()
@@ -238,7 +248,7 @@ _DI_JI_SEASON = re.compile(r"第\s*([0-9零〇一二两三四五六七八九十]
 _YEAR = re.compile(r"(?i)(?<![0-9a-z])[(\[（【]?((?:19|20)\d{2})[)\]）】]?(?![0-9a-z])")
 # 没有年份时，标题到第一个这类标记为止（分辨率、片源、编码、声音、HDR、发布的网站，还有中文的「高码版」「内封」
 # 「字幕」「收藏版」「片源」这些）。中文的前后不看挨着什么（「NF高码版」「内封精修官译简中字幕」）。
-_JUNK = re.compile(r"(?i)(?<![0-9a-z])((?:hd)?(?:tc|ts|cam)?(?:2160p|1080[pi]|720p|480p)|4k|8k|uhd|fhd|hq|blu-?ray|bdrip|brrip|bdremux|remux|"
+_JUNK = re.compile(r"(?i)(?<![0-9a-z])((?:hd)?(?:tc|ts|cam)?(?:2160p|1080[pi]|720p|480p)|4k|8k|uhd|fhd|hq|blu-?ray|bd|bdrip|brrip|bdremux|remux|"
                    r"web-?dl|webrip|hdtv|dvdrip|x26[45]|h\.?26[45]|hevc|avc|aac|e?ac3|ddp?(?:\d(?:\.\d)?)?|"
                    r"dd\+|dts(?:-?hd)?|truehd|atmos|flac|hdr(?:10\+?)?|sdr|dovi|10bit|8bit|60fps|120fps|nf|amzn|"
                    r"dsnp|hmax|atvp|itunes)(?![0-9a-z])|"
@@ -258,7 +268,7 @@ GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "�
                 "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
                 "downloads", "download", "media", "quark", "baidu"}
 # 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
-PARSE_VERSION = 6
+PARSE_VERSION = 7
 # 文件名开头的字幕组标签：[字幕组]、【xxx】。
 _TAG = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)\s*")
 
@@ -335,6 +345,35 @@ _VERSION_DIRS = {"电视剧版", "电视剧", "剧集版", "剧集", "剧版", "
 _BRACKETS = re.compile(r"[（(\[【][^）)\]】]*[）)\]】]")
 # 剧名末尾说「全系列」「1-7季」「全36集」的括号。
 _SERIES_NOTE = re.compile(r"\s*[（(\[【](?:全系列|全集|[^）)\]】]*季|全?\d{1,4}集[^）)\]】]*)[）)\]】]\s*$")
+
+
+_KANA = re.compile(r"[\u3040-\u30ff]")
+
+
+def _squash(text: str) -> str:
+    """比片名用：不分大小写，只留字母、数字和汉字。"""
+    return "".join(c for c in text.casefold() if c.isalnum())
+
+
+def _split_scripts(title: str) -> tuple[str, str]:
+    """片名里中文名后面跟着日文名（「X医生：外科医生大门未知子 特别篇 ドクターX ～外科医・大門未知子～ スペシャル」），
+    或者英文名和中文名并排（「Street Fighter 街头霸王」「登峰传奇：丹增诺盖 Tenzing」）：(中文名, 另一个)。
+    豆瓣按中文名找，另一个留着第二个查。分不开时 (原样, "")。"""
+    words = title.split()
+    kana = next((n for n, w in enumerate(words) if _KANA.search(w)), None)
+    if kana is not None and kana > 0 and _has_cjk(" ".join(words[:kana])):
+        return " ".join(words[:kana]), " ".join(words[kana:])
+    if kana is not None:
+        return title, ""
+    cjk = [_has_cjk(w) for w in words]
+    latin = [bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9'’:,.&!?-]*", w)) for w in words]
+    for cut in range(1, len(words)):
+        head, tail = words[:cut], words[cut:]
+        if all(latin[:cut]) and all(cjk[cut:]):
+            return " ".join(tail), " ".join(head)
+        if all(cjk[:cut]) and all(latin[cut:]):
+            return " ".join(head), " ".join(tail)
+    return title, ""
 
 
 def _version_dir(folder: str) -> bool:
@@ -434,7 +473,7 @@ def parse_name(rel: str) -> dict:
             found["title"] = f"第 {episode} 集 · {rest}"[:TITLE_MAX]
         return found
     title, year = _movie_title(stem)
-    alt = ""
+    title, alt = _split_scripts(title)
     from_folder = False
     if junk_only(stem):
         # 文件名只有标记：用最近的像片名的上层文件夹（至多往上看三层）。
@@ -454,6 +493,11 @@ def parse_name(rel: str) -> dict:
             # 文件名是乱的、只夹着一个汉字（「神探之痕迹/SHEN-碳.TC1080P.mp4」），文件夹是正经的中文片名：用文件夹的。
             title, year = folder_title, folder_year or year
             from_folder = True
+        elif year is None and folder_year and _squash(title) and _squash(title) in _squash(folder_title):
+            # 年份只写在文件夹上（「街头霸王 Street Fighter (1994)/Street.Fighter.街头霸王.mkv」）。
+            year = folder_year
+    if not alt:
+        title, alt = _split_scripts(title)
     # 片名取自它自己的文件夹的（一部片一个文件夹）没有年份也算电影：查豆瓣时按电影找。
     found.update(kind="movie" if year or from_folder else "video", title=title, year=year, alt=alt)
     return found
@@ -1547,8 +1591,9 @@ class Library:
                      if i.get("kind") == "episode" and self.show_key(i.get("show") or "") == key]
         return sorted(found, key=lambda i: (i.get("season") or 0, i.get("episode") or 0, i["path"]))
 
-    def view(self) -> dict:
-        """GET /api/library：来源（没有地址）、扫描状态，电影、剧（带各集）、其他视频。"""
+    def view(self, recent: dict[str, int] | None = None) -> dict:
+        """GET /api/library：来源（没有地址）、扫描状态，电影、剧（带各集）、其他视频。有好几季的剧带 season_rows（每季
+        的键、集数、资料、海报）；recent（剧的键 → 看这个页面的人最近看的是第几季）给 now_season，卡片用那一季的海报。"""
         sources = self._load_sources()
         names = {s["id"]: s.get("name") or "" for s in sources}
         counts = self._counts()
@@ -1584,7 +1629,13 @@ class Library:
         for key, show in shows.items():
             show["episodes"].sort(key=lambda c: (c["season"] or 0, c["episode"] or 0, c["title"]))
             show["art"] = next((c["art"] for c in show["episodes"] if c["art"]), "")
-            show["seasons"] = len(show["seasons"])
+            numbers = sorted(show["seasons"])
+            show["seasons"] = len(numbers)
+            if len(numbers) > 1:
+                show["season_rows"] = [self._season_row(key, n, show["episodes"], entries) for n in numbers]
+                now = (recent or {}).get(key)
+                if now in numbers:
+                    show["now_season"] = now
             show["playable"] = any(c["playable"] for c in show["episodes"])
             entry = entries.get("s" + key)
             show["key"] = "s" + key
@@ -1599,6 +1650,9 @@ class Library:
                 if not show["art"] and (entry.get("poster") or entry.get("img")):
                     show["art"] = self._meta_art_url("s" + key, entry)
             del show["nfo"]
+            seen = next((r for r in show.get("season_rows", []) if r["n"] == show.get("now_season") and r["art"]), None)
+            if seen is not None:
+                show["art"] = seen["art"]             # 卡片：最近在看的那一季的海报
             show_rows.append(show)
         # 新加进来的在前（剧按最新加进来的那一集），一样新的按名字。
         movies.sort(key=lambda c: (-(c["added"] or 0), c["title"].casefold()))
@@ -1609,6 +1663,18 @@ class Library:
                 "total": sum(counts.values()), "more": more, "online": self.online(),
                 "full_gb": self.full_gb(), "full_used": self.full.total(),
                 "pending": len(self.meta_due()) if self._meta_can() else 0}
+
+    def _season_row(self, key: str, n: int, episodes: list[dict], entries: dict) -> dict:
+        """详情页上的一季：{n, key, count, title, year, art, meta}；对上了豆瓣的用那一季的名字、年份、海报。"""
+        skey = f"s{key}-{n}"
+        entry = entries.get(skey)
+        row = {"n": n, "key": skey, "count": sum(1 for c in episodes if (c["season"] or 1) == n), "title": "",
+               "year": None, "art": "", "meta": libmeta.public(entry)}
+        if entry and entry.get("state") == "matched":
+            row.update(title=entry.get("title") or "", year=entry.get("year"))
+            if entry.get("poster") or entry.get("img"):
+                row["art"] = self._meta_art_url(skey, entry)
+        return row
 
     def recent(self, limit: int = RECENT_MAX) -> list[dict]:
         """首页「我的片库」：最近加进来的（剧只放一张，按剧）。"""
@@ -1699,11 +1765,30 @@ class Library:
                 row["added"] = max(row["added"], item.get("added") or 0)
             # 还没按新写法重新解析（下次扫描时解析）：片名可能不对，先不往外查。
             row["stale"] = row["stale"] or item.get("pv") != PARSE_VERSION
+        # 有好几季的剧：每季再一条（豆瓣一季一个条目，各有各的海报、评分、简介），键是剧的键加「-季」。
+        # 季的年份：各季的文件夹里写的不一样（「绝命毒师S02…2009」）时用各季的；都一样时那只是剧的年份，只给第一季。
+        seasons: dict[str, dict[int, set]] = {}
+        for item in self.items():
+            if item["kind"] == "episode":
+                years = seasons.setdefault(self.meta_key(item), {}).setdefault(int(item.get("season") or 1), set())
+                if item.get("year"):
+                    years.add(int(item["year"]))
+        for key, by_season in seasons.items():
+            if len(by_season) < 2:
+                continue
+            show = found[key]
+            own = {n: next(iter(years)) for n, years in by_season.items() if len(years) == 1}
+            distinct = len(set(own.values())) > 1
+            for n in by_season:
+                year = own.get(n) if distinct else (show["year"] if n == min(by_season) else None)
+                found[f"{key}-{n}"] = {"key": f"{key}-{n}", "kind": "season", "title": show["title"], "alt": show["alt"],
+                                       "year": year, "added": show["added"], "stale": show["stale"], "season": n}
         return found
 
     @staticmethod
     def _query(title: dict) -> str:
-        return f"{title['title']}|{title['alt']}|{title['year'] or ''}|{title['kind']}"
+        query = f"{title['title']}|{title['alt']}|{title['year'] or ''}|{title['kind']}"
+        return query + f"|{title['season']}" if title.get("season") else query
 
     def meta_due(self, titles: dict[str, dict] | None = None) -> list[str]:
         """后台要查的（新加的先查）：电影和剧（其他视频多半是自己拍的，名字不自动往外发，要管理员手动匹配）。
@@ -1721,7 +1806,7 @@ class Library:
             failed = self._meta_failed.get(key)
             if (failed is not None and now - failed < META_FAIL_S) or title.get("stale"):
                 continue
-            auto = title["kind"] in ("show", "movie") and bool(title["title"])
+            auto = title["kind"] in ("show", "movie", "season") and bool(title["title"])
             entry = entries.get(key)
             if entry is None:
                 if auto:
@@ -1811,6 +1896,11 @@ class Library:
                 return entry
         if problem is not None:
             raise problem
+        if before and before.get("state") == "matched":
+            # 片名变了（识别的规则改了）、新片名没找到：原来对上的留着，不改成「没对上」。
+            entry = dict(before, q=query)
+            self.meta.put(key, entry)
+            return entry
         entry = {"state": "miss", "manual": False, "q": query,
                  "at": int(before["at"]) if douban_said_no else int(self.clock())}
         if asked or failed:
@@ -1822,7 +1912,7 @@ class Library:
         """TMDB 的候选（规矩和豆瓣一样，libmeta.pick）：中文名（zh-CN）查一次，对不上再用英文名（en-US）查一次。"""
         want = {"show": "tv", "movie": "movie"}.get(title["kind"])
         if want is None:
-            return None
+            return None                             # 一季一季的只查豆瓣（TMDB 按季的资料在剧下面）
         names = [title["title"], title["alt"]]
         chosen = None
         if title["title"]:
@@ -1833,6 +1923,8 @@ class Library:
 
     def _find_douban(self, title: dict) -> tuple[dict | None, dict | None]:
         """按片名（再按英文名）找豆瓣的条目，有把握才认（libmeta.pick）：(候选, 已经取到的详细资料或 None)。"""
+        if title["kind"] == "season":
+            return self._find_douban_season(title), None
         want = {"show": "tv", "movie": "movie"}.get(title["kind"])
         names = [title["title"], title["alt"]]
         chosen, details = None, None
@@ -1853,6 +1945,22 @@ class Library:
                 if libmeta.norm(title["alt"]) in aka:
                     chosen, details = near[0], found
         return chosen, details
+
+    def _find_douban_season(self, title: dict) -> dict | None:
+        """一季：豆瓣上叫「剧名 第3季」或「剧名 第三季」（第一季也可能就叫剧名）。按「剧名 第N季」找，名字完全一样
+        才认；季的年份（各季的文件夹里写着时）也要一样。"""
+        n, name = title["season"], title["title"]
+        names = [f"{name} 第{n}季", f"{name} 第{_cn_digits(n)}季", f"{name}第{n}季", f"{name}第{_cn_digits(n)}季"]
+        if n == 1:
+            names.append(name)
+        if title["alt"]:
+            names += [f"{title['alt']} Season {n}", f"{title['alt']} 第{n}季"]
+        query = f"{name} 第{n}季"
+        suggested = self.douban.suggest(query)
+        chosen = libmeta.pick(suggested, names, title["year"], "tv")
+        if chosen is None:
+            chosen = libmeta.pick(self.douban.search(query), names, title["year"], "tv")
+        return chosen
 
     def _save_match(self, key: str, chosen: dict, query: str, manual: bool, details: dict | None = None,
                     douban_skipped: bool = False) -> dict:
@@ -2405,6 +2513,35 @@ class Library:
                  and (os.path.splitext(name)[0] == stem or name.startswith(stem + "."))]
         return sorted(found)[:SIDE_SUBS_MAX]
 
+    def _carry_meta(self, old: dict[str, dict], items: list[dict]) -> None:
+        """扫描后剧名变了（识别的规则改了、文件夹改了名）：旧剧名下的资料（对上的、手动「不匹配」的）搬到新剧名下，
+        新剧名还没有资料时才搬，手动的先搬；旧的那部只有一季、新的有好几季时搬到那一季上（「绝命毒师S02 Breaking Bad」
+        对上的「绝命毒师 第二季」→ 绝命毒师的第 2 季）。搬过去的照新片名记 q，后台不会再按新片名重查、盖掉它。
+        电影按条目 id 记，不会变。"""
+        moves: dict[str, dict[str, set]] = {}
+        for item in items:
+            before = old.get(item["id"])
+            if before is None or before.get("kind") != "episode" or item["kind"] != "episode":
+                continue
+            was, now = self.meta_key(before), self.meta_key(item)
+            if was != now:
+                moves.setdefault(was, {}).setdefault(now, set()).add(int(item.get("season") or 1))
+        if not moves:
+            return
+        titles = self.titles()
+        entries = self.meta.all()
+        rank = lambda key: (not entries[key].get("manual"), key)
+        for was in sorted((k for k in moves if k in entries), key=rank):
+            if len(moves[was]) != 1 or entries[was].get("state") not in ("matched", "none"):
+                continue                            # 一部拆成了好几部：不知道归谁
+            now, seasons = next(iter(moves[was].items()))
+            target = f"{now}-{next(iter(seasons))}" if len(seasons) == 1 and f"{now}-{next(iter(seasons))}" in titles \
+                else now
+            pairs = [(was, target)] + [(k, f"{now}{k[len(was):]}") for k in entries if k.startswith(was + "-")]
+            for source, dest in pairs:
+                if dest in titles and dest not in self.meta.all():
+                    self.meta.put(dest, dict(entries[source], q=self._query(titles[dest])))
+
     def scan_now(self, sid: str) -> dict:
         """现在扫一个来源（在调用的线程里）。走到一半出错时旧的条目照旧留着。"""
         src = next((s for s in self._load_sources() if s["id"] == sid), None)
@@ -2443,6 +2580,7 @@ class Library:
         self._update_source(sid, lambda s: s.update(last_scan=int(self.clock()), ok=True, error="", note=note,
                                                     count=len(items)))
         fresh = sum(1 for i in items if i["id"] not in old)
+        self._carry_meta(old, items)
         self._meta_wake.set()                      # 新加的片子去查在线资料（后台慢慢来）
         self.full.prune()                          # 不见了、变了的片子的整集缓存不留
         if src["kind"] == "webdav":
@@ -3898,7 +4036,7 @@ _FILE = re.compile(r"^/api/library/file/([0-9a-f]{16})$")
 _ART = re.compile(r"^/api/library/art/([0-9a-f]{16})$")
 _SUBS = re.compile(r"^/api/library/subs/([0-9a-f]{16})/(\d{1,3})\.vtt$")
 _RAW = re.compile(r"^/api/library/raw/([0-9a-f]{16})$")
-_META_ART = re.compile(r"^/api/library/meta-art/((?:s[0-9a-f]{12}|m[0-9a-f]{16}))$")
+_META_ART = re.compile(r"^/api/library/meta-art/((?:s[0-9a-f]{12}(?:-\d{1,2})?|m[0-9a-f]{16}))$")
 _THUMB = re.compile(r"^/api/admin/library/douban/thumb/(\d{1,12})$")
 _TMDB_THUMB = re.compile(r"^/api/admin/library/tmdb/thumb/(tv|movie)-(\d{1,10})$")
 
@@ -3935,6 +4073,19 @@ def raw(handler, relay, path: str) -> bool:
     return True
 
 
+def _recent_seasons(relay, library: Library, user: int) -> dict[str, int]:
+    """剧的键 → 这个人最近看的那一集是第几季（pc-progress.json 的 lib:<id>，最近的在前）。"""
+    store = getattr(relay, "pc_progress", None)
+    found: dict[str, int] = {}
+    if store is None:
+        return found
+    for key, _rec in store.rows(user):
+        item = library.item(key[4:]) if key.startswith("lib:") else None
+        if item is not None and item.get("kind") == "episode":
+            found.setdefault(library.show_key(item.get("show") or ""), int(item.get("season") or 1))
+    return found
+
+
 def get(handler, relay, caller, path: str) -> bool:
     """GET /api/library、/api/library/file/<id>、/api/library/art/<id>：只给登录的家里人（访客、没登录、云端 404）。"""
     if path != "/api/library" and not path.startswith("/api/library/"):
@@ -3945,7 +4096,7 @@ def get(handler, relay, caller, path: str) -> bool:
         return True
     if path == "/api/library":
         fresh = handler._query().get("open") == "1" and library.freshen()
-        answer = library.view()
+        answer = library.view(_recent_seasons(relay, library, caller.user))
         if fresh:
             # 后台线程可能刚把它从队里取走、还没标「正在扫」：照样告诉页面「排上了」，页面才会接着刷新。
             answer["scan"]["queued"] = max(1, answer["scan"].get("queued") or 0)

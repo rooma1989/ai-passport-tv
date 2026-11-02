@@ -16,7 +16,9 @@ const BRAND_ZH = "小鼠电视";
 
 // ======================================================================= 小工具
 
-const $ = (id) => document.getElementById(id);
+// 画中画小窗（文档画中画，pcTogglePip）开着时 <video> 搬到了小窗的文档里：$("watchVideo") 照样拿到它。
+let pipVideo = null;
+const $ = (id) => document.getElementById(id) || (id === "watchVideo" ? pipVideo : null);
 const qs = (sel, root) => (root || document).querySelector(sel);
 const qsa = (sel, root) => [...(root || document).querySelectorAll(sel)];
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -3130,12 +3132,47 @@ function stepRate(delta) {
   toast("播放速度 " + rateLabel(next));
 }
 function pipOk(v) {
+  if (docPipOk()) return true;
   if (document.pictureInPictureEnabled && typeof v.requestPictureInPicture === "function" && !v.disablePictureInPicture) return true;
   return typeof v.webkitSupportsPresentationMode === "function" && v.webkitSupportsPresentationMode("picture-in-picture");
 }
+// Chrome 的画中画（requestPictureInPicture）只有画面，字幕轨不显示。有文档画中画（Chrome 116+，要 https 或 localhost）时
+// 把 <video> 整个搬进小窗：字幕轨跟着它走，放着的接着放；小窗关掉（点它的 ×、「返回标签页」、关播放器）时搬回原处。
+// 别的浏览器照旧用自己的画中画（Safari 的会显示字幕轨）。
+let pipWin = null;
+function docPipOk() { return "documentPictureInPicture" in window && window.isSecureContext; }
+async function openDocPip(v) {
+  const home = { parent: v.parentNode, next: v.nextSibling };
+  let w;
+  try {
+    w = await documentPictureInPicture.requestWindow({ width: Math.max(320, Math.round(v.clientWidth / 2)), height: Math.max(180, Math.round(v.clientHeight / 2)) });
+  } catch (error) { toast("这个浏览器现在不让画中画", true); return; }
+  const css = w.document.createElement("style");
+  css.textContent = "html,body{margin:0;height:100%;background:#000;overflow:hidden}" +
+    "video{display:block;width:100%;height:100%;object-fit:contain;background:#000;cursor:pointer}" +
+    "video::cue{font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;font-size:max(15px,7vh);background:rgba(0,0,0,.55)}";
+  w.document.head.append(css);
+  w.document.title = $("watchWhat").textContent || BRAND;
+  pipWin = w; pipVideo = v;
+  w.document.body.append(v);                 // 单击暂停 / 播放还是 <video> 自己的那个处理
+  w.addEventListener("keydown", (event) => {
+    if (event.key === " " || event.key === "k") { event.preventDefault(); pcTogglePlay(); }
+  });
+  w.addEventListener("pagehide", () => {
+    if (home.next && home.next.parentNode === home.parent) home.parent.insertBefore(v, home.next); else home.parent.append(v);
+    pipWin = null; pipVideo = null;
+    $("pcPipNote").hidden = true;
+    renderPc();
+  });
+  $("pcPipNote").hidden = false;
+  renderPc();
+}
+function closeDocPip() { if (pipWin) pipWin.close(); }
 function pcTogglePip() {
   const v = $("watchVideo");
   if (!watching || !pipOk(v)) return;
+  if (pipWin) { closeDocPip(); return; }
+  if (docPipOk()) { openDocPip(v); return; }
   if (document.pictureInPictureElement) { document.exitPictureInPicture().catch(() => {}); return; }
   if (typeof v.requestPictureInPicture === "function") v.requestPictureInPicture().catch(() => toast("这个浏览器现在不让画中画", true));
   else v.webkitSetPresentationMode(v.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
@@ -3426,6 +3463,7 @@ $("pcPartsBtn").onclick = () => { if ($("pcParts").hidden) openParts(); else clo
 $("pcPartsX").onclick = closeParts;
 $("pcFull").onclick = pcToggleFull;
 $("pcPip").onclick = pcTogglePip;
+$("pcPipNote").onclick = (event) => { event.stopPropagation(); closeDocPip(); };
 $("pcRate").onclick = () => openMenu("rate");
 $("pcQuality").onclick = () => openMenu("quality");
 $("pcSubs").onclick = () => { if (watching && watching.subs && watching.subs.length) openMenu("subs"); };
@@ -3440,7 +3478,7 @@ $("pcMenu").addEventListener("keydown", (event) => {
 $("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0); };
 $("pcResumeX").onclick = () => { $("pcResume").hidden = true; };
 $("watchVideo").addEventListener("click", () => { pcTogglePlay(); $("pcBox").focus({ preventScroll: true }); });
-$("watchVideo").addEventListener("dblclick", pcToggleFull);
+$("watchVideo").addEventListener("dblclick", () => { if (!pipWin) pcToggleFull(); });
 $("pcBox").addEventListener("pointermove", pcActive);
 $("pcBox").addEventListener("focusin", pcActive);
 document.addEventListener("fullscreenchange", () => { renderPc(); pcActive(); });
@@ -3625,6 +3663,7 @@ function stopWatch() {
   closeParts();
   closeMenu();
   if (document.fullscreenElement === $("pcBox")) document.exitFullscreen().catch(() => {});
+  closeDocPip();
   watching = null;
   miniWho = "tv";
   histAfterPlay();
@@ -4947,7 +4986,7 @@ function renderAgg() {
 $("aggHits").addEventListener("click", (event) => {
   const t = event.target.closest("button");
   if (!t || !(t.dataset.aggshow || t.dataset.aggitem)) return;
-  lib.show = t.dataset.aggshow || ""; lib.item = t.dataset.aggitem || ""; lib.match = null; lib.more = false;
+  lib.show = t.dataset.aggshow || ""; lib.item = t.dataset.aggitem || ""; lib.match = null; lib.more = false; lib.season = 0;
   location.hash = "#/lib/local";
 });
 // 回车：先等这个词的结果（打字快、刚停手就按回车时还在路上），有自己的结果就打开第一条，否则照旧搜 B 站 / YouTube。
@@ -6775,7 +6814,7 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 // 上面一排是来源（管理员能扫描、删除、添加），下面是海报墙：电影、剧集（点进去是各集）、其他视频，搜索框按片名筛。
 // 和别的节目一样「播放到」：这台电脑上浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；小电视上
 // 中转缩好画面推过去（library.py 的 play_tv）。只有里面没有画面也没有声音的标「放不了」。家里人都能看，访客没有这一页。
-const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", kind: "webdav", form: false, timer: 0, failed: false,
+const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", season: 0, kind: "webdav", form: false, timer: 0, failed: false,
               match: null, more: false, tmdbForm: false };
 async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
@@ -6827,6 +6866,13 @@ function libShowCard(s) {
 const libD = () => lib.data || {};
 const libTmdb = () => !!(libD().tmdb && libD().tmdb.set);
 const libSrc = (m) => m && m.src === "tmdb" ? "TMDB" : "豆瓣";
+// 好几季的剧现在显示哪一季：点过的；没点过时是这个人最近在看的那一季（now_season），都没有时第一季。
+function libSeason(show) {
+  const rows = show.season_rows;
+  return rows.find((r) => r.n === lib.season) || rows.find((r) => r.n === show.now_season) || rows[0];
+}
+// 手动匹配一季时搜索框里先填的：「剧名 第 3 季」。
+function libSeasonGuess(show, n) { return (show.guess || show.title) + " 第" + n + "季"; }
 // 打开片库的详情页：先让中转把「播放」会放的那一段下到本机（librarypre.py），点下去少等。不等回答。
 function libPreread(body) { call("POST", "api/library/preread", body).catch(() => {}); }
 // 片库的一集出画面了：报给中转记一行日志（等了多久、网盘多快、片子码率、按没按「先放」），起播慢时查得出是哪一步。
@@ -7159,8 +7205,19 @@ function renderLib() {
     const item = !show && lib.item && (d.movies.find((c) => c.id === lib.item) || d.videos.find((c) => c.id === lib.item));
     if (show) {
       o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
-      o += libInfoHTML(Object.assign({}, show, { sub: (show.seasons > 1 ? show.seasons + " 季 · " : "") + show.count + " 集" }));
-      o += `<div class="h2 leps"><h2>选集</h2><small>${show.count} 集</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
+      const rows = show.season_rows || [];
+      if (rows.length) {
+        // 好几季的剧：上面切季，每季是豆瓣上那一季自己的海报、评分、简介（改匹配也只改这一季），下面是这一季的各集。
+        const row = libSeason(show);
+        const eps = show.episodes.filter((e) => (e.season || 1) === row.n);
+        o += `<div class="chips lseasons" role="group" aria-label="选季">${rows.map((r) => `<button type="button" data-libseason="${r.n}" aria-pressed="${r.n === row.n}">第 ${r.n} 季</button>`).join("")}</div>`;
+        o += libInfoHTML(Object.assign({}, show, { key: row.key, meta: row.meta, art: row.art || show.art, title: row.title || show.title + " 第 " + row.n + " 季",
+                                                   year: row.year || (row.n === rows[0].n ? show.year : null), guess: libSeasonGuess(show, row.n), sub: row.count + " 集" }));
+        o += `<div class="h2 leps"><h2>选集</h2><small>第 ${row.n} 季 · ${eps.length} 集</small></div><div class="hlist">${eps.map(libEpisode).join("")}</div>`;
+      } else {
+        o += libInfoHTML(Object.assign({}, show, { sub: show.count + " 集" }));
+        o += `<div class="h2 leps"><h2>选集</h2><small>${show.count} 集</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
+      }
     } else if (item) {
       const id = reg({ id: "lib:" + item.id, title: item.title, subtitle: item.year ? String(item.year) : "", art: { url: item.art, ratio: "poster" },
                        play: { kind: "library", id: item.id, playable: item.playable } });
@@ -7207,7 +7264,7 @@ $("libBox").addEventListener("click", async (event) => {
   if (!t) return;
   const ds = t.dataset;
   if (ds.libshow || ds.libitem) {
-    lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; renderLib();
+    lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; lib.season = 0; renderLib();
     libPreread(ds.libitem ? { id: ds.libitem } : { show: ds.libshow });
     $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return;
   }
@@ -7216,8 +7273,10 @@ $("libBox").addEventListener("click", async (event) => {
     lib.show = ""; lib.item = ""; lib.match = null; renderLib(); const c = qs("#libBox " + was); if (c) c.focus(); return;
   }
   if (ds.libmore) { lib.more = !lib.more; renderLib(); return; }
+  if (ds.libseason) { lib.season = Number(ds.libseason); lib.match = null; lib.more = false; renderLib(); return; }
   if (ds.libmatch) {
-    const d = lib.data, o = d.shows.find((s) => s.key === ds.libmatch) || d.movies.concat(d.videos).find((c) => c.key === ds.libmatch);
+    const d = lib.data, seasons = d.shows.flatMap((s) => (s.season_rows || []).map((r) => ({ key: r.key, guess: libSeasonGuess(s, r.n) })));
+    const o = d.shows.find((s) => s.key === ds.libmatch) || seasons.find((r) => r.key === ds.libmatch) || d.movies.concat(d.videos).find((c) => c.key === ds.libmatch);
     lib.match = { key: ds.libmatch, q: o ? (o.guess || o.title) : "", list: null, busy: false, error: "" };
     renderLib();
     const f = qs("#libMatch input"); if (f) f.focus();

@@ -30,6 +30,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -547,6 +548,111 @@ class EndpointTests(unittest.TestCase):
         self.assertFalse(self.call("admin", "GET", "/tv/api/admin/library")[1]["online"])
         actions = sorted(r["action"] for r in self.accounts.audit_rows(100) if r["action"].startswith("library."))
         self.assertEqual(actions, ["library.match", "library.settings", "library.unmatch"])
+
+
+# ---------------------------------------------------------------- seasons
+
+def _tv(did: str, title: str, year: int, episodes: int) -> dict:
+    return {"id": did, "title": title, "type": "movie", "year": str(year), "episode": str(episodes), "sub_title": "",
+            "img": "", "url": f"https://movie.douban.com/subject/{did}/"}
+
+
+class SeasonTests(unittest.TestCase):
+    """A show with several seasons: Douban has one entry per season ("X医生 第一季", "X医生 第2季"), each with its own
+    poster and rating. Each season is looked up as "<show> 第N季"; the page gets season_rows and the season the viewer
+    is on. A show renamed by a parser change keeps its matches; a rename that finds nothing keeps the old match."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.root = base / "videos"
+        for rel in ("X医生 (2012)/S01/S01E01.mkv", "X医生 (2012)/S01/S01E02.mkv", "X医生 (2012)/S02/S02E01.mkv"):
+            lib_base.touch(self.root / rel, lib_base.MP4)
+        self.lib = lib_base.quiet(base / "data")
+        self.fake = wire(self.lib, FakeDouban())
+        self.fake.suggest("X医生", json.dumps([_tv("2000000", "X医生", 2012, 8)]))
+        self.fake.suggest("X医生 第1季", json.dumps([_tv("2000001", "X医生 第一季", 2012, 8),
+                                                      _tv("2000009", "X医生 第一季 特别篇", 2012, 1)]))
+        self.fake.suggest("X医生 第2季", json.dumps([_tv("2000002", "X医生 第2季", 2013, 9)]))
+        self.assertTrue(self.lib.add({"kind": "local", "path": str(self.root)})["ok"])
+        self.key = self.lib.show_key("X医生")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_all(self):
+        steps = 0
+        while self.lib.meta_step():
+            steps += 1
+            self.assertLess(steps, 20)
+
+    def test_each_season_has_its_own_entry(self):
+        titles = self.lib.titles()
+        self.assertEqual({k: (v["kind"], v["season"], v["year"]) for k, v in titles.items() if v["kind"] == "season"},
+                         {f"s{self.key}-1": ("season", 1, 2012), f"s{self.key}-2": ("season", 2, None)},
+                         "the folder's year is the show's: only season 1 is held to it")
+        self.run_all()
+        entries = self.lib.meta.all()
+        self.assertEqual(entries[f"s{self.key}-1"]["title"], "X医生 第一季")
+        self.assertEqual(entries[f"s{self.key}-2"]["title"], "X医生 第2季", "arabic or Chinese numerals both count")
+        self.assertEqual(entries[f"s{self.key}"]["title"], "X医生")
+        show = self.lib.view({self.key: 2})["shows"][0]
+        self.assertEqual([(r["n"], r["count"], r["title"]) for r in show["season_rows"]],
+                         [(1, 2, "X医生 第一季"), (2, 1, "X医生 第2季")])
+        self.assertEqual((show["now_season"], show["seasons"]), (2, 2))
+        self.assertNotIn("now_season", self.lib.view()["shows"][0], "nothing watched: no season of one's own")
+
+    def test_a_single_season_show_has_no_season_rows(self):
+        lib_base.touch(self.root / "某剧 (2020)/S01E01.mkv", lib_base.MP4)
+        self.lib.scan()
+        self.assertFalse([k for k, v in self.lib.titles().items() if v["kind"] == "season" and "-" in k
+                          and k.startswith("s" + self.lib.show_key("某剧"))])
+        shows = {s["title"]: s for s in self.lib.view()["shows"]}
+        self.assertNotIn("season_rows", shows["某剧"])
+
+    def test_a_renamed_show_keeps_its_matches(self):
+        self.run_all()
+        self.lib.meta.put(f"s{self.key}-2", dict(self.lib.meta.get(f"s{self.key}-2"), manual=True))
+        real = library.parse_name
+        renamed = lambda rel: dict(real(rel), show="Doctor X") if real(rel)["kind"] == "episode" else real(rel)
+        with mock.patch.object(library, "parse_name", renamed), \
+                mock.patch.object(library, "PARSE_VERSION", library.PARSE_VERSION + 1):
+            self.lib.scan()
+        new = self.lib.show_key("Doctor X")
+        entries = self.lib.meta.all()
+        self.assertEqual(entries[f"s{new}"]["title"], "X医生")
+        self.assertEqual((entries[f"s{new}-2"]["title"], entries[f"s{new}-2"]["manual"]), ("X医生 第2季", True))
+        calls = len(self.fake.calls)
+        with mock.patch.object(library, "parse_name", renamed), \
+                mock.patch.object(library, "PARSE_VERSION", library.PARSE_VERSION + 1):
+            self.run_all()
+        self.assertEqual(len(self.fake.calls), calls, "carried entries are not looked up again under the new name")
+
+    def test_one_show_per_season_before_becomes_that_season(self):
+        real = library.parse_name
+        per_season = lambda rel: dict(real(rel), show=f"X医生S0{real(rel)['season']}") \
+            if real(rel)["kind"] == "episode" else real(rel)
+        with mock.patch.object(library, "parse_name", per_season), \
+                mock.patch.object(library, "PARSE_VERSION", library.PARSE_VERSION - 1):
+            self.lib.scan()
+        old = "s" + self.lib.show_key("X医生S02")
+        self.lib.meta.put(old, {"state": "matched", "manual": True, "id": "2000002", "title": "X医生 第2季",
+                                "q": "X医生S02|||show", "at": 1})
+        self.lib.scan()                            # parsed the current way: one show, two seasons
+        entry = self.lib.meta.get(f"s{self.key}-2")
+        self.assertEqual((entry["title"], entry["manual"]), ("X医生 第2季", True))
+        self.assertIsNone(self.lib.meta.get(f"s{self.key}"), "the show itself is looked up on its own")
+
+    def test_a_new_name_that_finds_nothing_keeps_the_old_match(self):
+        self.run_all()
+        key = f"s{self.key}"
+        self.lib.meta.put(key, dict(self.lib.meta.get(key), q="旧的片名|||show"))
+        self.lib._lookup(key, self.lib.titles()[key])
+        self.assertEqual(self.lib.meta.get(key)["state"], "matched")
+        self.fake.suggest("X医生", "[]")
+        self.lib.meta.put(key, dict(self.lib.meta.get(key), q="旧的片名|||show"))
+        entry = self.lib._lookup(key, self.lib.titles()[key])
+        self.assertEqual((entry["state"], entry["title"], entry["q"]), ("matched", "X医生", "X医生||2012|show"))
 
 
 if __name__ == "__main__":
