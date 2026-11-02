@@ -1,5 +1,6 @@
 """Turning relay events into SWITCH decisions for the session in progress."""
 
+import select
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server.cast_switch import SwitchWatcher
 from server.relay import events
 
+
+
+def next_packet(client, session):
+    """The next packet, or TimeoutError when none started arriving within 0.2 s (the loops run their script in
+    between). Once one has started it gets time to arrive whole: a 0.2 s deadline in the middle of a packet on a
+    busy machine dropped the bytes already read and the next read began mid-packet ("unsupported packet header")."""
+    if not select.select([client], [], [], 0.2)[0]:
+        raise TimeoutError("no packet yet")
+    from server.protocol import receive_packet
+    return receive_packet(client, timeout=2.0, expected_session=session)
 
 class WatcherTests(unittest.TestCase):
     def setUp(self):
@@ -193,7 +204,7 @@ class SessionTests(unittest.TestCase):
                     events.write_event(self.events, "cast")
                     written = True
                 try:
-                    packet = receive_packet(client, timeout=0.5, expected_session=session)
+                    packet = next_packet(client, session)
                 except TimeoutError:
                     continue
                 session = packet.session
@@ -285,7 +296,7 @@ class PauseTests(unittest.TestCase):
                     events.write_event(self.events, "resume")
                     phase = "resumed"
                 try:
-                    packet = receive_packet(client, timeout=0.2, expected_session=session)
+                    packet = next_packet(client, session)
                 except TimeoutError:
                     continue
                 session = packet.session
@@ -345,7 +356,7 @@ class DeviceControlTests(unittest.TestCase):
                 if session:
                     script(client, session, time.monotonic() - start)
                 try:
-                    packet = receive_packet(client, timeout=0.2, expected_session=session)
+                    packet = next_packet(client, session)
                 except TimeoutError:
                     continue
                 session = packet.session
@@ -496,7 +507,7 @@ class DevicePauseTests(unittest.TestCase):
                     events.write_event(self.events, "resume")
                     phase = "resumed"
                 try:
-                    packet = receive_packet(client, timeout=0.2, expected_session=session)
+                    packet = next_packet(client, session)
                 except TimeoutError:
                     continue
                 session = packet.session
@@ -629,7 +640,7 @@ class EpisodeInfoTests(unittest.TestCase):
                 if session:
                     script(time.monotonic() - start)
                 try:
-                    packet = receive_packet(client, timeout=0.2, expected_session=session)
+                    packet = next_packet(client, session)
                 except TimeoutError:
                     continue
                 session = packet.session
