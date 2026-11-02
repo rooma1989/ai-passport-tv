@@ -1377,7 +1377,7 @@ function renderMini2() {
   const m = $("mini");
   const pc = watching && (miniWho === "pc" || !tvOnline());
   if (pc) {
-    const paused = $("watchVideo").paused;
+    const paused = pcPaused();
     m.className = "";
     m.innerHTML = `<div class="mprog"><i id="miniBar" style="width:0%"></i></div>
       <button class="mart" data-mini-open aria-label="打开播放器">${art(watching.name || watching.title || "电脑", "w")}${watching.kind === "live" ? '<span class="badge live">直播</span>' : ""}</button>
@@ -1503,6 +1503,50 @@ function liveNeighbours(ids, id) {
 // 视频（不是直播）的缓冲：往前至多 AHEAD_S 秒、往回 BEHIND_S 秒，码率高（片库的 4K 文件只换封装，一秒两三 MB）时
 // 按字节封顶，免得超出 Chrome 给一个 SourceBuffer 的一百多 MB（超了 appendBuffer 抛 QuotaExceededError）。
 const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024 };
+
+// ---- 视频缓冲的几个纯函数（tests/console_buffer_test.mjs 截出这一段单独测）----
+// 视频（HLS，不是直播）起播、断粮时先攒一截再放，不放几秒停几秒（网盘一会儿 4 一会儿 80 Mbit/s，4K 只换封装的
+// 一秒十几二十 Mbit）：
+// - 起播（只给中转跑在播放器前面读的：片库；B 站这类按实时 -re 出段的一秒至多出一秒，先攒只会白等 START_S 秒）：
+//   要的那一秒在缓冲里、取得明显比放得快（FAST 倍：每秒墙钟取到的视频秒数，至少量过 MEASURE_S 秒的视频）、
+//   往前已经有 FAST_AHEAD_S 秒就马上放；否则攒到 START_S 秒再放。
+// - 放着放着缓冲不到 LOW_S 秒（还没取完）：先停下，攒到 RESUME_S 秒自己接着放。
+// 两个目标都不超过离结尾还有多少、也不超过 aheadLimit 让取到的那么远（码率高时按字节封顶，少 1 秒的余量），
+// 全都取完了（ended）就不等。
+const VOD_GATE = { START_S: 12, RESUME_S: 10, LOW_S: 0.5, FAST: 1.3, FAST_AHEAD_S: 2, MEASURE_S: 2, WINDOW: 8, END_NEAR_S: 0.5 };
+// 要攒到几秒：want 秒，不超过离结尾的 left 秒和取得到的 cap 秒（少 1 秒余量）。
+function vodTarget(want, left, cap) { return Math.max(0, Math.min(want, left, cap - 1)); }
+// 取得多快：feed 是接上的段 [{t: 接上的时刻（毫秒）, secs: 这段几秒}]，第一项只当起点（它自己的等待里有中转起播、
+// 读文件的时间）。取最近 WINDOW 段，每秒墙钟取到几秒视频；量过的不到 MEASURE_S 秒视频时 0（还不知道）。
+function vodSpeed(feed) {
+  const w = feed.slice(-(VOD_GATE.WINDOW + 1));
+  if (w.length < 2) return 0;
+  let secs = 0;
+  for (let i = 1; i < w.length; i++) secs += w[i].secs;
+  const span = (w[w.length - 1].t - w[0].t) / 1000;
+  return secs >= VOD_GATE.MEASURE_S && span > 0 ? secs / span : secs >= VOD_GATE.MEASURE_S ? Infinity : 0;
+}
+// 要不要等缓冲：0 是放（或不归缓冲管），大于 0 是要攒到的秒数。s：started（放起来过）、holding（正在为缓冲停着）、
+// wantPlay（用户要放：用户自己暂停了就不管）、ended（全都取完了）、ahead（往前缓冲了几秒）、speed（vodSpeed）、
+// left（离结尾还有几秒，不知道时 Infinity）、cap（aheadLimit）。
+function vodHold(s) {
+  if (!s.wantPlay || s.ended) return 0;
+  if (!s.started) {
+    const target = vodTarget(VOD_GATE.START_S, s.left, s.cap);
+    return s.ahead >= target || (s.speed >= VOD_GATE.FAST && s.ahead >= Math.min(VOD_GATE.FAST_AHEAD_S, target)) ? 0 : target;
+  }
+  const target = vodTarget(VOD_GATE.RESUME_S, s.left, s.cap);
+  if (s.holding) return s.ahead >= target ? 0 : target;
+  return s.ahead < VOD_GATE.LOW_S && s.left > VOD_GATE.LOW_S && target > s.ahead ? target : 0;
+}
+// 画面上的「正在缓冲 6/12 秒」。
+function vodBufferText(ahead, target) { return "正在缓冲 " + Math.min(Math.floor(Math.max(0, ahead)), Math.ceil(target)) + "/" + Math.ceil(target) + " 秒"; }
+// 真的放完了：播放器说完了（HLS 是数据都接完了，点播、DASH 是 <video> 的 ended），而且 <video> 也放到了结尾
+// （ended，或位置离结尾不到 END_NEAR_S 秒）。HLS 数据接完时往往还有一分钟没放，那时暂停再按空格是接着放，不是从头。
+function mediaDone(playerEnded, videoEnded, currentTime, duration) {
+  return !!playerEnded && (!!videoEnded || (isFinite(duration) && duration > 0 && duration - currentTime < VOD_GATE.END_NEAR_S));
+}
+// ---- 视频缓冲的纯函数到此 ----
 // 一路 HLS（fMP4 段）用 MediaSource 放：取 master 里的 CODECS，接上初始化段，再按列表一段段接。
 // opts：say（画面上的提示）、ended（放完了）、live（直播：落后太多时追到最新附近）、gap（视频落到中转的窗口外了）、
 // notice（换线路时中转说的话）、reopen（直播放了一阵断了、中转说还有别的线路：页面重开一次，返回 true 表示接手了）。
@@ -1513,11 +1557,31 @@ class WatchPlayer {
     this.line = opts.line || (() => {});
     this.slow = opts.slow || (() => {});
     this.opening = opts.opening || "正在连片源…（要几秒钟）";
+    // 视频：离结尾还有几秒（不知道时 Infinity），接上一段以后（进度条上的缓冲跟着动）。
+    this.left = opts.left || (() => Infinity);
+    // 起播前先攒（VOD_GATE）：中转跑在播放器前面读的视频（片库）；按实时出段的不攒，断粮了照样停下攒。
+    this.prebuffer = !this.live && !!opts.prebuffer;
+    this.fed = opts.fed || (() => {});
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
     // 视频：接上了多少字节、多少秒（算码率，缓冲按字节封顶，见 VOD_BUFFER）。
     this.gotBytes = 0; this.gotSecs = 0;
+    // 视频的缓冲（VOD_GATE）：hold 是为缓冲停着、要攒到的秒数（0 是没在等；和用户的暂停分开）；wantPlay 是用户要放
+    // （用户暂停了就是 false，缓冲够了也不自己放）；feed 是最近接上的段（vodSpeed），取到 aheadLimit 停下时清空。
+    this.hold = 0; this.wantPlay = true; this.feed = []; this.holdText = "";
     this.t0 = performance.now(); this.playedAt = 0;
     this.onWaiting = () => this.kick();
+    // 用户的暂停 / 播放（控制条、画中画、键盘上的媒体键都算）；为缓冲停下时（hold）的暂停不算。
+    this.onPause = () => { if (this.alive && !this.hold) this.wantPlay = false; };
+    this.onPlay = () => {
+      if (!this.alive) return;
+      this.wantPlay = true;
+      // 缓冲还没攒够、用户自己点了播放（画中画、媒体键）：照用户的，从这里放。
+      if (this.hold) { this.hold = 0; this.started = true; this.unsay(); }
+    };
+    this.onTime = () => this.gate();
+    video.addEventListener("pause", this.onPause);
+    video.addEventListener("play", this.onPlay);
+    video.addEventListener("timeupdate", this.onTime);
     // 出画面了（换台时收起上一台停住的画面，见 switching）。
     this.onPlaying = () => {
       if (!this.alive || this.playedAt) return;
@@ -1637,7 +1701,9 @@ class WatchPlayer {
       const durs = {};
       for (const m of text.matchAll(/#EXTINF:([\d.]+),\s*\n(\d+)\.m4s/g)) durs[m[2]] = Number(m[1]);
       for (; this.next < first + count && this.alive; this.next++) {
-        if (!this.live && this.ahead() > this.aheadLimit()) break;
+        // 取到头了：这之后再取时重新量取得多快（停着的这段时间不算）。
+        if (!this.live && this.ahead() > this.aheadLimit()) { this.feed = []; break; }
+        if (!this.live && !this.feed.length) this.feed.push({ t: performance.now(), secs: 0 });
         const chunk = await this.fetch(this.next + ".m4s", "arrayBuffer");
         if (!chunk || !this.alive) continue;
         await this.trim();
@@ -1650,16 +1716,20 @@ class WatchPlayer {
           await this.append(chunk);
         }
         this.gotBytes += chunk.byteLength; this.gotSecs += durs[this.next] || 0;
+        if (!this.live) { this.feed.push({ t: performance.now(), secs: durs[this.next] || 0 }); if (this.feed.length > 32) this.feed.splice(0, this.feed.length - 32); }
         this.kick();
+        if (!this.live) this.fed();
       }
       if (ended && this.next >= first + count) {
         // 直播放了一阵断了、中转还有别的线路（#EXT-X-RTV-REOPEN）：马上重开，不等缓冲放完。
         if (this.live && text.includes("#EXT-X-RTV-REOPEN") && this.reopen("线路断了，正在换线路…")) return;
         this.ended = true;
         if (this.ms.readyState === "open") this.ms.endOfStream();
+        this.gate();                       // 正为缓冲停着：全都取完了，接着放
         return;
       }
       this.pace();
+      this.gate();
       await sleep(this.live ? livePoll(this.ahead(), performance.now() - this.t0) : 1000);
     }
   }
@@ -1687,11 +1757,55 @@ class WatchPlayer {
       v.currentTime = (ahead !== undefined ? ahead : b.start(0)) + 0.05;
     } else if (this.live && end - v.currentTime > 30) v.currentTime = end - 12;
     if (!this.started) {
+      // 视频：取得不够快时先攒一截（vodHold）；用户在这时暂停了就停在要的那一秒，不自己放。
+      const wait = this.prebuffer ? vodHold(this.gateState()) : 0;
+      if (wait) { this.waitFor(wait); return; }
       this.started = true;
+      this.hold = 0;
+      this.unsay();
       this.say("");
-      v.play().catch(() => this.say("点一下画面开始播放"));
+      if (this.wantPlay) v.play().catch(() => this.say("点一下画面开始播放"));
     }
     this.pace();
+    this.gate();
+  }
+  // vodHold 要的那些数。
+  gateState() {
+    return { started: this.started, holding: this.hold > 0, wantPlay: this.wantPlay, ended: this.ended, ahead: this.ahead(),
+             speed: vodSpeed(this.feed), left: this.left(), cap: this.aheadLimit() };
+  }
+  // 为缓冲等着：画面上说攒了几秒（起播时写在遮罩上）。
+  waitFor(target) {
+    this.hold = target;
+    const text = vodBufferText(this.ahead(), target);
+    if (text !== this.holdText) { this.holdText = text; pcStage(text); }
+  }
+  unsay() { if (this.holdText) { this.holdText = ""; this.say(""); } }
+  // 视频放着放着断粮（缓冲不到 VOD_GATE.LOW_S 秒、还没取完）：停下攒到 RESUME_S 秒，再从同一个位置自己接着放。
+  // 不跳、不重起、不算放完；用户这时暂停了（userPause）就不自己放。
+  gate() {
+    if (this.live || !this.alive || !this.started || !this.sb) return;
+    const v = this.video;
+    if (!this.hold && (v.paused || v.seeking)) return;
+    const wait = vodHold(this.gateState());
+    if (wait) {
+      const was = this.hold;
+      this.waitFor(wait);
+      if (!was && !v.paused) v.pause();
+      return;
+    }
+    if (!this.hold) return;
+    this.hold = 0;
+    this.unsay();
+    v.play().catch(() => this.say("点一下画面开始播放"));
+  }
+  // 为缓冲停着时用户按了暂停（空格、点画面、按钮）：不再等，停在这里；再按播放才放。
+  userPause() {
+    if (!this.hold) return;
+    this.hold = 0; this.wantPlay = false;
+    this.unsay();
+    if (!this.started) switched();   // 收起起播的遮罩，露出停在那一秒的画面
+    this.kick();          // 还没放起来：停在要的那一秒（started），进度、跳转照常
   }
   async trim() {
     const v = this.video, b = this.sb.buffered;
@@ -1711,6 +1825,9 @@ class WatchPlayer {
     v.removeEventListener("waiting", this.onWaiting);
     v.removeEventListener("ended", this.onEnded);
     v.removeEventListener("playing", this.onPlaying);
+    v.removeEventListener("pause", this.onPause);
+    v.removeEventListener("play", this.onPlay);
+    v.removeEventListener("timeupdate", this.onTime);
     v.playbackRate = 1;
     v.pause();
     v.removeAttribute("src");
@@ -2128,7 +2245,10 @@ function playerFor(answer) {
   }
   $("watchSlow").hidden = true;
   const player = new WatchPlayer($("watchVideo"), answer.url, {
-    say: watchSay, ended: watchEnded, live, opening: answer.library ? "正在打开…" : "",
+    say: watchSay, ended: watchEnded, live, opening: answer.library ? "正在打开…" : "", prebuffer: !!answer.library,
+    // 离结尾还有几秒（起播、断粮时攒的不超过它）；接上一段就重画进度条上的缓冲（为缓冲停着时没有 timeupdate）。
+    left: () => (watching && watching.player === player && watching.duration ? Math.max(0, watching.duration - pcPos()) : Infinity),
+    fed: () => { if (watching && watching.player === player) renderPc(); },
     slow: (speed) => { if (!watching || watching.player === player) slowNote(speed); },
     notice: (text) => { if (watching && watching.player !== player) return; routeNotice(answer.name || answer.title || answer.channel, text); },
     reopen: (text) => (!watching || watching.player === player) && routeReopen(answer, text),
@@ -2142,7 +2262,7 @@ function playerFor(answer) {
     // 暂停太久、中转那边已经往前转过了：暂停着就等按「播放」时再从这里重起（那之前不占 ffmpeg），在放就马上重起。
     gap: () => {
       if (!watching || watching.player !== player) return;
-      if ($("watchVideo").paused) watching.stale = true; else seekRestart(pcPos());
+      if ($("watchVideo").paused && !player.hold) watching.stale = true; else seekRestart(pcPos());
     },
   });
   return player;
@@ -2613,7 +2733,7 @@ function renderPc() {
   bar.setAttribute("aria-valuemax", String(Math.round(dur)));
   bar.setAttribute("aria-valuenow", String(Math.round(pos)));
   bar.setAttribute("aria-valuetext", clock(pos) + (dur ? " / " + clock(dur) : ""));
-  const paused = v.paused;
+  const paused = pcPaused();
   const pp = $("pcPlay");
   if (pp.dataset.state !== String(paused)) {
     pp.dataset.state = String(paused);
@@ -2655,14 +2775,19 @@ function renderPc() {
     fb.title = (full ? "退出全屏" : "全屏") + "（F）";
   }
 }
+// 暂停着没有：为缓冲停着（WatchPlayer 的 hold）不算暂停——控制条上还是「暂停」键，按一下是用户暂停。
+function pcPaused() { return $("watchVideo").paused && !(watching && watching.player && watching.player.hold); }
 function pcTogglePlay() {
   const v = $("watchVideo");
   if (!watching) return;
+  const p = watching.player;
+  if (p.hold) { p.userPause(); renderPc(); renderMini(); return; }
   if (v.paused) {
     if (watching.stale) { watching.stale = false; seekRestart(pcPos()); return; }
-    if (watching.player.ended && watching.kind === "video") {
+    // 真放完了才从头放（mediaDone）：HLS 数据接完时往往还有一分钟没放，那时暂停再按是接着放。
+    if (watching.kind === "video" && mediaDone(p.ended, v.ended, v.currentTime, v.duration)) {
       hideUpNext();
-      if (watching.player.vod && !watching.player.failed) { watching.player.seek(0); v.play().catch(() => {}); return; }
+      if (p.vod && !p.failed) { p.seek(0); v.play().catch(() => {}); return; }
       seekRestart(watching.seekable ? 0 : pcPos());
       return;
     }
@@ -3062,7 +3187,8 @@ addEventListener("keydown", (event) => {
   const onButton = a && a.tagName === "BUTTON" && box.contains(a);
   if (key === " " || key === "k" || key === "K") {
     if (key === " " && onButton) return; // 空格按的是那个按钮
-    eat(); pcTogglePlay();
+    eat();
+    if (!event.repeat) pcTogglePlay();   // 按住不放：只算一下（自动重复的不再来回切）
   } else if ((key === "ArrowLeft" || key === "ArrowRight") && !onButton && a !== $("pcVol")) {
     if (!watching.seekable) return;
     eat(); pcSkip(key === "ArrowLeft" ? -10 : 10);

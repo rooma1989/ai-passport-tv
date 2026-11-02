@@ -17,6 +17,10 @@ member of), "cast" is the named device's slot or, without a device, the
 caller's last video cast to the PC; the PC keeps its own position and never
 marks the TV's videos watched; a user has at most MAX_PER_USER streams; a user
 with no device gets a working /api/state; and failures say what to check.
+
+The PC player's video buffering (pre-buffer before start, hold-and-resume when
+it runs dry) and its "really ended" rule are tested as pure JS under Node
+(console_buffer_test.mjs).
 """
 
 from __future__ import annotations
@@ -841,3 +845,11 @@ class BlockedBilibiliTests(unittest.TestCase):
     def test_other_network_errors_unchanged(self):
         self.assertEqual(watch.explain("bilibili", "取不到片源地址：offline"),
                          "B 站连不上：检查路由器或代理（取不到片源地址：offline）")
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class PlayerBufferLogicTests(unittest.TestCase):
+    def test_console_buffer_logic(self):
+        result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_buffer_test.mjs")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
