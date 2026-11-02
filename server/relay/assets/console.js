@@ -1727,6 +1727,15 @@ function vodHold(s) {
 function endedEarly(left, fed) { return isFinite(left) && left - Math.max(0, fed) > VOD_GATE.EARLY_END_S; }
 // 画面上的「正在缓冲 6/12 秒」。
 function vodBufferText(ahead, target) { return "正在缓冲 " + Math.min(Math.floor(Math.max(0, ahead)), Math.ceil(target)) + "/" + Math.ceil(target) + " 秒"; }
+// 网盘比片子慢、要等一会儿时说清楚：「网盘现在约 8 Mbit/s，这部片子要 22 Mbit/s，大约还要 25 秒」。speed 是
+// vodSpeed（每秒墙钟取到几秒视频），rate 是码率（字节 / 秒）；还没量出来、取得够快、快攒够了时空串。
+function vodWaitText(ahead, target, speed, rate) {
+  if (!(speed > 0) || !isFinite(speed) || speed >= VOD_GATE.FAST || !(rate > 0)) return "";
+  const left = Math.ceil((target - Math.max(0, ahead)) / speed);
+  if (left < 3) return "";
+  const need = rate * 8 / 1e6, have = speed * need;
+  return "网盘现在约 " + (have < 10 ? have.toFixed(1) : Math.round(have)) + " Mbit/s，这部片子要 " + Math.round(need) + " Mbit/s，大约还要 " + left + " 秒";
+}
 // 真的放完了：播放器说完了（HLS 是数据都接完了，点播、DASH 是 <video> 的 ended），而且 <video> 也放到了结尾
 // （ended，或位置离结尾不到 END_NEAR_S 秒）。HLS 数据接完时往往还有一分钟没放，那时暂停再按空格是接着放，不是从头。
 function mediaDone(playerEnded, videoEnded, currentTime, duration) {
@@ -2012,7 +2021,7 @@ class WatchPlayer {
     } else if (this.live && end - v.currentTime > 30) v.currentTime = end - 12;
     if (!this.started) {
       // 视频：取得不够快时先攒一截（vodHold）；用户在这时暂停了就停在要的那一秒，不自己放。
-      const wait = this.prebuffer && !this.gone ? vodHold(this.gateState()) : 0;
+      const wait = this.prebuffer && !this.gone && !this.rushed ? vodHold(this.gateState()) : 0;
       if (wait) { this.waitFor(wait); return; }
       this.started = true;
       this.hold = 0;
@@ -2031,10 +2040,24 @@ class WatchPlayer {
   // 为缓冲等着：画面上说攒了几秒（起播时写在遮罩上）。
   waitFor(target) {
     this.hold = target;
-    const text = vodBufferText(this.ahead(), target);
-    if (text !== this.holdText) { this.holdText = text; pcStage(text); }
+    const wait = vodWaitText(this.ahead(), target, vodSpeed(this.feed), this.rate());
+    const text = vodBufferText(this.ahead(), target) + (wait ? " · " + wait : "");
+    if (text !== this.holdText) {
+      this.holdText = text;
+      $("pcSwitch").classList.toggle("wrap", !!wait);
+      pcStage(text);
+    }
+    // 起播还在攒：「先放」（可能会卡），不等攒够。
+    $("pcRush").hidden = this.started;
   }
-  unsay() { if (this.holdText) { this.holdText = ""; this.say(""); } }
+  unsay() { $("pcRush").hidden = true; if (this.holdText) { this.holdText = ""; this.say(""); } }
+  // 起播时按了「先放」：不再等攒够，有画面就放（放起来以后断粮了照旧停下攒）。
+  rush() {
+    if (!this.alive || this.started) return;
+    this.rushed = true;
+    $("pcRush").hidden = true;
+    this.kick();
+  }
   // 视频放着放着断粮（缓冲不到 VOD_GATE.LOW_S 秒、还没取完）：停下攒到 RESUME_S 秒，再从同一个位置自己接着放。
   // 不跳、不重起、不算放完；用户这时暂停了（userPause）就不自己放。
   gate() {
@@ -2503,6 +2526,10 @@ function playerFor(answer) {
       fallback: () => { if (watching && watching.player === player) vodFallback(); },
       broken: () => sourceGone(player, ""),
     });
+    // 片库直接放原文件的：出画面了也报一下等了多久（没有取段速度、码率）。
+    if (answer.library) $("watchVideo").addEventListener("playing", () => {
+      if (watching && watching.player === player) libStarted(answer.library, null, 0);
+    }, { once: true });
     return player;
   }
   $("watchSlow").hidden = true;
@@ -2520,6 +2547,7 @@ function playerFor(answer) {
       if (!watching || watching.player !== player) return;
       switched();
       if (live) warmSoon();
+      if (answer.library) libStarted(answer.library, player, ms);
       if (window.console && console.debug) console.debug("在电脑上看：出画面用了 " + ms + " ms");
     },
     // 暂停太久、中转那边已经往前转过了：暂停着就等按「播放」时再从这里重起（那之前不占 ffmpeg），在放就马上重起。
@@ -2551,6 +2579,7 @@ function switching(name, text) {
 }
 function switched() {
   $("pcSwitch").hidden = true;
+  $("pcRush").hidden = true;
   $("pcFreeze").hidden = true;
   setPoster("");
 }
@@ -2574,8 +2603,10 @@ function ytIdOfItem(item) {
   return m ? m[1] : "";
 }
 function ytPoster(id) { return id ? "api/bili/thumb?" + new URLSearchParams({ s: "v", u: "https://i.ytimg.com/vi/" + id + "/mqdefault.jpg" }) : ""; }
+let openedAt = 0;          // 点下去的时刻（performance.now）：片库起播的日志按它算等了多久
 function pcOpening(item, label, poster) {
   const n = ++openSeq;
+  openedAt = performance.now();
   opening = { n };
   const yt = ytIdOfItem(item) || ytIdOfCard({ art: { url: poster } }), live = item.kind === "live";
   const name = label || item.title || item.channel || "";
@@ -3382,6 +3413,7 @@ $("pcNext").onclick = () => {
   else if (watching && !watching.busy) startDirect({ channel: watching.channel, step: 1 }, { group: watching.group });
 };
 $("pcMute").onclick = pcToggleMute;
+$("pcRush").onclick = () => { if (watching && watching.player && watching.player.rush) watching.player.rush(); };
 $("pcVol").oninput = () => {
   const v = $("watchVideo");
   v.volume = Number($("pcVol").value);
@@ -6795,6 +6827,15 @@ function libShowCard(s) {
 const libD = () => lib.data || {};
 const libTmdb = () => !!(libD().tmdb && libD().tmdb.set);
 const libSrc = (m) => m && m.src === "tmdb" ? "TMDB" : "豆瓣";
+// 打开片库的详情页：先让中转把「播放」会放的那一段下到本机（librarypre.py），点下去少等。不等回答。
+function libPreread(body) { call("POST", "api/library/preread", body).catch(() => {}); }
+// 片库的一集出画面了：报给中转记一行日志（等了多久、网盘多快、片子码率、按没按「先放」），起播慢时查得出是哪一步。
+function libStarted(id, player, ms) {
+  const speed = player ? vodSpeed(player.feed) : 0;
+  const wait = openedAt ? Math.round(performance.now() - openedAt) : ms;
+  call("POST", "api/library/started", { id, wait_ms: wait, speed: isFinite(speed) ? speed : 0, rate: player ? player.rate() : 0,
+                                         rushed: !!(player && player.rushed) }).catch(() => {});
+}
 function libInfoHTML(o, playHTML) {
   const m = o.meta && o.meta.state === "matched" ? o.meta : null, admin = isAdmin(), online = !!libD().online;
   const src = libSrc(m), web = libTmdb() ? "网上" : "豆瓣";
@@ -7167,6 +7208,7 @@ $("libBox").addEventListener("click", async (event) => {
   const ds = t.dataset;
   if (ds.libshow || ds.libitem) {
     lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; renderLib();
+    libPreread(ds.libitem ? { id: ds.libitem } : { show: ds.libshow });
     $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return;
   }
   if (ds.libback) {

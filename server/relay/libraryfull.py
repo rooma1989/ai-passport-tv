@@ -527,6 +527,31 @@ class FullCache:
             return None
         return _FullTee(self, f, job, at, fd)
 
+    def pre_tee(self, item: dict, at: int, name: str = "") -> "_FullTee | None":
+        """预读开头（librarypre.py）从网盘 at 起读时存进来：不经下载线程、不换它手上的文件，地方不够了就不存。
+        用完一定要 close。"""
+        with self._lock:
+            if not self.enabled():
+                return None
+            f = self._file(item, name, True)
+            if f is None:
+                return None
+            path = self._data(f)
+        try:
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            os.fchmod(fd, 0o600)
+        except OSError as error:
+            self._warn(error)
+            return None
+        return _FullTee(self, f, None, at, fd)
+
+    def covered(self, item: dict, start: int, end: int) -> bool:
+        """[start, end) 都已经下好了。"""
+        with self._lock:
+            f = self._files.get(self.key_of_item(item))
+            return f is not None and run_end(f.runs, start) >= min(end, f.size)
+
     def _wrote(self, f: _File, start: int, end: int, job: _Job | None, anchor: bool) -> None:
         """[start, end) 写进数据文件了：记下来、叫醒等着的；整个下好了记一行日志。在 self._lock 里调。"""
         was = f.done()
@@ -671,9 +696,9 @@ def _pwrite_all(fd: int, data: bytes, at: int) -> None:
 
 class _FullTee:
     """放片子自己从网盘读的时候顺手存：write 每块按位置写进数据文件（每写 CHUNK 字节问一次地方够不够；写不了、
-    不够了就不存了，从不打断放片子）；close 记下来。"""
+    不够了就不存了，从不打断放片子）；close 记下来。job 为 None：预读开头的（pre_tee），不跟着下载线程。"""
 
-    def __init__(self, cache: FullCache, f: _File, job: _Job, at: int, fd: int):
+    def __init__(self, cache: FullCache, f: _File, job: _Job | None, at: int, fd: int):
         self.cache, self.f, self.job, self.at, self.fd = cache, f, job, at, fd
         self.granted = 0
         self.stopped = False
@@ -683,13 +708,15 @@ class _FullTee:
             return
         cache, f, job = self.cache, self.f, self.job
         with cache._lock:
-            if cache._files.get(f.key) is not f or cache._job is not job or job.state not in ("", "done"):
+            if cache._files.get(f.key) is not f or (job is not None and (cache._job is not job
+                                                                          or job.state not in ("", "done"))):
                 self.stopped = True
                 return
             if self.granted < len(chunk):
                 why = cache._room(f, max(cache.chunk, len(chunk)))
                 if why:
-                    cache._block(job, why)
+                    if job is not None:
+                        cache._block(job, why)
                     self.stopped = True
                     return
                 self.granted += max(cache.chunk, len(chunk))

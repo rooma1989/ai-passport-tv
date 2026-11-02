@@ -347,7 +347,7 @@
       <canvas class="pcfreeze" id="pcFreeze" hidden></canvas>
       <!-- 点了马上开窗口：还没出画面时先放封面（console.js 的 pcOpening），出画面时收起 -->
       <img class="pcposter" id="pcPoster" alt="" referrerpolicy="no-referrer" hidden>
-      <div class="pcswitch" id="pcSwitch" hidden role="status"><i class="pcspin" aria-hidden="true"></i><b id="pcSwitchName"></b><span id="pcSwitchText">正在切换…</span></div>
+      <div class="pcswitch" id="pcSwitch" hidden role="status"><i class="pcspin" aria-hidden="true"></i><b id="pcSwitchName"></b><span id="pcSwitchText">正在切换…</span><button type="button" class="pcrush" id="pcRush" hidden>先放（可能会卡）</button></div>
       <div class="watchmsg" id="watchMsg"></div>
       <!-- 片源断了、缓存还在放（或者暂停着）：左上角一个小条，不挡画面，点画面照常暂停；后台在重连（console.js 的 lostRender） -->
       <div class="pcbanner pclost" id="pcLost" hidden role="status"><span id="pcLostText"></span><button class="pctxt" id="pcLostGo">重连</button></div>

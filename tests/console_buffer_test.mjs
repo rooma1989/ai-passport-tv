@@ -13,14 +13,24 @@ const source = readFileSync(join(ROOT, 'server/relay/assets/console.js'), 'utf8'
 const begin = source.indexOf('// ---- 视频缓冲的几个纯函数');
 const end = source.indexOf('// ---- 视频缓冲的纯函数到此');
 assert.ok(begin > 0 && end > begin, 'the pure block is marked in console.js');
-const { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, mediaDone, endedEarly } = new Function(
-  source.slice(begin, end) + '\nreturn { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, mediaDone, endedEarly };')();
+const { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, vodWaitText, mediaDone, endedEarly } = new Function(
+  source.slice(begin, end) + '\nreturn { VOD_GATE, vodTarget, vodSpeed, vodHold, vodBufferText, vodWaitText, mediaDone, endedEarly };')();
 
 // The VOD buffer cap in console.js lets the player fetch at least as far as it waits for.
 const cap = source.match(/const VOD_BUFFER = \{ AHEAD_S: (\d+), BEHIND_S: \d+, MIN_AHEAD_S: (\d+)/);
 assert.ok(cap, 'VOD_BUFFER is where it was');
 assert.ok(Number(cap[1]) - 1 >= VOD_GATE.START_S && Number(cap[1]) - 1 >= VOD_GATE.RESUME_S, 'the time cap is above both targets');
 assert.ok(VOD_GATE.START_S >= VOD_GATE.RESUME_S && VOD_GATE.RESUME_S > VOD_GATE.LOW_S * 4, 'hysteresis, not flapping');
+
+// ---- how long the wait still is, when the drive is slower than the file ----
+// 22 Mbit/s file (2.75 MB/s), the drive gives 0.4 s of video per second (about 9 Mbit/s), 2 of 12 s buffered.
+assert.equal(vodWaitText(2, 12, 0.4, 2_750_000), '网盘现在约 8.8 Mbit/s，这部片子要 22 Mbit/s，大约还要 25 秒');
+assert.equal(vodWaitText(2, 12, 0, 2_750_000), '', 'speed not measured yet');
+assert.equal(vodWaitText(2, 12, Infinity, 2_750_000), '', 'everything arrived at once');
+assert.equal(vodWaitText(2, 12, VOD_GATE.FAST, 2_750_000), '', 'fast enough: it starts by itself in a moment');
+assert.equal(vodWaitText(2, 12, 0.4, 0), '', 'bitrate unknown');
+assert.equal(vodWaitText(11, 12, 0.5, 2_750_000), '', 'almost there: not worth a sentence');
+assert.equal(vodWaitText(0, 12, 0.8, 1_500_000), '网盘现在约 9.6 Mbit/s，这部片子要 12 Mbit/s，大约还要 15 秒');
 
 // ---- a stream that "ends" far from the real end was cut off (relay restarting), not finished ----
 assert.equal(endedEarly(2480, 4.17), true, 'restart 4 s into a fresh stream at 10 min of a 47 min episode');

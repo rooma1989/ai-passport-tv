@@ -80,6 +80,7 @@ from typing import Callable
 from .librarycache import IndexCache
 from . import libraryfull
 from .libraryfull import FullCache
+from .librarypre import PreRead
 from . import libmeta
 from .table import CAST_ID
 
@@ -257,7 +258,7 @@ GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "�
                 "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
                 "downloads", "download", "media", "quark", "baidu"}
 # 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
-PARSE_VERSION = 5
+PARSE_VERSION = 6
 # 文件名开头的字幕组标签：[字幕组]、【xxx】。
 _TAG = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)\s*")
 
@@ -329,6 +330,27 @@ def _movie_title(stem: str) -> tuple[str, int | None]:
     return title or clean_title(stem) or stem[:TITLE_MAX], None
 
 
+# 只说是哪个版本、不是片名的文件夹（括号里的「1-7季」「2016」不看）：「电视剧版」「剧集版」「TV版」「全系列」。
+_VERSION_DIRS = {"电视剧版", "电视剧", "剧集版", "剧集", "剧版", "tv版", "tv", "正片", "全系列", "全集", "series"}
+_BRACKETS = re.compile(r"[（(\[【][^）)\]】]*[）)\]】]")
+# 剧名末尾说「全系列」「1-7季」「全36集」的括号。
+_SERIES_NOTE = re.compile(r"\s*[（(\[【](?:全系列|全集|[^）)\]】]*季|全?\d{1,4}集[^）)\]】]*)[）)\]】]\s*$")
+
+
+def _version_dir(folder: str) -> bool:
+    return "".join(_BRACKETS.sub("", folder).casefold().split()) in _VERSION_DIRS
+
+
+def _split_names(title: str) -> tuple[str, str]:
+    """剧名去掉末尾的「（全系列）」这类；「中文名／English」拆成 (中文名, 另一个)。"""
+    title = _SERIES_NOTE.sub("", title).strip() or title
+    parts = [part.strip() for part in re.split(r"\s*[／/｜|]\s*", title) if part.strip()]
+    if len(parts) == 2 and _has_cjk(parts[0]) != _has_cjk(parts[1]):
+        first, other = (parts[0], parts[1]) if _has_cjk(parts[0]) else (parts[1], parts[0])
+        return first, other
+    return title, ""
+
+
 def _season_of(folder: str) -> int | None:
     match = _SEASON_DIR.match(folder.strip())
     if match:
@@ -379,7 +401,12 @@ def parse_name(rel: str) -> dict:
         if named and _title_folder(named):
             folder = named
         else:
-            folder = grand if folder_season is not None and grand else parent
+            up = 3 if folder_season is not None and grand else 2
+            folder = parts[-up] if len(parts) >= up else ""
+            # 「电视剧版（1-7季）」「全系列」这类只说是哪个版本的文件夹：剧名在再上一层。
+            while folder and _version_dir(folder) and len(parts) > up:
+                up += 1
+                folder = parts[-up]
         if season is None:
             season = folder_season
         folder_title, folder_year = _movie_title(folder) if _title_folder(folder) else ("", None)
@@ -389,9 +416,11 @@ def parse_name(rel: str) -> dict:
         marker = _SERIES_DIR.search(folder_title)
         if marker and marker.start() > 0:
             folder_title = clean_title(re.sub(r"[全共]$", "", folder_title[:marker.start()].rstrip()))
+        # 「X医生：外科医生大门未知子／Doctor X」：中文名做剧名，另一种叫法留着查资料。
+        folder_title, folder_alt = _split_names(folder_title)
         alt = ""
         if not show:
-            show, year = folder_title, year or folder_year
+            show, year, alt = folder_title, year or folder_year, folder_alt
         elif folder_title and folder_year and _has_cjk(folder_title) and not _has_cjk(show) \
                 and (year is None or year == folder_year):
             show, alt, year = folder_title, show, folder_year
@@ -875,6 +904,8 @@ SUB_EXTRACT_S = 300
 # 给中转自己的 ffmpeg 的地址（/api/library/raw/<id>?t=…）的令牌有效期：看得再久也够；过期了 ffmpeg 重连失败，
 # 播放器从现在的位置重开一路（新的令牌）。
 RAW_LIFETIME_S = 6 * 3600
+# 预读开头（librarypre.py）从网盘一次读这么多就看看要不要停（有人开始放了）。
+PRE_PIECE = 4 * 1024 * 1024
 # 经前端（server/front.py）转进来的请求一定带这些头之一：带了就不是本机的 ffmpeg。
 FORWARDED_HEADERS = ("X-Real-IP", "X-Forwarded-For", "X-Forwarded-Proto", "CF-Connecting-IP", "Forwarded")
 # 页面说的它能放什么（MediaSource 能不能接 HEVC、<video> 能不能直接放 HEVC），没说的当不能。
@@ -1291,6 +1322,8 @@ class Library:
         # 正在看的网盘文件边看边整个下到本机（libraryfull.py）：上限是片库设置的 full_gb，0 是关。
         self.full = FullCache(self.dir / "library-full", opener=self._full_open, alive=self._now_of, log=log,
                               clock=clock, limit=self.full_gb() * libraryfull.GB, background=background)
+        # 预读开头（librarypre.py）：attach 接上 progress（pc-progress.json）、起线程。
+        self.pre = PreRead(self, log=log, clock=clock, background=background)
         # 在线资料（libmeta.py）：存在 library-meta.json；豆瓣一次一个请求，被拦了歇一个小时。
         self.meta = libmeta.MetaStore(self.dir / "library-meta.json")
         self.douban = libmeta.Douban(clock=clock, log=log)
@@ -1377,7 +1410,8 @@ class Library:
         return {"ok": True, "full_gb": gb, "full_used": self.full.total()}
 
     def close(self) -> None:
-        """中转关掉时：整集缓存的下载线程停下。"""
+        """中转关掉时：整集缓存的下载线程、预读停下。"""
+        self.pre.close()
         self.full.stop()
 
     def _load_index(self) -> dict[str, dict]:
@@ -1476,6 +1510,28 @@ class Library:
                 "size": item.get("size") or 0, "plot": (item.get("plot") or "")[:300],
                 "art": f"api/library/art/{item['id']}" if item.get("poster") else "",
                 "source": source_name, "added": item.get("added") or 0}
+
+    @staticmethod
+    def likely_direct(item: dict, media: dict | None) -> bool:
+        """在电脑上多半直接放原文件（浏览器自己按 Range 取，不经整集缓存）：mp4 / mov、第一路声音是 AAC / MP3、
+        画面是 8 位 H.264 或 HEVC Main / Main 10（Mac 上的浏览器都能直接放）、没有文字字幕。没探测过时按扩展名猜。
+        预读开头只给不是这样的（librarypre.py）。"""
+        if (item.get("ext") or "") not in DIRECT_CONTAINERS:
+            return False
+        streams = (media or {}).get("streams") or []
+        if not streams:
+            return True
+        video = first_video(media)
+        audio = next((st for st in streams if st.get("t") == "audio"), None)
+        if audio is not None and audio.get("c") not in DIRECT_AUDIO:
+            return False
+        if any(st.get("t") == "subtitle" and st.get("c") in TEXT_SUBS for st in streams):
+            return False
+        if video is None:
+            return True
+        if video.get("c") == "h264":
+            return not _deep(video)
+        return video.get("c") == "hevc" and (video.get("p") or "") in ("", "Main", "Main 10")
 
     @staticmethod
     def show_key(name: str) -> str:
@@ -2446,6 +2502,8 @@ class Library:
                 return "在扫描"
         if self.full.busy():
             return "在缓存整集"
+        if self.pre.busy():
+            return "在预读"
         if self.watching is not None and self.watching():
             return "有人在看"
         return ""
@@ -2661,9 +2719,14 @@ class Library:
             handler.close_connection = True
         return total
 
-    def serve_file(self, handler, iid: str, raw: bool = False, warm: bool = False) -> None:
+    def serve_file(self, handler, iid: str, raw: bool = False, warm: bool = False, pre: bool = False) -> None:
         """GET /api/library/file/<id>：按 Range 给文件的字节（只认 id）。raw：给中转自己的 ffmpeg 的（/api/library/raw），
-        记下给了多少字节（起播时的进度）。warm：预热自己的探测（不算「有人在放」，字节记进这一轮预热）。"""
+        记下给了多少字节（起播时的进度）。warm：预热自己的探测（不算「有人在放」，字节记进这一轮预热）。
+        pre：预读开头的 ffmpeg（librarypre.py；不算「有人在放」，读到的存进整集缓存）。"""
+        if pre:
+            warm = False
+        elif not warm:
+            self.pre.yield_to_playback(iid)      # 有人真放了：预读别和它抢网盘
         item = self.item(iid)
         src = next((s for s in self._load_sources() if item and s["id"] == item["source"]), None)
         if item is None or src is None:
@@ -2673,22 +2736,22 @@ class Library:
             handler._send(503, "同时在放的太多了，过一会儿再试".encode(), "text/plain; charset=utf-8")
             return
         with _LOCK:
-            if not warm:
+            if not warm and not pre:
                 self._serving += 1
         try:
             kind = VIDEO_TYPES.get(item.get("ext") or "", "application/octet-stream")
-            tally = self._warm_tally if warm else self._tally(iid) if raw else None
+            tally = self._warm_tally if warm else self.pre.tally if pre else self._tally(iid) if raw else None
             if src["kind"] == "local":
                 self._serve_local(handler, LocalFolder(src.get("path") or ""), item, kind, tally)
             else:
                 self._serve_dav(handler, self._source(src), item, kind, src.get("name") or "", tally, cached=raw,
-                                playback=raw and not warm)
+                                playback=raw and not warm and not pre, pre=pre)
         except (OSError, ValueError):
             handler.close_connection = True        # 浏览器断开（跳转、关窗口）
         finally:
             self._files.release()
             with _LOCK:
-                if not warm:
+                if not warm and not pre:
                     self._serving -= 1
                     self._served_at = self.clock()
 
@@ -2764,14 +2827,17 @@ class Library:
             upstream.close()
 
     def _serve_dav(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally=None,
-                   cached: bool = False, playback: bool = False) -> None:
+                   cached: bool = False, playback: bool = False, pre: bool = False) -> None:
         """网盘的文件：Range 带给上游，上游的状态、Content-Range、Content-Length 原样回。cached：给 ffmpeg 的
         （raw），先看索引缓存（_serve_cached）。playback：放片子的 ffmpeg 读的（不是预热的探测），整集缓存开着时
-        走 _serve_full。"""
+        走 _serve_full。pre：预读开头的 ffmpeg，走 _serve_pre。"""
         wanted = (handler.headers.get("Range") or "").strip()
         wanted = wanted if _RANGE.match(wanted) and wanted != "bytes=-" else None
         size = int(item.get("size") or 0)
         span = parse_range(wanted, size) if cached and wanted and size > 0 else None
+        if pre and isinstance(span, tuple) and self.full.enabled():
+            self._serve_pre(handler, dav, item, kind, name, tally, *span)
+            return
         if playback and isinstance(span, tuple) and self.full.enabled():
             self._serve_full(handler, dav, item, kind, name, tally, *span)
             return
@@ -2964,6 +3030,76 @@ class Library:
         if at <= end:
             handler.close_connection = True
 
+    def _serve_pre(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally, start: int, end: int) -> None:
+        """预读开头的 ffmpeg 的 Range 请求（librarypre.py）：索引缓存、整集缓存里有的从本机给；没有的从网盘一阵一阵
+        （PRE_PIECE）读，读到的存进两个缓存。不碰下载线程手上的文件（不 touch），读网盘时下载线程让开（on_drive）；
+        预读被叫停（有人开始放了）就断开，ffmpeg 读不到就停了。"""
+        full, iid = self.full, item["id"]
+        size, mtime, ext = int(item["size"]), int(item.get("mtime") or 0), item.get("ext") or ""
+        sock = getattr(handler, "connection", None)
+        sent_head = []
+
+        def head() -> None:
+            if not sent_head:
+                sent_head.append(True)
+                self._send_head(handler, 206, kind, end - start + 1, {"Content-Range": f"bytes {start}-{end}/{size}"})
+
+        at = start
+        while at <= end and not self.pre.stopping() and not _client_gone(sock):
+            want = end - at + 1
+            hit = self.cache.open(iid, size, mtime, ext, at)
+            if hit is not None:
+                handle, have = hit
+                head()
+                count = min(have, want)
+                with handle:
+                    sent = self._pump(handler, handle.read, count, None, close=False)
+                at += sent
+                if sent < count:
+                    break
+                continue
+            found = full.local(item, at)
+            if found is not None:
+                head()
+                count = min(found[1], want)
+                sent = self._send_local(handler, found[0], at, count, None, None)
+                at += sent
+                if sent < count:
+                    break
+                continue
+            last = min(end, at + PRE_PIECE - 1)
+            tees = [t for t in (full.pre_tee(item, at, self._full_name(item)),
+                                self.cache.tee(iid, size, mtime, ext, at)) if t is not None]
+            try:
+                with full.on_drive():
+                    try:
+                        upstream = dav.open(item["path"], f"bytes={at}-{last}")
+                    except (urllib.error.HTTPError, LibraryError, OSError, ValueError) as error:
+                        if isinstance(error, urllib.error.HTTPError):
+                            error.close()
+                        break
+                    try:
+                        span = self._answer_span(upstream, size)
+                        if span is None or span[0] != at:
+                            break
+                        head()
+                        read = getattr(upstream, "read1", None) or upstream.read
+                        sent = self._pump(handler, read, last - at + 1, tally, _Tees(tees) if tees else None,
+                                          close=False)
+                    finally:
+                        upstream.close()
+            finally:
+                for tee in tees:
+                    tee.close()
+            at += sent
+            if at <= last:
+                break
+        if not sent_head:
+            handler._send(503, "预读停下了".encode(), "text/plain; charset=utf-8")
+            return
+        if at <= end:
+            handler.close_connection = True
+
     def _full_drive(self, handler, dav: WebDav, item: dict, name: str, at: int, last: int, tally, head,
                     started: bool) -> int | None:
         """放片子自己从网盘读 [at, last]（这时下载线程让开），读到的顺手存进整集缓存和索引缓存。返回发了多少字节；
@@ -3021,11 +3157,12 @@ class Library:
         from ..listen import check_token
         return self.secret is not None and check_token(self.secret, f"libraw/{iid}", token, now=time.time())
 
-    def raw_url(self, iid: str, warm: bool = False) -> str:
+    def raw_url(self, iid: str, warm: bool = False, pre: bool = False) -> str:
         """中转自己的 ffmpeg 取这个文件的地址：只在本机（127.0.0.1）、带短期令牌。网盘的地址和密码从不给 ffmpeg，
-        本机的文件也不用 file: 协议（watch.py 只许网络协议）。warm：预热的探测（带 w=1，不算「有人在放」）。"""
+        本机的文件也不用 file: 协议（watch.py 只许网络协议）。warm：预热的探测（带 w=1，不算「有人在放」）；
+        pre：预读开头的（带 p=1，librarypre.py）。"""
         return f"http://127.0.0.1:{int(self.port())}/tv/api/library/raw/{iid}?t={self.raw_token(iid)}" \
-            + ("&w=1" if warm else "")
+            + ("&w=1" if warm else "") + ("&p=1" if pre else "")
 
     def bytes_read(self, iid: str) -> int:
         """经 /api/library/raw 给出去的这个文件一共多少字节（起播时说「已读 12 MB」）。"""
@@ -3688,6 +3825,8 @@ def tv_progress(relay, dev: dict, video, position: float, done: bool = False) ->
                           "title": item.get("title") if item.get("kind") == "episode" else name, "name": name,
                           "duration": duration, "position": round(max(0.0, float(position)), 1),
                           "device": dev.get("name") or "小电视"})
+    if not done:
+        library.pre.near_end(item["id"], float(position), duration)     # 快放完：预读下一集的开头
 
 
 def tv_finished(relay, dev: dict, video, offset: float, outcome: str, elapsed: float) -> str:
@@ -3791,7 +3930,8 @@ def raw(handler, relay, path: str) -> bool:
             or not library.raw_ok(match.group(1), handler._query().get("t")):
         handler._not_found()
         return True
-    library.serve_file(handler, match.group(1), raw=True, warm=handler._query().get("w") == "1")
+    query = handler._query()
+    library.serve_file(handler, match.group(1), raw=True, warm=query.get("w") == "1", pre=query.get("p") == "1")
     return True
 
 
@@ -3879,7 +4019,9 @@ def attach(relay, start: bool = True) -> Library | None:
     relay.library = library
     wired(relay)
     library.watching = lambda: _watching(relay)
+    library.pre.progress = lambda: getattr(relay, "pc_progress", None)
     if start:
+        library.pre.start()
         threading.Thread(target=library.run_forever, name="library", daemon=True).start()
         threading.Thread(target=library.run_meta, name="library-meta", daemon=True).start()
         threading.Thread(target=library.run_warm, name="library-warm", daemon=True).start()

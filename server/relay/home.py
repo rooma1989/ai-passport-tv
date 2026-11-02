@@ -212,6 +212,11 @@ class PcProgress:
             found = self._data.get(str(user), {}).get(key)
             return dict(found) if isinstance(found, dict) else None
 
+    def users(self) -> list[int]:
+        """记过进度的各个用户（片库的预读看所有人的「继续观看」，librarypre.py）。"""
+        with self.lock:
+            return [int(k) for k in self._data if k.lstrip("-").isdigit()]
+
     def rows(self, user: int) -> list[tuple[str, dict]]:
         with self.lock:
             mine = self._data.get(str(user), {})

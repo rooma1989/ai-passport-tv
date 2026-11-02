@@ -1770,12 +1770,75 @@ class Relay:
         if not self._pc_report(caller, body):
             return {"ok": False, "error": "这个页面现在没有在电脑上看视频"}
         self._pc_history(caller, body, final=body.get("ended") is True)
+        self._library_near_end(caller, body)
         session = self.vod.get(self._pc_slot(caller, body["viewer"])) if self.vod is not None else None
         if session is not None:
             session.touch()        # 点播暂停着时浏览器不取数据：页面报进度就是还在看
         self.pc_sync(caller.user)
         if body.get("ended") is True:
             self.forget_home(caller)
+        return {"ok": True}
+
+    def _library_near_end(self, caller: Caller, body: dict) -> None:
+        """在电脑上放片库的一集快放完了：预读下一集的开头（librarypre.py）。"""
+        library = getattr(self, "library", None)
+        key = self._pc_pages.get((caller.user, body.get("viewer")))
+        if library is None or not isinstance(key, str) or not key.startswith("lib:"):
+            return
+        cursor = self._pc_cursor.get((caller.user, key)) or {}
+        position = body.get("position")
+        if isinstance(position, (int, float)) and not isinstance(position, bool):
+            library.pre.near_end(key[4:], float(position), float(cursor.get("duration") or 0))
+
+    def library_preread(self, caller: Caller, body: dict) -> dict:
+        """POST /api/library/preread {id} 或 {show}：电脑版打开了片库的详情页，先把「播放」会放的那一段（这个人上次
+        看到的地方，没看过从头）下到本机（librarypre.py），点下去少等。剧（show 是剧的键）挑这个人最近看的那一集
+        （看完了是下一集，没看过是第一集，librarypre.PreRead.pick）。只给登录的家里人；没有片库、不是网盘上的、
+        直接放原文件的不读（queued 为假）。"""
+        library = library_api.wired(self)
+        iid, show = body.get("id"), body.get("show")
+        if caller.guest or caller.user is None:
+            return {"ok": False, "error": "请求格式不对"}
+        if isinstance(show, str) and re.fullmatch(r"[0-9a-f]{12}", show):
+            if library is None:
+                raise NotFound("library")
+            iid = library.pre.pick(caller.user, show)
+            if iid is None:
+                return {"ok": True, "queued": False}
+        elif not isinstance(iid, str) or not re.fullmatch(r"[0-9a-f]{16}", iid):
+            return {"ok": False, "error": "请求格式不对"}
+        if library is None:
+            raise NotFound("library")
+        return {"ok": True, "queued": library.pre.want(iid, library.pre.resume_at(caller.user, iid), "detail")}
+
+    def library_started(self, caller: Caller, body: dict) -> dict:
+        """POST /api/library/started {id, wait_ms, speed, rate, rushed}：电脑上片库的一集出画面了，页面报等了多久
+        （wait_ms）、取段的速度（speed：每秒墙钟取到几秒视频，不知道时 0）、码率（rate：字节 / 秒）、是不是按了「先放」。
+        记一行日志：下次说「起播慢」时看得出是网盘慢、片子码率高，还是开头没预读过。"""
+        library = library_api.wired(self)
+        iid = body.get("id")
+        if caller.guest or caller.user is None or not isinstance(iid, str) or not re.fullmatch(r"[0-9a-f]{16}", iid):
+            return {"ok": False, "error": "请求格式不对"}
+        item = library.item(iid) if library is not None else None
+        if item is None:
+            return {"ok": True}
+
+        def number(key: str, cap: float) -> float:
+            value = body.get(key)
+            return min(cap, max(0.0, float(value))) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+        wait, speed, rate = number("wait_ms", 3_600_000) / 1000, number("speed", 1000), number("rate", 1e9)
+        need = rate * 8 / 1e6
+        parts = [f"等了 {wait:.1f} 秒出画面"]
+        if need:
+            parts.append(f"片子 {need:.0f} Mbit/s")
+            if speed:
+                parts.append(f"网盘约 {speed * need:.0f} Mbit/s（{speed:.1f} 倍）")
+        pre = library.pre.last(iid)
+        parts.append("开头预读过" if pre else "开头没预读过")
+        if body.get("rushed") is True:
+            parts.append("按了「先放」")
+        self.log(f"片库起播：「{library._full_name(item)}」" + "，".join(parts))
         return {"ok": True}
 
     def watch_stop(self, caller: Caller, viewer, body: dict | None = None) -> dict:
@@ -3324,6 +3387,12 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/watch/prepare":
                 self._json(relay.watch_prepare(caller, body))
+                return
+            if path == "/api/library/preread":
+                self._json(relay.library_preread(caller, body))
+                return
+            if path == "/api/library/started":
+                self._json(relay.library_started(caller, body))
                 return
             if path == "/api/yt/prefetch":
                 self._json(relay.yt_prefetch(caller, body))

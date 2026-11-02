@@ -213,6 +213,15 @@ class NameTests(unittest.TestCase):
         self.check("某剧 第二季/03.mp4", kind="episode", show="某剧", season=2, episode=3)
         self.check("绝命毒师 第2季 (2009)/E03.mp4", kind="episode", show="绝命毒师", season=2, year=2009)
 
+    def test_version_folders_and_two_names(self):
+        base = "X医生：外科医生大门未知子／Doctor X（全系列）/"
+        for rel, season, episode in ((base + "电视剧版（1-7季）/S01/S01E01.mkv", 1, 1),
+                                     (base + "电视剧版（1-7季）/S07/S07E10.mkv", 7, 10)):
+            self.check(rel, kind="episode", show="X医生：外科医生大门未知子", alt="Doctor X", season=season,
+                       episode=episode)
+        self.check("某剧（全36集）/03.mp4", kind="episode", show="某剧", episode=3)
+        self.check("Breaking Bad/Season 2/E03.mp4", kind="episode", show="Breaking Bad", alt="", season=2)
+
     def test_regroup_by_folder(self):
         def row(path, **kw):
             found = library.parse_name(path)
