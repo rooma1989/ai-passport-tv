@@ -354,6 +354,9 @@ class ServeBase(unittest.TestCase):
         self.item = self.lib.items()[0]
         self.iid = self.item["id"]
         self.lib.full.chunk, self.lib.full.burst, self.lib.full.piece = 256 * KB, 512 * KB, 64 * KB
+        # Not the real disk: a CI runner has less than FREE_MIN free and nothing would be stored (the floor has
+        # its own test).
+        self.lib.full.disk_free = lambda: 100 * GB
         self.fronts = []
 
     def tearDown(self):
