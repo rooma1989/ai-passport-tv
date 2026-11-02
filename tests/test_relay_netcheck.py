@@ -24,6 +24,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -394,7 +395,10 @@ class NetcheckApiTests(lib_base.ApiTests):
     def test_whole_check(self):
         self.assertEqual(self.call("admin", "GET", "/tv/api/admin/netcheck")[1],
                          {"ok": True, "running": False, "step": "", "result": None})
-        answer, answers = self.run_check()
+        # The local lines answer at once; only a busy machine (the whole suite, a CI runner) makes one take
+        # longer than LIVE_SLOW_MS and read as slow. The dead line warns for being dead, not for being slow.
+        with unittest.mock.patch.object(netcheck, "LIVE_SLOW_MS", 60_000):
+            answer, answers = self.run_check()
         result = answer["result"]
         sections = {s["key"]: s["rows"] for s in result["sections"]}
         self.assertEqual(list(sections), ["drives", "live", "web", "clash"])
