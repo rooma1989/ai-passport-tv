@@ -37,13 +37,14 @@ from pathlib import Path
 
 from tools import netcheck
 
-from . import APP_ID, APP_NAME, __version__, autostart, legacy, menu, paths, power
+from . import APP_ID, APP_NAME, __version__, autostart, browsers, legacy, menu, paths, power
 from .control import ControlClient, ControlError, ControlUnavailable, Status
 from .core import CoreProcess, no_window_flags
 from .instance import SingleInstance, hand_off
 from .logs import log, setup as setup_logs
 
 POLL_S = 2.0
+BROWSERS_S = 60.0       # how often the installed browsers are looked up again
 NETWORK_CHECK_S = 60.0
 NOTICE_S = 60.0
 # Exit codes: 0 ok, 1 failure, 2 usage. A second instance that handed off exits 0.
@@ -76,26 +77,52 @@ def reveal(path: Path) -> None:
 
 class Prefs:
     """<data>/tray.json: what the tray needs to remember while the core does not
-    keep it ([desktop] in config.toml is the long-term home, design 5.6)."""
+    keep it ([desktop] in config.toml is the long-term home, design 5.6).
+
+    A second launch can write it too (choosing another browser in the dialog
+    of a hand-off), so a change on disk is read back before the next write and
+    on `reload_if_changed`."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._mtime = None
+        self.data = {}
+        self._load()
+
+    def _stamp(self):
+        try:
+            return self.path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _load(self) -> None:
+        self._mtime = self._stamp()
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             self.data = data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             self.data = {}
 
+    def reload_if_changed(self) -> bool:
+        """Read the file again when another process changed it. One stat when it did not."""
+        stamp = self._stamp()
+        if stamp is None or stamp == self._mtime:
+            return False
+        self._load()
+        return True
+
     def get(self, key: str, default=None):
         return self.data.get(key, default)
 
     def set(self, key: str, value) -> None:
+        self.reload_if_changed()
         self.data[key] = value
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(self.path.name + ".tmp")
             tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=1), encoding="utf-8")
             os.replace(tmp, self.path)
+            self._mtime = self._stamp()
         except OSError as error:
             log(f"保存托盘设置失败：{type(error).__name__}")
 
@@ -105,7 +132,7 @@ class App:
                  login_item=None, prefs: Prefs | None = None, opener=open_url, path_opener=open_path,
                  revealer=reveal, autostarted: bool = False, translocated: bool = False,
                  windows_profiles=None, logs_dir: Path | None = None, clock=time.monotonic,
-                 legacy_login_item=None):
+                 legacy_login_item=None, browser_system: browsers.System | None = None, spawn=None):
         self.data = Path(data)
         self.client = client
         self.core = core
@@ -120,8 +147,19 @@ class App:
         self.windows_profiles = windows_profiles  # callable -> list[dict], Windows only
         self.logs_dir = Path(logs_dir) if logs_dir else paths.logs_dir(self.data)
         self.clock = clock
+        # "打开电脑版" with a chosen browser (macOS): the installed ones are
+        # looked up off the poll thread, at most once a minute (BROWSERS_S).
+        self.browser_system = browser_system or browsers.System()
+        self._spawn = spawn or (lambda fn: threading.Thread(target=fn, daemon=True, name="browsers").start())
+        self._browsers_at: float | None = None
+        self._browsers_running = False
+        offered = browsers.supported(self.browser_system)
+        chosen = browsers.chosen(self.prefs, self.browser_system)
+        # Until the first lookup the saved choice is listed as it is.
+        first = ((chosen, browsers.name_of(chosen)),) if chosen else ()
         self.state = menu.TrayState(translocated=translocated,
-                                    keep_awake=self.prefs.get("keep_awake", "watching"))
+                                    keep_awake=self.prefs.get("keep_awake", "watching"),
+                                    browsers=first if offered else None, browser=chosen)
         self.last_status_raw: dict | None = None
         self.setup_opened = False
         self.quitting = threading.Event()
@@ -165,6 +203,7 @@ class App:
                 else self.state.keep_awake
             self.state = replace(self.state, core=core_state, status=status, keep_awake=keep_awake,
                                  autostart=self._login_item_enabled(), notices=self._current_notices())
+        self._browsers()
         self._first_run(status)
         self._power(status)
         self._network()
@@ -218,6 +257,39 @@ class App:
                 log("家里的网络被标成了公用网络（Windows）")
             with self._lock:
                 self.state = replace(self.state, windows_public=name)
+
+    def _browsers(self) -> None:
+        """Keep the browser submenu current: the saved choice (another launch may
+        have changed it) every poll, the installed browsers at most once a minute
+        and never on the poll thread (mdfind can take a moment)."""
+        if self.state.browsers is None:
+            return
+        self.prefs.reload_if_changed()
+        chosen = browsers.chosen(self.prefs, self.browser_system)
+        if chosen != self.state.browser:
+            with self._lock:
+                self.state = replace(self.state, browser=chosen)
+        now = self.clock()
+        if self._browsers_running or (self._browsers_at is not None and now - self._browsers_at < BROWSERS_S):
+            return
+        self._browsers_running = True
+        self._browsers_at = now
+
+        def lookup():
+            try:
+                found = browsers.detect(self.browser_system)
+            except Exception as error:      # noqa: BLE001 - keep the last list
+                log(f"查找浏览器失败：{type(error).__name__}: {error}")
+                found = None
+            finally:
+                self._browsers_running = False
+            if found is not None:
+                listed = tuple((b.bundle_id, b.name) for b in found)
+                if listed != self.state.browsers:
+                    with self._lock:
+                        self.state = replace(self.state, browsers=listed)
+                    self._changed()
+        self._spawn(lookup)
 
     def _changed(self) -> None:
         if self.on_change is not None:
@@ -301,14 +373,19 @@ class App:
         menu.DIAGNOSTICS: "diagnostics",
         menu.RESTART: "restart",
         menu.QUIT: "quit",
+        menu.CHOOSE_BROWSER: "choose_browser",     # "choose_browser:<bundle id>"
     }
 
     def run_action(self, action: str) -> None:
-        name = self.ACTIONS.get(action)
+        base, _, argument = action.partition(":")
+        name = self.ACTIONS.get(base)
         if name is None:
             return
         try:
-            getattr(self, name)()
+            if base == menu.CHOOSE_BROWSER:
+                self.choose_browser(argument)
+            else:
+                getattr(self, name)()
         except ControlError as error:
             self._notice(error.message or f"电视服务拒绝了这个操作（{error}）")
         except ControlUnavailable:
@@ -324,7 +401,27 @@ class App:
         self._changed()
 
     def open_console(self) -> None:
-        self._open(self.client.console_link())
+        url = self.client.console_link()
+        try:
+            browsers.open_console(url, self.prefs, self.open_url, self.browser_system,
+                                  available=self._installed_browsers, notify=self._notice)
+        except Exception as error:      # noqa: BLE001
+            log(f"打不开浏览器：{type(error).__name__}")
+        self._browsers()        # a choice made in the dialog shows in the menu at once
+
+    def _installed_browsers(self) -> tuple[browsers.Browser, ...]:
+        listed = self.state.browsers or ()
+        return tuple(browsers.Browser(bundle_id, name) for bundle_id, name in listed)
+
+    def choose_browser(self, bundle_id: str = "") -> None:
+        """The browser "打开电脑版" uses; "" follows the system default. Never
+        changes the system's own default browser."""
+        if not browsers.supported(self.browser_system):
+            return
+        self.prefs.set(browsers.PREF_KEY, bundle_id)
+        with self._lock:
+            self.state = replace(self.state, browser=bundle_id)
+        log(f"电脑版用的浏览器：{browsers.name_of(bundle_id) if bundle_id else '跟随系统默认'}")
 
     def open_setup(self) -> None:
         # console-link answers with the setup page while there is no admin.
@@ -552,7 +649,7 @@ class PystrayUI:
             # action, exactly 1 for `checked`), so no default-argument tricks.
             return pystray.MenuItem(item.text, on_click(item.action) if item.action else None,
                                     checked=is_checked(item.checked) if item.checked is not None else None,
-                                    enabled=item.enabled, default=item.default)
+                                    radio=item.radio, enabled=item.enabled, default=item.default)
         return pystray.Menu(*[convert(i) for i in items])
 
     def _click(self, action: str) -> None:
@@ -812,7 +909,12 @@ def main(argv: list[str] | None = None) -> int:
                 (paths.run_dir(data) / "handoff-ok").write_text("ok\n", encoding="ascii")
             opened = hand_off(client, record, wait_s=20, log=log)
             return 0 if opened else EXIT_FAILED
-        return 0 if hand_off(client, open_url, log=log) else EXIT_FAILED
+        prefs = Prefs(paths.prefs_file(data))
+
+        def open_console(url: str) -> None:
+            # The same browser as "打开电脑版" in the running tray's menu.
+            browsers.open_console(url, prefs, open_url, notify=log)
+        return 0 if hand_off(client, open_console, log=log) else EXIT_FAILED
     if args.smoke_second:
         log("::error::smoke test: the second instance got the lock")
         instance.release()

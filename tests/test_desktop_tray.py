@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from desktop import autostart, menu, paths, power  # noqa: E402
+from desktop import autostart, browsers, menu, paths, power  # noqa: E402
 from tools import netcheck  # noqa: E402
 from desktop.control import (ControlClient, ControlError, ControlUnavailable, Device, Ffmpeg,  # noqa: E402
                              Network, Problem, Status, read_control_file)
@@ -775,6 +775,8 @@ class AppTest(unittest.TestCase):
     def make(self, core: DevCore, autostarted=False, login_item=None, **kw) -> App:
         self.devcore = core.start()
         self.addCleanup(core.stop)
+        # Never look for (or start) the real browsers of the machine running the tests.
+        kw.setdefault("browser_system", browsers.System(platform="test", run=None, read_plist=None, app_dirs=()))
         return App(self.data, ControlClient(paths.control_file(self.data), timeout=3), FakeCore(),
                    power.KeepAwake(self.backend, clock=Clock()), login_item=login_item,
                    opener=self.opened.append, path_opener=self.opened.append, revealer=self.revealed.append,

@@ -13,6 +13,7 @@
 | --- | --- |
 | `desktop/tray.py` | 入口（`RooTV`、`python3 -m desktop`）；`App`：启动并看着核心、每 2 秒读状态、第一次运行、各个菜单动作；`PystrayUI`（真托盘）、`HeadlessUI`（`--no-tray`）；`--smoke-test`、`--tray-check` |
 | `desktop/menu.py` | 菜单的纯数据模型：标题行、问题、图标状态、菜单项。测试不需要图形界面 |
+| `desktop/browsers.py` | 「打开电脑版」用的浏览器（macOS）：在 /Applications、~/Applications（读 Info.plist）和一次 `mdfind` 里找已知浏览器的 bundle id；`open -b <id> <网址>`；选的浏览器不在了时的 osascript 对话框；选择存在 `tray.json` 的 `console_browser`（"" = 系统默认） |
 | `desktop/control.py` | 本机控制接口的客户端（P1c 约定）和 `Status.from_json`：约定变了只改这里 |
 | `desktop/core.py` | 启动/重启/停止核心进程：不写的标准输入管道 + `TV_WATCH_PARENT=1`；Windows 上作业对象（`tools/parentwatch.attach`）和 `CREATE_NO_WINDOW`；退出码 3（另一个核心占着数据目录）不当作崩溃 |
 | `desktop/instance.py` | 只开一个：`run/tray.lock` 上的系统文件锁；第二次启动经控制接口打开电脑版后退出 |
@@ -25,6 +26,7 @@
 | `packaging/release/release-body.txt` | 发布页的说明，固件、服务器、电脑客户端三个流程都发它 |
 | `.github/workflows/build-desktop.yml` | 四个平台的构建和冒烟测试，汇总发布文件集；推标签时发布 |
 | `tests/test_desktop_release.py` | 发布文件集、标签和版本的检查、等同一次发布的固件、发布说明、中文安装向导 |
+| `tests/test_desktop_browsers.py` | 浏览器查找（假的 mdfind 和 Info.plist）、子菜单、保存选择、`open -b` 和默认浏览器、浏览器不在了时的对话框不改已选的 |
 | `tests/test_desktop_tray.py` | 菜单状态、状态解析、控制接口客户端（对着替身核心）、只开一个、自启动文件、睡眠断言（模拟）、网络解析、核心进程、`App` 的动作 |
 
 托盘从不导入 `server`；核心是另一个程序，两者之间只有控制接口。这样方案 B（Tauri 外壳）只换托盘。

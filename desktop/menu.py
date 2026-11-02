@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import APP_NAME
+from .browsers import name_of
 from .control import Status
 
 
@@ -22,6 +23,7 @@ class Item:
     text: str
     action: str | None = None        # an action id handled by the tray; None = information only
     checked: bool | None = None      # None = not a check item
+    radio: bool = False              # a checked item drawn as one choice of several
     enabled: bool = True
     default: bool = False            # the item a left click runs (Windows, Linux)
     submenu: tuple["Item", ...] | None = None
@@ -43,6 +45,13 @@ OPEN_LOGS = "open_logs"
 DIAGNOSTICS = "diagnostics"
 RESTART = "restart"
 QUIT = "quit"
+# Parameterised: "choose_browser:<bundle id>", "choose_browser:" = the system default.
+CHOOSE_BROWSER = "choose_browser"
+
+
+def action_name(action: str) -> str:
+    """The handler part of an action id ("choose_browser:com.apple.Safari" -> "choose_browser")."""
+    return action.split(":", 1)[0]
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,10 @@ class TrayState:
     windows_public: str = ""            # name of a Windows network marked Public, "" if none
     translocated: bool = False          # macOS: running from the DMG / a translocated path
     busy: str = ""                      # a short note while an action runs ("正在导出诊断信息…")
+    # The browsers "打开电脑版" can use, as (bundle id, name); None = the choice
+    # is not offered here (not macOS): the system default is used.
+    browsers: tuple[tuple[str, str], ...] | None = None
+    browser: str = ""                   # the chosen bundle id, "" = the system default browser
     notices: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -165,6 +178,22 @@ def network_trust_needed(state: TrayState) -> str:
     return ""
 
 
+def browser_menu(state: TrayState) -> Item | None:
+    """"电脑版用的浏览器": the system default plus each installed browser, the
+    current one checked. A saved browser that is no longer found stays listed
+    (checked, marked) so the menu says what "打开电脑版" will try."""
+    if state.browsers is None:
+        return None
+    choices = [Item("跟随系统默认浏览器", f"{CHOOSE_BROWSER}:", checked=not state.browser, radio=True)]
+    known = {bundle_id for bundle_id, _ in state.browsers}
+    for bundle_id, name in state.browsers:
+        choices.append(Item(name, f"{CHOOSE_BROWSER}:{bundle_id}", checked=bundle_id == state.browser, radio=True))
+    if state.browser and state.browser not in known:
+        choices.append(Item(f"{name_of(state.browser)}（没有找到）", f"{CHOOSE_BROWSER}:{state.browser}",
+                            checked=True, radio=True))
+    return Item("电脑版用的浏览器", submenu=tuple(choices))
+
+
 def build(state: TrayState) -> tuple[Item, ...]:
     running = state.core == "running" and state.status is not None
     status = state.status
@@ -179,6 +208,9 @@ def build(state: TrayState) -> tuple[Item, ...]:
         items.append(Item("打开电脑版", OPEN_CONSOLE, enabled=running))
     else:
         items.append(Item("打开电脑版", OPEN_CONSOLE, enabled=running, default=True))
+    browsers = browser_menu(state)
+    if browsers is not None:
+        items.append(browsers)
     items.append(Item("连接手机…", CONNECT_PHONE, enabled=running and not status.setup_pending))
     items.append(Item("设置一台电视…", SET_UP_TV, enabled=running))
     items.append(SEPARATOR)

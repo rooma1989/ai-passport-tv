@@ -14,6 +14,7 @@ P2c installers). User tutorial: [`README.md`](README.md).
 | --- | --- |
 | `desktop/tray.py` | Entry point (`RooTV`, `python3 -m desktop`); `App`: starts and watches the core, reads the status every 2 s, first run, every menu action; `PystrayUI` (the real tray), `HeadlessUI` (`--no-tray`); `--smoke-test`, `--tray-check` |
 | `desktop/menu.py` | The menu as pure data: headline, problems, icon state, items. Tested without a GUI |
+| `desktop/browsers.py` | The browser "Open the console" uses (macOS): known browser bundle ids found in /Applications, ~/Applications (Info.plist) and with one `mdfind`; `open -b <id> <url>`; the osascript dialogs when the chosen one is gone; the choice is `console_browser` in `tray.json` ("" = system default) |
 | `desktop/control.py` | Client for the local control API (the P1c contract) and `Status.from_json`: a contract change is a change here only |
 | `desktop/core.py` | Starts, restarts and stops the core: a never-written stdin pipe plus `TV_WATCH_PARENT=1`; on Windows a job object (`tools/parentwatch.attach`) and `CREATE_NO_WINDOW`; exit code 3 (another core holds the data folder) is not a crash |
 | `desktop/instance.py` | Single instance: an OS file lock on `run/tray.lock`; a second launch opens the console through the control API and exits |
@@ -26,6 +27,7 @@ P2c installers). User tutorial: [`README.md`](README.md).
 | `packaging/release/release-body.txt` | The release page text, published by the firmware, server and desktop workflows |
 | `.github/workflows/build-desktop.yml` | Builds and smoke tests on four platforms, assembles the release set; publishes it on tags |
 | `tests/test_desktop_release.py` | The release set, the tag/version check, waiting for the tag's firmware, the release text, the Chinese installer |
+| `tests/test_desktop_browsers.py` | Browser detection (fake mdfind and Info.plist), the submenu, saving the choice, `open -b` versus the default browser, the missing-browser dialog keeping the choice |
 | `tests/test_desktop_tray.py` | Menu state, status parsing, the control client (against the stand-in core), single instance, autostart files, sleep assertions (mocked), network parsing, the core process, `App` actions |
 
 The tray never imports `server`; the core is another program and the control

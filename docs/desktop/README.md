@@ -198,6 +198,7 @@ The menu is in Chinese in the product; in order:
 | --- | --- |
 | Status line ("streaming to N devices") | Current state; a problem adds a line below (ffmpeg missing, port in use...) |
 | Open the console | Opens the console in the browser, signed in as the admin (also a left click on the icon on Windows) |
+| Browser for the console (Mac only) | Which browser "Open the console" uses: "Follow the system default browser" (the default) or one of the browsers installed on this Mac (Safari, Chrome, Edge, Firefox, Brave, Arc...); the ticked one is used. It never changes the Mac's default browser and only affects "Open the console" (and opening RooTV again); the other items keep using the default browser. If the chosen browser is gone, a dialog offers to open the console in the default browser this once (your choice is kept), to choose another browser, or to cancel |
 | Connect a phone | Phone sign-in by QR code |
 | Set up a TV | Opens the web flasher (the `localhost` flasher page) |
 | Devices | What each device plays, online or offline |

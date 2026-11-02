@@ -6,7 +6,8 @@ ends however it ends, so a crash never leaves a stale "already running".
 
 A second launch (double-clicking the app again, the Start-menu entry while it
 runs) cannot get the lock; it then asks the running core, through the control
-API, for a console sign-in link, opens it, and exits -- which is what a person
+API, for a console sign-in link, opens it (`open_url`: in tray.main, with the
+browser chosen under "电脑版用的浏览器", desktop/browsers.py), and exits -- which is what a person
 who double-clicks an app that is already running expects to see.
 """
 
