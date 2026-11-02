@@ -194,6 +194,52 @@ class NameTests(unittest.TestCase):
         self.check("我的剧/第二季/第二十三集.mp4", kind="episode", show="我的剧", season=2, episode=23)
         self.assertEqual(library.parse_name("Friends.S01E02.Reunion.mkv")["title"], "第 2 集 · Reunion")
 
+    def test_numbered_files_in_a_series_folder(self):
+        folder = "夸克/来自：分享/当我飞奔向你 (2023)  4K WEB-DL 24集已完结 内封中字幕  15.9G/"
+        self.check(folder + "01.4K.mp4", kind="episode", show="当我飞奔向你", year=2023, episode=1, season=None)
+        self.check(folder + "12.4K..mp4", kind="episode", show="当我飞奔向你", episode=12)
+        self.check("某剧 全36集/03 重逢.mp4", kind="episode", show="某剧", episode=3, title="第 3 集 · 重逢")
+        self.check("某剧/01-1080p.mkv", kind="episode", show="某剧", episode=1)
+        # 开头是数字的电影不算集数。
+        self.check("21 Grams.mkv", kind="video", title="21 Grams", episode=None)
+        self.check("300.2006.1080p.mkv", kind="movie", title="300", year=2006)
+
+    def test_seasons_named_in_the_folder_make_one_show(self):
+        base = "J 绝命毒师 1-5季 +电影/"
+        for season, year in ((1, 2008), (2, 2009)):
+            rel = (f"{base}绝命毒师S0{season}.Breaking.Bad.{year}.2160p.WEBrip.x265/"
+                   f"Breaking.Bad.S0{season}E01.{year}.2160p.WEBrip.x265.mkv")
+            self.check(rel, kind="episode", show="绝命毒师 Breaking Bad", season=season, episode=1)
+        self.check("某剧 第二季/03.mp4", kind="episode", show="某剧", season=2, episode=3)
+        self.check("绝命毒师 第2季 (2009)/E03.mp4", kind="episode", show="绝命毒师", season=2, year=2009)
+
+    def test_regroup_by_folder(self):
+        def row(path, **kw):
+            found = library.parse_name(path)
+            return dict({"path": path, "kind": found["kind"], "title": found["title"], "year": found["year"],
+                         "show": found["show"], "season": found["season"], "episode": found["episode"]}, **kw)
+        # 文件名认不出集数、文件夹写着「24集已完结」：按顺序排成各集。
+        series = [row(f"某剧 (2020) 24集已完结/某剧.2020.4K.{tag}.mp4") for tag in ("A", "B", "C")]
+        # 同名同年份、每个都有不同的数字。
+        numbered = [row(f"另一部 (2021)/另一部.2021.{n:02d}.1080p.mp4") for n in (3, 1)]
+        # 认不出集数的三个：其他视频；两个同名的：同一部片的两个版本，照旧是电影。
+        loose = [row(f"散的 (2019)/散的.2019.{tag}.mkv") for tag in ("Alpha", "Beta", "Gamma")]
+        versions = [row("盗梦空间 (2010)/盗梦空间.2010.1080p.mkv"), row("盗梦空间 (2010)/盗梦空间.2010.2160p.mkv")]
+        nfo = [row(f"片子 (2018)/片子.2018.{tag}.mkv", nfo=True) for tag in ("A", "B", "C")]
+        # 一个文件夹里两种剧名，一个包含另一个：合成多数的那个。
+        mixed = [row(f"Saul/S03/风S律师.Better.Call.Saul.S03E0{n}.mkv") for n in (1, 2)] + \
+            [row("Saul/S03/Better.Call.Saul.S03E07.mkv")]
+        items = series + numbered + loose + versions + nfo + mixed
+        self.assertTrue(all(r["kind"] == "movie" for r in series + numbered + loose + versions))
+        library.regroup(items)
+        self.assertEqual([(r["kind"], r["show"], r["episode"]) for r in series],
+                         [("episode", "某剧", 1), ("episode", "某剧", 2), ("episode", "某剧", 3)])
+        self.assertEqual(sorted((r["kind"], r["show"], r["episode"]) for r in numbered),
+                         [("episode", "另一部", 1), ("episode", "另一部", 3)])
+        self.assertEqual({r["kind"] for r in loose}, {"video"})
+        self.assertEqual({r["kind"] for r in versions + nfo}, {"movie"})
+        self.assertEqual({r["show"] for r in mixed}, {"风S律师 Better Call Saul"})
+
     def test_chinese_numbers(self):
         self.assertEqual([library.cn_number(t) for t in ("12", "十", "十二", "二十", "二十三", "一百零五", "两")],
                          [12, 10, 12, 20, 23, 105, 2])
@@ -306,6 +352,27 @@ class LocalTests(unittest.TestCase):
         self.assertEqual(len(self.lib.items()), 3)
         # The index survives a restart.
         self.assertEqual(len(quiet(self.data).items()), 3)
+
+    def test_old_index_rows_become_one_show_after_a_rescan(self):
+        folder = self.root / "当我飞奔向你 (2023)  4K WEB-DL 24集已完结 内封中字幕"
+        for n in (1, 2, 3):
+            touch(folder / f"{n:02d}.4K..mp4", MP4[:1000])
+        sid = self.add()
+        # 旧版本扫出来的索引：每集一部同名电影。
+        with library._LOCK:
+            for item in self.lib._items.values():
+                if "飞奔" in item["path"]:
+                    item.update(kind="movie", title="当我飞奔向你", year=2023, show="", episode=None,
+                                pv=library.PARSE_VERSION - 1)
+        before = {i["path"]: i["id"] for i in self.lib.items() if "飞奔" in i["path"]}
+        self.assertEqual(self.lib.due(), [sid], "rows parsed the old way get rescanned at once")
+        self.assertTrue(self.lib.scan_now(sid)["ok"])
+        view = self.lib.view()
+        self.assertNotIn("当我飞奔向你", [m["title"] for m in view["movies"]])
+        show = next(s for s in view["shows"] if s["title"] == "当我飞奔向你")
+        self.assertEqual(([e["episode"] for e in show["episodes"]], show["year"]), ([1, 2, 3], 2023))
+        self.assertEqual({e["id"] for e in show["episodes"]}, set(before.values()), "same ids: progress is kept")
+        self.assertTrue(all(p.exists() for p in folder.iterdir()), "the files are not touched")
 
     def test_view_groups_movies_shows_and_videos(self):
         self.add()

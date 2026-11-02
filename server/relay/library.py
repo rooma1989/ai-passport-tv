@@ -223,6 +223,13 @@ _SXXEYY = re.compile(r"(?i)(?<![a-z0-9])s(\d{1,2})[ ._-]?e(\d{1,4})(?!\d)")
 _DI_JI = re.compile(r"第\s*([0-9零〇一二两三四五六七八九十百]{1,6})\s*[集话話期]")
 # E 后面至多三位数：「WALL-E 2008」的年份不算集数。
 _EPISODE = re.compile(r"(?i)(?<![a-z0-9])(?:episode|ep|e)[ ._-]?(\d{1,3})(?!\d)")
+# 文件名开头的集数：「01.4K.mp4」「02 1080p.mkv」，后面只能跟着画质标记（「21 Grams.mkv」「300.2006.mkv」是电影）。
+_LEAD_NUMBER = re.compile(r"^(\d{1,3})(?=[ ._-]|$)")
+# 整部剧的文件夹：「24集已完结」「全36集」「更新至12集」。这样的文件夹里文件名开头的数字就是集数。
+_SERIES_DIR = re.compile(r"\d{1,4}\s*集|全集|完结|更新至|连载中")
+# 片名中间写着的季：「绝命毒师S02」「Show Season 2」「某剧 第二季」。
+_SEASON_WORD = re.compile(rf"(?i)(?:(?<=[\u3400-\u9fff])|(?<![0-9a-z]))(?:s\d{{1,2}}|season[ ._-]?\d{{1,2}})(?![0-9a-z])|"
+                          r"第\s*[0-9零〇一二两三四五六七八九十]{1,4}\s*季")
 # 季的文件夹：Season 2、S02、第二季。
 _SEASON_DIR = re.compile(r"(?i)^(?:season|s)[ ._-]?(\d{1,2})$")
 _DI_JI_SEASON = re.compile(r"第\s*([0-9零〇一二两三四五六七八九十]{1,4})\s*季")
@@ -250,7 +257,7 @@ GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "�
                 "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
                 "downloads", "download", "media", "quark", "baidu"}
 # 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
-PARSE_VERSION = 4
+PARSE_VERSION = 5
 # 文件名开头的字幕组标签：[字幕组]、【xxx】。
 _TAG = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)\s*")
 
@@ -354,8 +361,12 @@ def parse_name(rel: str) -> dict:
         if episode is not None:
             cut = match.start()
             break
-    if episode is None and re.fullmatch(r"\d{1,3}", stem.strip()):
-        episode, cut = int(stem.strip()), 0          # 「01.mp4」这样只有集数的，放在剧的文件夹里
+    lead = _LEAD_NUMBER.match(stem.strip()) if episode is None else None
+    if lead:
+        rest = stem.strip()[lead.end():]
+        # 「01.mp4」「01.4K.mp4」这样只有集数（和画质标记）的放在剧的文件夹里；整部剧的文件夹里后面还可以跟集名。
+        if not rest.strip(" ._-") or (junk_only(rest) and not _YEAR.search(rest)) or _SERIES_DIR.search(parent):
+            episode, cut = int(lead.group(1)), 0
     if episode is not None:
         show, year = _movie_title(stem[:cut]) if cut > 0 else ("", None)
         show = re.sub(r"(?i)[ ._-]*(?:s\d{1,2}|第[0-9一二三四五六七八九十]+季)$", "", show).strip(" -._")
@@ -363,10 +374,21 @@ def parse_name(rel: str) -> dict:
             show = ""
         # 剧名：文件名里有就用；没有就用文件夹（季的文件夹再往上一层）。
         folder_season = _season_of(parent) if parent else None
-        folder = grand if folder_season is not None and grand else parent
+        # 季的文件夹名字里也写着剧名（「某剧 第二季」）就用它；只有季（「Season 2」）用再上一层。
+        named = clean_title(_SEASON_WORD.sub(" ", parent)) if folder_season is not None else ""
+        if named and _title_folder(named):
+            folder = named
+        else:
+            folder = grand if folder_season is not None and grand else parent
         if season is None:
             season = folder_season
         folder_title, folder_year = _movie_title(folder) if _title_folder(folder) else ("", None)
+        # 「绝命毒师S02.Breaking.Bad.2009」：每季一个文件夹、名字里带着季，剧名去掉季（各季合成一部剧）。
+        folder_title = clean_title(_SEASON_WORD.sub(" ", folder_title)) or folder_title
+        # 「某剧 全36集」：剧名到集数说明为止。
+        marker = _SERIES_DIR.search(folder_title)
+        if marker and marker.start() > 0:
+            folder_title = clean_title(re.sub(r"[全共]$", "", folder_title[:marker.start()].rstrip()))
         alt = ""
         if not show:
             show, year = folder_title, year or folder_year
@@ -406,6 +428,56 @@ def parse_name(rel: str) -> dict:
     # 片名取自它自己的文件夹的（一部片一个文件夹）没有年份也算电影：查豆瓣时按电影找。
     found.update(kind="movie" if year or from_folder else "video", title=title, year=year, alt=alt)
     return found
+
+
+def _number_in(stem: str) -> int | None:
+    """文件名里去掉年份、画质标记以后的第一个一到三位数（「当我飞奔向你.07.4K」→ 7）。"""
+    rest = _JUNK.sub(" ", _YEAR.sub(" ", stem))
+    match = re.search(r"(?<!\d)(\d{1,3})(?!\d)", rest)
+    return int(match.group(1)) if match else None
+
+
+def regroup(items: list[dict]) -> None:
+    """一个文件夹里的条目合起来看（单看文件名分不清的）：
+    - 同一个文件夹里的各集剧名一个包含另一个（「风S律师 Better Call Saul」和「Better Call Saul」）：用多数的那个；
+    - 同一个文件夹里好几个同名同年份的「电影」：文件夹写着「24集已完结」这类、或者每个文件名里都有不同的数字，
+      是一部剧的各集；认不出集数的三个以上放进「其他视频」（不出一排同名的电影卡片）。两个同名的是同一部片的两个版本。
+    .nfo 里写了的不动。原地改。"""
+    folders: dict[str, list[dict]] = {}
+    for item in items:
+        folders.setdefault(item["path"].rpartition("/")[0], []).append(item)
+    squash = lambda name: "".join(name.casefold().split())
+    for folder, rows in folders.items():
+        names: dict[str, int] = {}
+        for row in rows:
+            if row["kind"] == "episode" and not row.get("nfo_show"):
+                names[row["show"]] = names.get(row["show"], 0) + 1
+        for name in list(names):
+            bigger = [other for other in names if other != name and squash(name) in squash(other)]
+            if bigger:
+                best = max(bigger, key=lambda other: (names[other], len(other)))
+                for row in rows:
+                    if row["kind"] == "episode" and row["show"] == name and not row.get("nfo_show"):
+                        row["show"] = best
+        same: dict[tuple, list[dict]] = {}
+        for row in rows:
+            if row["kind"] == "movie" and not row.get("nfo"):
+                same.setdefault((row["title"], row.get("year")), []).append(row)
+        series = _SERIES_DIR.search(folder.rpartition("/")[2]) is not None
+        for (title, year), group in same.items():
+            if len(group) < 2:
+                continue
+            group.sort(key=lambda row: row["path"])
+            stems = [os.path.splitext(row["path"].rpartition("/")[2])[0] for row in group]
+            numbers = [_number_in(stem) for stem in stems]
+            distinct = None not in numbers and len(set(numbers)) == len(numbers)
+            if series or distinct:
+                for rank, (row, number) in enumerate(zip(group, numbers), 1):
+                    episode = number if distinct else rank
+                    row.update(kind="episode", show=title, season=None, episode=episode, title=f"第 {episode} 集")
+            elif len(group) >= 3:
+                for row, stem in zip(group, stems):
+                    row.update(kind="video", title=clean_title(stem) or stem)
 
 
 # ---------------------------------------------------------------- .nfo
@@ -1464,6 +1536,9 @@ class Library:
             if entry and entry.get("state") == "matched":
                 if not show["nfo"]:
                     show["title"] = entry.get("title") or show["title"]
+                    if show["seasons"] > 1:
+                        # 豆瓣一季一个条目（「绝命毒师 第一季」）；片库里有好几季的，名字不写哪一季。
+                        show["title"] = clean_title(_SEASON_WORD.sub(" ", show["title"])) or show["title"]
                 show["year"] = entry.get("year") or show["year"]
                 if not show["art"] and (entry.get("poster") or entry.get("img")):
                     show["art"] = self._meta_art_url("s" + key, entry)
@@ -2262,6 +2337,7 @@ class Library:
             if same and isinstance(previous.get("media"), dict):
                 row["media"] = previous["media"]          # 只是解析的写法改了：探测的结果照旧用
             items.append(row)
+        regroup(items)
         return items
 
     @staticmethod

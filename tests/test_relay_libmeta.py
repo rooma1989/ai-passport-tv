@@ -29,6 +29,7 @@ import stat
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -346,6 +347,19 @@ class MatcherTests(unittest.TestCase):
         # 没对上的过几天再试一次。
         self.now += libmeta.MISS_RETRY_S + 1
         self.assertEqual(self.lib.meta_due(), ["m" + cards["10间敢死队"]["id"]])
+
+    def test_a_show_with_several_seasons_drops_the_season_from_douban_title(self):
+        """Douban has one entry per season ("苏里南 第一季"); a card holding two seasons doesn't name one."""
+        self.run_all()
+        key = self.view()[2]["苏里南"]["key"]
+        entries = self.lib.meta.all()
+        entries[key] = dict(entries[key], title="苏里南 第一季")
+        with unittest.mock.patch.object(self.lib.meta, "all", return_value=entries):
+            self.assertEqual(self.view()[2]["苏里南"]["title"], "苏里南 第一季", "one season: kept as Douban says")
+            with library._LOCK:
+                item = next(i for i in self.lib._items.values() if i["kind"] == "episode")
+                item["season"] = 2
+            self.assertEqual(self.view()[2]["苏里南"]["title"], "苏里南")
 
     def test_titles_parsed_the_old_way_wait_for_a_rescan(self):
         """An index from before the name cleanup still says "Narco-Saints": don't send that to Douban; scan first."""
