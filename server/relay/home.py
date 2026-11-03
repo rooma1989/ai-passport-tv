@@ -704,7 +704,7 @@ def home(relay, caller: Caller) -> dict:
         account = None
     live = _live_rows(relay, caller, dev, account)
     answer = {"ok": True, "guest": account is None, "hero": [], "continue": [], "live_now": live,
-              "creator_updates": [], "series_updates": [], "library_recent": [],
+              "creator_updates": [], "series_updates": [], "library_recent": [], "library_wished": [],
               "library": {"enabled": False}, "epg": bool(getattr(relay, "guide", None) and relay.guide.enabled)}
     if account is not None:
         if caller.user is not None:
@@ -723,6 +723,9 @@ def home(relay, caller: Caller) -> dict:
             from .library import home_rows
             answer["library_recent"] = home_rows(relay, caller)
             answer["library"] = {"enabled": True, "count": len(library.items()), "admin": caller.role == "admin"}
+            # 想看的片子到了（libdouban.py）：豆瓣「想看」里的，片库后来有了，没点开过的。
+            from .libdouban import home_rows as wished_rows
+            answer["library_wished"] = wished_rows(relay, caller)
         warm = getattr(relay, "_cover_warm", None)
         if warm is not None and warm.pending():
             # 正在后台补封面：页面过几秒再问一次（console.js 的 loadHome）。

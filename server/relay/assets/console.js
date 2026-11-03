@@ -146,6 +146,7 @@ const IC = {
   log: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/>',
   sys: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
   list: '<path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>',
+  star: '<path d="M12 3.5l2.6 5.3 5.9.86-4.25 4.14 1 5.86L12 16.9l-5.25 2.76 1-5.86L3.5 9.66l5.9-.86z"/>',
 };
 const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ""}</svg>`;
 function hydrateIcons(root) {
@@ -6676,11 +6677,11 @@ $("fwSync").onclick = () => busy($("fwSync"), async () => {
   pollFollows();
 });
 
-// ======================================================================= 片库：历史、我的片库
+// ======================================================================= 片库：历史、我的片库、豆瓣
 // 「历史」是自己 B 站的观看记录（GET api/feeds/history，accountfeeds.py 的 history_page）：每次打开都要新的
 // （fresh=1；服务器至少隔 30 秒才真去问 B 站），「加载更多」按 B 站给的游标往下翻。每一行是首页那样的节目
 // （data-play），点了按「播放到」接着看：视频是那一 P，剧集、番剧是那一集，都从看到的地方起。
-const LIB_TABS = [["history", "历史", "hist"], ["local", "我的片库", "lib"]];
+const LIB_TABS = [["history", "历史", "hist"], ["local", "我的片库", "lib"], ["douban", "豆瓣", "star"]];
 const HIST_KINDS = [["all", "全部"], ["video", "视频"], ["pgc", "剧集·番剧"], ["yt", "YouTube"]];
 const hist = { items: [], more: null, state: "", message: "", busy: false, at: 0, writeback: null, kind: "all", ytAsked: false };
 let libTab = "", libNavHTML = "", histTimer = 0;
@@ -6698,6 +6699,7 @@ function libNav() {
   libTab = cur;
   if (cur === "history") { renderHist(); loadHist(false); }
   if (cur === "local") { renderLib(); loadLib(false); loadDrive(); }
+  if (cur === "douban") { renderDb(); loadDb(false); }
 }
 // YouTube 观看记录（管理员、YouTube 开着）：就是首页那一排（feedRows.yt_history），在这里多一个标签。
 const histYt = () => !!(feedsInfo && feedsInfo.rows.some((r) => r.id === "yt_history" && r.state !== "hidden"));
@@ -6820,7 +6822,7 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 // 和别的节目一样「播放到」：这台电脑上浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；小电视上
 // 中转缩好画面推过去（library.py 的 play_tv）。只有里面没有画面也没有声音的标「放不了」。家里人都能看，访客没有这一页。
 const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", season: 0, kind: "webdav", form: false, timer: 0, failed: false,
-              match: null, more: false, tmdbForm: false };
+              match: null, more: false, tmdbForm: false, sort: "added", genre: "", country: "", going: false };
 async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
   lib.busy = true;
@@ -6835,6 +6837,7 @@ async function loadLib(force, poll) {
   lib.busy = false;
   lib.at = Date.now();
   lib.failed = false;
+  lib.going = false;
   if (answer.ok) lib.data = answer;
   // 正在填「添加来源」时不重画（扫描时每 3 秒问一次，重画会打断输入）。
   const form = qs("#libAdd"), panel = qs("#libBox .ldrive"), box = qs("#libMatch"), key = qs("#libTmdb");
@@ -6850,6 +6853,44 @@ const libKind = (k) => k === "webdav" ? "网盘" : "本机文件夹";
 const LIB_FULL = [0, 10, 30, 100];
 const libGB = (n) => n < 1073741824 ? Math.round(n / 1048576) + " MB" : (n / 1073741824).toFixed(1) + " GB";
 const libCached = (c) => !c.cached ? "" : c.cached >= 1 ? "已缓存" : "已缓存 " + Math.floor(c.cached * 100) + "%";
+// ---- 片库筛选的几个纯函数（tests/console_libfilter_test.mjs 截出这一段单独测）----
+// 我的片库按豆瓣评分 / 最近加入 / 片名排，按类型、地区筛：都用 GET api/library 里每张卡片已经有的 meta（libmeta.public），
+// 没对上豆瓣的没有。「最近加入」就是中转给的顺序（新加的在前），不再排；评分一样、没有评分的照原来的顺序（没有的在后）。
+// 有好几季的剧、剧本身没对上时，用第一个对上了的那一季的资料。
+const LIB_SORTS = [["added", "最近加入"], ["rating", "豆瓣评分"], ["title", "片名"]];
+function libMetaOf(x) {
+  const ok = (m) => (m && m.state === "matched" ? m : null);
+  return ok(x.meta) || (x.season_rows || []).map((r) => ok(r.meta)).find(Boolean) || null;
+}
+// 有哪些类型、地区（[[名字, 几部], …]，多的在前）：只数电影和剧。
+function libFacets(lists) {
+  const count = (key) => {
+    const n = new Map();
+    for (const x of lists.flat()) {
+      const m = libMetaOf(x);
+      for (const v of new Set((m && m[key]) || [])) n.set(v, (n.get(v) || 0) + 1);
+    }
+    return [...n].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  };
+  return { genres: count("genres"), countries: count("countries") };
+}
+function libFilter(list, f) {
+  if (!f.genre && !f.country) return list;
+  return list.filter((x) => {
+    const m = libMetaOf(x);
+    return !!m && (!f.genre || (m.genres || []).includes(f.genre)) && (!f.country || (m.countries || []).includes(f.country));
+  });
+}
+const LIB_TITLE_ORDER = typeof Intl !== "undefined" && Intl.Collator ? new Intl.Collator("zh-Hans-CN", { numeric: true, sensitivity: "base" }) : null;
+function libSort(list, how) {
+  if (how !== "rating" && how !== "title") return list;
+  const rate = (x) => { const m = libMetaOf(x); return (m && m.rating) || 0; };
+  const at = new Map(list.map((x, i) => [x, i]));
+  const plain = (a, b) => ((a.title || "") < (b.title || "") ? -1 : (a.title || "") > (b.title || "") ? 1 : 0);
+  const title = (a, b) => (LIB_TITLE_ORDER ? LIB_TITLE_ORDER.compare(a.title || "", b.title || "") : plain(a, b));
+  return list.slice().sort(how === "rating" ? (a, b) => rate(b) - rate(a) || at.get(a) - at.get(b) : (a, b) => title(a, b) || at.get(a) - at.get(b));
+}
+// ---- 片库筛选的纯函数到此 ----
 // 电影、其他视频的卡片：点开是资料页（libInfoHTML），在那里放；豆瓣的评分跟在年份后面。
 function libCard(c, wide) {
   const no = c.playable ? "" : '<span class="badge">放不了</span>';
@@ -7223,6 +7264,7 @@ function renderLib() {
         o += libInfoHTML(Object.assign({}, show, { sub: show.count + " 集" }));
         o += `<div class="h2 leps"><h2>选集</h2><small>${show.count} 集</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
       }
+      o += libMoreHTML(libDetailDid());
     } else if (item) {
       const id = reg({ id: "lib:" + item.id, title: item.title, subtitle: item.year ? String(item.year) : "", art: { url: item.art, ratio: "poster" },
                        play: { kind: "library", id: item.id, playable: item.playable } });
@@ -7231,16 +7273,28 @@ function renderLib() {
       const play = item.playable ? splitHTML(id, "播放", to ? (to === PC ? "在这台电脑上" : "到" + targetName(to)) : "") : '<span class="hint">这个文件放不了</span>';
       o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
       o += libInfoHTML(Object.assign({}, item, { sub: [(item.ext || "").toUpperCase(), item.source].filter(Boolean).join(" · ") }), play);
+      o += libMoreHTML(libDetailDid());
     } else {
-      lib.show = ""; lib.item = "";
-      o += `<div class="lbar"><input type="search" id="libQ" placeholder="搜片名" aria-label="搜片名" value="${esc(lib.q)}"><small>${d.total} 个视频</small></div>`;
-      const movies = d.movies.filter((c) => hit(c.title) || hit(c.guess)), shows = d.shows.filter((s) => hit(s.title) || hit(s.guess) || s.episodes.some((e) => hit(e.title))),
-        videos = d.videos.filter((c) => hit(c.title));
+      // 从豆瓣页、首页「想看的到了」点过来的（libGo），片库还在取：先别丢掉要打开的那一部。
+      if (!lib.going) { lib.show = ""; lib.item = ""; }
+      // 排序、按类型和地区筛（libSort、libFilter；类型和地区来自豆瓣的资料，没有就不出这两个框）。
+      const facets = libFacets([d.movies, d.shows]);
+      if (lib.genre && !facets.genres.some(([g]) => g === lib.genre)) lib.genre = "";
+      if (lib.country && !facets.countries.some(([c]) => c === lib.country)) lib.country = "";
+      const opt = (v, t, cur) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(t)}</option>`;
+      const sel = `<select class="field lsel" id="libSort" data-k="lsort" aria-label="排序">${LIB_SORTS.map(([v, t]) => opt(v, t, lib.sort)).join("")}</select>`
+        + (facets.genres.length ? `<select class="field lsel" id="libGenre" data-k="lgenre" aria-label="按类型筛">${opt("", "全部类型", lib.genre)}${facets.genres.map(([g, n]) => opt(g, g + "（" + n + "）", lib.genre)).join("")}</select>` : "")
+        + (facets.countries.length ? `<select class="field lsel" id="libCountry" data-k="lcountry" aria-label="按地区筛">${opt("", "全部地区", lib.country)}${facets.countries.map(([c, n]) => opt(c, c + "（" + n + "）", lib.country)).join("")}</select>` : "");
+      o += `<div class="lbar"><input type="search" id="libQ" placeholder="搜片名" aria-label="搜片名" value="${esc(lib.q)}">${sel}<small>${d.total} 个视频</small></div>`;
+      const f = { genre: lib.genre, country: lib.country }, filtered = !!(f.genre || f.country);
+      const movies = libSort(libFilter(d.movies.filter((c) => hit(c.title) || hit(c.guess)), f), lib.sort),
+        shows = libSort(libFilter(d.shows.filter((s) => hit(s.title) || hit(s.guess) || s.episodes.some((e) => hit(e.title))), f), lib.sort),
+        videos = libSort(libFilter(d.videos.filter((c) => hit(c.title)), f), lib.sort);
       if (movies.length) o += `<section aria-label="电影"><div class="h2"><h2>电影</h2><small>${movies.length}</small></div><div class="pgrid">${movies.map((c) => libCard(c)).join("")}</div></section>`;
       if (shows.length) o += `<section aria-label="剧集"><div class="h2"><h2>剧集</h2><small>${shows.length}</small></div><div class="pgrid">${shows.map(libShowCard).join("")}</div></section>`;
       if (videos.length) o += `<section aria-label="其他视频"><div class="h2"><h2>其他视频</h2><small>${videos.length}</small></div><div class="wgrid">${videos.map((c) => libCard(c, true)).join("")}</div></section>`;
       if (!movies.length && !shows.length && !videos.length) {
-        o += `<p class="hint">${q ? "没有找到「" + esc(lib.q) + "」" : d.scan.running || d.scan.queued ? "正在扫描，稍等…" : "还没有找到视频"}</p>`;
+        o += `<p class="hint">${q ? "没有找到「" + esc(lib.q) + "」" + (filtered ? "（还按类型、地区筛着）" : "") : filtered ? "没有这一类的片子" : d.scan.running || d.scan.queued ? "正在扫描，稍等…" : "还没有找到视频"}</p>`;
       }
       if (d.more) o += `<p class="hint">视频太多，只列出了最近的一部分</p>`;
     }
@@ -7440,6 +7494,161 @@ $("libBox").addEventListener("input", (event) => {
   lib.q = event.target.value;
   renderLib();
 });
+$("libBox").addEventListener("change", (event) => {
+  const id = event.target.id, v = event.target.value;
+  if (id === "libSort") lib.sort = v;
+  else if (id === "libGenre") lib.genre = v;
+  else if (id === "libCountry") lib.country = v;
+  else return;
+  renderLib();
+});
+
+// ======================================================================= 片库 → 豆瓣（GET api/library/douban，libdouban.py）
+// 豆瓣的几个榜单（正在热映、热门电影、热门剧集、高分 Top250）和每个人自己的「想看」。中转在后台慢慢取、存好（不登录
+// 豆瓣），这一页只读存好的；还在取（loading）时过几秒再问。海报都经中转（api/library/douban/poster/<id>），页面从不直接
+// 连豆瓣。片库里对上了的标「片库里有」，点了打开片库的详情页；没有的可以「想看」（POST api/library/wish，只记在这台
+// 中转上），片库后来有了，首页多一排「想看的片子到了」。
+const db = { data: null, busy: false, at: 0, tab: "movie_showing", timer: 0, polls: 0, failed: false, subjects: {} };
+async function loadDb(force, poll) {
+  if (db.busy || (!force && db.data && Date.now() - db.at < 30000)) return;
+  db.busy = true;
+  let answer;
+  try { answer = await call("GET", "api/library/douban"); }
+  catch (error) {
+    db.busy = false;
+    if (error instanceof SignedOut) { db.failed = true; renderDb(); } else toast("网络不通", true);
+    return;
+  }
+  db.busy = false;
+  db.at = Date.now();
+  db.failed = false;
+  if (answer.ok) db.data = answer;
+  renderDb();
+  // 后台还在取（第一次打开、过了 6 小时）：隔几秒再问，至多问 20 次。
+  clearTimeout(db.timer);
+  if (!poll) db.polls = 0;
+  if (answer.ok && answer.lists.some((r) => r.loading) && db.polls++ < 20)
+    db.timer = setTimeout(() => { if (route === "lib" && libTab === "douban") loadDb(true, true); }, 5000);
+}
+// 片库里的哪一部（libdouban 的 have：{item} 或 {show, season}）→ data-dbgo 的「i:<条目 id>」「s:<剧 id>:<第几季，0 是不限>」。
+const dbGo = (h) => (h.item ? "i:" + h.item : "s:" + h.show + ":" + (h.season || 0));
+// 一部豆瓣的片子：海报（经中转）、片名、年份、评分；片库里有的「去片库看」，没有的「想看」。wishView：「想看」列表里的。
+function dbCard(c, wishView) {
+  const sub = [c.year, c.rating ? "★ " + c.rating : "", c.type === "tv" ? "剧集" : ""].filter(Boolean).join(" · ");
+  const badge = c.have ? `<span class="badge new">${wishView ? "片库里有了" : "片库里有"}</span>` : c.wished && !wishView ? '<span class="badge">想看</span>' : "";
+  const go = c.have ? `<button class="ghost sm" data-dbgo="${esc(dbGo(c.have))}"${wishView ? ` data-dbseen="${esc(c.id)}"` : ""} data-k="dg-${esc(c.id)}">去片库看</button>` : "";
+  const wish = wishView ? `<button class="ghost sm" data-dbwish="${esc(c.id)}" data-on="0" data-k="dw-${esc(c.id)}">不想看了</button>`
+    : c.have ? "" : `<button class="ghost sm" data-dbwish="${esc(c.id)}" data-on="${c.wished ? "0" : "1"}" aria-pressed="${!!c.wished}" aria-label="${esc((c.wished ? "不想看了：" : "想看：") + c.title)}" data-k="dw-${esc(c.id)}">${ic(c.wished ? "check" : "plus", 14)}想看</button>`;
+  return `<div class="card p dbc" title="${esc(c.info ? c.title + " · " + c.info : c.title)}"><span class="art">${art(c.title, "p", { title: c.title, kick: "豆瓣" })}${imgTag(c.art)}${badge}</span>
+    <span class="t">${esc(c.title)}</span><span class="s">${esc(sub)}</span><span class="dbacts">${go}${wish}</span></div>`;
+}
+function renderDb() {
+  if (route !== "lib" || libTab !== "douban") return;
+  const box = $("dbBox"), d = db.data;
+  if (!d) { box.innerHTML = `<p class="hint">${db.failed ? "电脑客户端和家庭服务器才有，登录的家里人能看" : "正在加载…"}</p>`; return; }
+  const k = focusKey();
+  const tabs = d.lists.map((r) => [r.name, r.title, 0]).concat([["wish", "想看", d.wish.length]]);
+  if (!tabs.some(([id]) => id === db.tab)) db.tab = tabs[0][0];
+  let o = `<div class="chips" role="group" aria-label="豆瓣榜单">${tabs.map(([id, t, n]) => `<button type="button" data-dbtab="${id}" aria-pressed="${id === db.tab}" data-k="dt-${id}">${id === "wish" ? ic("check", 16) : ""}${esc(t)}${n ? `<em>${n}</em>` : ""}</button>`).join("")}</div>`;
+  const note = !d.online ? "片库的在线资料关着：不往豆瓣取新的（管理员在「我的片库」里能打开）" : d.blocked ? "豆瓣暂时不让查了，过一会儿再来" : "";
+  if (db.tab === "wish") {
+    o += `<p class="hint">只记在这台电脑（中转）上，不同步到豆瓣。片库里有了的，首页会提醒一次。</p>`;
+    o += d.wish.length ? `<div class="pgrid dbgrid">${d.wish.map((c) => dbCard(c, true)).join("")}</div>`
+      : `<div class="empty sm"><b>还没有想看的</b><p>在豆瓣榜单、片库详情页的「喜欢这部的人也喜欢」里点「想看」</p></div>`;
+  } else {
+    const row = d.lists.find((r) => r.name === db.tab);
+    if (note) o += `<p class="hint">${esc(note)}</p>`;
+    if (row.items.length) {
+      const have = row.items.filter((c) => c.have).length;
+      o += `<p class="hint">来自豆瓣${row.at ? " · " + ago(row.at) + "更新" : ""}${row.loading ? " · 正在更新…" : ""}${have ? " · 片库里有 " + have + " 部" : ""}</p>`;
+      o += `<div class="pgrid dbgrid">${row.items.map((c) => dbCard(c)).join("")}</div>`;
+    } else o += `<p class="hint">${row.loading ? "正在从豆瓣取，稍等…" : note ? "" : "这个榜单还没取到，过一会儿再来"}</p>`;
+  }
+  box.innerHTML = o;
+  restoreFocus(k);
+}
+$("dbBox").addEventListener("click", (event) => {
+  const b = event.target.closest("[data-dbtab]");
+  if (!b || b.dataset.dbtab === db.tab) return;
+  db.tab = b.dataset.dbtab;
+  renderDb();
+  if (db.tab === "wish") loadDb(true);         // 「片库里有了」要新的
+});
+// 打开片库里的那一部（豆瓣页、详情页的推荐、首页「想看的到了」）：go 是 dbGo 的；seen 是「想看的到了」的豆瓣 id
+// （点开了就不再提醒）。
+function libGo(go, seen) {
+  const [kind, id, n] = go.split(":");
+  lib.show = kind === "s" ? id : ""; lib.item = kind === "i" ? id : ""; lib.season = Number(n) || 0;
+  lib.match = null; lib.more = false; lib.going = true; lib.at = 0;
+  libPreread(kind === "i" ? { id } : { show: id });
+  if (seen) call("POST", "api/library/wish", { id: seen, seen: true }).then(() => loadHome(true)).catch(() => {});
+  if (route === "lib" && libTab === "local") { renderLib(); loadLib(true); $("main").scrollTop = 0; }
+  else location.hash = "#/lib/local";
+}
+async function dbWish(id, on, btn) {
+  btn.disabled = true;
+  let answer;
+  try { answer = await call("POST", "api/library/wish", { id, on }); }
+  catch (error) { btn.disabled = false; if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return; }
+  btn.disabled = false;
+  if (!answer.ok) { toast(answer.error || "没成功", true); return; }
+  toast(on ? "加进了「想看」：片库里有了会在首页提醒" : "从「想看」里拿掉了");
+  const mark = (c) => { if (c.id === id) { if (on) c.wished = true; else delete c.wished; } };
+  if (db.data) {
+    db.data.lists.forEach((r) => r.items.forEach(mark));
+    if (answer.wish) db.data.wish = answer.wish;
+  }
+  for (const s of Object.values(db.subjects)) (s.recs || []).forEach(mark);
+  renderDb();
+  renderLib();
+}
+// ---- 片库详情页的豆瓣短评和「喜欢这部的人也喜欢」（GET api/library/douban/subject/<豆瓣 id>）：详情页画好以后再取；
+// 中转有存好的马上给，没有就在后台取（state loading，过 5 秒再问，至多 6 次）；取不到（none）不显示这一块。
+function libDoubanId(o) {
+  const m = o && o.meta && o.meta.state === "matched" ? o.meta : null;
+  return m && m.src !== "tmdb" && m.id ? String(m.id) : "";
+}
+// 现在打开着的详情页对上的豆瓣 id（好几季的剧是看着的那一季）；不在详情页 ""。
+function libDetailDid() {
+  const d = lib.data;
+  if (!d) return "";
+  const show = lib.show && d.shows.find((s) => s.id === lib.show);
+  if (show) return libDoubanId(show.season_rows && show.season_rows.length ? libSeason(show) : show);
+  const item = lib.item && (d.movies.find((c) => c.id === lib.item) || d.videos.find((c) => c.id === lib.item));
+  return item ? libDoubanId(item) : "";
+}
+async function dbSubject(did, tries = 0) {
+  const s = db.subjects[did] || (db.subjects[did] = { state: "loading", comments: [], recs: [] });
+  if (s.busy || s.state !== "loading") return;
+  s.busy = true;
+  let answer;
+  try { answer = await call("GET", "api/library/douban/subject/" + did); }
+  catch (error) { answer = { ok: false }; }
+  s.busy = false;
+  if (answer.ok) Object.assign(s, { state: answer.state, comments: answer.comments || [], recs: answer.recs || [] });
+  else s.state = "none";
+  const here = () => route === "lib" && libTab === "local" && libDetailDid() === did;
+  if (s.state === "loading") {
+    if (tries >= 5) s.state = "none";
+    else setTimeout(() => { if (here()) dbSubject(did, tries + 1); else delete db.subjects[did]; }, 5000);
+  }
+  // 正在填匹配的小框时不重画（会打断输入）；下次重画时就有了。
+  if (s.state === "ready" && here() && !(qs("#libMatch") && qs("#libMatch").contains(document.activeElement))) renderLib();
+}
+const dbStars = (n) => (n ? `<span class="dbstar" role="img" aria-label="${n} 星">${"★".repeat(n)}${"☆".repeat(5 - n)}</span>` : "");
+function dbComment(c) {
+  return `<div class="dbcmt"><p class="dbcmh"><b>${esc(c.author)}</b>${dbStars(c.stars)}<small>${esc([c.date, c.votes ? c.votes + " 人觉得有用" : ""].filter(Boolean).join(" · "))}</small></p><p class="dbcmx">${esc(c.text)}</p></div>`;
+}
+function libMoreHTML(did) {
+  if (!did) return "";
+  const s = db.subjects[did];
+  if (!s) { setTimeout(() => dbSubject(did), 0); return ""; }
+  if (s.state !== "ready") return "";
+  let o = "";
+  if (s.comments.length) o += `<section class="dbsec dbcm" aria-label="豆瓣短评"><div class="h2"><h2>豆瓣短评</h2><small>热门</small></div>${s.comments.map(dbComment).join("")}</section>`;
+  if (s.recs.length) o += `<section class="dbsec" aria-label="喜欢这部的人也喜欢"><div class="h2"><h2>喜欢这部的人也喜欢</h2><small>豆瓣</small></div><div class="pgrid dbgrid">${s.recs.map((c) => dbCard(c)).join("")}</div></section>`;
+  return o;
+}
 
 // ======================================================================= 首页（/api/home）
 
@@ -7487,6 +7696,10 @@ function cardLib(x) {
   const id = reg(x);
   const p = x.play || {};
   return `<button class="card p${p.playable === false ? " dead" : ""}" data-play="${esc(id)}" data-k="lib-${esc(id)}" aria-label="播放 ${esc(x.title)}"><span class="art">${art(x.title, "p", { title: x.title, kick: "片库" })}${imgTag(x.art && x.art.url)}${p.playable === false ? '<span class="badge">放不了</span>' : ""}</span>
+    <span class="t">${esc(x.title)}</span><span class="s">${esc(x.subtitle || "")}</span></button>`;
+}
+function cardWish(x) {
+  return `<button class="card p" data-dbgo="${esc(dbGo(x.have))}" data-dbseen="${esc(x.wish)}" data-k="wish-${esc(x.wish)}" aria-label="${esc(x.title)}，想看的到了，打开"><span class="art">${art(x.title, "p", { title: x.title, kick: "想看" })}${imgTag(x.art && x.art.url)}<span class="badge new">到了</span></span>
     <span class="t">${esc(x.title)}</span><span class="s">${esc(x.subtitle || "")}</span></button>`;
 }
 function cardSeries(x) {
@@ -7609,6 +7822,8 @@ function renderHome() {
     }
     // 我的片库（library.py，只在电脑客户端和家庭服务器）：最近加进来的；还没有时一张「去添加」。
     const L = homeData.library || {};
+    // 想看的片子到了（libdouban.py）：豆瓣「想看」里的，片库后来有了；点开就不再提醒。
+    if ((homeData.library_wished || []).length) o += shelf("想看的片子到了", "豆瓣「想看」里的，片库里有了", homeData.library_wished.map(cardWish).join(""), "#/lib/douban", "想看");
     if (L.enabled && (homeData.library_recent || []).length) o += shelf("我的片库", "", homeData.library_recent.map(cardLib).join(""), "#/lib/local", "片库");
     else if (L.enabled) o += shelf("我的片库", "", `<a class="card soon" href="#/lib/local"><span class="art"><span>${ic("lib", 30)}${L.admin ? "添加片库来源" : "还没有片库"}</span></span><span class="t">我的片库</span><span class="s">${L.admin ? "网盘（OpenList）或电脑上的文件夹" : "请管理员添加"}</span></a>`);
   }
@@ -7998,6 +8213,9 @@ document.addEventListener("click", (event) => {
   }
   if (ds.pick) { const x = ITEMS[ds.pick]; if (x) openTarget(x.play, "", x.title, x.art && x.art.url); return; }
   if (ds.series) { location.hash = "#/series/" + ds.series; return; }
+  // 片库的豆瓣页、详情页的推荐、首页「想看的到了」（libdouban.py）：打开片库里的那一部、想看 / 不想看了。
+  if (ds.dbgo) { libGo(ds.dbgo, ds.dbseen); return; }
+  if (ds.dbwish) { dbWish(ds.dbwish, ds.on === "1", t); return; }
   if (ds.sheet === "target") { openTarget(null); return; }
   if (ds.tg) {
     if (t.getAttribute("aria-disabled") === "true") { toast(targetName(ds.tg) + "离线了，看看电源和 Wi-Fi"); return; }
