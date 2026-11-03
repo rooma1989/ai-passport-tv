@@ -30,7 +30,7 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import accountfeeds, bilidash, bililogin, bilivod, follows, static, ytsearch, ytsettings, ytvod
+from . import accountfeeds, bilidash, bililogin, bilivod, follows, static, wallpaper, ytsearch, ytsettings, ytvod
 from . import library as library_api
 from . import localsearch
 from . import detail
@@ -310,6 +310,9 @@ class Relay:
         # 首页上自己账号的几排、「我的关注」的同步、B 站历史的回写（accountfeeds.py、follows.py）：
         # 只在自建 / 电脑客户端有（和 B 站登录一样），云端为 None。
         self.account_feeds = accountfeeds.attach(self)
+        # 电脑版首页大图后面的壁纸（wallpaper.py，GitHub 上的 dharmx/walls，中转下载、存在数据目录的 wallpapers/）：
+        # 只在自建 / 电脑客户端有，云端为 None。第一次有人要壁纸时才开始取。
+        self.wallpapers = wallpaper.attach(self)
 
     @property
     def tenant(self) -> bool:
@@ -2495,6 +2498,9 @@ class Relay:
             if self.account_feeds is not None and not caller.guest and caller.user is not None:
                 # 首页「B 站推荐」等几排和「UP 主 → 我的关注」（accountfeeds.py）：电脑版据此显示，云端没有。
                 summary["feeds"] = True
+            if self.wallpapers is not None and not caller.guest:
+                # 首页壁纸（wallpaper.py）：电脑版据此显示「设置 → 外观」里的开关、去问 /api/home/wallpaper。
+                summary["wallpaper"] = True
             if self.selfhost is not None:
                 # 自建：绑定码是 6 位数字，遥控页和电脑版的输入框据此换成数字键盘（云端没有这一项，还是 20 位）。
                 summary["claim_digits"] = tenancy_db.CLAIM_DIGITS
@@ -3084,7 +3090,8 @@ def _manage_handler(relay: Relay):
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
             if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)
                                  or ytsettings.get(self, relay, path) or bililogin.get(self, relay, path)
-                                 or accountfeeds.get(self, relay, path) or follows.get(self, relay, path)):
+                                 or accountfeeds.get(self, relay, path) or follows.get(self, relay, path)
+                                 or wallpaper.get(self, relay, path)):
                 return
             # 在电脑上看的列表和段（watch.py）：只认地址里的令牌，不看登录；没开这个功能时 404。
             # 片库给中转自己的 ffmpeg 的文件（library.raw）：只认本机直接连进来的、带令牌的。

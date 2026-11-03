@@ -4,8 +4,9 @@
 账号（bililogin.py）；YouTube 的 cookies 是这台服务器的（ytsettings.py，管理员的小号），所以 YouTube 的几排只给管理员。
 
     GET  /api/feeds                    有哪几排、每排能不能用（没登录时页面画一张「登录后这里会显示…」的小卡片）、设置
-    GET  /api/feeds/row?id=<排>[&fresh=1]
-                                       一排：{state: ready|loading|login|blocked|error|hidden, items, loading, message}
+    GET  /api/feeds/row?id=<排>[&fresh=1][&next=1]
+                                       一排：{state: ready|loading|login|blocked|error|hidden, items, loading, message}；
+                                       「YouTube 推荐」另有 rotate: true、more（还有没放上来的），next=1 是「换一批」
     GET  /api/feeds/history[?max=&view_at=&business=][&fresh=1]
                                        「片库 → 历史」：B 站观看记录的一页（每项是首页的节目，另带 hist：剧名、第几集），
                                        more 是下一页的游标（history/cursor 的 cursor），没有了为 null
@@ -27,6 +28,13 @@ id 是整季（ss<季 id>），ep 是看的那一集（history.epid）：在电�
 
 别打扰网站：按（用户, 来源）缓存 TTL_S 秒，同一时间只取一次，在后台线程里取（页面先拿到 loading，再问）；
 「刷新」至少隔 FRESH_GAP_S 秒；出错后 ERROR_GAP_S 秒内（被网络拦了是 BLOCKED_GAP_S）不再问。
+
+「YouTube 推荐」看着像是不动（ROTATE_ROWS）：那个账号的推荐本来就变得慢（实测强制刷新后 29 个里 21 个一样、第一个
+也一样）。所以问节点要 YT_REC_N 个（节点最多 40 个），一排只放 REC_BATCH 个：没放上来过的在前（照 YouTube 的顺序），
+放上来过的按上次放的时刻往后排，看过的不要（YouTube 观看记录那一排的缓存、电脑上的进度 pc-progress.json）。每个人
+放上来过哪些记在 feeds/<用户 id>.json 的 shown 里（至多 SHOWN_KEEP 个）。一批定下来以后，同一份缓存（同一次取到的）
+一直给同一批（页面重画、隔一会儿再问都不变）；缓存换了（重新取到了）或者点了「换一批」（next=1）才排下一批。
+「换一批」不额外叫节点：缓存过期了照常在后台取，没过期就在手里这些里轮换。
 
 回写（HistoryReport）：默认开（没动过这个开关的人都算开；自己关了就一直关，见 Store.load 的 chosen），小电视和这台
 电脑上看 B 站视频的进度报给他自己的 B 站账号：投稿视频用 /x/v2/history/report（aid、cid、progress、csrf）；番剧、
@@ -71,6 +79,11 @@ ERROR_GAP_S = 60
 BLOCKED_GAP_S = 300
 ROW_MAX = 30
 YT_FEED_N = 30
+# 「YouTube 推荐」：问节点要多少个（ytnode.FEED_MAX 是 40）、一排放几个、每个人记住放上来过的多少个。
+YT_REC_N = 40
+REC_BATCH = 16
+SHOWN_KEEP = 400
+ROTATE_ROWS = ("yt_rec",)
 BILI_REC_N = 20
 BILI_HISTORY_N = 30
 # 搜索标注用的观看记录：最多看最近几条（一页 BILI_HISTORY_N 条，至多 4 页）；搜索最多等它几秒。
@@ -200,6 +213,11 @@ class Store:
 
 def _int(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _when(value) -> float:
+    """存下来的时刻（feeds/<用户 id>.json 的 shown）：不是数就当没有（0）。"""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
 def _clean(value, limit: int) -> str:
@@ -492,6 +510,8 @@ class Feeds:
         self._views: dict[str, tuple] = {}
         # 观看记录第一页之后的游标（用户 → cursor），「片库 → 历史」的「加载更多」从这里接着取。
         self._history_more: dict[int, dict | None] = {}
+        # 轮换的几排（ROTATE_ROWS）现在给的那一批：(用户, 排) → (那份缓存取到的时刻, [id, …])。
+        self._batches: dict[tuple, tuple] = {}
         self._queue: queue.Queue | None = None
         # 测试替身可以换掉：YouTube cookies 在不在（本机模式看 ytaccount 的 gate；节点模式先当作在）。
         self.yt_cookies = self._yt_cookies
@@ -550,7 +570,7 @@ class Feeds:
 
     # ---- 一排 ----
 
-    def row(self, caller, rid: str, fresh: bool = False) -> dict:
+    def row(self, caller, rid: str, fresh: bool = False, next_batch: bool = False) -> dict:
         if rid not in ROWS:
             return {"ok": False, "error": "没有这一排"}
         title, sources = ROWS[rid]
@@ -568,6 +588,10 @@ class Feeds:
             items.extend(p["items"])
         if rid == "updates":
             items.sort(key=lambda e: -(e.get("date") or 0))
+        if rid in ROTATE_ROWS and items:
+            at = max((p.get("at") or 0.0) for _, p in usable)
+            items, more = self._rotate(caller, rid, items, at, next_batch)
+            answer.update(rotate=True, more=more)
         answer["items"] = [media(rid, e) for e in items[:ROW_MAX]]
         answer["loading"] = any(p["state"] == "loading" for _, p in usable)
         errors = [p for _, p in usable if p["state"] in ("blocked", "error")]
@@ -585,6 +609,55 @@ class Feeds:
         else:
             state = "ready"
         return dict(answer, state=state)
+
+    # ---- 轮换（「YouTube 推荐」） ----
+
+    def _watched_ids(self, caller) -> set[str]:
+        """看过的 YouTube 视频：YouTube 观看记录那一排手里的缓存（不为这个去叫节点），和电脑上的进度。"""
+        with self.lock:
+            cached = self._cache.get((caller.user, "yt_history"))
+        found = {e["id"] for e in cached[1]} if cached is not None else set()
+        progress = getattr(self.relay, "pc_progress", None)
+        if progress is not None:
+            for key, record in progress.rows(caller.user):
+                if key.startswith("v:youtube:"):
+                    found.add(key[len("v:youtube:"):])
+                if record.get("site") == "youtube" and isinstance(record.get("bvid"), str):
+                    found.add(record["bvid"])
+        return found
+
+    def _rotate(self, caller, rid: str, items: list[dict], at: float, next_batch: bool) -> tuple[list[dict], bool]:
+        """这一排这次给哪一批（模块说明「YouTube 推荐」那一段）→ (这一批, 还有没有没放上来的)。"""
+        watched = self._watched_ids(caller)
+        pool = [e for e in items if e["id"] not in watched] or items
+        key = (caller.user, rid)
+        with self.lock:
+            batch = self._batches.get(key)
+        if batch is not None and batch[0] == at and not next_batch:
+            place = {vid: i for i, vid in enumerate(batch[1])}
+            kept = sorted((e for e in pool if e["id"] in place), key=lambda e: place[e["id"]])
+            if kept:
+                return kept, len(pool) > len(kept)
+        current = set(batch[1]) if batch is not None and next_batch else set()
+        shown = self.store.load(caller.user).get("shown")
+        shown = shown.get(rid) if isinstance(shown, dict) and isinstance(shown.get(rid), dict) else {}
+        # 没放上来过的（0）在前，放上来过的按上次放的时刻；「换一批」时刚才那批放到最后；同样的照 YouTube 的顺序。
+        order = sorted(range(len(pool)), key=lambda i: (pool[i]["id"] in current, _when(shown.get(pool[i]["id"])), i))
+        chosen = [pool[i] for i in order[:REC_BATCH]]
+        now = self.clock()
+
+        def change(data):
+            marks = data.get("shown") if isinstance(data.get("shown"), dict) else {}
+            mine = marks.get(rid) if isinstance(marks.get(rid), dict) else {}
+            mine.update({e["id"]: now for e in chosen})
+            if len(mine) > SHOWN_KEEP:
+                mine = dict(sorted(mine.items(), key=lambda kv: _when(kv[1]))[-SHOWN_KEEP:])
+            marks[rid] = mine
+            data["shown"] = marks
+        self.store.update(caller.user, change)
+        with self.lock:
+            self._batches[key] = (at, [e["id"] for e in chosen])
+        return chosen, len(pool) > len(chosen)
 
     def _source(self, caller, source: str, fresh: bool, sync: bool = False) -> dict:
         """一个来源的缓存（过期了就去取：后台线程里取，sync 时就在这个线程里取，等它取完）。"""
@@ -615,7 +688,8 @@ class Feeds:
             loading = key in self._busy
         items = list(cached[1]) if cached is not None else []
         answer = {"state": "loading" if loading else "ready", "items": items, "message": "",
-                  "age": (self.monotonic() - cached[0]) if cached is not None else None}
+                  "age": (self.monotonic() - cached[0]) if cached is not None else None,
+                  "at": cached[0] if cached is not None else None}
         if error is not None and not loading:
             answer.update(state=error[1], message=error[2])
             if error[1] == "login":
@@ -783,7 +857,7 @@ class Feeds:
             raise FeedError("error", "YouTube 还没开启")
         with self._yt_lock:
             try:
-                videos = client.feed(kind, YT_FEED_N)
+                videos = client.feed(kind, YT_REC_N if kind == "rec" else YT_FEED_N)
             except SourceError as error:
                 reason = getattr(error, "reason", "")
                 self.relay.log(f"取 YouTube {kind} 失败：{reason or type(error).__name__}")
@@ -839,7 +913,7 @@ class Feeds:
 
     def _drop(self, user: int, prefix: str) -> None:
         with self.lock:
-            for table in (self._cache, self._errors):
+            for table in (self._cache, self._errors, self._batches):
                 for key in [k for k in table if k[0] == user and k[1].startswith(prefix)]:
                     table.pop(key, None)
 
@@ -1039,7 +1113,8 @@ def get(handler, relay, path: str) -> bool:
         handler._json(feeds.history_page(caller, handler._query()))
     else:
         query = handler._query()
-        handler._json(feeds.row(caller, query.get("id") or "", fresh=query.get("fresh") == "1"))
+        handler._json(feeds.row(caller, query.get("id") or "", fresh=query.get("fresh") == "1",
+                                next_batch=query.get("next") == "1"))
     return True
 
 
