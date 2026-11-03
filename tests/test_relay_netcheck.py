@@ -333,6 +333,14 @@ class NetcheckApiTests(lib_base.ApiTests):
 
     def setUp(self):
         super().setUp()
+        # The fake resolver answers localhost with a fake IP (Clash's TUN mode), so a local line or site that takes
+        # longer than LIVE_SLOW_MS / WEB_SLOW_MS reads as "slow through the proxy" and gets a DIRECT rule. The local
+        # servers answer at once; only a busy machine (the whole suite, a CI runner) is that slow: these tests are not
+        # about slowness, so the thresholds are out of reach.
+        for name in ("LIVE_SLOW_MS", "WEB_SLOW_MS"):
+            patcher = unittest.mock.patch.object(netcheck, name, 60_000)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.data = Path(self.accounts.path).parent
         self.relay.selfhost_data = self.data
         self.relay.log = self.logs.append
@@ -395,10 +403,8 @@ class NetcheckApiTests(lib_base.ApiTests):
     def test_whole_check(self):
         self.assertEqual(self.call("admin", "GET", "/tv/api/admin/netcheck")[1],
                          {"ok": True, "running": False, "step": "", "result": None})
-        # The local lines answer at once; only a busy machine (the whole suite, a CI runner) makes one take
-        # longer than LIVE_SLOW_MS and read as slow. The dead line warns for being dead, not for being slow.
-        with unittest.mock.patch.object(netcheck, "LIVE_SLOW_MS", 60_000):
-            answer, answers = self.run_check()
+        # The dead line warns for being dead, not for being slow (the thresholds are out of reach, see setUp).
+        answer, answers = self.run_check()
         result = answer["result"]
         sections = {s["key"]: s["rows"] for s in result["sections"]}
         self.assertEqual(list(sections), ["drives", "live", "web", "clash"])

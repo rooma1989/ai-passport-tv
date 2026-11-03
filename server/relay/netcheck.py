@@ -643,7 +643,7 @@ class NetCheck:
     def _live_row(self, name: str, url: str, found: dict, clash) -> dict:
         host = (urllib.parse.urlsplit(url).hostname or "").lower()
         dns = dns_of(host, self.resolve)
-        via = env_proxy(url)
+        via = self.env(url)
         notes = [f"源站：{host}"]
         if via:
             notes.append(f"经代理 {via}（环境变量里设的；ffmpeg 放直播时也走它）")
