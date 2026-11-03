@@ -1087,6 +1087,34 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m .hero .hposter { left: 16px; right: 16px; width: auto; top: calc(var(--topH) + 8px); bottom: 200px; justify-content: center; }
 .m .hero.soft .copy { max-width: none; }
 
+/* ---- 首页壁纸（server/relay/wallpaper.py）：垫在大图后面、铺满裁切；顶上、底下和左边加深，标题、按钮和
+   右上角的出处在深浅两种主题、窄屏上都看得清。节目自己的图这时作为海报放在右边（console.js heroLook） ---- */
+.hero.wall .bg > img.wimg { filter: saturate(1.05) brightness(.84); }
+.hero.wall .bg > img.wimg.in { animation: fade .7s var(--ease); }
+.hero.wall .shade { background: linear-gradient(180deg, rgba(0,0,0,.55) 0, rgba(0,0,0,0) calc(var(--topH) + 90px)),
+                                linear-gradient(0deg, var(--page) 0, rgba(0,0,0,.28) 34%, rgba(0,0,0,0) 62%),
+                                linear-gradient(90deg, rgba(0,0,0,.74) 0, rgba(0,0,0,.4) 38%, rgba(0,0,0,.06) 70%); }
+:root[data-theme=light] .hero.wall .shade { background: linear-gradient(180deg, rgba(0,0,0,.5) 0, rgba(0,0,0,0) calc(var(--topH) + 90px)),
+                                                        linear-gradient(0deg, rgba(0,0,0,.6) 0, rgba(0,0,0,0) 46%),
+                                                        linear-gradient(90deg, rgba(0,0,0,.78) 0, rgba(0,0,0,.42) 40%, rgba(0,0,0,.08) 70%); }
+.m .hero.wall .shade { background: linear-gradient(180deg, rgba(0,0,0,.55) 0, rgba(0,0,0,0) calc(var(--topH) + 60px)),
+                                   linear-gradient(0deg, var(--page) 0, rgba(0,0,0,.6) 34%, rgba(0,0,0,.18) 72%); }
+:root[data-theme=light] .m .hero.wall .shade { background: linear-gradient(180deg, rgba(0,0,0,.55) 0, rgba(0,0,0,0) calc(var(--topH) + 60px)),
+                                                           linear-gradient(0deg, rgba(0,0,0,.8) 0, rgba(0,0,0,.5) 40%, rgba(0,0,0,.2) 72%); }
+.hero.wall .hposter { top: calc(var(--topH) + 56px); }
+.wbar { position: absolute; z-index: 2; right: var(--g); top: calc(var(--topH) + 12px); max-width: min(60%, 640px);
+        display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--label-2); }
+.wbar .wcr { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 6px rgba(0,0,0,.6); }
+.wbar .wnext { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 14px;
+               font: 600 12px var(--sans); color: var(--label); background: var(--mat); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+               transition: background var(--t-fast); }
+.wbar .wnext:hover { background: var(--fill-3); }
+.wbar .wnext:focus-visible { outline: none; background: var(--focus-bg); color: var(--focus-fg); }
+.m .wbar { left: 16px; right: 16px; max-width: none; top: calc(var(--topH) + 6px); justify-content: flex-end; font-size: 11px; }
+.m .hero.wall .hposter { top: calc(var(--topH) + 44px); }
+/* 「YouTube 推荐」的「换一批」和「全部 ›」并排在右边 */
+.h2 .more.swap + .more { margin-left: 0; }
+
 /* ---- 横向货架两头的翻页箭头：只给鼠标，移到这一排上才出来，滚到头的那边不出 ---- */
 .sbox { position: relative; }
 .sarr { position: absolute; z-index: 5; top: calc(var(--ay, 100px) - 22px); width: 44px; height: 44px; border-radius: 50%; display: none; place-items: center; color: var(--label); cursor: pointer;

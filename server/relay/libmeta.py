@@ -587,10 +587,12 @@ def parse_tmdb_details(data: bytes | str, kind: str) -> dict | None:
             "img": _tmdb_path(row.get("poster_path"))}
 
 
-def tmdb_fetch(url: str, headers: dict, cap: int, timeout: float = TMDB_TIMEOUT_S, proxy: str = "") -> tuple[int, bytes]:
+def tmdb_fetch(url: str, headers: dict, cap: int, timeout: float = TMDB_TIMEOUT_S, proxy: str = "",
+               site: str = "TMDB") -> tuple[int, bytes]:
     """GET → (状态, 至多 cap+1 字节)。填了代理（「设置 → YouTube」的 http:// 或 socks5://）就经它连
     （ytnode.open_tunnel），没填就和 urllib 一样看环境变量；本机的假服务器（http://）直连。跳转不跟。
-    出错时的原因只写错误的种类，从不带地址（地址里可能有 api_key）。"""
+    出错时的原因只写错误的种类，从不带地址（地址里可能有 api_key）。首页壁纸（wallpaper.py）也用它取 GitHub，
+    site 是出错时说的网站名。"""
     parts = urllib.parse.urlsplit(url)
     try:
         if parts.scheme == "http" or not proxy:
@@ -615,7 +617,7 @@ def tmdb_fetch(url: str, headers: dict, cap: int, timeout: float = TMDB_TIMEOUT_
         finally:
             connection.close()
     except (OSError, ValueError, http.client.HTTPException) as error:
-        raise Failed(f"连不上 TMDB（{type(error).__name__}）") from None
+        raise Failed(f"连不上 {site}（{type(error).__name__}）") from None
 
 
 class Tmdb:

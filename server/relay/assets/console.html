@@ -198,6 +198,8 @@
             <div class="li"><span class="ico" data-ic="tv" data-ics="18"></span><span class="tx">记住「播放到」<small>关掉后每次播放先问播到哪</small></span><button class="sw" role="switch" aria-checked="true" id="rememberSw" aria-label="记住「播放到」"></button></div>
             <div class="li"><span class="ico" data-ic="moon" data-ics="18"></span><span class="tx">外观</span>
               <span class="segc" role="group" aria-label="外观"><button data-theme-pick="dark" aria-pressed="true">深色</button><button data-theme-pick="light" aria-pressed="false">浅色</button></span></div>
+            <!-- 首页壁纸（server/relay/wallpaper.py）：家庭服务器和电脑客户端才有；记在这个浏览器里，默认开 -->
+            <div class="li" id="wallRow" hidden><span class="ico" data-ic="pic" data-ics="18"></span><span class="tx">首页壁纸<small>大图后面随机垫一张 dharmx/walls 的壁纸，图由这台服务器下载</small></span><button class="sw" role="switch" aria-checked="true" id="wallSw" aria-label="首页壁纸"></button></div>
           </div>
           <!-- 家人和邀请（管理员）：在「管理 → 用户」里 -->
           <div class="list" id="adminList" hidden>

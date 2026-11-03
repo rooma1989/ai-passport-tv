@@ -517,6 +517,101 @@ class FeedRowTests(FeedHarness):
                                           {"kind": "feed", "site": "youtube", "id": "recrecrec01"})
             self.assertEqual(casts[-1][0].site, "youtube")
 
+class RecRotationTests(FeedHarness):
+    """「YouTube 推荐」: the account's feed barely changes, so the row rotates through what the node gave."""
+
+    def setUp(self):
+        super().setUp()
+        self.limits = []
+        feed = self.yt.feed
+
+        def counted(kind, limit=30, timeout=None):
+            self.limits.append((kind, limit))
+            return feed(kind, limit, timeout)
+        self.yt.feed = counted
+        self.yt.feeds["rec"] = [self.video(i) for i in range(40)]
+
+    @staticmethod
+    def video(i):
+        return {"id": f"rec{i:08d}", "title": f"推荐 {i}", "duration": 60, "channel": "频道一", "channel_id": UC1,
+                "date": 0, "views": 0}
+
+    def ids(self, nxt=False, fresh=False):
+        path = "/tv/api/feeds/row?id=yt_rec" + ("&next=1" if nxt else "") + ("&fresh=1" if fresh else "")
+        answer = self.request("GET", path, user=self.admin)[1]
+        self.last = answer
+        return [x["play"]["id"] for x in answer["items"]]
+
+    def test_asks_the_node_for_more_and_shows_a_stable_batch(self):
+        first = self.ids()
+        self.assertEqual(self.limits, [("rec", accountfeeds.YT_REC_N)])
+        self.assertLessEqual(accountfeeds.YT_REC_N, ytnode.FEED_MAX, "the node refuses more than FEED_MAX")
+        self.assertEqual(first, [f"rec{i:08d}" for i in range(accountfeeds.REC_BATCH)], "YouTube's order at first")
+        self.assertTrue(self.last["rotate"])
+        self.assertTrue(self.last["more"])
+        self.assertEqual(self.ids(), first, "asking again (a re-render, a timer) keeps the batch")
+        self.assertEqual(len(self.limits), 1)
+
+    def test_next_batch_shows_unseen_ones_without_the_node(self):
+        first = self.ids()
+        second = self.ids(nxt=True)
+        self.assertEqual(len(self.limits), 1, "within the TTL: rotate what we have")
+        self.assertFalse(set(first) & set(second))
+        self.assertEqual(second, [f"rec{i:08d}" for i in range(16, 32)])
+        third = self.ids(nxt=True)
+        self.assertEqual(third[:8], [f"rec{i:08d}" for i in range(32, 40)], "the last never-shown ones first")
+        self.assertEqual(third[8:], first[:8], "then the longest-ago shown")
+        self.assertEqual(self.ids(), third, "and that batch stays")
+
+    def test_new_fetch_puts_never_shown_first_and_skips_watched(self):
+        self.yt.feeds["history"] = [self.video(3)]
+        self.request("GET", "/tv/api/feeds/row?id=yt_history", user=self.admin)
+        progress = mock.Mock()
+        progress.rows.return_value = [("v:youtube:rec00000005", {"site": "youtube", "bvid": "rec00000005"}),
+                                      ("up01", {"site": "youtube", "bvid": "rec00000006"}),
+                                      ("v:bilibili:BV1hist00001", {"site": "bilibili", "bvid": "BV1hist00001"})]
+        with mock.patch.object(self.relay, "pc_progress", progress):
+            first = self.ids()
+            for watched in ("rec00000003", "rec00000005", "rec00000006"):
+                self.assertNotIn(watched, first)
+            self.assertEqual(len(first), accountfeeds.REC_BATCH)
+            # YouTube's feed an hour later: mostly the same, three new ones at the end
+            self.yt.feeds["rec"] = [self.video(i) for i in range(3, 40)] + [self.video(i) for i in (90, 91, 92)]
+            self.mono.t += accountfeeds.TTL_S["yt_rec"] + 1
+            self.ids()                      # stale: fetched again (inline in the tests)
+            later = self.ids()
+        self.assertEqual(len(self.limits), 3)
+        unseen = [f"rec{i:08d}" for i in range(19, 40)] + [f"rec{i:08d}" for i in (90, 91, 92)]
+        self.assertEqual(later, unseen[:accountfeeds.REC_BATCH], "never-shown first, in YouTube's order")
+        self.assertFalse(set(later) & set(first))
+
+    def test_shown_ids_are_remembered_per_user_and_bounded(self):
+        with mock.patch.object(accountfeeds, "SHOWN_KEEP", 20):
+            first = self.ids()
+            self.ids(nxt=True)
+        data = json.loads((self.root / "feeds" / f"{self.admin}.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(data["shown"]["yt_rec"]), 20)
+        self.assertNotIn(first[0], data["shown"]["yt_rec"], "the oldest marks go first")
+        self.assertTrue(data["settings"]["writeback"], "the settings are kept")
+
+    def test_marks_survive_a_restart(self):
+        self.ids()
+        self.ids(nxt=True)
+        # a restart: the batch is rebuilt, still preferring what was not shown
+        self.feeds._batches.clear()
+        self.feeds._cache.clear()
+        again = self.ids()
+        self.assertEqual(again[:4], [f"rec{i:08d}" for i in range(32, 36)])
+        self.assertEqual(self.request("GET", "/tv/api/feeds/row?id=bili_rec", user=self.admin)[1].get("rotate"), None)
+
+    def test_everything_watched_still_shows_a_row(self):
+        self.yt.feeds["rec"] = [self.video(1)]
+        self.yt.feeds["history"] = [self.video(1)]
+        self.request("GET", "/tv/api/feeds/row?id=yt_history", user=self.admin)
+        self.assertEqual(self.ids(), ["rec00000001"])
+        self.assertFalse(self.last["more"])
+
+
 class FollowTests(FeedHarness):
     def listing(self, user):
         return self.request("GET", "/tv/api/follows", user=user)[1]

@@ -136,6 +136,7 @@ const IC = {
   shrink: '<path d="M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7"/>',
   full: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
   unfull: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+  pic: '<rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 8"/>',
   mute: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/>',
   r10: '<path d="M4.6 14.5A8 8 0 1 0 7 5.8"/><path d="M7.5 2.5 7 5.8l3.3.8"/><text x="12.6" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
   f10: '<path d="M19.4 14.5A8 8 0 1 1 17 5.8"/><path d="M16.5 2.5l.5 3.3-3.3.8"/><text x="11.4" y="15.4" font-size="7.4" font-weight="700" text-anchor="middle" fill="currentColor" stroke="none">10</text>',
@@ -264,6 +265,50 @@ function applyTheme(theme) {
 }
 applyTheme(lsGet("rootv.theme", "dark"));
 for (const b of qsa("[data-theme-pick]")) b.onclick = () => { lsSet("rootv.theme", b.dataset.themePick); applyTheme(b.dataset.themePick); };
+
+// ---- 首页壁纸（server/relay/wallpaper.py）：大图后面垫一张 dharmx/walls 仓库里的壁纸，图是中转下载好的，
+// 浏览器只连中转。打开页面后第一次到首页挑一张（GET api/home/wallpaper），之后首页重画、数据刷新都用这一张；
+// 「换一张」再问一次（not=现在这张）。开关在「设置 → 通用 → 外观」，和深色、浅色一样记在这个浏览器里；关了就不问。
+// 没有壁纸（中转不在家里、池子还空着、图片加载失败、没网）：照原来的样子，什么也不说。
+let wall = null;            // 已经加载好的那张：{id, url, credit, theme, name}
+let wallAsked = false, wallTries = 0;
+const wallOn = () => !!(data && data.wallpaper) && lsGet("rootv.wall", "1") === "1";
+async function loadWall(avoid) {
+  if (!wallOn()) return false;
+  wallAsked = true;
+  let answer;
+  try { answer = await call("GET", "api/home/wallpaper" + (avoid ? "?not=" + encodeURIComponent(avoid) : "")); }
+  catch (error) { return false; }
+  const w = answer && answer.ok ? answer.wallpaper : null;
+  if (!w || (avoid && w.id === avoid)) {
+    // 中转刚开始往池子里补：过一会儿再问，最多三次。
+    if (!w && !avoid && answer && answer.filling && ++wallTries <= 3) setTimeout(() => { if (!wall && route === "home") loadWall(); }, 20000);
+    return false;
+  }
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => { wall = Object.assign({}, w, { fresh: true }); if (route === "home") renderHome(); resolve(true); };
+    img.onerror = () => resolve(false);
+    img.src = w.url;
+  });
+}
+async function nextWall(btn) {
+  if (!wall) return;
+  btn.disabled = true;
+  if (!await loadWall(wall.id)) { btn.disabled = false; toast("暂时没有别的壁纸，过一会儿再换"); }
+}
+function applyWallSetting() {
+  $("wallRow").hidden = !(data && data.wallpaper);
+  $("wallSw").setAttribute("aria-checked", String(lsGet("rootv.wall", "1") === "1"));
+}
+$("wallSw").onclick = () => {
+  const on = lsGet("rootv.wall", "1") !== "1";
+  lsSet("rootv.wall", on ? "1" : "0");
+  applyWallSetting();
+  if (on && !wall) loadWall();
+  if (route === "home") renderHome();
+};
 
 // ======================================================================= 状态
 
@@ -812,6 +857,8 @@ function render() {
   if (feedsOn() && !feedsInfo && !feedsAt) loadFeeds();
   if (route === "up" && feedsOn() && !fw && $("followsBox").hidden) { renderFollows(); loadFollows(); }
   if (feedsInfo) applyFeedSettings();
+  applyWallSetting();
+  if (route === "home" && homeData && !wallAsked && wallOn()) loadWall();
   ytPrefetchView();
 }
 
@@ -6475,6 +6522,23 @@ function scheduleFeeds() {
     scheduleFeeds();
   }, 3000);
 }
+// 「换一批」：GET api/feeds/row?next=1。缓存过期了中转顺便在后台重新取（这时 loading，照常每 3 秒再问）。
+async function nextFeedBatch(id, btn) {
+  btn.disabled = true;
+  let answer;
+  try { answer = await call("GET", "api/feeds/row?id=" + encodeURIComponent(id) + "&next=1"); }
+  catch (error) { btn.disabled = false; if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return; }
+  btn.disabled = false;
+  if (!answer || !answer.ok) return;
+  feedRows[id] = answer;
+  if (!answer.more && !answer.loading) toast("推荐就这些了，过几分钟会有新的");
+  if (route !== "home") return;
+  renderHome();
+  const row = qs(`#homeBody [data-feed-next="${id}"]`);
+  const sh = row && row.closest("section").querySelector(".shelf");
+  if (sh) { sh.scrollLeft = 0; shelfEdges(sh); }
+  if (answer.loading) { feedTries = 0; scheduleFeeds(); }
+}
 function applyFeedSettings() {
   const s = (feedsInfo && feedsInfo.settings) || (fw && fw.settings) || {};
   $("writebackSw").setAttribute("aria-checked", String(!!s.writeback));
@@ -6557,7 +6621,9 @@ function feedShelves() {
       continue;
     }
     SHELF[r.id] = { title: r.title, items: () => (feedRows[r.id] || a).items, card: cardFeed, paged: r.id === "bili_history" ? "hist" : "" };
-    o += shelf(r.title, sub, a.items.map(cardFeed).join(""), "", "", r.id);
+    // 「YouTube 推荐」（accountfeeds.py 的 ROTATE_ROWS）：「换一批」放上没放过的，不额外叫 YouTube 节点。
+    const swap = a.rotate ? `<button class="more swap" data-feed-next="${esc(r.id)}" data-k="next-${esc(r.id)}" aria-label="${esc(r.title)}：换一批">换一批</button>` : "";
+    o += shelf(r.title, sub, a.items.map(cardFeed).join(""), "", "", r.id, "", swap);
   }
   return o;
 }
@@ -7603,7 +7669,7 @@ function cardSeries(x) {
 }
 // 一排货架。all：「全部 ›」打开的弹窗（SHELF 里的键）；没有 all 时 more 是跳到别的页的链接。pre：标题和货架之间的一行
 // （「关注的更新」的头像筛选）。货架两头的箭头只给鼠标（不能聚焦，键盘照旧用方向键），滚到头的那一边藏起来。
-const shelf = (title, sub, inner, more, moreT, all, pre) => `<section aria-label="${esc(title)}"><div class="h2"><h2>${esc(title)}</h2>${sub ? `<small>${esc(sub)}</small>` : ""}${all ? `<button class="more" data-all="${esc(all)}" data-k="all-${esc(all)}" aria-label="${esc(title)}：全部">全部 ›</button>` : more ? `<a class="more" href="${more}">${esc(moreT || "全部")} ›</a>` : ""}</div>${pre || ""}<div class="sbox"><div class="shelf">${inner}</div><span class="sarr l" data-sarr="-1" aria-hidden="true">${ic("back", 22)}</span><span class="sarr r" data-sarr="1" aria-hidden="true">${ic("fwd", 22)}</span></div></section>`;
+const shelf = (title, sub, inner, more, moreT, all, pre, tools) => `<section aria-label="${esc(title)}"><div class="h2"><h2>${esc(title)}</h2>${sub ? `<small>${esc(sub)}</small>` : ""}${tools || ""}${all ? `<button class="more" data-all="${esc(all)}" data-k="all-${esc(all)}" aria-label="${esc(title)}：全部">全部 ›</button>` : more ? `<a class="more" href="${more}">${esc(moreT || "全部")} ›</a>` : ""}</div>${pre || ""}<div class="sbox"><div class="shelf">${inner}</div><span class="sarr l" data-sarr="-1" aria-hidden="true">${ic("back", 22)}</span><span class="sarr r" data-sarr="1" aria-hidden="true">${ic("fwd", 22)}</span></div></section>`;
 const banner = (kind, t, p, btn, href) => `<div class="banner ${kind}" role="note"><span class="ico">${ic(kind === "warn" ? "warn" : "info", 22)}</span><div><b>${esc(t)}</b><p>${esc(p)}</p></div>${btn ? `<a class="btn sm" href="${href}">${esc(btn)}</a>` : ""}</div>`;
 
 // ---- 大图的图：先按真实尺寸量一下（B 站图床要 s=h：只限宽、不放大；YouTube 要最大的 maxresdefault），
@@ -7628,7 +7694,8 @@ function heroLoaded() { if (route === "home" && homeData) renderHome(); }
 function heroFill(rec) {
   return heroFits(rec.w, rec.h, (qs("#homeBody .hero") || {}).clientWidth || innerWidth, devicePixelRatio);
 }
-function heroLook(url) {
+// onWall：大图后面垫着壁纸时，节目自己的图一律作为海报放在右边（不铺满、不模糊当底），露出壁纸。
+function heroLook(url, onWall) {
   const none = { cls: "", bg: "", poster: "" };
   if (!url) return none;
   const rec = heroProbe(url);
@@ -7637,11 +7704,11 @@ function heroLook(url) {
   const fresh = !rec.shown ? " in" : "";
   rec.shown = true;
   const src = esc(rec.src);
-  if (heroFill(rec)) return { cls: fresh, bg: `<img class="fill" src="${src}" alt="" decoding="async">`, poster: "" };
+  if (!onWall && heroFill(rec)) return { cls: fresh, bg: `<img class="fill" src="${src}" alt="" decoding="async">`, poster: "" };
   const tall = rec.h > rec.w;
   // 海报最多放大到原图的 1.6 倍（再大就糊了），也不超过右边那块地方。
   const hmax = Math.round((tall ? rec.h : rec.w * 9 / 16) * 1.6);
-  return { cls: " soft" + fresh, bg: `<img class="blur" src="${src}" alt="" decoding="async">`,
+  return { cls: " soft" + fresh, bg: onWall ? "" : `<img class="blur" src="${src}" alt="" decoding="async">`,
            poster: `<div class="hposter" aria-hidden="true"><img class="${tall ? "p" : "w"}" src="${src}" alt="" decoding="async" style="height:min(100%, ${hmax}px);aspect-ratio:${tall ? rec.w + " / " + rec.h : "16 / 9"}"></div>` };
 }
 
@@ -7669,8 +7736,13 @@ function heroHTML(list) {
   const L = [...title].length;
   const second = h.kind === "series" ? `<button class="btn" data-series="${esc(h.series.id)}">选集</button>`
     : live ? `<a class="btn" href="#/live">全部直播</a>` : `<a class="btn" href="#/up">UP 主</a>`;
-  const look = heroLook(h.art && h.art.url);
-  return `<section class="hero dk${look.cls}" aria-label="推荐"><div class="bg">${art(title, "w", { motif: live ? 2 : h.kind === "series" ? 1 : 0 })}${look.bg}</div><div class="shade"></div>${look.poster}
+  const W = wallOn() ? wall : null;
+  const look = heroLook(h.art && h.art.url, !!W);
+  const wbg = W ? `<img class="wimg${W.fresh ? " in" : ""}" src="${esc(W.url)}" alt="" decoding="async">` : "";
+  // 仓库没写许可证：一直写明出处（主题和文件名），旁边是「换一张」。
+  const wbar = W ? `<div class="wbar"><span class="wcr" title="${esc(W.credit + " · " + W.theme + "/" + W.name)}">${esc(W.credit)}<span aria-hidden="true"> · </span>${esc(W.theme)} / ${esc(W.name)}</span><button class="wnext" data-wall-next data-k="wall-next" aria-label="换一张壁纸">${ic("r30", 14)}换一张</button></div>` : "";
+  if (W) W.fresh = false;
+  return `<section class="hero dk${look.cls}${W ? " wall" : ""}" aria-label="推荐"><div class="bg">${W ? wbg : art(title, "w", { motif: live ? 2 : h.kind === "series" ? 1 : 0 }) + look.bg}</div><div class="shade"></div>${look.poster}${wbar}
     <div class="copy"><div class="kicker">${live ? '<span class="badge live">直播</span>' : ""}${esc(h.kicker || "")}</div>
       <div class="tart${L > 12 ? " xs" : L > 6 ? " sm" : ""}" style="--h:${hsh(title) % 360}" role="heading" aria-level="2">${esc(title)}</div>
       <div class="meta">${meta.filter(Boolean).map(esc).join('<span aria-hidden="true">·</span>')}</div>${syn ? `<p class="syn">${esc(syn)}</p>` : ""}
@@ -7681,6 +7753,7 @@ function heroHTML(list) {
 function renderHome() {
   const box = $("homeBody");
   if (!homeData) { box.innerHTML = `<div class="ph"><h1 class="lt">首页</h1></div><p class="hint">正在准备…</p>`; return; }
+  if (!wallAsked && wallOn()) loadWall();
   const fk = focusKey();
   const scrolls = qsa("#homeBody .shelf").map((e) => e.scrollLeft);
   const H = homeData.hero || [];
@@ -8116,6 +8189,8 @@ document.addEventListener("click", (event) => {
   if (ds.remember !== undefined) { setRemember(!remember); return; }
   if (ds.rdev) { pick(ds.rdev); return; }
   if (ds.hero) { const n = (homeData && homeData.hero.length) || 1; heroIndex = (heroIndex + Number(ds.hero) + n) % n; renderHome(); return; }
+  if (ds.wallNext !== undefined) { nextWall(t); return; }
+  if (ds.feedNext) { nextFeedBatch(ds.feedNext, t); return; }
   if (ds.heroI !== undefined) { heroIndex = Number(ds.heroI); renderHome(); return; }
 });
 
