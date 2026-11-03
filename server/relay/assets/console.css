@@ -722,15 +722,19 @@ button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px
 #pcwin { position: absolute; z-index: 9; right: 18px; bottom: 104px; width: min(520px, calc(100% - 36px)); display: flex; flex-direction: column;
          border-radius: 18px; overflow: hidden; background: #000;
          box-shadow: 0 24px 60px rgba(0,0,0,.55), inset 0 0 0 1px var(--mat-line); color: #f5f5f7; }
-/* 宽由画面（和旁边的选集）撑开（console.js 把 width 设成 auto）：标题栏、脚注不参与算宽，长标题不会把小窗撑宽 */
+/* 宽由画面（和旁边的选集）撑开（console.js 把 width 设成 auto）：标题栏、脚注不参与算宽，长标题不会把小窗撑宽。
+   无边框：标题栏在画面（.pcbox）里，浮在画面上面，顶上一层渐变；和控制条一起出现、一起收（.idle）。 */
 #pcwin .pchead, #pcwin .pcfoot { contain: inline-size; }
 #pcwin.sizing, #pcwin.sizing .pcbox { transition: none; }
-#pcwin .pchead { display: flex; align-items: center; gap: 2px; min-height: 46px; padding: 5px 6px 5px 14px; background: rgba(24,24,28,.96);
-                 box-shadow: inset 0 -1px 0 rgba(255,255,255,.06); }
+#pcwin .pchead { position: absolute; z-index: 1; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 2px; padding: 7px 7px 24px 14px;
+                 background: linear-gradient(rgba(0,0,0,.68), rgba(0,0,0,.34) 55%, transparent); text-shadow: 0 1px 3px rgba(0,0,0,.6);
+                 transition: opacity var(--t-fade) var(--ease); }
+#pcwin .pcbox.idle .pchead { opacity: 0; pointer-events: none; }
 #pcwin .pchead > div { flex: 1; min-width: 0; margin-right: 4px; }
 #pcwin .pchead b { display: block; font: 600 13.5px/1.35 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#pcwin .pchead span { display: block; font-size: 11.5px; line-height: 1.35; color: rgba(235,235,245,.55); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#pcwin .pchead .iconbtn { flex: none; width: 32px; height: 32px; border-radius: 10px; color: rgba(245,245,247,.82); }
+#pcwin .pchead span { display: block; font-size: 11.5px; line-height: 1.35; color: rgba(235,235,245,.72); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#pcwin .pchead .iconbtn { flex: none; width: 32px; height: 32px; border-radius: 10px; color: rgba(245,245,247,.9); filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
+#pcwin .pchead .iconbtn:focus-visible { outline: 2px solid var(--brand); outline-offset: 0; }
 #pcwin .pchead .iconbtn:hover { background: rgba(255,255,255,.12); color: #fff; }
 #pcwin .pchead #watchClose:hover { background: rgba(255,90,80,.85); }
 #pcwin .pchead .pcline { flex: none; height: 26px; margin-right: 4px; padding: 0 10px; border: 0; border-radius: 13px; background: rgba(255,255,255,.12); color: #f5f5f7;
@@ -787,6 +791,8 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
   .d#app.pcdock .hero, .d#app.pcdock .shelf, .d#app.pcdock .cfil { margin-right: 0; } }
 #pcwin .pchead { cursor: grab; touch-action: none; }
 #pcwin[data-moved] .pchead { cursor: grabbing; }
+#pcwin.big .pchead, #pcwin .pcbox:fullscreen .pchead, .m #pcwin .pchead { cursor: default; touch-action: auto; }
+#pcwin .pcbox:fullscreen #watchBig { display: none; }
 #pcwin.big { left: var(--g); right: var(--g); top: calc(var(--topH) + 6px); bottom: 104px; width: auto !important; }
 #pcwin.big .pcmain { flex: 1; }
 #pcwin.big .pcbox { flex: 1; width: auto; height: auto; aspect-ratio: auto; max-height: none; min-height: 0; }
@@ -817,7 +823,7 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcctl { position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 10px 6px; background: linear-gradient(transparent, rgba(0,0,0,.78));
                 transition: opacity var(--t-fade) var(--ease); }
 #pcwin .pcbox.idle .pcctl, #pcwin .pcbox.noctl .pcctl { opacity: 0; pointer-events: none; }
-#pcwin .pcseek { position: relative; height: 18px; display: flex; align-items: center; cursor: pointer; touch-action: none; border-radius: 6px; }
+#pcwin .pcseek { position: relative; height: 18px; margin: 0 4px; display: flex; align-items: center; cursor: pointer; touch-action: none; border-radius: 6px; }
 #pcwin .pcseek:focus { outline: none; }
 #pcwin .pcseek:focus-visible { box-shadow: 0 0 0 2px var(--brand); }
 #pcwin .pcseek .rail { position: relative; flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,.24); transition: height var(--t-fast); }
@@ -825,12 +831,14 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcseek .buf, #pcwin .pcseek .cur { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; }
 #pcwin .pcseek .buf { background: rgba(255,255,255,.42); }
 #pcwin .pcseek .cur { background: var(--brand); }
-#pcwin .pcseek .knob { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5);
-                       transform: scale(0); transition: transform var(--t-fast); }
-#pcwin .pcseek:hover .knob, #pcwin .pcseek.drag .knob, #pcwin .pcseek:focus-visible .knob { transform: scale(1); }
+/* 滑块是图标 B 的小电视（console.js 的 knobSVG）：矢量的，高分屏也清楚；指上去、拖着、键盘焦点时大一点 */
+#pcwin .pcseek .knob { position: absolute; top: 50%; width: 24px; height: 24px; margin: -13px 0 0 -12px; pointer-events: none;
+                       filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); transform: scale(.92); transform-origin: 50% 60%; transition: transform var(--t-fast); }
+#pcwin .pcseek .knob svg { display: block; width: 100%; height: 100%; }
+#pcwin .pcseek:hover .knob, #pcwin .pcseek.drag .knob, #pcwin .pcseek:focus-visible .knob { transform: scale(1.18); }
 #pcwin .pcseek.off { cursor: default; }
 #pcwin .pcseek.off .knob { display: none; }
-#pcwin .pcseek .tip { position: absolute; bottom: 20px; transform: translateX(-50%); padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,.8);
+#pcwin .pcseek .tip { position: absolute; bottom: 26px; transform: translateX(-50%); padding: 2px 7px; border-radius: 6px; background: rgba(0,0,0,.8);
                       font: 600 12px/1.5 var(--mono); white-space: nowrap; pointer-events: none; }
 #pcwin .pcrow { display: flex; align-items: center; gap: 2px; min-height: 36px; }
 #pcwin .pcrow .sp { flex: 1; }
@@ -845,6 +853,32 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 /* 字幕开着时（片库的字幕菜单，console.js 的 subs） */
 #pcwin #pcSubs.on { box-shadow: inset 0 -2px 0 var(--brand); }
 #pcwin video::cue { font-family: var(--sans); background: rgba(0,0,0,.55); }
+/* 控制条出来时字幕往上让，不被它挡住（Chrome、Safari 的字幕层；别的浏览器没有这个就照旧） */
+#pcwin video::-webkit-media-text-track-container { transition: transform var(--t-fade) var(--ease); }
+#pcwin .pcbox:not(.idle) video::-webkit-media-text-track-container { transform: translateY(calc(-1 * var(--pcctl-h, 72px) + 8px)); }
+#pcwin #pcPip.on { color: var(--brand); }
+/* 画中画用的小 <video>（console.js 的 openCanvasPip）：要在页面里、在视口里（Chrome 才照常放它），但看不见、点不到 */
+.pcpiphelper { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: .01; pointer-events: none; z-index: -1; }
+/* ↑ ↓ 音量、C 字幕的小提示 */
+#pcwin .pcosd { position: absolute; z-index: 2; left: 50%; top: 20%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+                border-radius: 12px; background: rgba(20,20,24,.8); box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); font: 600 14px var(--sans); color: #f5f5f7;
+                white-space: nowrap; pointer-events: none; transition: opacity .2s var(--ease); }
+#pcwin .pcosd.out { opacity: 0; }
+#pcwin .pcosd[hidden] { display: none; }
+#pcwin .pcosd i { display: block; width: 72px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.24); overflow: hidden; }
+#pcwin .pcosd i b { display: block; height: 100%; background: var(--brand); }
+/* 快捷键表：盖在画面上，Esc、?、点空白处关 */
+#pcwin .pckeys { position: absolute; z-index: 4; inset: 0; display: flex; align-items: center; justify-content: center; padding: 10px; background: rgba(0,0,0,.5); }
+#pcwin .pckeys[hidden] { display: none; }
+#pcwin .pckbox { max-width: 100%; max-height: 100%; overflow: auto; padding: 8px 14px 12px; border-radius: 14px; background: rgba(18,18,22,.96);
+                 box-shadow: 0 12px 30px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.12); overscroll-behavior: contain; }
+#pcwin .pckhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; font: 600 14px var(--sans); }
+#pcwin .pckeys dl { display: grid; grid-template-columns: auto auto auto auto; gap: 6px 12px; align-items: center; margin: 0; font-size: 12.5px; }
+#pcwin.tiny .pckeys dl { grid-template-columns: auto auto; }
+#pcwin .pckeys dt { text-align: right; white-space: nowrap; color: rgba(235,235,245,.6); }
+#pcwin .pckeys dd { margin: 0 8px 0 0; white-space: nowrap; }
+#pcwin .pckeys kbd { display: inline-block; min-width: 20px; padding: 1px 6px; border-radius: 5px; background: rgba(255,255,255,.14); box-shadow: inset 0 -1px 0 rgba(255,255,255,.2);
+                     color: #f5f5f7; font: 600 11.5px/18px var(--mono); text-align: center; }
 /* 视频搬进画中画小窗时原处的提示（console.js 的 openDocPip），点一下放回来 */
 #pcwin .pcpipnote { position: absolute; inset: 0; margin: auto; width: max-content; height: max-content; padding: 10px 18px; border: 0; border-radius: 999px;
                     background: rgba(255,255,255,.12); color: #f5f5f7; font: 15px/1.4 var(--sans); cursor: pointer; z-index: 2; }
@@ -853,10 +887,11 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pctime { min-width: 0; margin: 0 8px; overflow: hidden; text-overflow: ellipsis; font: 500 13px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: rgba(245,245,247,.92); }
 #pcwin .pclive { margin: 0 6px; padding: 1px 8px; border-radius: 6px; background: var(--live); color: #fff; font: 700 12px/20px var(--sans); }
 #pcwin #pcVol { width: 76px; accent-color: #f5f5f7; margin: 0 6px 0 0; }
-#pcwin .pcbanner { position: absolute; left: 12px; top: 12px; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 6px 6px 12px; border-radius: 12px;
+#pcwin .pcbanner { position: absolute; left: 12px; top: 12px; transition: top var(--t-fade) var(--ease); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 6px 6px 12px; border-radius: 12px;
                    background: rgba(20,20,24,.82); font-size: 13px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
 #pcwin .pcbanner span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 片源断了、缓存还在放：小一点，前面一个琥珀色的点（不是红字：画面和声音还在） */
+#pcwin .pcbox:not(.idle) .pcbanner { top: 50px; }   /* 标题栏出来时让到它下面 */
 #pcwin .pclost { padding: 4px 4px 4px 10px; font-size: 12px; color: rgba(245,245,247,.92); }
 #pcwin .pclost::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
 #pcwin .pclost .pctxt { height: 26px; padding: 0 9px; font-size: 12px; }
@@ -875,8 +910,8 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcparts { display: flex; flex-direction: column; min-height: 0; background: rgba(18,18,22,.97); }
 #pcwin .pcmain > .pcparts { flex: none; width: var(--pc-pw, 300px); height: var(--pc-vh, auto); box-shadow: inset 1px 0 0 rgba(255,255,255,.08); }
 #pcwin .pcmain.below > .pcparts { width: auto; contain: inline-size; height: var(--pc-ph, 240px); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
-#pcwin .pcbox > .pcparts { position: absolute; z-index: 2; top: 0; right: 0; bottom: calc(var(--pcctl-h, 72px) + 4px); width: min(340px, 86%);
-                           border-bottom-left-radius: 14px; box-shadow: -12px 0 30px rgba(0,0,0,.45); }
+#pcwin .pcbox > .pcparts { position: absolute; z-index: 2; top: 50px; right: 0; bottom: calc(var(--pcctl-h, 72px) + 4px); width: min(340px, 86%);
+                           border-radius: 14px 0 0 14px; box-shadow: -12px 0 30px rgba(0,0,0,.45); }
 #pcwin .pcphead { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 14px; border-bottom: 1px solid rgba(255,255,255,.1); }
 #pcwin .pcphead > div { flex: 1; min-width: 0; }
 #pcwin .pcphead b { display: block; font: 600 14px var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -901,7 +936,7 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin.compact .pctxt { height: 28px; padding: 0 8px; font-size: 12px; }
 #pcwin.compact .pctime { margin: 0 4px; font-size: 12px; }
 #pcwin.tiny .pcrow #pcRate, #pcwin.tiny .pcrow #pcPip, #pcwin.tiny .pcrow #pcNext,
-#pcwin.tiny .pchead #watchPrevCh, #pcwin.tiny .pchead #watchNextCh, #pcwin.tiny .pchead span { display: none; }
+#pcwin.tiny .pchead #watchPrevCh, #pcwin.tiny .pchead #watchNextCh, #pcwin.tiny .pchead #pcKeysBtn, #pcwin.tiny .pchead span { display: none; }
 #pcwin #pcRate { min-width: 46px; padding: 0 8px; font-family: var(--mono); background: transparent; }
 #pcwin #pcQuality { padding: 0 8px; background: transparent; }
 #pcwin #pcRate:hover, #pcwin #pcQuality:hover { background: rgba(255,255,255,.16); }
@@ -1018,6 +1053,7 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m .rpad button { height: 60px; }
 .m #pcwin { left: 8px; right: 8px; width: auto; bottom: calc(var(--sab) + 134px); }
 .m #pcwin .pcbox { max-height: 56vh; }
+.m #pcwin #pcKeysBtn { display: none; }
 .m #pcwin.big { left: 0; right: 0; top: var(--topH); bottom: calc(var(--sab) + 134px); border-radius: 0; }
 .m .petgrid { grid-template-columns: repeat(4, 1fr); }
 .m .wifiform { grid-template-columns: 1fr; }

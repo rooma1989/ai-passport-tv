@@ -22,7 +22,8 @@ The PC player's video buffering (pre-buffer before start, hold-and-resume when
 it runs dry) and its "really ended" rule are tested as pure JS under Node
 (console_buffer_test.mjs); so is what it does when the relay loses the stream
 mid-play (keep playing the cache, reconnect from the current position, accurate
-messages: console_reconnect_test.mjs).
+messages: console_reconnect_test.mjs); so are the player's keyboard shortcuts (console_keys_test.mjs) and the
+canvas picture-in-picture's size and subtitle layout (console_pip_test.mjs).
 """
 
 from __future__ import annotations
@@ -879,5 +880,15 @@ class PlayerBufferLogicTests(unittest.TestCase):
 
     def test_console_reconnect_logic(self):
         result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_reconnect_test.mjs")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_console_player_keys(self):
+        result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_keys_test.mjs")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_console_canvas_pip(self):
+        result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_pip_test.mjs")],
                                 capture_output=True, text=True, encoding="utf-8", timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)

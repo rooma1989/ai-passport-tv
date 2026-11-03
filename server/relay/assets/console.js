@@ -147,6 +147,7 @@ const IC = {
   log: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/>',
   sys: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
   list: '<path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>',
+  keys: '<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M8 14h8"/>',
   star: '<path d="M12 3.5l2.6 5.3 5.9.86-4.25 4.14 1 5.86L12 16.9l-5.25 2.76 1-5.86L3.5 9.66l5.9-.86z"/>',
 };
 const ic = (n, s = 20) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[n] || ""}</svg>`;
@@ -181,6 +182,12 @@ function iconSVG(size, small, label) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="${size}" height="${size}"${label ? ` role="img" aria-label="${esc(label)}"` : ' aria-hidden="true"'}><defs><linearGradient id="${u}b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a5aa0"/><stop offset="1" stop-color="#1b2145"/></linearGradient>
 <linearGradient id="${u}h" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
 <path d="${SQUIRCLE}" fill="url(#${u}b)"/><path d="${SQUIRCLE}" fill="url(#${u}h)"/>${g}</svg>`;
+}
+// 进度条上的滑块：图标 B 的小电视（鼠耳朵、机身、屏幕、眼睛、鼻子），不要后面的圆角方底。视框裁到它自己那么大。
+function knobSVG() {
+  return `<svg viewBox="100 118 824 800" aria-hidden="true">${ear(282, 300, 176, 100)}${ear(742, 300, 176, 100)}<path d="${rr(112, 300, 800, 610, 200)}" fill="${MC.body}"/>`
+    + `<path d="${rr(204, 404, 616, 416, 132)}" fill="#20264a"/><circle cx="420" cy="592" r="50" fill="#fff3e6"/><circle cx="604" cy="592" r="50" fill="#fff3e6"/>`
+    + `<ellipse cx="512" cy="686" rx="42" ry="32" fill="${MC.nose}"/></svg>`;
 }
 // 字标「RooTV」：圆头粗线条画的几何字母，不依赖字体。
 function wordmarkSVG(h, label) {
@@ -3093,14 +3100,14 @@ function renderPc() {
     pp.dataset.state = String(paused);
     pp.innerHTML = ic(paused ? "play" : "pause", 20);
     pp.setAttribute("aria-label", paused ? "播放" : "暂停");
-    pp.title = paused ? "播放（空格）" : "暂停（空格）";
+    pp.title = paused ? "播放（空格 / K）" : "暂停（空格 / K）";
   }
   $("pcBack").hidden = $("pcFwd").hidden = !seekable;
   const next = nextPart();
   const stepUp = watching.mode === "direct" && watching.kind === "video" && /^up\d\d$/.test(watching.channel);
   $("pcNext").hidden = !(next || stepUp);
   $("pcNext").setAttribute("aria-label", next ? "下一" + (watching.parts.kind === "up" ? "个" : "集") + "：" + (next.title || partWord(next.n)) : "下一个");
-  $("pcNext").title = $("pcNext").getAttribute("aria-label");
+  $("pcNext").title = $("pcNext").getAttribute("aria-label") + "（N）";
   $("pcPartsBtn").hidden = !(watching.parts && watching.parts.items.length > 1 && watching.mode === "direct");
   const vod = !!(p && p.vod);
   $("pcRate").hidden = !vod;
@@ -3110,6 +3117,13 @@ function renderPc() {
   $("pcSubs").hidden = !(watching.subs && watching.subs.length);
   $("pcSubs").classList.toggle("on", subs.n >= 0);
   $("pcPip").hidden = !pipOk(v);
+  const inPip = cpip.on || !!pipWin;
+  if ($("pcPip").dataset.state !== String(inPip)) {
+    $("pcPip").dataset.state = String(inPip);
+    $("pcPip").classList.toggle("on", inPip);
+    $("pcPip").setAttribute("aria-label", inPip ? "退出画中画" : "画中画");
+    $("pcPip").title = (inPip ? "退出画中画" : "画中画") + "（P）";
+  }
   $("pcPartsBtn").textContent = watching.parts && watching.parts.kind === "up" ? "视频" : "选集";
   const muted = v.muted || v.volume === 0;
   const mb = $("pcMute");
@@ -3126,7 +3140,7 @@ function renderPc() {
     fb.dataset.state = String(full);
     fb.innerHTML = ic(full ? "unfull" : "full", 20);
     fb.setAttribute("aria-label", full ? "退出全屏" : "全屏");
-    fb.title = (full ? "退出全屏" : "全屏") + "（F）";
+    fb.title = full ? "退出全屏（F / Esc）" : "全屏（F）";
   }
 }
 // 暂停着没有：为缓冲停着（WatchPlayer 的 hold）不算暂停——控制条上还是「暂停」键，按一下是用户暂停。
@@ -3190,13 +3204,212 @@ function stepRate(delta) {
   toast("播放速度 " + rateLabel(next));
 }
 function pipOk(v) {
-  if (docPipOk()) return true;
+  if (canvasPipOk(v) || docPipOk()) return true;
   if (document.pictureInPictureEnabled && typeof v.requestPictureInPicture === "function" && !v.disablePictureInPicture) return true;
   return typeof v.webkitSupportsPresentationMode === "function" && v.webkitSupportsPresentationMode("picture-in-picture");
 }
-// Chrome 的画中画（requestPictureInPicture）只有画面，字幕轨不显示。有文档画中画（Chrome 116+，要 https 或 localhost）时
-// 把 <video> 整个搬进小窗：字幕轨跟着它走，放着的接着放；小窗关掉（点它的 ×、「返回标签页」、关播放器）时搬回原处。
-// 别的浏览器照旧用自己的画中画（Safari 的会显示字幕轨）。
+
+// ---- 画中画画布的纯函数（tests/console_pip_test.mjs 把这一段切出来单独跑） ----
+// 画布最大 1280×720，宽高比和视频一样（偶数边，编码器喜欢）；不知道视频多大时就 1280×720。
+const PIP_MAX = { W: 1280, H: 720 };
+function pipSize(vw, vh) {
+  if (!(vw > 0 && vh > 0)) return { w: PIP_MAX.W, h: PIP_MAX.H };
+  const s = Math.min(1, PIP_MAX.W / vw, PIP_MAX.H / vh);
+  return { w: Math.max(2, Math.round(vw * s / 2) * 2), h: Math.max(2, Math.round(vh * s / 2) * 2) };
+}
+// 视频画在画布里的哪块：宽高比不同（直播半路换了分辨率）时整个放进去，上下或左右留黑。
+function pipFit(vw, vh, cw, ch) {
+  if (!(vw > 0 && vh > 0)) return { x: 0, y: 0, w: cw, h: ch };
+  const s = Math.min(cw / vw, ch / vh), w = Math.round(vw * s), h = Math.round(vh * s);
+  return { x: Math.round((cw - w) / 2), y: Math.round((ch - h) / 2), w, h };
+}
+// 一条字幕的字：去掉 WebVTT 的标签（<i>、<c.x>、<00:01.000>），换回几个常见的转义。
+function cueText(raw) {
+  return String(raw || "").replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
+    .replace(/&lrm;|&rlm;/g, "").replace(/&amp;/g, "&").trim();
+}
+// 折行：中日韩的字一个一个能断，西文按词断（一个词比一行还长时按字母断）；原来的换行照留。measure(s) 是 s 画出来多宽。
+const CUE_WIDE = "\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f";   // 中日韩的字、全角标点
+const CUE_TOKEN = new RegExp(`[${CUE_WIDE}]|[^\\s${CUE_WIDE}]+|\\s+`, "g");
+function cueWrap(text, maxW, measure) {
+  const out = [];
+  for (const para of String(text).split("\n")) {
+    let line = "";
+    for (let t of para.match(CUE_TOKEN) || []) {
+      if (/^\s+$/.test(t)) { if (line) line += " "; continue; }
+      if (measure(line + t) <= maxW) { line += t; continue; }
+      if (line.trim()) out.push(line.trimEnd());
+      line = "";
+      while (t.length > 1 && measure(t) > maxW) {
+        let n = t.length - 1;
+        while (n > 1 && measure(t.slice(0, n)) > maxW) n--;
+        out.push(t.slice(0, n));
+        t = t.slice(n);
+      }
+      line = t;
+    }
+    if (line.trim()) out.push(line.trimEnd());
+  }
+  return out;
+}
+// 字幕的样子和页面里的 video::cue 一样：白字、半透明黑底、每行一块，居中靠下。字高是画布高的 4.5%（至少 12 像素）。
+// widths：每行字的宽。回答字号、行高和每行底块的位置（最后一行离底边 5%）。
+function cueLayout(widths, W, H) {
+  const font = Math.max(12, Math.round(H * 0.045)), lineH = Math.round(font * 1.3), padX = Math.round(font * 0.35);
+  const bottom = Math.round(H * 0.05), top = H - bottom - lineH * widths.length;
+  const boxes = widths.map((w, i) => {
+    const bw = Math.ceil(w) + 2 * padX;
+    return { x: Math.round((W - bw) / 2), y: top + i * lineH, w: bw, h: lineH };
+  });
+  return { font, lineH, padX, maxW: Math.round(W * 0.9) - 2 * padX, boxes };
+}
+// ---- 画中画画布的纯函数到此 ----
+
+// ---- 画中画（Chrome）：把画面和字幕画到一块画布上，画布的流放进一个不出声的小 <video>，画中画的是它 ----
+// Chrome 的画中画（requestPictureInPicture）没有标题栏，但只有画面、不显示字幕轨；文档画中画能带字幕，可小窗上总有
+// 一条写着网站地址的栏。所以：视频的每一帧连同正在显示的字幕画到画布上（最大 1280×720），canvas.captureStream(30)
+// 给一个静音的 <video>（.pcpiphelper），画中画的是它。声音还是页面里那个真的 <video> 放；页面里的画面照放，不用提示。
+// 小窗上的 暂停 / 播放 管真的视频（helper 的 play / pause 事件，和 Media Session 的 play / pause）；真的视频暂停、
+// 继续时小窗跟着（pipSync）。画的时机：有新的一帧时（requestVideoFrameCallback）；标签页在后台时它和
+// requestAnimationFrame 都可能不来，另有一个每秒 30 次的定时器，画过的帧、字幕没变时什么都不做。小窗关了全停。
+// 画不了的片源（跨站的、画布被弄脏，SecurityError）退回文档画中画（再没有就是浏览器自己的）；Safari 不走这里，
+// 它自己的画中画会显示字幕轨。
+const cpip = { on: false, opening: false, bad: false, v: null, canvas: null, ctx: null, helper: null, stream: null,
+               frame: 0, timer: 0, lastFrame: 0, lastKey: "", dirty: false, cueKey: "", cueLines: [] };
+function canvasPipOk(v) {
+  return !cpip.bad && typeof HTMLCanvasElement.prototype.captureStream === "function" && document.pictureInPictureEnabled
+    && typeof v.requestPictureInPicture === "function" && typeof v.webkitSetPresentationMode !== "function";
+}
+function pipCues(ctx, W, H) {
+  const track = subsTrack;
+  const cues = track && track.mode === "showing" && track.activeCues ? Array.from(track.activeCues) : [];
+  const text = cues.map((c) => cueText(c.text)).filter(Boolean).join("\n");
+  if (!text) { cpip.cueKey = ""; return; }
+  const lay0 = cueLayout([0], W, H);
+  ctx.font = `500 ${lay0.font}px ${SANS}`;
+  const key = text + "|" + W + "x" + H;
+  if (key !== cpip.cueKey) { cpip.cueKey = key; cpip.cueLines = cueWrap(text, lay0.maxW, (s) => ctx.measureText(s).width); }
+  const lines = cpip.cueLines, lay = cueLayout(lines.map((s) => ctx.measureText(s).width), W, H);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  lines.forEach((s, i) => {
+    const b = lay.boxes[i];
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(s, W / 2, b.y + b.h / 2 + 1);
+  });
+}
+function pipDraw() {
+  const { v, ctx, canvas } = cpip;
+  if (!ctx) return;
+  const W = canvas.width, H = canvas.height;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, H);
+  if (v.readyState >= 2 && v.videoWidth) { const r = pipFit(v.videoWidth, v.videoHeight, W, H); ctx.drawImage(v, r.x, r.y, r.w, r.h); }
+  pipCues(ctx, W, H);
+  cpip.lastKey = pipFrameKey(v);
+  cpip.dirty = false;
+}
+function pipLoop() {
+  const v = cpip.v;
+  if (typeof v.requestVideoFrameCallback === "function") {
+    const step = () => { cpip.frame = 0; if (!cpip.on) return; cpip.lastFrame = performance.now(); pipDraw(); cpip.frame = v.requestVideoFrameCallback(step); };
+    cpip.frame = v.requestVideoFrameCallback(step);
+  }
+  cpip.timer = setInterval(() => {
+    if (!cpip.on || (performance.now() - cpip.lastFrame < 200 && !v.paused)) return;   // 新帧的回调在画着
+    if (cpip.dirty || pipFrameKey(v) !== cpip.lastKey || cpip.cueKey !== pipCueKeyNow()) pipDraw();
+  }, 1000 / 30);
+}
+// 定时器画的时候，这一帧画过没有：放着时看解码出来的帧数，暂停时看位置（拖动）。
+function pipFrameKey(v) {
+  const frames = typeof v.getVideoPlaybackQuality === "function" ? v.getVideoPlaybackQuality().totalVideoFrames : -1;
+  return frames >= 0 ? frames + "|" + (v.paused ? v.currentTime : "") : String(v.currentTime);
+}
+function pipCueKeyNow() {
+  const track = subsTrack;
+  if (!track || track.mode !== "showing" || !track.activeCues || !track.activeCues.length) return "";
+  return Array.from(track.activeCues).map((c) => cueText(c.text)).join("\n") + "|" + cpip.canvas.width + "x" + cpip.canvas.height;
+}
+// 小窗的暂停 / 播放跟着真的视频（为缓冲停着不算暂停，pcPaused）。
+function pipSync() {
+  const h = cpip.helper;
+  if (!h) return;
+  const paused = pcPaused();
+  if (paused && !h.paused) h.pause();
+  else if (!paused && h.paused) h.play().catch(() => {});
+  if (cpip.on && "mediaSession" in navigator) navigator.mediaSession.playbackState = paused ? "paused" : "playing";
+  cpip.dirty = true;
+}
+function pipSession(on) {
+  if (!("mediaSession" in navigator)) return;
+  const set = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch (error) { /* 不认这个动作 */ } };
+  set("play", on ? () => { if (pcPaused()) pcTogglePlay(); } : null);
+  set("pause", on ? () => { if (!pcPaused()) pcTogglePlay(); } : null);
+  if (!on) navigator.mediaSession.playbackState = "none";
+}
+async function openCanvasPip(v) {
+  if (cpip.opening) return;
+  cpip.opening = true;
+  try {
+    const size = pipSize(v.videoWidth, v.videoHeight), canvas = document.createElement("canvas");
+    canvas.width = size.w; canvas.height = size.h;
+    Object.assign(cpip, { v, canvas, ctx: canvas.getContext("2d", { alpha: false }), lastKey: "", cueKey: "" });
+    pipDraw();
+    if (v.readyState >= 2) cpip.ctx.getImageData(0, 0, 1, 1);       // 片源跨站（画布脏了）时这里就是 SecurityError
+    const stream = canvas.captureStream(30), helper = document.createElement("video");
+    helper.className = "pcpiphelper";
+    helper.muted = true; helper.playsInline = true;
+    helper.setAttribute("aria-hidden", "true");
+    helper.srcObject = stream;
+    document.body.append(helper);
+    Object.assign(cpip, { stream, helper });
+    pipDraw();                                                         // 流里要有一帧，小 <video> 才知道多大
+    if (helper.readyState < 1) {
+      await new Promise((resolve, reject) => {
+        helper.addEventListener("loadedmetadata", resolve, { once: true });
+        setTimeout(() => reject(new Error("画中画的画面没出来")), 3000);
+      });
+    }
+    await helper.play().catch(() => {});
+    helper.addEventListener("pause", () => { if (cpip.on && !pcPaused()) pcTogglePlay(); });
+    helper.addEventListener("play", () => { if (cpip.on && pcPaused()) pcTogglePlay(); });
+    helper.addEventListener("leavepictureinpicture", pipCleanup);
+    await helper.requestPictureInPicture();
+    cpip.on = true;
+    pipSession(true);
+    pipSync();
+    pipLoop();
+    renderPc();
+  } catch (error) {
+    pipCleanup();
+    if (error && error.name === "SecurityError") {
+      // 画不了这个片源：这次和以后都用文档画中画（或者浏览器自己的）。
+      cpip.bad = true;
+      if (docPipOk()) openDocPip(v);
+      else v.requestPictureInPicture().catch(() => toast("这个浏览器现在不让画中画", true));
+    } else toast("这个浏览器现在不让画中画", true);
+  } finally { cpip.opening = false; }
+}
+function pipCleanup() {
+  const was = cpip.on;
+  cpip.on = false;
+  if (cpip.frame && cpip.v && cpip.v.cancelVideoFrameCallback) cpip.v.cancelVideoFrameCallback(cpip.frame);
+  clearInterval(cpip.timer);
+  if (cpip.stream) for (const t of cpip.stream.getTracks()) t.stop();
+  if (cpip.helper) { cpip.helper.srcObject = null; cpip.helper.remove(); }
+  Object.assign(cpip, { frame: 0, timer: 0, stream: null, helper: null, canvas: null, ctx: null, v: null, cueKey: "", cueLines: [] });
+  if (was) pipSession(false);
+  if (watching) renderPc();
+}
+function closeCanvasPip() {
+  if (cpip.helper && document.pictureInPictureElement === cpip.helper) document.exitPictureInPicture().catch(pipCleanup);
+  else pipCleanup();
+}
+
+// 文档画中画（画布画不了的片源时用）：把 <video> 整个搬进小窗，字幕轨跟着它走，放着的接着放；小窗关掉（点它的 ×、
+// 关播放器）时搬回原处。
 let pipWin = null;
 function docPipOk() { return "documentPictureInPicture" in window && window.isSecureContext; }
 async function openDocPip(v) {
@@ -3229,12 +3442,15 @@ async function openDocPip(v) {
   renderPc();
 }
 function closeDocPip() { if (pipWin) pipWin.close(); }
+// P 键、画中画按钮：开着时关掉。Chrome 用画布（openCanvasPip），画不了时文档画中画，Safari 等用浏览器自己的。
 function pcTogglePip() {
   const v = $("watchVideo");
   if (!watching || !pipOk(v)) return;
+  if (cpip.on || cpip.opening) { closeCanvasPip(); return; }
   if (pipWin) { closeDocPip(); return; }
-  if (docPipOk()) { openDocPip(v); return; }
   if (document.pictureInPictureElement) { document.exitPictureInPicture().catch(() => {}); return; }
+  if (canvasPipOk(v)) { openCanvasPip(v); return; }
+  if (docPipOk()) { openDocPip(v); return; }
   if (typeof v.requestPictureInPicture === "function") v.requestPictureInPicture().catch(() => toast("这个浏览器现在不让画中画", true));
   else v.webkitSetPresentationMode(v.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
 }
@@ -3306,8 +3522,8 @@ function openMenu(kind) {
   menu.hidden = false;
   const box = $("pcBox").getBoundingClientRect(), r = anchor.getBoundingClientRect();
   menu.style.right = Math.max(6, box.right - r.right) + "px";
-  // 线路的按钮在画面上面的标题栏里：菜单从画面顶上往下开；别的在控制条上，往上开。
-  menu.style.top = kind === "line" ? "6px" : "";
+  // 线路的按钮在浮在画面上的标题栏里：菜单从它下面往下开；别的在控制条上，往上开。
+  menu.style.top = kind === "line" ? "46px" : "";
   menu.style.bottom = kind === "line" ? "auto" : "";
   (menu.querySelector('[aria-checked="true"]') || menu.firstChild).focus({ preventScroll: true });
   pcActive();
@@ -3350,7 +3566,7 @@ function vodFallback() {
 // 网盘上的内嵌字幕是边放边抽的（live）：隔 SUBS_POLL_MS 再取一次，只要新的。选了什么记在这个浏览器里（按语言），
 // 没选过时：有默认的就用默认的，没有就用中文的那条，都没有就关着。
 const SUBS_POLL_MS = 8000;
-const subs = { n: -1, seen: new Set(), timer: 0, after: 0, gen: 0 };
+const subs = { n: -1, seen: new Set(), timer: 0, after: 0, gen: 0, last: -1, lastSid: "" };   // last：C 键关掉前开的那条
 let subsTrack = null;
 function subsTextTrack() {
   // 只建一次（addTextTrack 建的轨删不掉）：换片、换字幕时清空它的字幕。
@@ -3385,9 +3601,23 @@ function subsPick(n) {
   const s = (watching.subs || []).find((x) => x.n === n);
   if (n >= 0 && (!s || !s.ok)) { toast("这条字幕是图片的，放不了", true); return; }
   lsSet("rootv.subs", n < 0 ? "off" : s.lang || s.label);
+  if (n >= 0) { lsSet("rootv.subsLast", s.lang || s.label); subs.last = n; subs.lastSid = watching.sid; }
+  else if (subs.n >= 0) { subs.last = subs.n; subs.lastSid = watching.sid; }
   subsClear();
   if (n >= 0) subsLoad(n);
   renderPc();
+}
+// C 键：字幕开 / 关。关着时开回这个视频里上次开的那条（没开过时：和上次选的语言一样的、默认的、中文的、第一条）。
+function subsToggle() {
+  if (!watching) return;
+  const ok = (watching.subs || []).filter((s) => s.ok);
+  if (!ok.length) return;
+  if (subs.n >= 0) { subsPick(-1); pcOsd("x", "字幕：关"); return; }
+  const pref = lsGet("rootv.subsLast", "");
+  const pick = ok.find((s) => s.n === subs.last && subs.lastSid === watching.sid) || (pref && ok.find((s) => (s.lang || s.label) === pref))
+    || ok.find((s) => s.def) || ok.find(subsChinese) || ok[0];
+  subsPick(pick.n);
+  pcOsd("check", "字幕：" + pick.label);
 }
 function vttSeconds(t) { return t.replace(",", ".").split(":").reduce((a, x) => a * 60 + Number(x), 0); }
 function vttCues(text) {
@@ -3428,7 +3658,7 @@ async function subsLoad(n) {
   if (partial || (s && s.live)) subs.timer = setTimeout(() => { if (subs.gen === gen && watching === w) subsLoad(n); }, SUBS_POLL_MS);
 }
 
-// 不动鼠标 3 秒后收起控制条（暂停、选集或菜单开着、焦点在控制条上时不收）。
+// 不动鼠标 3 秒后收起控制条和上面的标题（暂停、选集、菜单或快捷键表开着、焦点在控制条或标题栏的按钮上时不收）。
 let idleTimer = 0;
 function pcActive() {
   const box = $("pcBox");
@@ -3436,7 +3666,8 @@ function pcActive() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     const v = $("watchVideo");
-    if (!watching || v.paused || !$("pcParts").hidden || !$("pcMenu").hidden || !$("pcUpNext").hidden || $("pcCtl").contains(document.activeElement)) return;
+    if (!watching || v.paused || !$("pcParts").hidden || !$("pcMenu").hidden || !$("pcUpNext").hidden || !$("pcKeys").hidden
+        || $("pcCtl").contains(document.activeElement) || qs("#pcwin .pchead").contains(document.activeElement)) return;
     box.classList.add("idle");
   }, 3000);
 }
@@ -3445,6 +3676,7 @@ function pcActive() {
 // 松手才真跳一次，松手就发（点播是浏览器另开一个 Range 请求，HLS 是中转从那里重起一路）。
 (function seekBar() {
   const bar = $("pcSeek"), tip = $("pcTip");
+  $("pcKnob").innerHTML = knobSVG();          // 滑块是小电视（console.css 的 .knob）
   let drag = false;
   const at = (event) => {
     const r = bar.getBoundingClientRect();
@@ -3538,7 +3770,13 @@ $("pcMenu").addEventListener("keydown", (event) => {
 });
 $("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0); };
 $("pcResumeX").onclick = () => { $("pcResume").hidden = true; };
-$("watchVideo").addEventListener("click", () => { pcTogglePlay(); $("pcBox").focus({ preventScroll: true }); });
+// 触屏：标题和控制条收着时，点一下画面只是把它们叫出来（不暂停），关闭、全屏这些按钮才点得到。
+let pcTapShow = false;
+$("pcBox").addEventListener("pointerdown", (event) => { pcTapShow = event.pointerType !== "mouse" && $("pcBox").classList.contains("idle"); }, true);
+$("watchVideo").addEventListener("click", () => {
+  if (pcTapShow) { pcTapShow = false; pcActive(); return; }
+  pcTogglePlay(); $("pcBox").focus({ preventScroll: true });
+});
 $("watchVideo").addEventListener("dblclick", () => { if (!pipWin) pcToggleFull(); });
 $("pcBox").addEventListener("pointermove", pcActive);
 $("pcBox").addEventListener("focusin", pcActive);
@@ -3548,42 +3786,185 @@ document.addEventListener("fullscreenchange", () => { renderPc(); pcActive(); })
   v.volume = isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1;
   v.muted = lsGet("rootv.muted", "0") === "1";
 }
-for (const ev of ["play", "pause", "volumechange", "progress", "seeked", "ratechange", "durationchange"]) $("watchVideo").addEventListener(ev, () => { renderPc(); if (ev === "play" || ev === "pause") { renderMini(); pcActive(); } });
+for (const ev of ["play", "pause", "volumechange", "progress", "seeked", "ratechange", "durationchange"]) $("watchVideo").addEventListener(ev, () => { renderPc(); if (ev === "play" || ev === "pause") { renderMini(); pcActive(); pipSync(); } });
 $("watchVideo").addEventListener("play", () => { if (watching && watching.stale) { watching.stale = false; seekRestart(pcPos()); } });
 $("watchVideo").addEventListener("timeupdate", () => { renderPc(); renderMiniProgress(); });
 
-// 播放器的键：画面（或控制条）有焦点、放大了、全屏时——空格 暂停 / 继续，← → 10 秒，F 全屏，M 静音，P 画中画，
-// < > 慢一档 / 快一档（点播），Esc 关菜单 / 选集 / 取消下一集。
-// 先于整页的方向键焦点引擎（捕获阶段），用掉的键不再往下传。
+// ---- 播放器快捷键的纯函数（tests/console_keys_test.mjs 把这一段切出来单独跑） ----
+// 电脑上在放视频时（watching、小窗开着），这些键不管焦点在哪都归播放器：正在打字（输入框、下拉框、可编辑的）时不管；
+// 选集列表、速度 / 字幕菜单里方向键、空格、回车照旧是那个列表的。方向键跟着焦点走：焦点在播放器上（画面、控制条、
+// 标题栏的按钮）、放大了、全屏时归播放器，别的时候照常移动页面上的焦点（遥控器式的焦点引擎）。
+// 回车永远是按那个按钮。
+// c：{ key, shift, mod（Ctrl / Alt / ⌘ 按着）, target, watching, full, big, seekable, vod }
+//   target："input" 在打字，"menu" 选集 / 菜单里，"slider" 音量滑块（方向键它自己用），"button" 播放器上的按钮，
+//   "player" 画面或进度条，"page" 页面上别的地方。
+// 回答动作的名字，不归播放器时 null。动作能不能做（有没有字幕、下一集、画中画）由调用的地方再看。
+const PC_KEY_ONCE = new Set(["play", "mute", "full", "pip", "subs", "next", "prev", "help", "rateUp", "rateDown",
+  "pct0", "pct1", "pct2", "pct3", "pct4", "pct5", "pct6", "pct7", "pct8", "pct9"]);
+// 帮助里的那张表（「快捷键」）：键、做什么。
+const PC_KEY_HELP = [
+  ["空格 / K", "暂停 / 继续"], ["← / →", "后退 / 前进 5 秒"], ["J / L", "后退 / 前进 10 秒"], ["↑ / ↓", "音量"],
+  ["M", "静音"], ["F", "全屏"], ["Esc", "退出全屏 / 缩小"], ["P", "画中画"], ["C", "字幕"],
+  ["N / Shift+N", "下一集 / 上一集"], ["< / >", "速度"], ["0–9", "跳到 0%–90%"], ["?", "这张表"],
+];
+function pcKeyAction(c) {
+  if (!c.watching || c.mod || c.target === "input") return null;
+  const key = c.key, k = key.length === 1 ? key.toLowerCase() : key;
+  const menu = c.target === "menu";
+  if (key === "Escape") return "esc";
+  if (key === "Enter") return null;
+  if (key === " ") return menu ? null : "play";
+  if (key.startsWith("Arrow")) {
+    if (menu || c.target === "slider") return null;
+    if (!(c.target === "player" || c.target === "button" || c.full || c.big)) return null;
+    if (key === "ArrowUp") return "volUp";
+    if (key === "ArrowDown") return "volDown";
+    if (!c.seekable) return null;
+    return key === "ArrowLeft" ? "back5" : key === "ArrowRight" ? "fwd5" : null;
+  }
+  if (k === "k") return "play";
+  if (k === "j" || k === "l") return c.seekable ? (k === "j" ? "back10" : "fwd10") : null;
+  if (k === "m") return "mute";
+  if (k === "f") return "full";
+  if (k === "p") return "pip";
+  if (k === "c") return "subs";
+  if (k === "n") return c.shift ? "prev" : "next";
+  if (key === "<" || key === ">") return c.vod ? (key === ">" ? "rateUp" : "rateDown") : null;
+  if (/^[0-9]$/.test(key)) return c.seekable ? "pct" + key : null;
+  if (key === "?") return "help";
+  return null;
+}
+// 按住不放（自动重复）时：快进快退、音量接着来，开关一类的只算第一下（不来回切）。
+function pcKeyRepeats(action) { return !PC_KEY_ONCE.has(action); }
+// ↑ ↓ 的音量：一档 10%，停在 0..1 的整十上。
+function pcVolStep(volume, delta) { return Math.min(1, Math.max(0, Math.round((volume + delta) * 10) / 10)); }
+// ---- 播放器快捷键的纯函数到此 ----
+
+// 焦点 / 按键的目标是哪一类（给 pcKeyAction 的 target）。
+function pcKeyTarget(event) {
+  const t = event.target, tag = (t && t.tagName || "").toLowerCase();
+  if (t && t.isContentEditable) return "input";
+  if (tag === "textarea" || tag === "select") return "input";
+  if (tag === "input" && !["range", "checkbox", "radio", "button", "submit", "reset", "color", "file"].includes(t.type)) return "input";
+  const a = document.activeElement, box = $("pcBox");
+  if (!a || a === document.body) return "page";
+  if ($("pcMenu").contains(a) || $("pcParts").contains(a) || $("pcKeys").contains(a)) return "menu";
+  if (a === $("pcVol")) return "slider";
+  if (!box.contains(a)) return "page";
+  return a.tagName === "BUTTON" ? "button" : "player";
+}
+// 这个动作现在做得了吗（做不了的键不吃掉，照常往下传）。
+function pcCan(act) {
+  const v = $("watchVideo");
+  if (act === "pip") return pipOk(v);
+  if (act === "subs") return !!(watching.subs && watching.subs.some((s) => s.ok));
+  // 剧集、分 P 的：只在集里换（第一集再往前不跳到上一台）；没有选集的直播台、视频是上一台 / 下一台。
+  if (act === "next") return !$("pcNext").hidden || (!watching.parts && !$("watchNextCh").hidden);
+  if (act === "prev") return !!prevPart() || pcStepUp() || (!watching.parts && !$("watchPrevCh").hidden);
+  if (act.startsWith("pct")) return !!watching.duration;
+  return true;
+}
+function pcKeyRun(act) {
+  const v = $("watchVideo");
+  if (act === "play") pcTogglePlay();
+  else if (act === "back5" || act === "fwd5") pcSkip(act === "back5" ? -5 : 5);
+  else if (act === "back10" || act === "fwd10") pcSkip(act === "back10" ? -10 : 10);
+  else if (act === "volUp" || act === "volDown") pcVolume(act === "volUp" ? 0.1 : -0.1);
+  else if (act === "mute") { pcToggleMute(); pcOsd(v.muted ? "mute" : "vol", v.muted ? "静音" : "音量 " + Math.round(v.volume * 100) + "%", v.muted ? 0 : v.volume); }
+  else if (act === "full") pcToggleFull();
+  else if (act === "pip") pcTogglePip();
+  else if (act === "subs") subsToggle();
+  else if (act === "next") { if (!$("pcNext").hidden) $("pcNext").click(); else stepChannel(1); }
+  else if (act === "prev") pcPrev();
+  else if (act === "rateUp" || act === "rateDown") stepRate(act === "rateUp" ? 1 : -1);
+  else if (act === "help") pcKeysToggle();
+  else if (act.startsWith("pct")) { const target = watching.duration * Number(act.slice(3)) / 10; watching.preview = null; seekPreview(target, true); skipAt = performance.now(); pcSeek(target, true); }
+}
+// 上一集（Shift+N）：选集里的上一集；UP 主的视频是上一个；直播台是上一台。
+function prevPart() {
+  if (!watching || watching.mode !== "direct" || !watching.parts) return null;
+  const cur = watching.parts.current;
+  return cur > 1 && watching.parts.items[cur - 2] ? watching.parts.items[cur - 2] : null;
+}
+function pcStepUp() { return !!watching && watching.mode === "direct" && watching.kind === "video" && /^up\d\d$/.test(watching.channel); }
+function pcPrev() {
+  const prev = prevPart();
+  if (prev) playPart(prev.n);
+  else if (pcStepUp()) { if (!watching.busy) startDirect({ channel: watching.channel, step: -1 }, { group: watching.group }); }
+  else stepChannel(-1);
+}
+// ↑ ↓ 调音量：和音量滑块一样记在这个浏览器里；画面上说一下现在多大。
+function pcVolume(delta) {
+  const v = $("watchVideo");
+  const from = v.muted ? 0 : v.volume, to = pcVolStep(from, delta);
+  v.volume = to;
+  v.muted = to === 0;
+  lsSet("rootv.volume", String(v.volume));
+  lsSet("rootv.muted", v.muted ? "1" : "0");
+  renderPc();
+  pcOsd(to === 0 ? "mute" : "vol", to === 0 ? "静音" : "音量 " + Math.round(to * 100) + "%", to);
+}
+// 画面上方一个小提示（音量、字幕开关），一会儿就收；level 给了时下面画一条音量条。
+let osdTimer = 0;
+function pcOsd(icon, text, level) {
+  const box = $("pcOsd");
+  box.innerHTML = ic(icon, 18) + `<span>${esc(text)}</span>` + (level != null ? `<i><b style="width:${Math.round(level * 100)}%"></b></i>` : "");
+  box.hidden = false;
+  box.classList.remove("out");
+  clearTimeout(osdTimer);
+  osdTimer = setTimeout(() => { box.classList.add("out"); osdTimer = setTimeout(() => { box.hidden = true; }, 220); }, 900);
+}
+// 「快捷键」那张表：画面上盖一层，Esc、?、点空白处关。
+function pcKeysToggle(open) {
+  const box = $("pcKeys");
+  open = open === undefined ? box.hidden : open;
+  if (!open) {
+    if (box.hidden) return;
+    const had = box.contains(document.activeElement);
+    box.hidden = true;
+    if (had) $("pcBox").focus({ preventScroll: true });
+    pcActive();
+    return;
+  }
+  closeMenu();
+  $("pcKeysList").innerHTML = PC_KEY_HELP.map(([k, what]) => `<dt>${k.split(" / ").map((x) => `<kbd>${esc(x)}</kbd>`).join(" / ")}</dt><dd>${esc(what)}</dd>`).join("");
+  box.hidden = false;
+  $("pcKeysX").focus({ preventScroll: true });
+  pcActive();
+}
+$("pcKeysX").onclick = () => pcKeysToggle(false);
+$("pcKeysBtn").onclick = () => pcKeysToggle();
+$("pcKeys").addEventListener("click", (event) => { if (event.target === $("pcKeys")) pcKeysToggle(false); });
+
+// 播放器的键（表在上面的 pcKeyAction）。先于整页的方向键焦点引擎（捕获阶段），用掉的键不再往下传。
+// Esc：先关菜单 / 选集 / 快捷键表 / 取消下一集；都没有时不管——全屏时浏览器自己退出，放大时整页的处理缩小。
 addEventListener("keydown", (event) => {
-  if (!watching || $("pcwin").hidden || $("app").hidden || anyOverlay() || event.altKey || event.metaKey || event.ctrlKey) return;
-  const a = document.activeElement, tag = (event.target.tagName || "").toLowerCase();
-  if (["input", "select", "textarea"].includes(tag) && event.target.type !== "range") return;
-  const box = $("pcBox"), inBox = box.contains(a) || $("pcParts").contains(a), full = document.fullscreenElement === box;
-  const big = $("pcwin").classList.contains("big") && !(a && a.closest && a.closest("#view, #top, #mini, #tabs"));
-  if (!inBox && !full && !big) return;
-  const key = event.key, inParts = $("pcParts").contains(a);
+  if (!watching || $("pcwin").hidden || $("app").hidden || anyOverlay() || !$("gpop").hidden) return;
+  const a = document.activeElement, box = $("pcBox"), full = document.fullscreenElement === box;
+  const big = $("pcwin").classList.contains("big") && !(a && a.closest && a.closest("#top, #mini, #tabs"));
+  const act = pcKeyAction({ key: event.key, shift: event.shiftKey, mod: event.altKey || event.metaKey || event.ctrlKey,
+                            target: pcKeyTarget(event), watching: true, full, big, seekable: !!watching.seekable, vod: !!watching.player.vod });
+  if (!act) return;
   const eat = () => { event.preventDefault(); event.stopPropagation(); pcActive(); };
-  if (key === "Escape") {
+  if (act === "esc") {
+    if (!$("pcKeys").hidden) { eat(); pcKeysToggle(false); return; }
     if (!$("pcMenu").hidden) { eat(); closeMenu(); return; }
     if (!$("pcParts").hidden) { eat(); closeParts(); return; }
     if (upNext) { eat(); $("pcUpNextStop").click(); return; }
-    return;                          // 全屏时浏览器自己退出；放大时整页的处理缩小
+    return;
   }
-  if (inParts || $("pcMenu").contains(a)) return;   // 选集列表、菜单里方向键照常移动焦点
-  const onButton = a && a.tagName === "BUTTON" && box.contains(a);
-  if (key === " " || key === "k" || key === "K") {
-    // 空格按的是那个按钮；全屏时不是（焦点停在「全屏」按钮上时，空格会把全屏退掉）：只管暂停 / 继续。
-    if (key === " " && onButton && !full) return;
-    eat();
-    if (!event.repeat) pcTogglePlay();   // 按住不放：只算一下（自动重复的不再来回切）
-  } else if ((key === "ArrowLeft" || key === "ArrowRight") && !onButton && a !== $("pcVol")) {
-    if (!watching.seekable) return;
-    eat(); pcSkip(key === "ArrowLeft" ? -10 : 10);
-  } else if (key === "f" || key === "F") { eat(); pcToggleFull(); }
-  else if (key === "m" || key === "M") { eat(); pcToggleMute(); }
-  else if (key === "p" || key === "P") { if (pipOk($("watchVideo"))) { eat(); pcTogglePip(); } }
-  else if (key === "<" || key === ">") { if (watching.player.vod) { eat(); stepRate(key === ">" ? 1 : -1); } }
+  if (!pcCan(act)) return;
+  eat();
+  if (event.key === " ") spaceEaten = true;
+  if (event.repeat && !pcKeyRepeats(act)) return;   // 按住不放：开关一类的只算第一下
+  pcKeyRun(act);
+}, true);
+// 按钮、勾选框是松开空格时才「按」的：按下时归了播放器的那个空格，松开时也不许再按到焦点上的按钮。
+let spaceEaten = false;
+addEventListener("keyup", (event) => {
+  if (event.key !== " " || !spaceEaten) return;
+  spaceEaten = false;
+  event.preventDefault(); event.stopPropagation();
 }, true);
 
 // 跟随小电视：看它正在播的台。start 给了是在电脑上跳转（只动电脑：这个页面另起一路）。
@@ -3726,6 +4107,7 @@ function stopWatch() {
   closeMenu();
   if (document.fullscreenElement === $("pcBox")) document.exitFullscreen().catch(() => {});
   closeDocPip();
+  closeCanvasPip();
   watching = null;
   miniWho = "tv";
   histAfterPlay();
@@ -3865,7 +4247,7 @@ function pcLayout() {
   }
   const area = w.offsetParent ? w.offsetParent.getBoundingClientRect() : { left: 0, top: 0, width: innerWidth, height: innerHeight };
   const top = ($("top") ? $("top").offsetHeight : 76) + 6;
-  const chrome = w.querySelector(".pchead").offsetHeight + w.querySelector(".pcfoot").offsetHeight;
+  const chrome = w.querySelector(".pcfoot").offsetHeight;     // 标题栏浮在画面上（无边框），不占高
   const roomW = area.width - 2 * PCW.MARGIN, roomH = area.height - PCW.BOTTOM - top - chrome;
   const open = !$("pcParts").hidden;
   const below = open && roomW - PCW.PARTS < PCW.MIN;
@@ -3967,7 +4349,7 @@ $("watchBig").onclick = () => {
   const big = $("pcwin").classList.toggle("big");
   $("watchBig").innerHTML = ic(big ? "shrink" : "expand", 16);
   $("watchBig").setAttribute("aria-label", big ? "缩小" : "放大");
-  $("watchBig").title = big ? "缩小" : "放大";
+  $("watchBig").title = big ? "缩小（Esc）" : "放大";
   renderPc();
 };
 
