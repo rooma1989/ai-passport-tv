@@ -282,6 +282,16 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(self.runs(of=c), [])
         self.assertIn("片库：「大片」没缓存完，整集缓存满了", self.logs)
         self.assertLessEqual(self.cache.total(), 1500)
+        # A file bigger than the cap hits it again on every seek: said once an hour, not on every touch.
+        said = self.logs.count("片库：「大片」没缓存完，整集缓存满了")
+        for _ in range(3):
+            self.cache.touch(big, 1000, "大片")
+            self.drain()
+        self.assertEqual(self.logs.count("片库：「大片」没缓存完，整集缓存满了"), said)
+        self.now[0] += libraryfull.BLOCK_LOG_S
+        self.cache.touch(big, 1000, "大片")
+        self.drain()
+        self.assertEqual(self.logs.count("片库：「大片」没缓存完，整集缓存满了"), said + 1)
 
     def test_free_space_floor(self):
         self.free[0] = libraryfull.FREE_MIN + 500

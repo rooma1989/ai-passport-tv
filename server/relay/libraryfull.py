@@ -64,6 +64,8 @@ TICK_S = 5.0
 # 网盘出错了歇这么久，接连出错翻倍，至多 BACKOFF_MAX_S。
 BACKOFF_S = 15.0
 BACKOFF_MAX_S = 600.0
+# 「没缓存完，整集缓存满了」同一个文件至多隔这么久说一次。
+BLOCK_LOG_S = 3600.0
 # 磁盘剩多少空间至多隔这么久问一次系统。
 DISK_CHECK_S = 2.0
 
@@ -180,6 +182,7 @@ class FullCache:
         self._stopped = False
         self._thread: threading.Thread | None = None
         self._disk = (float("-inf"), 0)
+        self._blocked_said: dict[tuple[str, str], float] = {}
         self._warned = False
         self._load()
 
@@ -337,10 +340,14 @@ class FullCache:
         return ""
 
     def _block(self, job: _Job, why: str) -> None:
-        """地方不够了：这个文件不再往下存（上限改大了、再放时再试）。在 self._lock 里调。"""
+        """地方不够了：这个文件不再往下存（上限改大了、再放时再试）。在 self._lock 里调。日志同一个文件 BLOCK_LOG_S
+        内只说一次（一部比上限还大的片子每跳一下都会再撞一次）。"""
         if job.state != why:
             job.state = why
-            self.log(f"片库：「{job.name}」没缓存完，" + ("整集缓存满了" if why == "full" else "磁盘快满了"))
+            now = self.clock()
+            if now - self._blocked_said.get((job.key, why), float("-inf")) >= BLOCK_LOG_S:
+                self._blocked_said[(job.key, why)] = now
+                self.log(f"片库：「{job.name}」没缓存完，" + ("整集缓存满了" if why == "full" else "磁盘快满了"))
 
     def prune(self) -> None:
         """索引里没有了、大小或修改时间变了的删；总共超过上限时按最后用过的时间删最旧的（正在下、正在读的不删）。"""

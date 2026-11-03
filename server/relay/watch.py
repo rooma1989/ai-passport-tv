@@ -156,7 +156,8 @@ LEG_TRIES = 4
 BAD_ROUTE_S = 600.0
 _SID = re.compile(r"^[0-9a-f]{16}$")
 # 片库（Source.bounded）：ffmpeg 跑在播放器前面，至多攒这么多段、这么多字节没被取走（4K 20 Mbit/s 一段就是
-# 十几 MB，按字节封顶），取走一段再接着读文件。比 WINDOW_* 小：没取走的段不会被挤出窗口。
+# 十几 MB，按字节封顶），取走一段再接着读文件。没取走的段也从不挤出窗口（Window.protect）：攒着的不到这么多时
+# 还会再放进一段，关键帧隔得远的蓝光（一段 30–40 MB）加起来会超过 WINDOW_BYTES。
 VOD_AHEAD_SEGMENTS = 6
 VOD_AHEAD_BYTES = 40 * 1024 * 1024
 # 片库起播时（Source.progress）取列表最多等这么久就先回 503 和进度（「正在读取文件…已读 12 MB」），页面显示了再来取。
@@ -604,6 +605,9 @@ class Window:
         self.fixed_origin: float | None = None
         # 播放器取过的最大的段号（片库按它攒段，WatchStream._hold）。
         self.fetched = -1
+        # 片库（Source.bounded）：窗口超了也不挤掉播放器还没取走的段（只挤取走了的）；挤掉了播放器就以为暂停太久、
+        # 从这里重起一路，大段一来就一直重起。没取走的有多少由 WatchStream._hold 管着。直播照旧往前滑。
+        self.protect = False
 
     def ahead(self) -> tuple[int, int]:
         """还没被播放器取走的：(几段, 多少字节)。"""
@@ -619,6 +623,8 @@ class Window:
         self.target = max(self.target, math.ceil(duration))
         while len(self.segments) > self.keep or \
                 (len(self.segments) > 2 and sum(len(s[2]) for s in self.segments) > self.keep_bytes):
+            if self.protect and self.segments[0][0] > self.fetched:
+                break
             self.segments.popleft()
 
     def release(self) -> None:
@@ -850,6 +856,7 @@ class WatchStream:
         self.clock = clock
         self.popen = popen
         self.window = Window()
+        self.window.protect = source.bounded
         if source.exact:
             self.window.fixed_origin = max(0.0, source.offset) + source.media_start + EXACT_TS_OFFSET
         self.created = self.seen = clock()

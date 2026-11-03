@@ -7103,7 +7103,9 @@ function libPreread(body) { call("POST", "api/library/preread", body).catch(() =
 // 片库的一集出画面了：报给中转记一行日志（等了多久、网盘多快、片子码率、按没按「先放」），起播慢时查得出是哪一步。
 function libStarted(id, player, ms) {
   const speed = player ? vodSpeed(player.feed) : 0;
+  // 点下去以后的第一次起播从点的那一下算；之后的重起（跳转、重连）从那一路起的时候算（ms）。
   const wait = openedAt ? Math.round(performance.now() - openedAt) : ms;
+  openedAt = 0;
   call("POST", "api/library/started", { id, wait_ms: wait, speed: isFinite(speed) ? speed : 0, rate: player ? player.rate() : 0,
                                          rushed: !!(player && player.rushed) }).catch(() => {});
 }

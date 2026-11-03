@@ -252,6 +252,27 @@ class Mp4Tests(unittest.TestCase):
         self.assertTrue(window.playlist().endswith("#EXT-X-ENDLIST\n"))
         self.assertIn('CODECS="avc1.640028,mp4a.40.2"', window.master())
 
+    def test_library_window_keeps_what_the_player_has_not_taken(self):
+        """A Blu-ray with keyframes 10 s apart makes 30-40 MB segments: with 15 + 20 MB waiting (under VOD_AHEAD_BYTES)
+        the next 37 MB one goes in and the window passes WINDOW_BYTES. A live window slides on; a library one (protect)
+        drops only taken segments, or the player finds its next segment gone, restarts there, and keeps restarting
+        (once every ~3 s)."""
+        mb = 1024 * 1024
+        live, library = watch.Window(keep_bytes=64 * mb), watch.Window(keep_bytes=64 * mb)
+        library.protect = True
+        for window in (live, library):
+            window.add(4.0, b"a" * (10 * mb))          # 0: taken
+            window.fetched = 0
+            window.add(4.0, b"b" * (15 * mb))          # 1, 2: waiting, 35 MB: _hold lets the next one in
+            window.add(5.0, b"c" * (20 * mb))
+            window.add(10.0, b"d" * (37 * mb))         # 3: waiting
+        self.assertEqual([seq for seq, _, _ in live.segments], [2, 3], "a live window slides past what nobody took")
+        self.assertEqual([seq for seq, _, _ in library.segments], [1, 2, 3], "taken ones go, waiting ones stay")
+        self.assertEqual(library.ahead(), (3, 72 * mb))
+        library.fetched = 1
+        library.add(8.0, b"e" * (20 * mb))
+        self.assertEqual([seq for seq, _, _ in library.segments], [2, 3, 4], "once taken it may go")
+
 
 # ---------------------------------------------------------------- streams and the service
 
