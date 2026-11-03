@@ -6680,9 +6680,39 @@ $("fwSync").onclick = () => busy($("fwSync"), async () => {
 // 「历史」是自己 B 站的观看记录（GET api/feeds/history，accountfeeds.py 的 history_page）：每次打开都要新的
 // （fresh=1；服务器至少隔 30 秒才真去问 B 站），「加载更多」按 B 站给的游标往下翻。每一行是首页那样的节目
 // （data-play），点了按「播放到」接着看：视频是那一 P，剧集、番剧是那一集，都从看到的地方起。
+// 「片库」那个标签是自己在我的片库里看过的（GET api/library/history，library.py 的 history；电脑上、小电视上看的都在，
+// 一集一行）：点了从看到的地方接着放，看完了的从头放（服务器按 home.finished 定）；每行的 × 删一条，「清空片库历史」
+// 两步确认后清掉（只是记录，片子不动）。「全部」里和 B 站的按时间穿插，封面上标「片库」。
 const LIB_TABS = [["history", "历史", "hist"], ["local", "我的片库", "lib"]];
-const HIST_KINDS = [["all", "全部"], ["video", "视频"], ["pgc", "剧集·番剧"], ["yt", "YouTube"]];
+const HIST_KINDS = [["all", "全部"], ["video", "视频"], ["pgc", "剧集·番剧"], ["yt", "YouTube"], ["lib", "片库"]];
+// ---- 片库播放历史的几个纯函数（tests/console_libhist_test.mjs 截出这一段单独测）----
+// 片库的一行 → 「历史」那样的一条（histRow 画）：标题「X医生 · 第 2 季 第 5 集」（片库里这部剧不止一季才写第几季），
+// 下面一行是这一集的名字（电影、其他视频写「电影」「视频」）；finished 的进度条画满、写「看完了」。
+function libHistItem(r) {
+  const ep = r.kind === "episode";
+  let head = r.name || r.title || "?";
+  if (ep && r.episode) head += " · " + (r.seasons > 1 ? "第 " + r.season + " 季 " : "") + "第 " + r.episode + " 集";
+  // 这一集的名字只是「第 5 集」「S02E05」（文件名里只有集数）时不再写一遍。
+  const plain = !r.title || r.title === r.name || /^(第\s*\d+\s*集|s\d{1,2}\s*e\d{1,4}|ep?\s*\d{1,4})$/i.test(r.title.trim());
+  const sub = ep ? (plain ? "" : r.title) : r.kind === "movie" ? "电影" : "视频";
+  return { id: "lh-" + r.id, title: head, subtitle: sub, source: "library", lib: r.id,
+           hist: { head, ep: sub, type: "lib", device: r.device || "" },
+           progress: { position: r.position || 0, duration: r.duration || 0, done: !!r.finished },
+           watched_at: r.at || 0, art: { url: r.art || "", ratio: "poster" },
+           play: { kind: "library", id: r.id, playable: r.playable !== false } };
+}
+// 「全部」：B 站的和片库的按看的时间穿插，最近的在前（一样时 B 站的在前）。B 站的还能往下翻（more）时，比已经取到的
+// 最旧那条还早的片库记录先不放，免得翻一页顺序就乱跳；翻到底了（或没有 B 站的）全放上。
+function histMerge(bili, libs, more) {
+  const floor = more && bili.length ? Math.min(...bili.map((x) => x.watched_at || 0)) : -Infinity;
+  const mixed = bili.concat(libs.filter((x) => (x.watched_at || 0) >= floor)).map((x, i) => [x, i]);
+  mixed.sort((a, b) => (b[0].watched_at || 0) - (a[0].watched_at || 0) || a[1] - b[1]);
+  return mixed.map(([x]) => x);
+}
+// ---- 片库播放历史的纯函数到此 ----
 const hist = { items: [], more: null, state: "", message: "", busy: false, at: 0, writeback: null, kind: "all", ytAsked: false };
+// 片库的播放历史：ok 是问到过（没有片库的——云端、访客——是 404，标签不出来）；failed 是这次没取到（只在「片库」里说一句）。
+const libHist = { rows: [], ok: false, off: false, failed: false, busy: false, at: 0 };
 let libTab = "", libNavHTML = "", histTimer = 0;
 function libNav() {
   if (!me) return;
@@ -6696,7 +6726,7 @@ function libNav() {
   }
   for (const pane of qsa("#app .lpane")) pane.hidden = pane.dataset.pane !== cur;
   libTab = cur;
-  if (cur === "history") { renderHist(); loadHist(false); }
+  if (cur === "history") { renderHist(); loadHist(false); loadLibHist(false); }
   if (cur === "local") { renderLib(); loadLib(false); loadDrive(); }
 }
 // YouTube 观看记录（管理员、YouTube 开着）：就是首页那一排（feedRows.yt_history），在这里多一个标签。
@@ -6732,11 +6762,40 @@ async function loadHist(more, again) {
   if (answer.state === "loading") histTimer = setTimeout(() => { if (route === "lib" && libTab === "history") loadHist(false, true); }, 1500);
   renderHist();
 }
-// 在这台电脑上看完、关掉窗口以后：中转已经报给 B 站（开着同步时），过一会儿重新取一次。
+// 在这台电脑上看完、关掉窗口以后：中转已经报给 B 站（开着同步时），过一会儿重新取一次；片库的看到哪里马上就有。
 function histAfterPlay() {
   if (route !== "lib" || libTab !== "history") return;
+  loadLibHist(true);
   clearTimeout(histTimer);
   histTimer = setTimeout(() => loadHist(false, true), 3000);
+}
+async function loadLibHist(force) {
+  if (!me || isGuest() || libHist.off || libHist.busy || (!force && Date.now() - libHist.at < 5000)) return;
+  libHist.busy = true;
+  let answer = null;
+  try { answer = await call("GET", "api/library/history"); }
+  catch (error) {
+    // 404：这里没有片库（云端）或不是家里人，不出这个标签；别的（断网）只在「片库」里说一句，不挡 B 站的。
+    if (error instanceof SignedOut) libHist.off = true; else libHist.failed = true;
+  }
+  libHist.busy = false;
+  libHist.at = Date.now();
+  if (answer && answer.ok) Object.assign(libHist, { rows: answer.items, ok: true, failed: false });
+  else if (answer) libHist.failed = true;
+  renderHist();
+}
+async function libHistRemove(body, btn) {
+  let answer;
+  btn.disabled = true;
+  try { answer = await call("POST", "api/library/history/remove", body); }
+  catch (error) { answer = { ok: false, error: "网络不通" }; }
+  btn.disabled = false;
+  if (!answer.ok) { toast(answer.error || "没删掉", true); return; }
+  if (body.all) libHist.rows = [];
+  else libHist.rows = libHist.rows.filter((r) => r.id !== body.id);
+  toast(body.all ? "片库的播放历史清空了（片子本身不动）" : "删掉了这条记录");
+  renderHist();
+  loadHome(true);                  // 首页的「继续观看」跟着变
 }
 function histGroup(at) {
   const t = new Date(), start = new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime() / 1000;
@@ -6751,30 +6810,65 @@ function histRow(x, group) {
   const time = !at ? "" : group !== "更早" ? hm(at)
     : (d.getFullYear() === new Date().getFullYear() ? "" : d.getFullYear() + "年") + (d.getMonth() + 1) + "月" + d.getDate() + "日";
   const how = p.done ? "看完了" : p.position ? "看到 " + clock(p.position) + (p.duration ? " / " + clock(p.duration) : "") : "";
-  const resume = x.play && x.play.start ? "，从 " + clock(x.play.start) + " 接着看" : "";
-  return `<button class="hrow" data-play="${esc(id)}" data-k="h-${esc(id)}" aria-label="播放 ${esc(x.title)}${resume}"><span class="art">${itemArt(x, "w")}${pbar(pct)}</span>
-    <span class="htx"><b>${esc(h.head)}</b>${h.ep ? `<small>${esc(h.ep)}</small>` : ""}<small class="hm">${esc([how, time].filter(Boolean).join(" · "))}</small></span></button>`;
+  const lib = h.type === "lib";
+  const resume = lib ? (p.done ? "，从头看" : p.position ? "，从 " + clock(p.position) + " 接着看" : "")
+    : x.play && x.play.start ? "，从 " + clock(x.play.start) + " 接着看" : "";
+  // 片库的海报是竖的：模糊的放大一张垫底，整张放在中间；左上角标「片库」。
+  const look = lib ? `<span class="art lp">${art(x.title, "w")}${imgTag(x.art.url, "bg")}${imgTag(x.art.url)}<span class="badge">片库</span>${pbar(pct)}</span>`
+    : `<span class="art">${itemArt(x, "w")}${pbar(pct)}</span>`;
+  const row = `<button class="hrow" data-play="${esc(id)}" data-k="h-${esc(id)}" aria-label="播放 ${esc(x.title)}${resume}">${look}
+    <span class="htx"><b>${esc(h.head)}</b>${h.ep ? `<small>${esc(h.ep)}</small>` : ""}<small class="hm">${esc([how, h.device, time].filter(Boolean).join(" · "))}</small></span></button>`;
+  return lib ? `<div class="hitem">${row}<button class="hdel" data-lhdel="${esc(x.lib)}" data-k="hd-${esc(x.lib)}" aria-label="从片库历史里删掉「${esc(x.title)}」" title="删掉这条记录">${ic("x", 16)}</button></div>` : row;
+}
+function histList(items, note) {
+  let o = note ? `<p class="hint">${esc(note)}</p>` : "", last = null;
+  for (const x of items) {
+    const g = histGroup(x.watched_at);
+    if (g !== last) { o += (last === null ? "" : "</div>") + `<h3 class="hgrp">${g}</h3><div class="hlist">`; last = g; }
+    o += histRow(x, g);
+  }
+  return last === null ? o : o + "</div>";
+}
+// 「片库」标签：空的、没取到的各说一句；有记录时上面一个「清空片库历史」（两步确认）。
+function libHistHTML() {
+  if (libHist.failed && !libHist.rows.length) return '<p class="hint">片库的播放历史没取到。<button class="linkbtn" data-lhretry>再试一次</button></p>';
+  if (!libHist.rows.length) {
+    return `<div class="empty sm"><b>${libHist.ok ? "还没有片库的播放记录" : "正在加载…"}</b>${libHist.ok ? '<p>在「我的片库」里看过的电影、每一集都会记在这里，点一下接着看</p><a class="btn sm" href="#/lib/local">去我的片库</a>' : ""}</div>`;
+  }
+  return `<div class="lhbar"><button class="ghost" data-lhclear>清空片库历史</button></div>` + histList(libHist.rows.map(libHistItem), "");
 }
 function renderHistMore() {
   const btn = $("histMore");
-  btn.hidden = hist.kind === "yt" || !hist.more || hist.state === "login";
+  btn.hidden = hist.kind === "yt" || hist.kind === "lib" || !hist.more || hist.state === "login" || hist.state === "off";
   btn.disabled = hist.busy;
   btn.textContent = hist.busy && hist.items.length ? "正在加载…" : "加载更多";
 }
 function renderHist() {
   if (route !== "lib" || libTab !== "history") return;
-  const kinds = HIST_KINDS.filter(([id]) => id !== "yt" || histYt());
-  if (!kinds.some(([id]) => id === hist.kind)) hist.kind = "all";
   const login = hist.state === "login" || hist.state === "off";
-  $("histChips").hidden = login;
+  // 没登录 B 站（或这里没有 B 站的记录）时只剩「全部」和「片库」；没有片库时没有「片库」。
+  const kinds = HIST_KINDS.filter(([id]) => (id !== "yt" || histYt()) && (id !== "lib" || libHist.ok) && (!login || id === "all" || id === "lib"));
+  if (!kinds.some(([id]) => id === hist.kind)) hist.kind = "all";
+  $("histChips").hidden = login && !libHist.ok;
   $("histChips").innerHTML = kinds.map(([id, t]) => `<button data-hk="${id}" aria-pressed="${id === hist.kind}">${t}</button>`).join("");
-  $("histSyncRow").hidden = login || hist.writeback == null;
+  $("histSyncRow").hidden = login || hist.writeback == null || hist.kind === "lib";
   $("histSync").setAttribute("aria-checked", String(!!hist.writeback));
   renderHistMore();
   const box = $("histBox");
-  if (hist.state === "off") { box.innerHTML = '<div class="empty sm"><b>这里没有观看记录</b><p>电脑客户端和家庭服务器才有</p></div>'; return; }
-  if (hist.state === "login") {
-    box.innerHTML = `<div class="empty sm"><b>登录 B 站后，这里是你的观看记录</b><a class="btn pri sm" href="#/settings/bili">去登录</a></div>`;
+  const libs = libHist.rows.map(libHistItem);
+  if (hist.kind === "lib") {
+    const k = focusKey();
+    box.innerHTML = libHistHTML();
+    restoreFocus(k);
+    return;
+  }
+  if (login) {
+    // B 站那边没有记录可给：先说一句，片库的照样列在下面。
+    const k = focusKey();
+    box.innerHTML = (hist.state === "off" ? '<div class="empty sm"><b>这里没有 B 站的观看记录</b><p>电脑客户端和家庭服务器才有</p></div>'
+      : `<div class="empty sm"><b>登录 B 站后，这里是你的观看记录</b><a class="btn pri sm" href="#/settings/bili">去登录</a></div>`)
+      + (libs.length ? histList(libs, "") : "");
+    restoreFocus(k);
     return;
   }
   let items = hist.items, note = hist.message;
@@ -6789,6 +6883,7 @@ function renderHist() {
       histTimer = setTimeout(async () => { if (route === "lib" && hist.kind === "yt") { await loadFeedRow("yt_history"); renderHist(); } }, row ? 3000 : 0);
     }
   } else if (hist.kind !== "all") items = items.filter((x) => (x.hist && x.hist.type) === hist.kind);
+  else items = histMerge(items, libs, !!hist.more);
   const k = focusKey();
   if (!items.length) {
     const waiting = hist.kind === "yt" ? !feedRows.yt_history || feedWaiting("yt_history")
@@ -6797,13 +6892,7 @@ function renderHist() {
     restoreFocus(k);
     return;
   }
-  let o = note ? `<p class="hint">${esc(note)}</p>` : "", last = null;
-  for (const x of items) {
-    const g = histGroup(x.watched_at);
-    if (g !== last) { o += (last === null ? "" : "</div>") + `<h3 class="hgrp">${g}</h3><div class="hlist">`; last = g; }
-    o += histRow(x, g);
-  }
-  box.innerHTML = o + "</div>";
+  box.innerHTML = histList(items, note);
   restoreFocus(k);
 }
 $("histChips").addEventListener("click", (event) => {
@@ -6811,6 +6900,21 @@ $("histChips").addEventListener("click", (event) => {
   if (!b || b.dataset.hk === hist.kind) return;
   hist.kind = b.dataset.hk;
   renderHist();
+  if (hist.kind === "lib" || hist.kind === "all") loadLibHist(false);
+});
+$("histBox").addEventListener("click", (event) => {
+  const t = event.target.closest("[data-lhdel], [data-lhclear], [data-lhretry]");
+  if (!t) return;
+  if (t.dataset.lhretry !== undefined) { libHist.failed = false; renderHist(); loadLibHist(true); return; }
+  if (t.dataset.lhdel) { libHistRemove({ id: t.dataset.lhdel }, t); return; }
+  // 两步：先变成「确定清空？」，4 秒内再点一下才清（有的窗口里没有 confirm()）。
+  if (t.dataset.sure !== "1") {
+    t.dataset.sure = "1";
+    t.textContent = "确定清空？再点一下";
+    setTimeout(() => { if (t.isConnected) { t.dataset.sure = ""; t.textContent = "清空片库历史"; } }, 4000);
+    return;
+  }
+  libHistRemove({ all: true }, t);
 });
 $("histMore").onclick = () => loadHist(true);
 $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarget);

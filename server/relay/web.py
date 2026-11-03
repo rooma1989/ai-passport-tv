@@ -1811,6 +1811,15 @@ class Relay:
             raise NotFound("library")
         return {"ok": True, "queued": library.pre.want(iid, library.pre.resume_at(caller.user, iid), "detail")}
 
+    def library_history_remove(self, caller: Caller, body: dict) -> dict:
+        """POST /api/library/history/remove {id} 或 {all: true}：片库的播放历史删一条 / 清空（library.history_remove）。
+        只给登录的家里人；没有片库（云端）404。"""
+        if caller.guest or caller.user is None:
+            return {"ok": False, "error": "请求格式不对"}
+        if library_api.wired(self) is None:
+            raise NotFound("library")
+        return library_api.history_remove(self, caller, body)
+
     def library_started(self, caller: Caller, body: dict) -> dict:
         """POST /api/library/started {id, wait_ms, speed, rate, rushed}：电脑上片库的一集出画面了，页面报等了多久
         （wait_ms）、取段的速度（speed：每秒墙钟取到几秒视频，不知道时 0）、码率（rate：字节 / 秒）、是不是按了「先放」。
@@ -2045,7 +2054,9 @@ class Relay:
         offset = self._pc_position(cursor) if cursor is not None else float((saved or {}).get("position") or 0)
         if start is not None:
             offset = _clamp(start, duration) if duration else max(0.0, start)
-        elif duration and offset >= duration - 5:
+        elif home.finished(offset, duration, found["id"] in ((saved or {}).get("done") or [])):
+            # 看完了的（离结尾不到 PROGRESS_END_S 秒，或记过看完了、没再重看）从头放：片库的播放历史上标「看完了」的
+            # 点下去就是从头，和 home.finished 一个规则。
             offset = 0.0
         episodes = library.episodes_of(found)
         # 剧名 / 片名：对上豆瓣的用豆瓣的（library.shown）。
@@ -3393,6 +3404,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/library/started":
                 self._json(relay.library_started(caller, body))
+                return
+            if path == "/api/library/history/remove":
+                self._json(relay.library_history_remove(caller, body))
                 return
             if path == "/api/yt/prefetch":
                 self._json(relay.yt_prefetch(caller, body))
