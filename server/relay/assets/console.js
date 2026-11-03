@@ -3094,7 +3094,8 @@ function pcTogglePlay() {
 function pcToggleFull() {
   const box = $("pcBox");
   if (document.fullscreenElement === box) document.exitFullscreen().catch(() => {});
-  else if (box.requestFullscreen) box.requestFullscreen().catch(() => toast("这个浏览器不让全屏", true));
+  // 进了全屏把焦点放到画面上（不留在「全屏」按钮上），空格、方向键都归播放器。
+  else if (box.requestFullscreen) box.requestFullscreen().then(() => box.focus({ preventScroll: true })).catch(() => toast("这个浏览器不让全屏", true));
 }
 function pcToggleMute() {
   const v = $("watchVideo");
@@ -3145,7 +3146,10 @@ async function openDocPip(v) {
   const home = { parent: v.parentNode, next: v.nextSibling };
   let w;
   try {
-    w = await documentPictureInPicture.requestWindow({ width: Math.max(320, Math.round(v.clientWidth / 2)), height: Math.max(180, Math.round(v.clientHeight / 2)) });
+    // 不要小窗上的「返回标签页」（Chrome 124+ 认；回去点小窗的 ×，或者原处的「点这里放回来」）。窗口上那条
+    // 站点栏是浏览器的，网页去不掉。
+    w = await documentPictureInPicture.requestWindow({ width: Math.max(320, Math.round(v.clientWidth / 2)), height: Math.max(180, Math.round(v.clientHeight / 2)),
+                                                       disallowReturnToOpener: true });
   } catch (error) { toast("这个浏览器现在不让画中画", true); return; }
   const css = w.document.createElement("style");
   css.textContent = "html,body{margin:0;height:100%;background:#000;overflow:hidden}" +
@@ -3512,7 +3516,8 @@ addEventListener("keydown", (event) => {
   if (inParts || $("pcMenu").contains(a)) return;   // 选集列表、菜单里方向键照常移动焦点
   const onButton = a && a.tagName === "BUTTON" && box.contains(a);
   if (key === " " || key === "k" || key === "K") {
-    if (key === " " && onButton) return; // 空格按的是那个按钮
+    // 空格按的是那个按钮；全屏时不是（焦点停在「全屏」按钮上时，空格会把全屏退掉）：只管暂停 / 继续。
+    if (key === " " && onButton && !full) return;
     eat();
     if (!event.repeat) pcTogglePlay();   // 按住不放：只算一下（自动重复的不再来回切）
   } else if ((key === "ArrowLeft" || key === "ArrowRight") && !onButton && a !== $("pcVol")) {
