@@ -32,6 +32,7 @@ from . import admin, bilisearch, console, epg, events, home, setup, stream, tabl
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
 from . import accountfeeds, bilidash, bililogin, bilivod, follows, static, wallpaper, ytsearch, ytsettings, ytvod
 from . import library as library_api
+from . import libdouban
 from . import localsearch
 from . import detail
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
@@ -3414,6 +3415,10 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/library/history/remove":
                 self._json(relay.library_history_remove(caller, body))
+                return
+            if path == "/api/library/wish":
+                # 片库「豆瓣」页的想看（libdouban.py）：每个人自己的，只存在这台中转上。
+                self._json(libdouban.wish(relay, caller, body))
                 return
             if path == "/api/yt/prefetch":
                 self._json(relay.yt_prefetch(caller, body))

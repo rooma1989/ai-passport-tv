@@ -18,7 +18,8 @@
 - 在线资料（libmeta.py）：扫描完了后台慢慢从豆瓣查电影和剧的片名、海报、评分、导演演员、简介（不登录、一次一个
   请求、被拦了歇一个小时），存在 library-meta.json，按剧 / 电影记；本地的 .nfo 片名和海报优先，管理员手动选的、
   「不匹配」的不被自动的盖掉。片库的设置里能关（关了一个请求也不往豆瓣发）。管理员填了 TMDB 的密钥时，豆瓣没把握、
-  拦着或连不上的再查 TMDB（libmeta.Tmdb，备用；豆瓣永远先查），资料上标着来源。
+  拦着或连不上的再查 TMDB（libmeta.Tmdb，备用；豆瓣永远先查），资料上标着来源。片库的「豆瓣」页（榜单、详情页的
+  短评和推荐、每个人的「想看」）在 libdouban.py（self.boards），「片库里有」按 douban_index 标。
 - 网盘上小的 .nfo 扫描时可以取（每个至多 NFO_MAX 字节，一次扫描至多 NFO_PER_SCAN 个）；海报扫描时不取，只记路径，
   页面要时才取一次，存在 library-art/（总共至多 ART_CACHE_MAX 字节，超了删最旧的）。
 - 扫描在后台线程里一个一个来（管理员点「扫描」，另外每 EVERY_S 秒自动一次）；为了不和给小电视推流抢，每列一个
@@ -81,7 +82,7 @@ from .librarycache import IndexCache
 from . import libraryfull
 from .libraryfull import FullCache
 from .librarypre import PreRead
-from . import libmeta
+from . import libdouban, libmeta
 from .table import CAST_ID
 
 SOURCES_MAX = 12
@@ -1373,6 +1374,8 @@ class Library:
         self.douban = libmeta.Douban(clock=clock, log=log)
         # 备用的 TMDB：密钥在数据目录的 secrets/tmdb-key（600）；代理由 attach 接上「设置 → YouTube」的。
         self.tmdb = libmeta.Tmdb(self.dir / "secrets", clock=clock, log=log)
+        # 片库的「豆瓣」页（libdouban.py）：榜单、详情页的短评和推荐、每个人的「想看」；也走上面这个 douban。
+        self.boards = libdouban.Boards(self, log=log)
         self._meta_wake = threading.Event()
         self._meta_failed: dict[str, float] = {}
         self._meta_lock = threading.Lock()
@@ -1798,6 +1801,28 @@ class Library:
                 year = own.get(n) if distinct else (show["year"] if n == min(by_season) else None)
                 found[f"{key}-{n}"] = {"key": f"{key}-{n}", "kind": "season", "title": show["title"], "alt": show["alt"],
                                        "year": year, "added": show["added"], "stale": show["stale"], "season": n}
+        return found
+
+    def douban_index(self) -> dict[str, dict]:
+        """豆瓣条目 id → 片库里的哪一部：{key, item: 电影（其他视频）的条目 id} 或 {key, show: 剧的 id, season: 第几季}
+        （季只在有好几季的剧上）。对上了豆瓣的才算（TMDB 的 id 不是豆瓣的）；片库里已经没有了的不算。同一个 id 对上了
+        好几部时取第一个（电影先、剧后，各按键排；剧和它的一季是同一个条目时取那一季）。libdouban.py 用它标「片库里有」。"""
+        titles = self.titles()
+        found: dict[str, dict] = {}
+        for key, entry in sorted(self.meta.all().items()):
+            if key not in titles or entry.get("state") != "matched" or entry.get("src") == "tmdb":
+                continue
+            did = str(entry.get("id") or "")
+            if not re.fullmatch(r"\d{1,12}", did):
+                continue
+            if key.startswith("m"):
+                found.setdefault(did, {"key": key, "item": key[1:]})
+                continue
+            show, _, n = key[1:].partition("-")
+            was = found.get(did)
+            # 剧和它的第一季常是豆瓣的同一个条目：标到那一季上（打开时直接是那一季）。
+            if was is None or (n and was.get("show") == show and "season" not in was):
+                found[did] = {"key": key, "show": show, **({"season": int(n)} if n else {})}
         return found
 
     @staticmethod
@@ -4152,6 +4177,9 @@ def get(handler, relay, caller, path: str) -> bool:
     if match:
         library.serve_meta_art(handler, match.group(1))
         return True
+    if path.startswith("/api/library/douban") and libdouban.get(handler, library, caller, path):
+        # 片库的「豆瓣」页（libdouban.py）：榜单、一部的短评和推荐、经中转的海报。
+        return True
     match = _SUBS.match(path)
     if match:
         after = handler._query().get("after")
@@ -4277,6 +4305,7 @@ def attach(relay, start: bool = True) -> Library | None:
         threading.Thread(target=library.run_forever, name="library", daemon=True).start()
         threading.Thread(target=library.run_meta, name="library-meta", daemon=True).start()
         threading.Thread(target=library.run_warm, name="library-warm", daemon=True).start()
+        threading.Thread(target=library.boards.run, name="library-douban", daemon=True).start()
     return library
 
 

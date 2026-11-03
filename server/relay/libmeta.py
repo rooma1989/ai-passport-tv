@@ -18,6 +18,10 @@
   JPEG、PNG、WebP），至多 POSTER_MAX 字节。
 - 资料存在 library-meta.json（600，和 library.json 一样整份换掉写），按剧（剧名）或电影（条目 id）记，重新扫描
   不会丢。手动选的、手动「不匹配」的从不被自动的盖掉。
+- 片库的「豆瓣」页（libdouban.py）也走这里的 Douban（同一把锁、同样的间隔和被拦了歇）：手机版的榜单
+  （rexxar/api/v2/subject_collection/<名字>/items）、条目的热门短评（subject/<id>/interests?order_by=hot）和
+  「喜欢这部的人也喜欢」（subject/<id>/recommendations）。只解析片名、年份、评分、海报地址和短评的名字、星数、
+  正文、日期；豆瓣用户的 id、头像、IP 属地一概不要。
 
 备用的资料来源 TMDB（The Movie Database，官方的 API v3）：豆瓣没把握（没对上）、拦着、连不上时才查它，豆瓣永远
 先查。要主人自己去 TMDB 免费注册一个 API 密钥（32 位的 API Key 或者长的 API Read Access Token），在片库里粘贴；
@@ -62,6 +66,12 @@ SEARCH_REFERER = "https://m.douban.com/search/"
 MOBILE_URL = "https://m.douban.com/rexxar/api/v2/subject/{}"
 REFERER = "https://movie.douban.com/"
 MOBILE_REFERER = "https://m.douban.com/movie/subject/{}/"
+# 片库的「豆瓣」页（libdouban.py）：手机版的榜单（subject_collection）、条目的热门短评（interests）和「喜欢这部的人也
+# 喜欢」（recommendations）。2026-11-03 实测都不用登录、不带 Cookie 也照常回答（Referer 是手机版的页面）。
+COLLECTION_URL = "https://m.douban.com/rexxar/api/v2/subject_collection/{}/items?start=0&count={}"
+COLLECTION_REFERER = "https://m.douban.com/subject_collection/{}"
+INTERESTS_URL = "https://m.douban.com/rexxar/api/v2/subject/{}/interests?start=0&count={}&order_by=hot"
+RECOMMENDATIONS_URL = "https://m.douban.com/rexxar/api/v2/subject/{}/recommendations?start=0&count={}"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/124.0.0.0 Safari/537.36")
 TIMEOUT_S = 20
@@ -90,6 +100,12 @@ QUERY_MAX = 60
 _DOUBAN_ID = re.compile(r"^\d{1,12}$")
 _IMG_HOST = re.compile(r"^img\d{0,2}\.doubanio\.com$")
 _BLOCK_WORDS = ("检测到有异常请求", "sec.douban.com")
+_COLLECTION = re.compile(r"^[a-z0-9_]{1,40}$")
+_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+# 榜单、推荐里的一部、一条短评至多这么长。
+INFO_MAX = 80
+COMMENT_MAX = 350
+CARDS_MAX = 60
 
 
 class Blocked(Exception):
@@ -288,6 +304,94 @@ def parse_subject(html: bytes | str, did: str = "") -> dict | None:
             "img": poster_url(img) or (img if good_image_url(img) else "")}
 
 
+def parse_card(row) -> dict | None:
+    """榜单、推荐里的一部 → {id, title, year, type, rating, info, img}；不是电影、电视剧的（或看不懂的）None。
+    两种样子：榜单的 cover.url（电影）或 pic.large / normal（剧集、Top250、推荐）；Top250 和推荐没有 year，用
+    card_subtitle（「1994 / 美国 / 剧情 犯罪 / 导演 / 演员」）开头的年份。info 是 card_subtitle 去掉年份的那几段。"""
+    if not isinstance(row, dict) or row.get("type") not in ("movie", "tv"):
+        return None
+    did = str(row.get("id") or "")
+    title = _text(row.get("title"))
+    if not _DOUBAN_ID.match(did) or not title:
+        return None
+    pic = row.get("pic") if isinstance(row.get("pic"), dict) else {}
+    cover = row.get("cover") if isinstance(row.get("cover"), dict) else {}
+    img = next((u for u in (pic.get("large"), cover.get("url"), pic.get("normal"), row.get("cover_url"))
+                if good_image_url(u)), "")
+    rating = row.get("rating") if isinstance(row.get("rating"), dict) else {}
+    subtitle = _text(row.get("card_subtitle"), 200)
+    parts = [p.strip() for p in subtitle.split("/")]
+    if parts and _year(parts[0]) is not None and len(parts[0]) <= 6:
+        parts = parts[1:]
+    return {"id": did, "title": title, "year": _year(row.get("year")) or _year(subtitle[:6]), "type": row["type"],
+            "rating": _rating(rating.get("value")), "info": " / ".join(p for p in parts[:3] if p)[:INFO_MAX],
+            "img": img}
+
+
+def _cards(rows) -> list[dict]:
+    found, seen = [], set()
+    for row in rows:
+        card = parse_card(row)
+        if card is not None and card["id"] not in seen:
+            seen.add(card["id"])
+            found.append(card)
+        if len(found) >= CARDS_MAX:
+            break
+    return found
+
+
+def parse_collection(data: bytes | str) -> list[dict] | None:
+    """手机版榜单（subject_collection/<名字>/items）的 JSON → [parse_card 的]；不是榜单的样子（被换成了别的页面、
+    出错的 JSON）None，空榜单 []。"""
+    try:
+        answer = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    rows = answer.get("subject_collection_items") if isinstance(answer, dict) else None
+    return _cards(rows) if isinstance(rows, list) else None
+
+
+def parse_recommendations(data: bytes | str) -> list[dict] | None:
+    """条目的「喜欢这部的人也喜欢」（subject/<id>/recommendations，一个 JSON 数组）→ [parse_card 的]；看不懂 None。"""
+    try:
+        rows = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    return _cards(rows) if isinstance(rows, list) else None
+
+
+def parse_interests(data: bytes | str) -> list[dict] | None:
+    """条目的热门短评（subject/<id>/interests?order_by=hot）→ [{author, stars, text, date, votes}]；看不懂 None。
+    只留名字、星数（1–5，没打分的 None）、短评、日期和「有用」数：豆瓣用户的 id、头像、IP 属地都不要。"""
+    try:
+        answer = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    rows = answer.get("interests") if isinstance(answer, dict) else None
+    if not isinstance(rows, list):
+        return None
+    found = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = _text(row.get("comment"), COMMENT_MAX)
+        if not text:
+            continue
+        user = row.get("user") if isinstance(row.get("user"), dict) else {}
+        rating = row.get("rating") if isinstance(row.get("rating"), dict) else {}
+        stars = rating.get("value")
+        date = _DATE.match(str(row.get("create_time") or ""))
+        votes = row.get("vote_count")
+        found.append({"author": _text(user.get("name"), 40) or "豆瓣用户", "text": text,
+                      "stars": stars if isinstance(stars, int) and not isinstance(stars, bool) and 1 <= stars <= 5
+                      and rating.get("max") in (5, None) else None,
+                      "date": date.group(1) if date else "",
+                      "votes": votes if isinstance(votes, int) and not isinstance(votes, bool) and votes >= 0 else 0})
+        if len(found) >= 20:
+            break
+    return found
+
+
 def blocked_page(status: int, location: str, body: bytes) -> bool:
     """豆瓣拦了：403 / 429、跳到 sec.douban.com、页面里说「检测到有异常请求」。"""
     if status in (403, 429) or "sec.douban.com" in (location or ""):
@@ -468,6 +572,38 @@ class Douban:
             self._thumbs[did] = found
             while len(self._thumbs) > THUMBS_KEPT:
                 self._thumbs.popitem(last=False)
+        return found
+
+    # 片库的「豆瓣」页（libdouban.py 在后台一件一件取，结果存盘）：和上面走同一条路（一次一个、有间隔、被拦了歇）。
+
+    def collection(self, name: str, count: int) -> list[dict]:
+        """一个榜单的前 count 部（parse_collection）。被拦了抛 Blocked，看不懂抛 Failed。"""
+        if not _COLLECTION.match(str(name)):
+            raise Failed("榜单的名字不对")
+        found = parse_collection(self._get(COLLECTION_URL.format(name, int(count)), COLLECTION_REFERER.format(name),
+                                           "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+        if found is None:
+            raise Failed("豆瓣的榜单看不懂")
+        return found
+
+    def interests(self, did: str, count: int) -> list[dict]:
+        """一个条目的热门短评（parse_interests）。"""
+        if not _DOUBAN_ID.match(str(did)):
+            raise Failed("豆瓣的编号不对")
+        found = parse_interests(self._get(INTERESTS_URL.format(did, int(count)), MOBILE_REFERER.format(did),
+                                          "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+        if found is None:
+            raise Failed("豆瓣的短评看不懂")
+        return found
+
+    def recommendations(self, did: str, count: int) -> list[dict]:
+        """一个条目的「喜欢这部的人也喜欢」（parse_recommendations）。"""
+        if not _DOUBAN_ID.match(str(did)):
+            raise Failed("豆瓣的编号不对")
+        found = parse_recommendations(self._get(RECOMMENDATIONS_URL.format(did, int(count)), MOBILE_REFERER.format(did),
+                                                "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+        if found is None:
+            raise Failed("豆瓣的推荐看不懂")
         return found
 
 

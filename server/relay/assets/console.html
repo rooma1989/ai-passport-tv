@@ -129,7 +129,7 @@
        <div class="dpage" id="upDetail" hidden></div>
       </section>
 
-      <!-- 片库：「历史」是自己 B 站的观看记录（console.js renderHist，accountfeeds.py）和片库里看过的（library.py 的 history）；「我的片库」是网盘和电脑上的视频（renderLib，library.py） -->
+      <!-- 片库：「历史」是自己 B 站的观看记录（console.js renderHist，accountfeeds.py）和片库里看过的（library.py 的 history）；「我的片库」是网盘和电脑上的视频（renderLib，library.py）；「豆瓣」是榜单和想看（renderDb，libdouban.py） -->
       <section class="page" data-route="lib" aria-label="片库">
         <header class="ph"><h1 class="lt">片库</h1></header>
         <nav class="chips ssub" id="libNav" aria-label="片库分类"></nav>
@@ -143,6 +143,9 @@
         </div>
         <div class="lpane" data-pane="local" hidden>
           <div id="libBox"></div>
+        </div>
+        <div class="lpane" data-pane="douban" hidden>
+          <div id="dbBox"></div>
         </div>
       </section>
 
