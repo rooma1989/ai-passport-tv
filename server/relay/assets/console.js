@@ -6795,7 +6795,7 @@ function libNav() {
   libTab = cur;
   if (cur === "history") { renderHist(); loadHist(false); loadLibHist(false); }
   if (cur === "local") { renderLib(); loadLib(false); loadDrive(); }
-  if (cur === "douban") { renderDb(); loadDb(false); }
+  if (cur === "douban") dbRoute();
 }
 // YouTube 观看记录（管理员、YouTube 开着）：就是首页那一排（feedRows.yt_history），在这里多一个标签。
 const histYt = () => !!(feedsInfo && feedsInfo.rows.some((r) => r.id === "yt_history" && r.state !== "hidden"));
@@ -7438,7 +7438,7 @@ function renderLib() {
         o += libInfoHTML(Object.assign({}, show, { sub: show.count + " 集" }));
         o += `<div class="h2 leps"><h2>选集</h2><small>${show.count} 集</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
       }
-      o += libMoreHTML(libDetailDid());
+      o += libMoreHTML(libDetailDid(), true);
     } else if (item) {
       const id = reg({ id: "lib:" + item.id, title: item.title, subtitle: item.year ? String(item.year) : "", art: { url: item.art, ratio: "poster" },
                        play: { kind: "library", id: item.id, playable: item.playable } });
@@ -7447,7 +7447,7 @@ function renderLib() {
       const play = item.playable ? splitHTML(id, "播放", to ? (to === PC ? "在这台电脑上" : "到" + targetName(to)) : "") : '<span class="hint">这个文件放不了</span>';
       o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
       o += libInfoHTML(Object.assign({}, item, { sub: [(item.ext || "").toUpperCase(), item.source].filter(Boolean).join(" · ") }), play);
-      o += libMoreHTML(libDetailDid());
+      o += libMoreHTML(libDetailDid(), true);
     } else {
       // 从豆瓣页、首页「想看的到了」点过来的（libGo），片库还在取：先别丢掉要打开的那一部。
       if (!lib.going) { lib.show = ""; lib.item = ""; }
@@ -7683,16 +7683,20 @@ $("libBox").addEventListener("change", (event) => {
 });
 
 // ======================================================================= 片库 → 豆瓣（GET api/library/douban，libdouban.py）
-// 豆瓣的几个榜单（正在热映、热门电影、热门剧集、高分 Top250）和每个人自己的「想看」。中转在后台慢慢取、存好（不登录
-// 豆瓣），这一页只读存好的；还在取（loading）时过几秒再问。海报都经中转（api/library/douban/poster/<id>），页面从不直接
-// 连豆瓣。片库里对上了的标「片库里有」，点了打开片库的详情页；没有的可以「想看」（POST api/library/wish，只记在这台
-// 中转上），片库后来有了，首页多一排「想看的片子到了」。
-const db = { data: null, busy: false, at: 0, tab: "movie_showing", timer: 0, polls: 0, failed: false, subjects: {} };
+// 豆瓣的榜单（电影、剧集、综艺 · 动画三组，每组几个）和每个人自己的「想看」。中转在后台慢慢取、存好（不登录豆瓣），
+// 这一页只问正看着的那一个榜单（?list=），读存好的；还在取（loading）时过几秒再问。先有 50 部，最后「加载更多」让中转往后
+// 再取一页（POST api/library/douban/more）。海报都经中转（api/library/douban/poster/<id>），页面从不直接连豆瓣。片库里
+// 对上了的标「片库里有」，点了打开片库的详情页；别的点开是豆瓣的详情（#/lib/douban/<豆瓣 id>，dbDetailHTML），可以
+// 「想看」（POST api/library/wish，只记在这台中转上），片库后来有了，首页多一排「想看的片子到了」。
+// lists：各个榜单上次拿到的那一份（带片子的）；details：详情页的回答；lastIn：每组上次看的是哪个榜单。
+const db = { data: null, busy: false, at: 0, tab: "movie_showing", timer: 0, polls: 0, failed: false, subjects: {},
+             lists: {}, lastIn: {}, detail: "", details: {}, more: false, scroll: 0 };
 async function loadDb(force, poll) {
-  if (db.busy || (!force && db.data && Date.now() - db.at < 30000)) return;
+  const want = db.tab;
+  if (db.busy || (!force && db.data && Date.now() - db.at < 30000 && (want === "wish" || db.lists[want]))) return;
   db.busy = true;
   let answer;
-  try { answer = await call("GET", "api/library/douban"); }
+  try { answer = await call("GET", "api/library/douban" + (want === "wish" ? "" : "?list=" + encodeURIComponent(want))); }
   catch (error) {
     db.busy = false;
     if (error instanceof SignedOut) { db.failed = true; renderDb(); } else toast("网络不通", true);
@@ -7701,58 +7705,161 @@ async function loadDb(force, poll) {
   db.busy = false;
   db.at = Date.now();
   db.failed = false;
-  if (answer.ok) db.data = answer;
+  if (answer.ok) {
+    db.data = answer;
+    for (const r of answer.lists) if (r.items) db.lists[r.name] = r;
+  }
   renderDb();
-  // 后台还在取（第一次打开、过了 6 小时）：隔几秒再问，至多问 20 次。
+  // 取的时候换了榜单：再取一次换过去的那个。
+  if (want !== db.tab) { loadDb(true); return; }
+  // 后台还在取（第一次打开、过了 6 小时、「加载更多」）：隔几秒再问，至多问 30 次。
   clearTimeout(db.timer);
   if (!poll) db.polls = 0;
-  if (answer.ok && answer.lists.some((r) => r.loading) && db.polls++ < 20)
-    db.timer = setTimeout(() => { if (route === "lib" && libTab === "douban") loadDb(true, true); }, 5000);
+  const row = answer.ok && answer.lists.find((r) => r.name === want);
+  if (row && row.loading && db.polls++ < 30)
+    db.timer = setTimeout(() => { if (route === "lib" && libTab === "douban" && db.tab === want) loadDb(true, true); }, 4000);
 }
 // 片库里的哪一部（libdouban 的 have：{item} 或 {show, season}）→ data-dbgo 的「i:<条目 id>」「s:<剧 id>:<第几季，0 是不限>」。
 const dbGo = (h) => (h.item ? "i:" + h.item : "s:" + h.show + ":" + (h.season || 0));
-// 一部豆瓣的片子：海报（经中转）、片名、年份、评分；片库里有的「去片库看」，没有的「想看」。wishView：「想看」列表里的。
+// 一部豆瓣的片子：海报（经中转）、片名、年份、评分；点海报和片名：片库里有的打开片库的详情页，没有的打开豆瓣的详情。
+// 下面一个按钮：「去片库看」或「想看」。wishView：「想看」列表里的。
 function dbCard(c, wishView) {
   const sub = [c.year, c.rating ? "★ " + c.rating : "", c.type === "tv" ? "剧集" : ""].filter(Boolean).join(" · ");
   const badge = c.have ? `<span class="badge new">${wishView ? "片库里有了" : "片库里有"}</span>` : c.wished && !wishView ? '<span class="badge">想看</span>' : "";
   const go = c.have ? `<button class="ghost sm" data-dbgo="${esc(dbGo(c.have))}"${wishView ? ` data-dbseen="${esc(c.id)}"` : ""} data-k="dg-${esc(c.id)}">去片库看</button>` : "";
   const wish = wishView ? `<button class="ghost sm" data-dbwish="${esc(c.id)}" data-on="0" data-k="dw-${esc(c.id)}">不想看了</button>`
-    : c.have ? "" : `<button class="ghost sm" data-dbwish="${esc(c.id)}" data-on="${c.wished ? "0" : "1"}" aria-pressed="${!!c.wished}" aria-label="${esc((c.wished ? "不想看了：" : "想看：") + c.title)}" data-k="dw-${esc(c.id)}">${ic(c.wished ? "check" : "plus", 14)}想看</button>`;
-  return `<div class="card p dbc" title="${esc(c.info ? c.title + " · " + c.info : c.title)}"><span class="art">${art(c.title, "p", { title: c.title, kick: "豆瓣" })}${imgTag(c.art)}${badge}</span>
-    <span class="t">${esc(c.title)}</span><span class="s">${esc(sub)}</span><span class="dbacts">${go}${wish}</span></div>`;
+    : c.have ? "" : dbWishBtn(c, "ghost sm");
+  const open = c.have ? `data-dbgo="${esc(dbGo(c.have))}"${wishView ? ` data-dbseen="${esc(c.id)}"` : ""} aria-label="${esc(c.title)}，片库里有，打开"`
+    : `data-dbopen="${esc(c.id)}" aria-label="${esc(c.title)}，豆瓣详情"`;
+  return `<div class="card p dbc" title="${esc(c.info ? c.title + " · " + c.info : c.title)}"><button type="button" class="dbhit" ${open} data-k="do-${esc(c.id)}"><span class="art">${art(c.title, "p", { title: c.title, kick: "豆瓣" })}${imgTag(c.art)}${badge}</span>
+    <span class="t">${esc(c.title)}</span><span class="s">${esc(sub)}</span></button><span class="dbacts">${go}${wish}</span></div>`;
 }
+const dbWishBtn = (c, cls) => `<button class="${cls}" data-dbwish="${esc(c.id)}" data-on="${c.wished ? "0" : "1"}" aria-pressed="${!!c.wished}" aria-label="${esc((c.wished ? "不想看了：" : "想看：") + c.title)}" data-k="dw-${esc(c.id)}">${ic(c.wished ? "check" : "plus", 14)}想看</button>`;
+const dbGroupOf = (name) => { const r = db.data && db.data.lists.find((x) => x.name === name); return r ? r.group : ""; };
 function renderDb() {
   if (route !== "lib" || libTab !== "douban") return;
   const box = $("dbBox"), d = db.data;
+  if (db.detail) { dbRenderDetail(); return; }
   if (!d) { box.innerHTML = `<p class="hint">${db.failed ? "电脑客户端和家庭服务器才有，登录的家里人能看" : "正在加载…"}</p>`; return; }
   const k = focusKey();
-  const tabs = d.lists.map((r) => [r.name, r.title, 0]).concat([["wish", "想看", d.wish.length]]);
-  if (!tabs.some(([id]) => id === db.tab)) db.tab = tabs[0][0];
-  let o = `<div class="chips" role="group" aria-label="豆瓣榜单">${tabs.map(([id, t, n]) => `<button type="button" data-dbtab="${id}" aria-pressed="${id === db.tab}" data-k="dt-${id}">${id === "wish" ? ic("check", 16) : ""}${esc(t)}${n ? `<em>${n}</em>` : ""}</button>`).join("")}</div>`;
+  if (db.tab !== "wish" && !d.lists.some((r) => r.name === db.tab)) db.tab = d.lists[0].name;
+  const group = db.tab === "wish" ? "wish" : dbGroupOf(db.tab);
+  // 上面一排分组（电影、剧集、综艺 · 动画）和「想看」，下面一排是这一组的几个榜单。
+  let o = `<div class="chips" role="group" aria-label="豆瓣榜单的分组">${(d.groups || []).map((g) => `<button type="button" data-dbgroup="${esc(g.id)}" aria-pressed="${g.id === group}" data-k="dgp-${esc(g.id)}">${esc(g.title)}</button>`).join("")}<button type="button" data-dbtab="wish" aria-pressed="${group === "wish"}" data-k="dt-wish">${ic("check", 16)}想看${d.wish.length ? `<em>${d.wish.length}</em>` : ""}</button></div>`;
+  if (group !== "wish") o += `<div class="chips dbsub" role="group" aria-label="榜单">${d.lists.filter((r) => r.group === group).map((r) => `<button type="button" data-dbtab="${esc(r.name)}" aria-pressed="${r.name === db.tab}" data-k="dt-${esc(r.name)}">${esc(r.title)}</button>`).join("")}</div>`;
   const note = !d.online ? "片库的在线资料关着：不往豆瓣取新的（管理员在「我的片库」里能打开）" : d.blocked ? "豆瓣暂时不让查了，过一会儿再来" : "";
   if (db.tab === "wish") {
     o += `<p class="hint">只记在这台电脑（中转）上，不同步到豆瓣。片库里有了的，首页会提醒一次。</p>`;
     o += d.wish.length ? `<div class="pgrid dbgrid">${d.wish.map((c) => dbCard(c, true)).join("")}</div>`
-      : `<div class="empty sm"><b>还没有想看的</b><p>在豆瓣榜单、片库详情页的「喜欢这部的人也喜欢」里点「想看」</p></div>`;
+      : `<div class="empty sm"><b>还没有想看的</b><p>在豆瓣榜单、详情和「喜欢这部的人也喜欢」里点「想看」</p></div>`;
   } else {
-    const row = d.lists.find((r) => r.name === db.tab);
+    const meta = d.lists.find((r) => r.name === db.tab), row = db.lists[db.tab];
     if (note) o += `<p class="hint">${esc(note)}</p>`;
-    if (row.items.length) {
+    if (row && row.items.length) {
       const have = row.items.filter((c) => c.have).length;
-      o += `<p class="hint">来自豆瓣${row.at ? " · " + ago(row.at) + "更新" : ""}${row.loading ? " · 正在更新…" : ""}${have ? " · 片库里有 " + have + " 部" : ""}</p>`;
+      o += `<p class="hint">来自豆瓣${meta.at ? " · " + ago(meta.at) + "更新" : ""} · ${row.items.length} 部${have ? " · 片库里有 " + have + " 部" : ""}</p>`;
       o += `<div class="pgrid dbgrid">${row.items.map((c) => dbCard(c)).join("")}</div>`;
-    } else o += `<p class="hint">${row.loading ? "正在从豆瓣取，稍等…" : note ? "" : "这个榜单还没取到，过一会儿再来"}</p>`;
+      // 还有往后的：「加载更多」（中转在后台取下一页，取好了这里接着长）。
+      if (meta.more) o += `<div class="bsmore"><button class="ghost" data-dbpage="${esc(db.tab)}" data-k="dm-${esc(db.tab)}"${meta.loading ? " disabled" : ""}>${meta.loading ? "正在加载…" : "加载更多"}</button></div>`;
+    } else o += `<p class="hint">${!row || meta.loading ? (note && !meta.loading ? "" : "正在从豆瓣取，稍等…") : note ? "" : "这个榜单还没取到，过一会儿再来"}</p>`;
   }
   box.innerHTML = o;
   restoreFocus(k);
 }
+async function dbPage(name, btn) {
+  btn.disabled = true;
+  btn.textContent = "正在加载…";
+  let answer;
+  try { answer = await call("POST", "api/library/douban/more", { list: name }); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); renderDb(); return; }
+  if (!answer.ok) toast(answer.error || "没成功", true);
+  else if (!answer.queued) toast("这个榜单没有更多了");
+  loadDb(true);
+}
 $("dbBox").addEventListener("click", (event) => {
-  const b = event.target.closest("[data-dbtab]");
-  if (!b || b.dataset.dbtab === db.tab) return;
-  db.tab = b.dataset.dbtab;
-  renderDb();
-  if (db.tab === "wish") loadDb(true);         // 「片库里有了」要新的
+  const t = event.target.closest("button");
+  if (!t) return;
+  const ds = t.dataset;
+  if (ds.dbgroup) {
+    const first = db.data.lists.find((r) => r.group === ds.dbgroup);
+    db.tab = db.lastIn[ds.dbgroup] || (first ? first.name : db.tab);
+    renderDb(); loadDb(false); return;
+  }
+  if (ds.dbtab) {
+    if (ds.dbtab === db.tab) return;
+    db.tab = ds.dbtab;
+    if (db.tab !== "wish") db.lastIn[dbGroupOf(db.tab)] = db.tab;
+    renderDb();
+    loadDb(db.tab === "wish");                    // 「片库里有了」要新的
+    return;
+  }
+  if (ds.dbpage) { dbPage(ds.dbpage, t); return; }
+  if (ds.dbback) { location.hash = "#/lib/douban"; return; }
+  if (ds.dbmore) { db.more = !db.more; renderDb(); }
 });
+// 地址 #/lib/douban/<豆瓣 id> 是豆瓣的详情（libNav 叫这里）：进去时记下列表滚到哪儿，回来时滚回去、焦点回到那张海报上。
+function dbRoute() {
+  const id = routeParts()[2] || "";
+  const did = /^\d{1,12}$/.test(id) ? id : "";
+  if (did === db.detail) { renderDb(); if (did) dbLoadDetail(did); else loadDb(false); return; }
+  const back = db.detail && !did ? db.detail : "";
+  if (did && !db.detail) db.scroll = $("main").scrollTop;
+  db.detail = did;
+  db.more = false;
+  renderDb();
+  if (did) { $("main").scrollTop = 0; dbLoadDetail(did); return; }
+  $("main").scrollTop = db.scroll || 0;
+  const c = back && qs(`#dbBox [data-k="do-${CSS.escape(back)}"]`);
+  if (c) c.focus({ preventScroll: true });
+  loadDb(false);
+}
+// ---- 豆瓣的详情（GET api/library/douban/detail/<id>）：中转有存好的马上给，没有时先给榜单里已经知道的几样（片名、年份、
+// 评分、海报），后台取完整的，这里隔 4 秒再问（至多 8 次）。下面是短评和推荐（libMoreHTML）。
+async function dbLoadDetail(did, tries = 0) {
+  const a = db.details[did];
+  if (a && (a.busy || (a.state === "ready" && !tries))) return;
+  db.details[did] = Object.assign(a || {}, { busy: true });
+  let answer;
+  try { answer = await call("GET", "api/library/douban/detail/" + did); }
+  catch (error) { answer = { ok: false }; }
+  const cur = db.details[did];
+  cur.busy = false;
+  if (answer.ok) Object.assign(cur, { state: answer.state, detail: answer.detail || cur.detail || null });
+  else cur.state = "none";
+  const here = () => route === "lib" && libTab === "douban" && db.detail === did;
+  if (cur.state === "loading" && tries < 8) setTimeout(() => { if (here()) dbLoadDetail(did, tries + 1); }, 4000);
+  if (here()) renderDb();
+}
+// 评分人数：「27.4 万人评价」「1234 人评价」。
+const dbVotes = (n) => (n >= 10000 ? (Math.round(n / 1000) / 10) + " 万" : String(n)) + " 人评价";
+function dbRenderDetail() {
+  const box = $("dbBox"), did = db.detail, a = db.details[did], d = a && a.detail;
+  const k = focusKey();
+  const meta = db.data && db.data.lists.find((r) => r.name === db.tab);
+  let o = `<div class="lshow"><button class="ghost sm" data-dbback="1" data-k="dback">${ic("back", 16)}${esc(db.tab === "wish" ? "想看" : meta ? meta.title : "豆瓣")}</button></div>`;
+  if (!d) {
+    o += `<p class="hint">${!a || a.busy || a.state === "loading" ? "正在从豆瓣取…" : "这一部的豆瓣资料没取到，过一会儿再来"}</p>`;
+  } else {
+    const kind = d.type === "tv" ? (d.episodes ? d.episodes + " 集" : "剧集") : "";
+    const len = (d.durations || [])[0] ? (d.type === "tv" ? "单集 " : "") + d.durations[0] : "";
+    const facts = [d.year ? esc(d.year) : "", d.rating ? `<b class="lrate">豆瓣 ${esc(d.rating)}</b>` + (d.votes ? `<span class="lvotes">${esc(dbVotes(d.votes))}</span>` : "") : "",
+      esc((d.genres || []).join(" / ")), esc((d.countries || []).slice(0, 3).join(" / ")), esc(kind), esc(len)].filter(Boolean);
+    const people = (label, list) => list && list.length ? `<p class="lppl"><span>${label}</span>${esc(list.join(" / "))}</p>` : "";
+    const acts = d.have ? `<button class="btn pri sm" data-dbgo="${esc(dbGo(d.have))}" data-k="dg-${esc(did)}">${ic("play", 16)}去片库看</button>`
+      : dbWishBtn(d, "btn sm" + (d.wished ? "" : " pri"));
+    const state = a.state === "loading" ? "正在从豆瓣取详细资料…" : a.state === "none" && !d.plot ? "豆瓣的详细资料没取到，过一会儿再来" : "";
+    o += infoHTML({ title: d.title, art: d.art, orig: d.original && d.original !== d.title ? d.original : "", facts,
+                    people: people("导演", d.directors) + people("主演", (d.actors || []).slice(0, 6))
+                      + people(d.type === "tv" ? "首播" : "上映", d.pubdate) + people("又名", (d.aka || []).slice(0, 4)),
+                    plot: d.plot || "", more: db.more, moreKey: "dbmore", state, acts });
+    o += libMoreHTML(did);
+  }
+  box.innerHTML = o;
+  // 简介没被折起来（三行放得下）就不要「展开」。
+  const plotP = qs("#dbBox .lplot"), plotB = qs("#dbBox [data-dbmore]");
+  if (plotP && plotB && !db.more && plotP.scrollHeight <= plotP.clientHeight + 1) plotB.hidden = true;
+  restoreFocus(k);
+}
 // 打开片库里的那一部（豆瓣页、详情页的推荐、首页「想看的到了」）：go 是 dbGo 的；seen 是「想看的到了」的豆瓣 id
 // （点开了就不再提醒）。
 function libGo(go, seen) {
@@ -7772,17 +7879,16 @@ async function dbWish(id, on, btn) {
   btn.disabled = false;
   if (!answer.ok) { toast(answer.error || "没成功", true); return; }
   toast(on ? "加进了「想看」：片库里有了会在首页提醒" : "从「想看」里拿掉了");
-  const mark = (c) => { if (c.id === id) { if (on) c.wished = true; else delete c.wished; } };
-  if (db.data) {
-    db.data.lists.forEach((r) => r.items.forEach(mark));
-    if (answer.wish) db.data.wish = answer.wish;
-  }
+  const mark = (c) => { if (c && c.id === id) { if (on) c.wished = true; else delete c.wished; } };
+  for (const r of Object.values(db.lists)) r.items.forEach(mark);
+  if (db.data && answer.wish) db.data.wish = answer.wish;
   for (const s of Object.values(db.subjects)) (s.recs || []).forEach(mark);
+  for (const a of Object.values(db.details)) mark(a.detail);
   renderDb();
   renderLib();
 }
-// ---- 片库详情页的豆瓣短评和「喜欢这部的人也喜欢」（GET api/library/douban/subject/<豆瓣 id>）：详情页画好以后再取；
-// 中转有存好的马上给，没有就在后台取（state loading，过 5 秒再问，至多 6 次）；取不到（none）不显示这一块。
+// ---- 片库详情页、豆瓣详情下面的豆瓣短评和「喜欢这部的人也喜欢」（GET api/library/douban/subject/<豆瓣 id>）：详情页
+// 画好以后再取；中转有存好的马上给，没有就在后台取（state loading，过 5 秒再问，至多 6 次）；取不到（none）不显示这一块。
 function libDoubanId(o) {
   const m = o && o.meta && o.meta.state === "matched" ? o.meta : null;
   return m && m.src !== "tmdb" && m.id ? String(m.id) : "";
@@ -7806,26 +7912,31 @@ async function dbSubject(did, tries = 0) {
   s.busy = false;
   if (answer.ok) Object.assign(s, { state: answer.state, comments: answer.comments || [], recs: answer.recs || [] });
   else s.state = "none";
-  const here = () => route === "lib" && libTab === "local" && libDetailDid() === did;
+  // 在片库的详情页上，或者在豆瓣的详情上。
+  const onLib = () => route === "lib" && libTab === "local" && libDetailDid() === did;
+  const onDb = () => route === "lib" && libTab === "douban" && db.detail === did;
   if (s.state === "loading") {
     if (tries >= 5) s.state = "none";
-    else setTimeout(() => { if (here()) dbSubject(did, tries + 1); else delete db.subjects[did]; }, 5000);
+    else setTimeout(() => { if (onLib() || onDb()) dbSubject(did, tries + 1); else delete db.subjects[did]; }, 5000);
   }
+  if (s.state !== "ready") return;
+  if (onDb()) renderDb();
   // 正在填匹配的小框时不重画（会打断输入）；下次重画时就有了。
-  if (s.state === "ready" && here() && !(qs("#libMatch") && qs("#libMatch").contains(document.activeElement))) renderLib();
+  else if (onLib() && !(qs("#libMatch") && qs("#libMatch").contains(document.activeElement))) renderLib();
 }
 const dbStars = (n) => (n ? `<span class="dbstar" role="img" aria-label="${n} 星">${"★".repeat(n)}${"☆".repeat(5 - n)}</span>` : "");
 function dbComment(c) {
   return `<div class="dbcmt"><p class="dbcmh"><b>${esc(c.author)}</b>${dbStars(c.stars)}<small>${esc([c.date, c.votes ? c.votes + " 人觉得有用" : ""].filter(Boolean).join(" · "))}</small></p><p class="dbcmx">${esc(c.text)}</p></div>`;
 }
-function libMoreHTML(did) {
+// link：片库的详情页上，第一段的标题旁边放一个「豆瓣详情 ›」。
+function libMoreHTML(did, link) {
   if (!did) return "";
   const s = db.subjects[did];
   if (!s) { setTimeout(() => dbSubject(did), 0); return ""; }
   if (s.state !== "ready") return "";
-  let o = "";
-  if (s.comments.length) o += `<section class="dbsec dbcm" aria-label="豆瓣短评"><div class="h2"><h2>豆瓣短评</h2><small>热门</small></div>${s.comments.map(dbComment).join("")}</section>`;
-  if (s.recs.length) o += `<section class="dbsec" aria-label="喜欢这部的人也喜欢"><div class="h2"><h2>喜欢这部的人也喜欢</h2><small>豆瓣</small></div><div class="pgrid dbgrid">${s.recs.map((c) => dbCard(c)).join("")}</div></section>`;
+  let o = "", more = link ? `<a class="more" href="#/lib/douban/${esc(did)}" data-k="dlink-${esc(did)}">豆瓣详情 ›</a>` : "";
+  if (s.comments.length) { o += `<section class="dbsec dbcm" aria-label="豆瓣短评"><div class="h2"><h2>豆瓣短评</h2><small>热门</small>${more}</div>${s.comments.map(dbComment).join("")}</section>`; more = ""; }
+  if (s.recs.length) o += `<section class="dbsec" aria-label="喜欢这部的人也喜欢"><div class="h2"><h2>喜欢这部的人也喜欢</h2><small>豆瓣</small>${more}</div><div class="pgrid dbgrid">${s.recs.map((c) => dbCard(c)).join("")}</div></section>`;
   return o;
 }
 
@@ -8401,6 +8512,7 @@ document.addEventListener("click", (event) => {
   if (ds.series) { location.hash = "#/series/" + ds.series; return; }
   // 片库的豆瓣页、详情页的推荐、首页「想看的到了」（libdouban.py）：打开片库里的那一部、想看 / 不想看了。
   if (ds.dbgo) { libGo(ds.dbgo, ds.dbseen); return; }
+  if (ds.dbopen) { location.hash = "#/lib/douban/" + ds.dbopen; return; }
   if (ds.dbwish) { dbWish(ds.dbwish, ds.on === "1", t); return; }
   if (ds.sheet === "target") { openTarget(null); return; }
   if (ds.tg) {

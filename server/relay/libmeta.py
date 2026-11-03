@@ -19,8 +19,9 @@
 - 资料存在 library-meta.json（600，和 library.json 一样整份换掉写），按剧（剧名）或电影（条目 id）记，重新扫描
   不会丢。手动选的、手动「不匹配」的从不被自动的盖掉。
 - 片库的「豆瓣」页（libdouban.py）也走这里的 Douban（同一把锁、同样的间隔和被拦了歇）：手机版的榜单
-  （rexxar/api/v2/subject_collection/<名字>/items）、条目的热门短评（subject/<id>/interests?order_by=hot）和
-  「喜欢这部的人也喜欢」（subject/<id>/recommendations）。只解析片名、年份、评分、海报地址和短评的名字、星数、
+  （rexxar/api/v2/subject_collection/<名字>/items?start=&count=，一页一页取）、条目的热门短评
+  （subject/<id>/interests?order_by=hot）、「喜欢这部的人也喜欢」（subject/<id>/recommendations）和详情（只用手机版的
+  subject/<id>，Douban.mobile）。只解析片名、年份、评分、海报地址和短评的名字、星数、
   正文、日期；豆瓣用户的 id、头像、IP 属地一概不要。
 
 备用的资料来源 TMDB（The Movie Database，官方的 API v3）：豆瓣没把握（没对上）、拦着、连不上时才查它，豆瓣永远
@@ -68,7 +69,7 @@ REFERER = "https://movie.douban.com/"
 MOBILE_REFERER = "https://m.douban.com/movie/subject/{}/"
 # 片库的「豆瓣」页（libdouban.py）：手机版的榜单（subject_collection）、条目的热门短评（interests）和「喜欢这部的人也
 # 喜欢」（recommendations）。2026-11-03 实测都不用登录、不带 Cookie 也照常回答（Referer 是手机版的页面）。
-COLLECTION_URL = "https://m.douban.com/rexxar/api/v2/subject_collection/{}/items?start=0&count={}"
+COLLECTION_URL = "https://m.douban.com/rexxar/api/v2/subject_collection/{}/items?start={}&count={}"
 COLLECTION_REFERER = "https://m.douban.com/subject_collection/{}"
 INTERESTS_URL = "https://m.douban.com/rexxar/api/v2/subject/{}/interests?start=0&count={}&order_by=hot"
 RECOMMENDATIONS_URL = "https://m.douban.com/rexxar/api/v2/subject/{}/recommendations?start=0&count={}"
@@ -256,7 +257,15 @@ def parse_mobile(data: bytes | str) -> dict | None:
             "plot": _text(row.get("intro"), PLOT_MAX),
             "episodes": int(episodes) if isinstance(episodes, int) and episodes > 0 else None,
             "aka": [_text(a) for a in (row.get("aka") or [])[:12] if _text(a)] if isinstance(row.get("aka"), list) else [],
-            "img": img}
+            "img": img,
+            # 片库「豆瓣」页的详情（libdouban.py）还要的几样：片长（「45分钟」）、语言、上映日期（「2026-10-21(中国大陆)」）。
+            # 片库的资料不存它们（entry_of 只留认得的）。
+            "durations": _texts(row.get("durations"), 3, 30), "languages": _texts(row.get("languages"), 4, 20),
+            "pubdate": _texts(row.get("pubdate"), 3, 40)}
+
+
+def _texts(rows, count: int, cap: int) -> list[str]:
+    return [_text(r, cap) for r in rows[:count] if _text(r, cap)] if isinstance(rows, list) else []
 
 
 _LD_JSON = re.compile(r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>', re.S | re.I)
@@ -349,6 +358,15 @@ def parse_collection(data: bytes | str) -> list[dict] | None:
         return None
     rows = answer.get("subject_collection_items") if isinstance(answer, dict) else None
     return _cards(rows) if isinstance(rows, list) else None
+
+
+def collection_total(data: bytes | str) -> int | None:
+    """榜单的回答里说一共几部（total）；没有、不像个数 None。"""
+    try:
+        total = json.loads(data).get("total")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return total if isinstance(total, int) and not isinstance(total, bool) and 0 <= total <= 100000 else None
 
 
 def parse_recommendations(data: bytes | str) -> list[dict] | None:
@@ -533,16 +551,24 @@ class Douban:
         if not _DOUBAN_ID.match(str(did)):
             raise Failed("豆瓣的编号不对")
         try:
-            found = parse_mobile(self._get(MOBILE_URL.format(did), MOBILE_REFERER.format(did),
-                                           "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
-            if found is not None:
-                return found
+            return self.mobile(did)
         except Failed:
             pass
         found = parse_subject(self._get(SUBJECT_URL.format(did), REFERER, "text/html,application/xhtml+xml",
                                         ANSWER_MAX, GAP_S), did)
         if found is None:
             raise Failed("豆瓣的条目页看不懂")
+        return found
+
+    def mobile(self, did: str) -> dict:
+        """只取手机版的接口（parse_mobile）。片库「豆瓣」页的详情只用它：条目页对不带 Cookie 的请求一律跳到验证页，
+        一跳就算被拦，一个小时什么都查不了，为了看一眼详情不值得。"""
+        if not _DOUBAN_ID.match(str(did)):
+            raise Failed("豆瓣的编号不对")
+        found = parse_mobile(self._get(MOBILE_URL.format(did), MOBILE_REFERER.format(did),
+                                       "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+        if found is None:
+            raise Failed("豆瓣的资料看不懂")
         return found
 
     def image(self, url: str, cap: int = POSTER_MAX) -> tuple[str, bytes]:
@@ -576,15 +602,17 @@ class Douban:
 
     # 片库的「豆瓣」页（libdouban.py 在后台一件一件取，结果存盘）：和上面走同一条路（一次一个、有间隔、被拦了歇）。
 
-    def collection(self, name: str, count: int) -> list[dict]:
-        """一个榜单的前 count 部（parse_collection）。被拦了抛 Blocked，看不懂抛 Failed。"""
+    def collection(self, name: str, count: int, start: int = 0) -> tuple[list[dict], int | None]:
+        """一个榜单从第 start 部起的 count 部（parse_collection）和榜单一共几部（豆瓣的 total，没有时 None）。
+        2026-11-03 实测一次给到 100 部也照常回答。被拦了抛 Blocked，看不懂抛 Failed。"""
         if not _COLLECTION.match(str(name)):
             raise Failed("榜单的名字不对")
-        found = parse_collection(self._get(COLLECTION_URL.format(name, int(count)), COLLECTION_REFERER.format(name),
-                                           "application/json, text/plain, */*", ANSWER_MAX, GAP_S))
+        data = self._get(COLLECTION_URL.format(name, int(start), int(count)), COLLECTION_REFERER.format(name),
+                         "application/json, text/plain, */*", ANSWER_MAX, GAP_S)
+        found = parse_collection(data)
         if found is None:
             raise Failed("豆瓣的榜单看不懂")
-        return found
+        return found, collection_total(data)
 
     def interests(self, did: str, count: int) -> list[dict]:
         """一个条目的热门短评（parse_interests）。"""
