@@ -14,7 +14,9 @@
 - 本地的元数据：.nfo（标题、年份、简介）、视频旁边的海报（poster.jpg、folder.jpg、<名字>-poster.jpg、
   <名字>.jpg）、文件名（电影「名字 (2019)」「名字.2019.1080p…」；剧集 S01E02、EP03、第3集、E03，按剧名或上一层
   文件夹归成一部剧；文件名只有画质标记的用上层文件夹，「苏.里.南」连起来，英文名留着当第二个查法）。
-  网盘上的文件从不截图（网盘会限速）；这一步本机的也不截，没海报的用页面自己画的图。
+  电影和剧的卡片没海报的用页面自己画的图。剧集每一集自己的封面（librarythumb.py）：旁边的 <名字>-thumb.jpg、
+  <名字>.jpg（文件夹的 poster.jpg 是整部剧的，从不当某一集的），没有的没人在看时后台从这一集里截一帧（一集只解
+  一帧、避开片头和黑场），存在 library-thumb/。
 - 在线资料（libmeta.py）：扫描完了后台慢慢从豆瓣查电影和剧的片名、海报、评分、导演演员、简介（不登录、一次一个
   请求、被拦了歇一个小时），存在 library-meta.json，按剧 / 电影记；本地的 .nfo 片名和海报优先，管理员手动选的、
   「不匹配」的不被自动的盖掉。片库的设置里能关（关了一个请求也不往豆瓣发）。管理员填了 TMDB 的密钥时，豆瓣没把握、
@@ -82,6 +84,7 @@ from .librarycache import IndexCache
 from . import libraryfull
 from .libraryfull import FullCache
 from .librarypre import PreRead
+from .librarythumb import Thumbs
 from . import libdouban, libmeta
 from .table import CAST_ID
 
@@ -951,6 +954,8 @@ SUB_EXTRACT_S = 300
 RAW_LIFETIME_S = 6 * 3600
 # 预读开头（librarypre.py）从网盘一次读这么多就看看要不要停（有人开始放了）。
 PRE_PIECE = 4 * 1024 * 1024
+# 截分集封面的 ffmpeg（librarythumb.py）从网盘一次读多大一段：它只要一帧，读够了就断开。
+THUMB_PIECE = 2 * 1024 * 1024
 # 经前端（server/front.py）转进来的请求一定带这些头之一：带了就不是本机的 ffmpeg。
 FORWARDED_HEADERS = ("X-Real-IP", "X-Forwarded-For", "X-Forwarded-Proto", "CF-Connecting-IP", "Forwarded")
 # 页面说的它能放什么（MediaSource 能不能接 HEVC、<video> 能不能直接放 HEVC），没说的当不能。
@@ -1369,6 +1374,8 @@ class Library:
                               clock=clock, limit=self.full_gb() * libraryfull.GB, background=background)
         # 预读开头（librarypre.py）：attach 接上 progress（pc-progress.json）、起线程。
         self.pre = PreRead(self, log=log, clock=clock, background=background)
+        # 剧集的分集封面（librarythumb.py）：旁边没有图片的，没人在看时后台从这一集里截一帧，存在 library-thumb/。
+        self.thumbs = Thumbs(self, self.dir / "library-thumb", log=log, clock=clock, background=background)
         # 在线资料（libmeta.py）：存在 library-meta.json；豆瓣一次一个请求，被拦了歇一个小时。
         self.meta = libmeta.MetaStore(self.dir / "library-meta.json")
         self.douban = libmeta.Douban(clock=clock, log=log)
@@ -1457,8 +1464,9 @@ class Library:
         return {"ok": True, "full_gb": gb, "full_used": self.full.total()}
 
     def close(self) -> None:
-        """中转关掉时：整集缓存的下载线程、预读停下。"""
+        """中转关掉时：整集缓存的下载线程、预读、截分集封面停下。"""
         self.pre.close()
+        self.thumbs.close()
         self.full.stop()
 
     def _load_index(self) -> dict[str, dict]:
@@ -1616,7 +1624,10 @@ class Library:
                 show = shows.setdefault(key, {"id": key, "title": item.get("show") or "", "count": 0, "art": "",
                                               "seasons": set(), "added": 0, "episodes": [], "year": None,
                                               "guess": item.get("show") or "", "nfo": False})
-                show["episodes"].append(card)
+                # 剧的卡片用文件夹里的海报（条目的 poster）；每一集的卡片用这一集自己的封面（旁边的图片或截的一帧，
+                # librarythumb.py），没有时空的（页面画那张图），从不用剧的海报。
+                show["episodes"].append((card, card["art"]))
+                card["art"] = self.thumbs.url(item)
                 show["count"] += 1
                 show["seasons"].add(item.get("season") or 1)
                 show["added"] = max(show["added"], card["added"])
@@ -1630,8 +1641,9 @@ class Library:
                 videos.append(card)
         show_rows = []
         for key, show in shows.items():
-            show["episodes"].sort(key=lambda c: (c["season"] or 0, c["episode"] or 0, c["title"]))
-            show["art"] = next((c["art"] for c in show["episodes"] if c["art"]), "")
+            show["episodes"].sort(key=lambda c: (c[0]["season"] or 0, c[0]["episode"] or 0, c[0]["title"]))
+            show["art"] = next((poster for _, poster in show["episodes"] if poster), "")
+            show["episodes"] = [card for card, _ in show["episodes"]]
             numbers = sorted(show["seasons"])
             show["seasons"] = len(numbers)
             if len(numbers) > 1:
@@ -1750,13 +1762,16 @@ class Library:
         return {"name": name, "art": art}
 
     def history_art(self, item: dict, episodes: list[dict] | None = None) -> str:
-        """片库的播放历史上一行的图：这一集（这部片子）自己的海报；剧集没有时是那一季对上豆瓣的海报，再没有是页面上
-        剧的卡片用的（各集里第一张本地海报，没有时剧对上豆瓣的海报，shown）。episodes：这部剧排好的各集（episodes_of，
-        一次请求里同一部剧只排一次）。"""
+        """片库的播放历史上一行的图：这一集（这部片子）自己的海报；剧集先用这一集的封面（旁边的图片或截的一帧，
+        librarythumb.py），没有时是那一季对上豆瓣的海报，再没有是页面上剧的卡片用的（各集里第一张本地海报，没有时剧对上
+        豆瓣的海报，shown）。episodes：这部剧排好的各集（episodes_of，一次请求里同一部剧只排一次）。"""
         if item.get("poster"):
             return f"api/library/art/{item['id']}"
         if item.get("kind") != "episode":
             return self.shown(item)["art"]
+        own = self.thumbs.url(item)
+        if own:
+            return own
         key = f"{self.meta_key(item)}-{int(item.get('season') or 1)}"
         entry = self.meta.get(key)
         if entry and entry.get("state") == "matched" and (entry.get("poster") or entry.get("img")):
@@ -2477,10 +2492,12 @@ class Library:
         return files, truncated
 
     @staticmethod
-    def _poster_of(entry: Entry, here: dict[str, Entry], above: dict[str, Entry]) -> str:
-        """视频旁边的海报：<名字>-poster、<名字>、<名字>-thumb、poster、folder、cover；季的文件夹再看上一层。"""
+    def _poster_of(entry: Entry, here: dict[str, Entry], above: dict[str, Entry], episode: bool = False) -> str:
+        """视频旁边的海报：<名字>-poster、<名字>、<名字>-thumb、poster、folder、cover；季的文件夹再看上一层。
+        剧集的 <名字>、<名字>-thumb 是这一集的封面（_thumb_of），不当剧的海报。"""
         stem = os.path.splitext(entry.name)[0].casefold()
-        for base in (f"{stem}-poster", stem, f"{stem}-thumb", "poster", "folder", "cover"):
+        own = (f"{stem}-poster",) if episode else (f"{stem}-poster", stem, f"{stem}-thumb")
+        for base in (*own, "poster", "folder", "cover"):
             for ext in IMAGE_TYPES:
                 found = here.get(base + ext)
                 if found is not None and found.size <= ART_MAX:
@@ -2492,8 +2509,20 @@ class Library:
                     return found.rel
         return ""
 
+    @staticmethod
+    def _thumb_of(entry: Entry, here: dict[str, Entry]) -> str:
+        """剧集旁边这一集自己的封面（Kodi 的叫法）：<名字>-thumb、<名字>（.jpg / .png / .webp）。文件夹的 poster、folder
+        是整部剧的，不算。只记路径，扫描时不取。"""
+        stem = os.path.splitext(entry.name)[0].casefold()
+        for base in (f"{stem}-thumb", stem):
+            for ext in IMAGE_TYPES:
+                found = here.get(base + ext)
+                if found is not None and found.size <= ART_MAX:
+                    return found.rel
+        return ""
+
     def build(self, sid: str, source, files: list[Entry], old: dict[str, dict]) -> list[dict]:
-        """文件 → 条目。大小和修改时间都没变的照旧用（不再读 .nfo）；海报每次按目录重新找（不用取）。"""
+        """文件 → 条目。大小和修改时间都没变的照旧用（不再读 .nfo）；海报、分集封面每次按目录重新找（不用取）。"""
         by_dir: dict[str, dict[str, Entry]] = {}
         for entry in files:
             by_dir.setdefault(entry.rel.rpartition("/")[0], {})[entry.name.casefold()] = entry
@@ -2512,14 +2541,12 @@ class Library:
                 continue
             folder = entry.rel.rpartition("/")[0]
             here = by_dir.get(folder, {})
-            above = by_dir.get(folder.rpartition("/")[0], {}) if folder else {}
             iid = item_id(sid, entry.rel)
-            poster = self._poster_of(entry, here, above)
             subs = self._sidecars(entry, here)
             previous = old.get(iid)
             same = previous is not None and previous.get("size") == entry.size and previous.get("mtime") == entry.mtime
             if same and previous.get("pv") == PARSE_VERSION:
-                items.append(dict(previous, poster=poster, subs=subs, playable=ext in VIDEO_TYPES))
+                items.append(dict(previous, subs=subs, playable=ext in VIDEO_TYPES))
                 continue
             found = parse_name(entry.rel)
             nfo = here.get(stem.casefold() + ".nfo")
@@ -2544,7 +2571,7 @@ class Library:
                    "year": found.get("year"), "kind": found["kind"], "show": found.get("show") or "",
                    "season": found.get("season"), "episode": found.get("episode"), "alt": found.get("alt") or "",
                    "plot": found.get("plot") or "", "size": entry.size, "mtime": entry.mtime, "ext": ext,
-                   "playable": ext in VIDEO_TYPES, "poster": poster, "subs": subs, "pv": PARSE_VERSION,
+                   "playable": ext in VIDEO_TYPES, "poster": "", "subs": subs, "pv": PARSE_VERSION,
                    "added": (previous or {}).get("added") or now}
             # .nfo 里写了片名 / 剧名的：本地的比豆瓣的优先（libmeta 的资料只补没有的）。
             if meta.get("title") and found["kind"] != "episode":
@@ -2555,6 +2582,15 @@ class Library:
                 row["media"] = previous["media"]          # 只是解析的写法改了：探测的结果照旧用
             items.append(row)
         regroup(items)
+        # 海报、分集封面每次按目录重新找（不用取），按合起来以后的种类：剧集旁边的 <名字>.jpg 是这一集的封面。
+        for row in items:
+            folder = row["path"].rpartition("/")[0]
+            here = by_dir.get(folder, {})
+            above = by_dir.get(folder.rpartition("/")[0], {}) if folder else {}
+            entry = here[row["path"].rpartition("/")[2].casefold()]
+            episode = row["kind"] == "episode"
+            row["poster"] = self._poster_of(entry, here, above, episode)
+            row["thumb"] = self._thumb_of(entry, here) if episode else ""
         return items
 
     @staticmethod
@@ -2636,6 +2672,10 @@ class Library:
         self._carry_meta(old, items)
         self._meta_wake.set()                      # 新加的片子去查在线资料（后台慢慢来）
         self.full.prune()                          # 不见了、变了的片子的整集缓存不留
+        self.thumbs.prune()                        # 分集封面也是
+        if any(i["kind"] == "episode" and (i["id"] not in old or (old[i["id"]].get("size"), old[i["id"]].get("mtime"))
+                                           != (i["size"], i["mtime"])) for i in items):
+            self.thumbs.wake()                     # 新的、变了的剧集去截封面（后台没人在看时）
         if src["kind"] == "webdav":
             # 新的、变了的网盘片子排上预热（后台没人在放时先把索引区读进缓存、探测一次）。
             changed = [i["id"] for i in items if i["id"] not in old
@@ -2695,6 +2735,8 @@ class Library:
             return "在缓存整集"
         if self.pre.busy():
             return "在预读"
+        if self.thumbs.busy():
+            return "在截分集封面"
         if self.watching is not None and self.watching():
             return "有人在看"
         return ""
@@ -2910,14 +2952,19 @@ class Library:
             handler.close_connection = True
         return total
 
-    def serve_file(self, handler, iid: str, raw: bool = False, warm: bool = False, pre: bool = False) -> None:
+    def serve_file(self, handler, iid: str, raw: bool = False, warm: bool = False, pre: bool = False,
+                   thumb: bool = False) -> None:
         """GET /api/library/file/<id>：按 Range 给文件的字节（只认 id）。raw：给中转自己的 ffmpeg 的（/api/library/raw），
         记下给了多少字节（起播时的进度）。warm：预热自己的探测（不算「有人在放」，字节记进这一轮预热）。
-        pre：预读开头的 ffmpeg（librarypre.py；不算「有人在放」，读到的存进整集缓存）。"""
-        if pre:
+        pre：预读开头的 ffmpeg（librarypre.py；不算「有人在放」，读到的存进整集缓存）。thumb：截分集封面的 ffmpeg
+        （librarythumb.py；不算「有人在放」，不存进整集缓存）。"""
+        if thumb:
+            warm = pre = False
+        elif pre:
             warm = False
         elif not warm:
-            self.pre.yield_to_playback(iid)      # 有人真放了：预读别和它抢网盘
+            self.pre.yield_to_playback(iid)      # 有人真放了：预读、截封面别和它抢网盘
+            self.thumbs.yield_to_playback()
         item = self.item(iid)
         src = next((s for s in self._load_sources() if item and s["id"] == item["source"]), None)
         if item is None or src is None:
@@ -2926,23 +2973,25 @@ class Library:
         if not self._files.acquire(blocking=False):
             handler._send(503, "同时在放的太多了，过一会儿再试".encode(), "text/plain; charset=utf-8")
             return
+        quiet = warm or pre or thumb
         with _LOCK:
-            if not warm and not pre:
+            if not quiet:
                 self._serving += 1
         try:
             kind = VIDEO_TYPES.get(item.get("ext") or "", "application/octet-stream")
-            tally = self._warm_tally if warm else self.pre.tally if pre else self._tally(iid) if raw else None
+            tally = self._warm_tally if warm else self.pre.tally if pre else self.thumbs.tally if thumb \
+                else self._tally(iid) if raw else None
             if src["kind"] == "local":
-                self._serve_local(handler, LocalFolder(src.get("path") or ""), item, kind, tally)
+                self._serve_local(handler, LocalFolder(src.get("path") or ""), item, kind, None if thumb else tally)
             else:
                 self._serve_dav(handler, self._source(src), item, kind, src.get("name") or "", tally, cached=raw,
-                                playback=raw and not warm and not pre, pre=pre)
+                                playback=raw and not quiet, pre=pre, thumb=thumb)
         except (OSError, ValueError):
             handler.close_connection = True        # 浏览器断开（跳转、关窗口）
         finally:
             self._files.release()
             with _LOCK:
-                if not warm and not pre:
+                if not quiet:
                     self._serving -= 1
                     self._served_at = self.clock()
 
@@ -3018,14 +3067,19 @@ class Library:
             upstream.close()
 
     def _serve_dav(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally=None,
-                   cached: bool = False, playback: bool = False, pre: bool = False) -> None:
+                   cached: bool = False, playback: bool = False, pre: bool = False, thumb: bool = False) -> None:
         """网盘的文件：Range 带给上游，上游的状态、Content-Range、Content-Length 原样回。cached：给 ffmpeg 的
         （raw），先看索引缓存（_serve_cached）。playback：放片子的 ffmpeg 读的（不是预热的探测），整集缓存开着时
-        走 _serve_full。pre：预读开头的 ffmpeg，走 _serve_pre。"""
+        走 _serve_full。pre：预读开头的 ffmpeg，走 _serve_pre。thumb：截分集封面的 ffmpeg，也走 _serve_pre（整集缓存
+        关着时也是），只是一小段一小段读、不存进整集缓存。"""
         wanted = (handler.headers.get("Range") or "").strip()
         wanted = wanted if _RANGE.match(wanted) and wanted != "bytes=-" else None
         size = int(item.get("size") or 0)
         span = parse_range(wanted, size) if cached and wanted and size > 0 else None
+        if thumb and isinstance(span, tuple):
+            self._serve_pre(handler, dav, item, kind, name, tally, *span, job=self.thumbs, piece=THUMB_PIECE,
+                            keep=False)
+            return
         if pre and isinstance(span, tuple) and self.full.enabled():
             self._serve_pre(handler, dav, item, kind, name, tally, *span)
             return
@@ -3221,10 +3275,15 @@ class Library:
         if at <= end:
             handler.close_connection = True
 
-    def _serve_pre(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally, start: int, end: int) -> None:
+    def _serve_pre(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally, start: int, end: int,
+                   job=None, piece: int = 0, keep: bool = True) -> None:
         """预读开头的 ffmpeg 的 Range 请求（librarypre.py）：索引缓存、整集缓存里有的从本机给；没有的从网盘一阵一阵
         （PRE_PIECE）读，读到的存进两个缓存。不碰下载线程手上的文件（不 touch），读网盘时下载线程让开（on_drive）；
-        预读被叫停（有人开始放了）就断开，ffmpeg 读不到就停了。"""
+        预读被叫停（有人开始放了）就断开，ffmpeg 读不到就停了。截分集封面（librarythumb.py）也走这里：job 是谁在读
+        （stopping() 说停没停，有 drive_error 的网盘出错时告诉它；默认是预读），piece 一次从网盘读多大，keep 为假时
+        不存进整集缓存（只存索引区）。"""
+        job = job if job is not None else self.pre
+        piece = piece or PRE_PIECE
         full, iid = self.full, item["id"]
         size, mtime, ext = int(item["size"]), int(item.get("mtime") or 0), item.get("ext") or ""
         sock = getattr(handler, "connection", None)
@@ -3236,7 +3295,7 @@ class Library:
                 self._send_head(handler, 206, kind, end - start + 1, {"Content-Range": f"bytes {start}-{end}/{size}"})
 
         at = start
-        while at <= end and not self.pre.stopping() and not _client_gone(sock):
+        while at <= end and not job.stopping() and not _client_gone(sock):
             want = end - at + 1
             hit = self.cache.open(iid, size, mtime, ext, at)
             if hit is not None:
@@ -3258,8 +3317,8 @@ class Library:
                 if sent < count:
                     break
                 continue
-            last = min(end, at + PRE_PIECE - 1)
-            tees = [t for t in (full.pre_tee(item, at, self._full_name(item)),
+            last = min(end, at + piece - 1)
+            tees = [t for t in (full.pre_tee(item, at, self._full_name(item)) if keep else None,
                                 self.cache.tee(iid, size, mtime, ext, at)) if t is not None]
             try:
                 with full.on_drive():
@@ -3268,10 +3327,14 @@ class Library:
                     except (urllib.error.HTTPError, LibraryError, OSError, ValueError) as error:
                         if isinstance(error, urllib.error.HTTPError):
                             error.close()
+                        if hasattr(job, "drive_error"):
+                            job.drive_error()
                         break
                     try:
                         span = self._answer_span(upstream, size)
                         if span is None or span[0] != at:
+                            if hasattr(job, "drive_error"):
+                                job.drive_error()
                             break
                         head()
                         read = getattr(upstream, "read1", None) or upstream.read
@@ -3286,7 +3349,8 @@ class Library:
             if at <= last:
                 break
         if not sent_head:
-            handler._send(503, "预读停下了".encode(), "text/plain; charset=utf-8")
+            handler._send(503, ("截封面停下了" if job is self.thumbs else "预读停下了").encode(),
+                          "text/plain; charset=utf-8")
             return
         if at <= end:
             handler.close_connection = True
@@ -3348,12 +3412,12 @@ class Library:
         from ..listen import check_token
         return self.secret is not None and check_token(self.secret, f"libraw/{iid}", token, now=time.time())
 
-    def raw_url(self, iid: str, warm: bool = False, pre: bool = False) -> str:
+    def raw_url(self, iid: str, warm: bool = False, pre: bool = False, thumb: bool = False) -> str:
         """中转自己的 ffmpeg 取这个文件的地址：只在本机（127.0.0.1）、带短期令牌。网盘的地址和密码从不给 ffmpeg，
         本机的文件也不用 file: 协议（watch.py 只许网络协议）。warm：预热的探测（带 w=1，不算「有人在放」）；
-        pre：预读开头的（带 p=1，librarypre.py）。"""
+        pre：预读开头的（带 p=1，librarypre.py）；thumb：截分集封面的（带 g=1，librarythumb.py）。"""
         return f"http://127.0.0.1:{int(self.port())}/tv/api/library/raw/{iid}?t={self.raw_token(iid)}" \
-            + ("&w=1" if warm else "") + ("&p=1" if pre else "")
+            + ("&w=1" if warm else "") + ("&p=1" if pre else "") + ("&g=1" if thumb else "")
 
     def bytes_read(self, iid: str) -> int:
         """经 /api/library/raw 给出去的这个文件一共多少字节（起播时说「已读 12 MB」）。"""
@@ -3409,10 +3473,11 @@ class Library:
                 self._save_index()
         return found
 
-    def with_color(self, iid: str, media: dict | None) -> dict | None:
+    def with_color(self, iid: str, media: dict | None, warm: bool = False) -> dict | None:
         """要转码画面时用：media 里有没有画面的传输特性（HDR 要色调映射，is_hdr）。以前探测的（没有 color）不知道；
         只有 10 位的画面（HDR 的片子都是）才重新探测一次补上——网盘上的文件头多半在索引区的缓存里（librarycache），
-        不必为这个加 PROBE_VERSION 让所有的片子都重新探测。探测不了时照旧用原来的（当 SDR），PROBE_RETRY_S 内不再试。"""
+        不必为这个加 PROBE_VERSION 让所有的片子都重新探测。探测不了时照旧用原来的（当 SDR），PROBE_RETRY_S 内不再试。
+        warm：后台截封面时问的（探测经 raw_url(warm=True)，不算「有人在放」）。"""
         video = first_video(media)
         if not isinstance(media, dict) or media.get("color") or video is None or not _deep(video):
             return media
@@ -3428,7 +3493,7 @@ class Library:
             again = (self.item(iid) or {}).get("media")
             if isinstance(again, dict) and again.get("color"):
                 return again
-            found = self.probe(iid)
+            found = self.probe(iid, warm=True) if warm else self.probe(iid)
             if found is None:
                 with _LOCK:
                     self._color_failed[iid] = self.clock()
@@ -4089,6 +4154,7 @@ def tv_episode(relay, video) -> dict:
 
 _FILE = re.compile(r"^/api/library/file/([0-9a-f]{16})$")
 _ART = re.compile(r"^/api/library/art/([0-9a-f]{16})$")
+_EP_THUMB = re.compile(r"^/api/library/thumb/([0-9a-f]{16})$")
 _SUBS = re.compile(r"^/api/library/subs/([0-9a-f]{16})/(\d{1,3})\.vtt$")
 _RAW = re.compile(r"^/api/library/raw/([0-9a-f]{16})$")
 _META_ART = re.compile(r"^/api/library/meta-art/((?:s[0-9a-f]{12}(?:-\d{1,2})?|m[0-9a-f]{16}))$")
@@ -4124,7 +4190,8 @@ def raw(handler, relay, path: str) -> bool:
         handler._not_found()
         return True
     query = handler._query()
-    library.serve_file(handler, match.group(1), raw=True, warm=query.get("w") == "1", pre=query.get("p") == "1")
+    library.serve_file(handler, match.group(1), raw=True, warm=query.get("w") == "1", pre=query.get("p") == "1",
+                       thumb=query.get("g") == "1")
     return True
 
 
@@ -4142,8 +4209,8 @@ def _recent_seasons(relay, library: Library, user: int) -> dict[str, int]:
 
 
 def get(handler, relay, caller, path: str) -> bool:
-    """GET /api/library、/api/library/history、/api/library/file/<id>、/api/library/art/<id>：只给登录的家里人（访客、
-    没登录、云端 404）。"""
+    """GET /api/library、/api/library/history、/api/library/file/<id>、/api/library/art/<id>、/api/library/thumb/<id>（分集
+    封面）：只给登录的家里人（访客、没登录、云端 404）。"""
     if path != "/api/library" and not path.startswith("/api/library/"):
         return False
     library = getattr(relay, "library", None)
@@ -4172,6 +4239,10 @@ def get(handler, relay, caller, path: str) -> bool:
     match = _ART.match(path)
     if match:
         library.serve_art(handler, match.group(1))
+        return True
+    match = _EP_THUMB.match(path)
+    if match:
+        library.thumbs.serve(handler, match.group(1))
         return True
     match = _META_ART.match(path)
     if match:
@@ -4302,6 +4373,7 @@ def attach(relay, start: bool = True) -> Library | None:
     library.pre.progress = lambda: getattr(relay, "pc_progress", None)
     if start:
         library.pre.start()
+        library.thumbs.start()
         threading.Thread(target=library.run_forever, name="library", daemon=True).start()
         threading.Thread(target=library.run_meta, name="library-meta", daemon=True).start()
         threading.Thread(target=library.run_warm, name="library-warm", daemon=True).start()

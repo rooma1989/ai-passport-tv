@@ -780,6 +780,18 @@ def post(handler, relay, path: str) -> bool:
             relay.accounts.audit(action, caller.user, ip, "library", sid[:8], detail[:40])
         handler._json(answer)
         return True
+    if path == "/api/admin/library/thumb":
+        # 一集的分集封面重新截一张（librarythumb.py）：删掉现在截的，排到最前面，没人在看时从下一个位置截。
+        library = getattr(relay, "library", None)
+        if library is None:
+            handler._json({"ok": False, "error": LIBRARY_OFF})
+            return True
+        iid = body.get("id") if isinstance(body.get("id"), str) else ""
+        answer = library.thumbs.refresh(iid)
+        if answer.get("ok"):
+            relay.accounts.audit("library.thumb", caller.user, ip, "library", iid[:16], "")
+        handler._json(answer)
+        return True
     if path in ("/api/admin/library/match", "/api/admin/library/meta/refresh", "/api/admin/library/settings"):
         # 片库的在线资料（library.py、libmeta.py）：手动选豆瓣的条目或「不匹配」（手动的从不被自动的盖掉）、
         # 重新取一部、打开 / 关掉在线资料（关了一个请求也不往豆瓣发）、粘贴 / 清掉备用的 TMDB 密钥（tmdb_key，
