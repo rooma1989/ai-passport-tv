@@ -252,6 +252,15 @@ const imgTag = (url, cls) => url ? `<img src="${esc(url)}" alt="" loading="lazy"
 document.addEventListener("error", (event) => {
   const t = event.target;
   if (t && t.id === "pcPoster") { t.hidden = true; t.removeAttribute("src"); return; }   // 播放器的封面留着下次用
+  // 豆瓣的海报经中转一张一张取，同时要的太多时中转回 503：先藏起来露出占位图，过几秒再要（至多 6 次）。
+  if (t && t.tagName === "IMG" && /api\/library\/douban\/poster\//.test(t.src || "") && (Number(t.dataset.tries) || 0) < 6) {
+    const tries = (Number(t.dataset.tries) || 0) + 1, base = t.src.replace(/\?.*$/, "");
+    t.dataset.tries = String(tries);
+    t.style.visibility = "hidden";
+    t.addEventListener("load", () => { t.style.visibility = ""; }, { once: true });
+    setTimeout(() => { if (t.isConnected) t.src = base + "?r=" + tries; }, 3000 + Math.random() * 4000);
+    return;
+  }
   if (t && t.tagName === "IMG" && !t.closest("#petgrid")) t.remove();
 }, true);
 
@@ -7827,7 +7836,8 @@ async function dbLoadDetail(did, tries = 0) {
   if (answer.ok) Object.assign(cur, { state: answer.state, detail: answer.detail || cur.detail || null });
   else cur.state = "none";
   const here = () => route === "lib" && libTab === "douban" && db.detail === did;
-  if (cur.state === "loading" && tries < 8) setTimeout(() => { if (here()) dbLoadDetail(did, tries + 1); }, 4000);
+  // 豆瓣的请求排着队（海报、榜单的下一页），慢的时候要一两分钟：至多问 30 次。
+  if (cur.state === "loading" && tries < 30) setTimeout(() => { if (here()) dbLoadDetail(did, tries + 1); }, 4000);
   if (here()) renderDb();
 }
 // 评分人数：「27.4 万人评价」「1234 人评价」。

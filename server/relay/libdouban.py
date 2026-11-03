@@ -71,6 +71,9 @@ DETAILS_MAX = 300
 IMG_FILES_MAX = 400
 IMG_BYTES_MAX = 60 * 1024 * 1024
 IMG_RETRY_S = 600.0
+# 同一时间至多这么多张海报在等豆瓣（豆瓣的请求一个一个来）：一屏几十张一起要时，别的先回 503（页面过一会儿再要），
+# 不然榜单的下一页、详情都得排在几十张海报后面。
+IMG_AT_ONCE = 3
 # 想看：每人至多这么多部、至多这么多个人；片库里有了以后首页提醒这么久。
 WISH_MAX = 200
 WISH_USERS_MAX = 64
@@ -245,6 +248,8 @@ class Boards:
         self._subjects: dict[str, dict] = self._load_subjects()
         self._details: dict[str, dict] = self._load_details()
         self._queue: deque[tuple[str, str]] = deque()
+        self._doing: tuple[str, str] | None = None      # 正在取的那一件（取出队了、还没取完）
+        self._img_slots = threading.BoundedSemaphore(IMG_AT_ONCE)
         self._wake = threading.Event()
         self._img_failed: dict[str, float] = {}
         self.wishes = Wishes(self.dir / "wish.json", lambda: self.lib.clock())
@@ -368,6 +373,16 @@ class Boards:
                     break
                 if kind != "more" and self._due(store.get(key), ttl):
                     break                       # 排队时已经取好了的跳过，不发请求
+            start = start if kind == "more" else 0
+            self._doing = (kind, key)
+        try:
+            return self._fetch(kind, key, store, start)
+        finally:
+            with self._lock:
+                self._doing = None
+
+    def _fetch(self, kind: str, key: str, store: dict, start: int) -> bool:
+        """step 取出来的一件：问豆瓣、存下来。"""
         douban = self.lib.douban
         try:
             if kind == "list":
@@ -460,7 +475,8 @@ class Boards:
                 items = list(entry["items"]) if entry and lname == name else []
                 due = self._due(entry, LIST_TTL_S)
                 more = self._more_due(entry)
-                paging = ("more", lname) in self._queue
+                # 下一页还在排队、或者正在取：页面接着问（取出队了不算排队，不看这个页面就不刷新了）。
+                paging = ("more", lname) in self._queue or self._doing == ("more", lname)
             loading = lname == name and can and (bool(due and self.want("list", lname)) or paging)
             row = {"name": lname, "title": title, "group": group, "at": int(entry["at"]) if entry and entry["at"] else 0,
                    "count": len(entry["items"]) if entry else 0, "more": more, "loading": loading}
@@ -565,6 +581,9 @@ class Boards:
         if not url or not self.can() or (failed is not None and self.lib.clock() - failed < IMG_RETRY_S):
             handler._send(404, b"", "text/plain; charset=utf-8", miss)
             return
+        if not self._img_slots.acquire(blocking=False):
+            handler._send(503, b"", "text/plain; charset=utf-8", {"Cache-Control": "no-store", "Retry-After": "5"})
+            return
         try:
             kind, data = self.lib.douban.image(url)
         except (libmeta.Blocked, libmeta.Failed):
@@ -573,6 +592,8 @@ class Boards:
                 self._img_failed.clear()
             handler._send(404, b"", "text/plain; charset=utf-8", miss)
             return
+        finally:
+            self._img_slots.release()
         try:
             self.img_dir.mkdir(parents=True, exist_ok=True)
             os.chmod(self.img_dir, 0o700)

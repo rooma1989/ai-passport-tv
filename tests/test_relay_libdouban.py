@@ -334,7 +334,18 @@ class BoardsTests(unittest.TestCase):
         self.assertEqual(boards.more("movie_top250"), {"ok": True, "queued": True})
         row = next(r for r in boards.lists_view(1, "movie_top250")["lists"] if r["name"] == "movie_top250")
         self.assertTrue(row["loading"], "the page keeps asking while the next page is queued")
-        self.assertEqual(drain(self.lib), 1)
+        # Taken off the queue but not fetched yet (the page asked right after clicking): still loading.
+        seen = []
+        real = self.lib.douban.collection
+        def watching(*args):
+            seen.append(next(r for r in boards.lists_view(1, "movie_top250")["lists"]
+                             if r["name"] == "movie_top250")["loading"])
+            return real(*args)
+        with mock.patch.object(self.lib.douban, "collection", watching):
+            self.assertEqual(drain(self.lib), 1)
+        self.assertEqual(seen, [True], "the page keeps asking while the next page is being fetched")
+        row = next(r for r in boards.lists_view(1, "movie_top250")["lists"] if r["name"] == "movie_top250")
+        self.assertFalse(row["loading"])
         self.assertEqual(self.fake.urls()[-1], libmeta.COLLECTION_URL.format("movie_top250", 50, libdouban.PAGE))
         boards.more("movie_top250")
         drain(self.lib)
@@ -481,6 +492,24 @@ class BoardsTests(unittest.TestCase):
         with mock.patch.object(libdouban, "IMG_FILES_MAX", 1):
             boards.serve_poster(handler, "4000001")
         self.assertEqual(sorted(p.name for p in boards.img_dir.iterdir()), ["4000001.jpg"], "bounded on disk")
+
+    def test_too_many_posters_at_once_wait_their_turn(self):
+        """Douban requests go one by one: with IMG_AT_ONCE posters already waiting, another gets 503 at once (the page
+        asks again a few seconds later) instead of queueing in front of the next list page or a detail."""
+        boards = self.lib.boards
+        open_lists(self.lib)
+        drain(self.lib)
+        calls = len(self.fake.calls)
+        for _ in range(libdouban.IMG_AT_ONCE):
+            boards._img_slots.acquire()
+        handler = Handler()
+        boards.serve_poster(handler, "2000001")
+        self.assertEqual(handler.sent[-1][0], 503)
+        self.assertEqual(len(self.fake.calls), calls, "nothing asked of Douban")
+        for _ in range(libdouban.IMG_AT_ONCE):
+            boards._img_slots.release()
+        boards.serve_poster(handler, "2000001")
+        self.assertEqual(handler.sent[-1][0], 200)
 
 
 # ---------------------------------------------------------------- wishlist
