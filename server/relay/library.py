@@ -1746,6 +1746,21 @@ class Library:
                 art = self._meta_art_url(key, entry)
         return {"name": name, "art": art}
 
+    def history_art(self, item: dict, episodes: list[dict] | None = None) -> str:
+        """片库的播放历史上一行的图：这一集（这部片子）自己的海报；剧集没有时是那一季对上豆瓣的海报，再没有是页面上
+        剧的卡片用的（各集里第一张本地海报，没有时剧对上豆瓣的海报，shown）。episodes：这部剧排好的各集（episodes_of，
+        一次请求里同一部剧只排一次）。"""
+        if item.get("poster"):
+            return f"api/library/art/{item['id']}"
+        if item.get("kind") != "episode":
+            return self.shown(item)["art"]
+        key = f"{self.meta_key(item)}-{int(item.get('season') or 1)}"
+        entry = self.meta.get(key)
+        if entry and entry.get("state") == "matched" and (entry.get("poster") or entry.get("img")):
+            return self._meta_art_url(key, entry)
+        found = next((ep for ep in (self.episodes_of(item) if episodes is None else episodes) if ep.get("poster")), None)
+        return f"api/library/art/{found['id']}" if found is not None else self.shown(item)["art"]
+
     def titles(self) -> dict[str, dict]:
         """片库里的「片子」：一部剧（各集一起）、一部电影、一个其他视频。{键: {key, kind, title, alt, year, added, stale}}"""
         found: dict[str, dict] = {}
@@ -3944,8 +3959,10 @@ def play_tv(relay, caller, dev: dict, iid) -> dict:
     saved = store.get(caller.user, key) if store is not None else None
     position = float((saved or {}).get("position") or 0)
     video = _tv_video(library, item)
-    if video.duration and position >= video.duration - 5:
-        position = 0.0
+    from . import home         # home 引用 voicecmds，voicecmds 引用 voicelib，voicelib 引用这里：用到时再引
+    if home.finished(position, float(video.duration or (saved or {}).get("duration") or 0),
+                     item["id"] in ((saved or {}).get("done") or [])):
+        position = 0.0         # 看完了的从头放（和电脑上一样，web.py 的 _pc_library）
     _viewers(relay)[dev["slot"]] = caller.user
     _tv_cast(relay, dev, library, item, position)
     relay.log(f"片库的「{item['title']}」播到{dev['name']}" + (f"，从 {int(position)} 秒接着放" if position else ""))
@@ -4100,7 +4117,8 @@ def _recent_seasons(relay, library: Library, user: int) -> dict[str, int]:
 
 
 def get(handler, relay, caller, path: str) -> bool:
-    """GET /api/library、/api/library/file/<id>、/api/library/art/<id>：只给登录的家里人（访客、没登录、云端 404）。"""
+    """GET /api/library、/api/library/history、/api/library/file/<id>、/api/library/art/<id>：只给登录的家里人（访客、
+    没登录、云端 404）。"""
     if path != "/api/library" and not path.startswith("/api/library/"):
         return False
     library = getattr(relay, "library", None)
@@ -4118,6 +4136,9 @@ def get(handler, relay, caller, path: str) -> bool:
             # 备用的 TMDB：只说填了没有、有没有出错，从不带密钥。
             answer["tmdb"] = library.tmdb.state()
         handler._json(answer)
+        return True
+    if path == "/api/library/history":
+        handler._json(history(relay, caller))
         return True
     match = _FILE.match(path)
     if match:
@@ -4160,6 +4181,73 @@ def home_rows(relay, caller) -> list[dict]:
                      "art": {"url": shown["art"], "ratio": "poster"},
                      "play": {"kind": "library", "id": item["id"], "playable": Library.playable(item)}})
     return rows
+
+
+# ---------------------------------------------------------------- 片库的播放历史
+
+def history(relay, caller) -> dict:
+    """GET /api/library/history：这个人在片库里看过的（pc-progress.json 的 lib:<id>：电脑上、小电视上看的都记在那里），
+    最近的在前，一集一行（「继续观看」一部剧只留最近的那一集，这里不合并）。条目不在片库里了的不显示，记录留着（重新
+    扫描回来了照旧）。每行：id、kind（movie / episode / video）、name（剧名或片名，对上豆瓣的用豆瓣的，shown）；
+    剧集再有 season、seasons（片库里这部剧有几季，页面上不止一季才写第几季）、episode（第几集）、title（这一集的名字）；
+    art（history_art）、position、duration、at、finished（home.finished：离结尾不到 PROGRESS_END_S 秒，或记过看完了）、
+    device（在小电视上看的是那台的名字，电脑上看的为空）、playable。"""
+    from . import home         # home 引用 voicecmds，voicecmds 引用 voicelib，voicelib 引用这里：用到时再引
+    library = getattr(relay, "library", None)
+    store = getattr(relay, "pc_progress", None)
+    rows: list[dict] = []
+    if library is None or store is None:
+        return {"ok": True, "items": rows}
+    shows: dict[str, list[dict]] = {}
+    for key, rec in store.rows(caller.user):
+        item = library.item(key[4:]) if key.startswith("lib:") else None
+        if item is None:
+            continue
+        position, duration = float(rec.get("position") or 0), float(rec.get("duration") or 0)
+        done = item["id"] in (rec.get("done") or [])
+        name = library.shown(item)["name"] or item.get("title") or ""
+        row = {"id": item["id"], "kind": item["kind"], "name": name, "title": item.get("title") or "",
+               "position": int(position), "duration": int(duration), "at": rec.get("at") or 0,
+               "finished": home.finished(position, duration, done), "device": rec.get("device") or "",
+               "playable": Library.playable(item)}
+        episodes = None
+        if item["kind"] == "episode":
+            episodes = shows.get(library.meta_key(item))
+            if episodes is None:
+                episodes = shows[library.meta_key(item)] = library.episodes_of(item)
+            seasons = len({int(ep.get("season") or 1) for ep in episodes})
+            if seasons > 1:
+                # 豆瓣一季一个条目（「X医生 第二季」）：后面另写第几季，名字里不重复。
+                row["name"] = clean_title(_SEASON_WORD.sub(" ", name)) or name
+            n = item.get("episode") or next((n for n, ep in enumerate(episodes, 1) if ep["id"] == item["id"]), None)
+            row.update(season=int(item.get("season") or 1), seasons=seasons, episode=n)
+        row["art"] = library.history_art(item, episodes)
+        rows.append(row)
+    return {"ok": True, "items": rows}
+
+
+def history_remove(relay, caller, body: dict) -> dict:
+    """POST /api/library/history/remove {id} 删一条，{all: true} 清空这个人片库的播放历史（只动 pc-progress.json 里
+    他自己的 lib: 记录，B 站、YouTube 的不动，片子本身从来不碰）。删了的那一集看到哪里、「看过」的勾都一起忘掉；
+    电脑上的游标（_pc_cursor）也去掉，不然 pc_sync 又把它写回去。"""
+    store = getattr(relay, "pc_progress", None)
+    if store is None:
+        return {"ok": True, "removed": 0}
+    if body.get("all") is True:
+        keys = [k for (who, k) in list(relay._pc_cursor) if who == caller.user and k.startswith("lib:")]
+        for k in keys:
+            relay._pc_cursor.pop((caller.user, k), None)
+        removed = store.forget_prefix(caller.user, "lib:")
+    else:
+        iid = body.get("id")
+        if not isinstance(iid, str) or not _ID.match(iid):
+            return {"ok": False, "error": "请求格式不对"}
+        key = "lib:" + iid
+        relay._pc_cursor.pop((caller.user, key), None)
+        removed = 1 if store.get(caller.user, key) is not None else 0
+        store.forget(caller.user, key)
+    relay.forget_home(caller)            # 首页的「继续观看」跟着变
+    return {"ok": True, "removed": removed}
 
 
 def _proxy(relay) -> str:

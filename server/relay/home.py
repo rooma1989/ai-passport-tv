@@ -43,7 +43,9 @@ LIVE_MAX = 16
 CONTINUE_MAX = 12
 PER_CREATOR = 3
 # 电脑上的进度：每个用户最多记这么多条；看了不到 MIN_S 秒、离结尾不到 END_S 秒的不算「看到一半」。
+# 片库的（lib:<id>）另算，最多 LIB_PROGRESS_MAX 条：片库的播放历史一集一行，一部剧几十集，不能挤掉 B 站的。
 PROGRESS_MAX = 40
+LIB_PROGRESS_MAX = 400
 PROGRESS_MIN_S = 30
 PROGRESS_END_S = 30
 # 进度变化不到这么多秒就不重写文件。
@@ -51,6 +53,15 @@ PROGRESS_STEP_S = 5
 # 每条记录最多记多少个「电脑上看完了」的集（选集里打 ✓ 的）。
 DONE_MAX = 1000
 PC_NAME = "这台电脑"
+
+
+def finished(position: float, duration: float, done: bool = False) -> bool:
+    """一条进度算不算看完了：离结尾不到 PROGRESS_END_S 秒（「继续观看」不收的那种）；或者记过看完了（done），
+    后来又没重新看到 PROGRESS_MIN_S 秒以后（重看到一半的照「看到一半」算）。不知道多长时只看 done。
+    片库的播放历史标「看完了」、再放时从头放（web.py 的 _pc_library、library.py 的 play_tv）都按它。"""
+    if duration and position > duration - PROGRESS_END_S:
+        return True
+    return bool(done) and (not duration or position < PROGRESS_MIN_S)
 _TV_SITES = {"bilibili": "B 站", "youtube": "YouTube"}
 
 
@@ -237,9 +248,13 @@ class PcProgress:
                     old.get("bvid") == record.get("bvid"):
                 fresh["cover"] = old["cover"]       # 首页补上的封面：同一集接着记
             mine[key] = fresh
-            while len(mine) > PROGRESS_MAX:
-                oldest = min(mine, key=lambda k: float(mine[k].get("at") or 0))
+            # 超了就去掉同一类里最旧的（片库的和别的各算各的）。
+            lib = key.startswith("lib:")
+            same = [k for k in mine if k.startswith("lib:") == lib]
+            while len(same) > (LIB_PROGRESS_MAX if lib else PROGRESS_MAX):
+                oldest = min(same, key=lambda k: float(mine[k].get("at") or 0))
                 mine.pop(oldest)
+                same.remove(oldest)
             self._save()
 
     def set_cover(self, user: int, key: str, url: str) -> None:
@@ -270,6 +285,17 @@ class PcProgress:
         with self.lock:
             if self._data.get(str(user), {}).pop(key, None) is not None:
                 self._save()
+
+    def forget_prefix(self, user: int, prefix: str) -> int:
+        """去掉这个用户键以 prefix 开头的所有记录（清空片库的播放历史：lib:），别的不动；返回去掉了几条。"""
+        with self.lock:
+            mine = self._data.get(str(user), {})
+            gone = [k for k in mine if k.startswith(prefix)]
+            for k in gone:
+                mine.pop(k)
+            if gone:
+                self._save()
+            return len(gone)
 
     def _save(self) -> None:
         try:
