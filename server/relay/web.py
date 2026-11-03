@@ -46,6 +46,9 @@ MAX_SKIPS = 3
 MAX_QUICK_FAILURES = 3
 QUICK_FAILURE_S = 5.0
 MAX_BODY_BYTES = 4096
+# 片库的播放诊断（library_playdiag）：一次至多看这么多条、记这么多行日志。
+PLAYDIAG_MAX = 20
+PLAYDIAG_LOG = 5
 _CHANNEL = re.compile(r"^/ch/(up\d\d|sr\d\d|cast)$")
 # 多用户：/ch/<设备 id>/<台>
 _DEVICE_CHANNEL = re.compile(r"^/ch/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|cast)$")
@@ -1855,6 +1858,52 @@ class Relay:
         self.log(f"片库起播：「{library._full_name(item)}」" + "，".join(parts))
         return {"ok": True}
 
+    def library_playdiag(self, caller: Caller, body: dict) -> dict:
+        """POST /api/library/playdiag {id, events: [...]}：电脑上放片库的片子时页面攒的播放诊断（console.js 的 playDiag）：
+        gap（播放器跳过了缓冲里的空档：gap 秒、ranges 缓冲的几截）、jump（位置突然多走了 extra 秒）、dropped（10 秒里
+        丢了 n 帧，共 of 帧）、stall（卡住等了 secs 秒）。每条记一行日志（至多 PLAYDIAG_LOG 行，多的合成一句），
+        「偶尔跳一下」时看得出是哪一种、在片子的哪儿。"""
+        library = library_api.wired(self)
+        iid, events = body.get("id"), body.get("events")
+        if caller.guest or caller.user is None or not isinstance(iid, str) or not re.fullmatch(r"[0-9a-f]{16}", iid) \
+                or not isinstance(events, list):
+            return {"ok": False, "error": "请求格式不对"}
+        item = library.item(iid) if library is not None else None
+        if item is None:
+            return {"ok": True}
+
+        def num(row: dict, key: str, cap: float = 1e6) -> float:
+            value = row.get(key)
+            return min(cap, max(0.0, float(value))) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+        def clock(seconds: float) -> str:
+            seconds = int(seconds)
+            return f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}" if seconds >= 3600 \
+                else f"{seconds // 60}:{seconds % 60:02d}"
+
+        lines = []
+        for row in events[:PLAYDIAG_MAX]:
+            if not isinstance(row, dict):
+                continue
+            kind, at = row.get("kind"), clock(num(row, "at"))
+            if kind == "gap":
+                ranges = [r for r in (row.get("ranges") or [])[:4] if isinstance(r, list) and len(r) == 2
+                          and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in r)]
+                held = " ".join(f"{clock(max(0, a))}–{clock(max(0, b))}" for a, b in ranges)
+                lines.append(f"{at} 跳过了 {num(row, 'gap', 600):.2f} 秒的空档" + (f"（缓冲 {held}）" if held else ""))
+            elif kind == "jump":
+                lines.append(f"{at} 位置突然往前多走了 {num(row, 'extra', 600):.2f} 秒")
+            elif kind == "dropped":
+                lines.append(f"{at} 前 10 秒丢了 {int(num(row, 'n'))} 帧（共 {int(num(row, 'of'))} 帧）")
+            elif kind == "stall":
+                lines.append(f"{at} 卡住等数据 {num(row, 'secs', 3600):.1f} 秒")
+        name = library._full_name(item)
+        for line in lines[:PLAYDIAG_LOG]:
+            self.log(f"片库播放诊断：「{name}」{line}")
+        if len(lines) > PLAYDIAG_LOG:
+            self.log(f"片库播放诊断：「{name}」另有 {len(lines) - PLAYDIAG_LOG} 条（同一类的多半是同一个原因）")
+        return {"ok": True}
+
     def watch_stop(self, caller: Caller, viewer, body: dict | None = None) -> dict:
         """页面上点了「关闭」：马上停掉这个页面直接看的那一路（跟随小电视的那一路是全家共用的，等它自己空闲停）。
         body 里带着 sid 和 position 时先记下看到的地方（关页面时也发，keepalive）。"""
@@ -3413,6 +3462,9 @@ def _manage_handler(relay: Relay):
                 return
             if path == "/api/library/started":
                 self._json(relay.library_started(caller, body))
+                return
+            if path == "/api/library/playdiag":
+                self._json(relay.library_playdiag(caller, body))
                 return
             if path == "/api/library/history/remove":
                 self._json(relay.library_history_remove(caller, body))

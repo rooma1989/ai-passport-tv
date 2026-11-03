@@ -288,6 +288,33 @@ class EndpointTests(unittest.TestCase):
         self.assertIn("开头没预读过", line)
         self.assertIn("按了「先放」", line)
 
+    def test_playback_diagnostics_are_logged(self):
+        lib = self.relay.library
+        logs = []
+        self.relay.log = logs.append
+        item = {"id": "0123456789abcdef", "title": "肖申克的救赎", "kind": "movie", "size": 1, "mtime": 1, "path": "x",
+                "source": "s"}
+        events = [{"kind": "gap", "at": 3725.4, "gap": 0.42, "ranges": [[3600, 3725.3], [3725.8, 3790]]},
+                  {"kind": "jump", "at": 61, "extra": 1.3}, {"kind": "dropped", "at": 70, "n": 12, "of": 240},
+                  {"kind": "stall", "at": 80, "secs": 1.24}, {"kind": "bogus"}, "x"]
+        with mock.patch.object(lib, "item", return_value=item):
+            status, answer = self.call("alice", "POST", "/tv/api/library/playdiag", {"id": "0123456789abcdef",
+                                                                                    "events": events})
+            self.assertEqual((status, answer), (200, {"ok": True}))
+            lines = [m for m in logs if m.startswith("片库播放诊断")]
+            self.assertEqual(lines, ["片库播放诊断：「肖申克的救赎」1:02:05 跳过了 0.42 秒的空档（缓冲 1:00:00–1:02:05 1:02:05–1:03:10）",
+                                     "片库播放诊断：「肖申克的救赎」1:01 位置突然往前多走了 1.30 秒",
+                                     "片库播放诊断：「肖申克的救赎」1:10 前 10 秒丢了 12 帧（共 240 帧）",
+                                     "片库播放诊断：「肖申克的救赎」1:20 卡住等数据 1.2 秒"])
+            logs.clear()
+            self.call("alice", "POST", "/tv/api/library/playdiag",
+                      {"id": "0123456789abcdef", "events": [{"kind": "jump", "at": i, "extra": 1} for i in range(9)]})
+            self.assertEqual(len(logs), 6, "at most five lines and one summary")
+            self.assertIn("另有 4 条", logs[-1])
+        self.assertFalse(self.call("guest", "POST", "/tv/api/library/playdiag", {"id": "0123456789abcdef",
+                                                                               "events": []})[1]["ok"])
+        self.assertFalse(self.call("alice", "POST", "/tv/api/library/playdiag", {"id": "../x", "events": []})[1]["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

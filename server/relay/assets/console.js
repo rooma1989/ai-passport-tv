@@ -2082,7 +2082,10 @@ class WatchPlayer {
       // 停在一个空档里：跳到后面那一截。后面没有了时只有起播才回到第一截；放起来以后是放到了缓存的末尾
       // （画面和声音两条轨不一样长，位置会比缓冲多出一点），往回跳就是把放过的一大截再放一遍（片源没了时尤其如此）。
       const ahead = [...Array(b.length).keys()].map((i) => b.start(i)).find((t) => t > v.currentTime);
-      if (ahead !== undefined) v.currentTime = ahead + 0.05;
+      if (ahead !== undefined) {
+        if (this.started) diagNote("gap", { gap: ahead + 0.05 - v.currentTime, ranges: diagRanges(b, this) });
+        v.currentTime = ahead + 0.05;
+      }
       else if (!this.started) v.currentTime = b.start(0) + 0.05;
     } else if (this.live && end - v.currentTime > 30) v.currentTime = end - 12;
     if (!this.started) {
@@ -2564,6 +2567,7 @@ class DashPlayer {
   }
 }
 function playerFor(answer) {
+  diagStart(answer.library || "");
   const live = answer.kind === "live";
   if (live) switching(answer.name || answer.title || answer.channel);
   if (watching) watching.player.stop();
@@ -2840,6 +2844,7 @@ function pcPos() {
 let seekTimer = 0;
 // 跳到 target 秒：缓冲里有就直接跳，没有就让中转从那里重起一路（拖动时停手一会儿才发）。
 function pcSeek(target, now) {
+  playDiag.moved = performance.now();
   if (!watching || !watching.seekable) return;
   const dur = watching.duration;
   target = Math.max(0, dur ? Math.min(target, dur - 3) : target);
@@ -4085,6 +4090,7 @@ function openDirect(answer, ctx) {
 }
 
 function stopWatch() {
+  diagStart("");
   if (opening) {
     // 还在等中转回答时关掉：取消。回答到了也不放（playOnPc 收到后会让中转停掉那一路）。
     opening = null;
@@ -7483,6 +7489,80 @@ function libSeasonGuess(show, n) { return (show.guess || show.title) + " 第" + 
 // 打开片库的详情页：先让中转把「播放」会放的那一段下到本机（librarypre.py），点下去少等。不等回答。
 function libPreread(body) { call("POST", "api/library/preread", body).catch(() => {}); }
 // 片库的一集出画面了：报给中转记一行日志（等了多久、网盘多快、片子码率、按没按「先放」），起播慢时查得出是哪一步。
+// ---- 播放诊断：偶尔「跳一下」查得出是哪种（rootv：画面跳帧）----
+// 片库的片子放着时记三种：播放器自己跳过缓冲里的空档（gap：空档多大、缓冲到哪儿）、位置突然比走过的时间多出去
+// 半秒以上（jump：浏览器自己越过了接缝）、10 秒里丢了 DIAG.DROPPED 帧以上（dropped：解码跟不上）、卡住等数据
+// （stall）。攒着，至多每 DIAG.FLUSH_MS 报一次给中转记日志（POST api/library/playdiag）。
+const DIAG = { TICK_MS: 1000, FLUSH_MS: 30000, MAX: 20, JUMP_S: 0.5, DROPPED: 5, DROP_WINDOW_MS: 10000, STALL_S: 0.5 };
+const playDiag = { id: "", events: [], timer: 0, sent: 0, lastT: 0, lastWall: 0, moved: 0, frames: null, stallAt: 0 };
+// ---- 播放诊断的纯函数（tests/console_diag_test.mjs 截出这一段单独测）----
+// 一秒前在 t0、现在在 t1，墙钟过了 wall 秒、速度 rate：多走出去的秒数（不是跳就 0）。
+function diagJump(t0, t1, wall, rate) {
+  const extra = (t1 - t0) - wall * (rate || 1);
+  return extra > DIAG.JUMP_S ? Math.round(extra * 100) / 100 : 0;
+}
+// 一段时间里丢的帧：(这次的 dropped, total) 减上次的；丢得多（>= DROPPED）时给 {n, of}，不然 null。
+function diagDropped(before, now) {
+  if (!before || !now) return null;
+  const n = now.dropped - before.dropped, of = now.total - before.total;
+  return n >= DIAG.DROPPED && of >= 0 ? { n, of } : null;
+}
+// ---- 播放诊断的纯函数到此 ----
+// 缓冲的几截（换成片子里的秒，至多 4 截）：「10:01–12:34 12:35–13:10」那样记进日志。
+function diagRanges(b, player) {
+  const shift = player && player.origin != null && watching ? (watching.start || 0) - player.origin : 0;
+  const out = [];
+  for (let i = 0; i < b.length && out.length < 4; i++) out.push([Math.round((b.start(i) + shift) * 10) / 10, Math.round((b.end(i) + shift) * 10) / 10]);
+  return out;
+}
+function diagStart(id) {
+  diagFlush();
+  playDiag.id = id; playDiag.events = []; playDiag.frames = null; playDiag.lastWall = 0; playDiag.stallAt = 0;
+  clearInterval(playDiag.timer);
+  if (id) playDiag.timer = setInterval(diagTick, DIAG.TICK_MS);
+}
+function diagNote(kind, data) {
+  if (!playDiag.id || playDiag.events.length >= DIAG.MAX) return;
+  playDiag.events.push(Object.assign({ kind, at: Math.round(pcPos() * 10) / 10 }, data || {}));
+}
+function diagTick() {
+  const v = $("watchVideo");
+  if (!watching || !playDiag.id || !v) { diagStart(""); return; }
+  const now = performance.now();
+  if (!v.paused && !v.seeking && playDiag.lastWall && now - playDiag.moved > 1500) {
+    const extra = diagJump(playDiag.lastT, v.currentTime, (now - playDiag.lastWall) / 1000, v.playbackRate);
+    if (extra) diagNote("jump", { extra });
+  }
+  playDiag.lastT = v.currentTime; playDiag.lastWall = now;
+  const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+  if (q) {
+    const cur = { dropped: q.droppedVideoFrames, total: q.totalVideoFrames, at: now };
+    if (!playDiag.frames) playDiag.frames = cur;
+    else if (now - playDiag.frames.at >= DIAG.DROP_WINDOW_MS) {
+      const lost = diagDropped(playDiag.frames, cur);
+      if (lost && !v.paused) diagNote("dropped", lost);
+      playDiag.frames = cur;
+    }
+  }
+  if (playDiag.events.length && now - playDiag.sent >= DIAG.FLUSH_MS) diagFlush();
+}
+function diagFlush() {
+  if (!playDiag.id || !playDiag.events.length) return;
+  const events = playDiag.events.splice(0, DIAG.MAX);
+  playDiag.sent = performance.now();
+  call("POST", "api/library/playdiag", { id: playDiag.id, events }).catch(() => {});
+}
+// 卡住等数据（不是为攒缓冲停着、不是用户暂停）：从 waiting 到 playing 多久。
+$("watchVideo").addEventListener("waiting", () => { if (playDiag.id) playDiag.stallAt = performance.now(); });
+$("watchVideo").addEventListener("playing", () => {
+  const p = watching && watching.player;
+  if (playDiag.id && playDiag.stallAt && p && p.started && !p.hold) {
+    const secs = (performance.now() - playDiag.stallAt) / 1000;
+    if (secs >= DIAG.STALL_S) diagNote("stall", { secs: Math.round(secs * 10) / 10 });
+  }
+  playDiag.stallAt = 0;
+});
+$("watchVideo").addEventListener("seeking", () => { playDiag.moved = performance.now(); playDiag.stallAt = 0; });
 function libStarted(id, player, ms) {
   const speed = player ? vodSpeed(player.feed) : 0;
   // 点下去以后的第一次起播从点的那一下算；之后的重起（跳转、重连）从那一路起的时候算（ms）。
