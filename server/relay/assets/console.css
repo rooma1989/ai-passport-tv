@@ -1234,6 +1234,10 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .lctx b { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lctx small { color: var(--label-3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .h2.leps { margin-top: 26px; margin-bottom: 8px; }
+/* 片库的一集，管理员多一个「换封面」（libEpisode）。 */
+.lerow { display: flex; align-items: center; gap: 8px; }
+.lerow .hrow { flex: 1; min-width: 0; }
+.lerow > .ghost { flex: none; }
 .m .linfo { grid-template-columns: 108px minmax(0, 1fr); gap: 14px; }
 .m .linx h2 { font-size: 21px; }
 .m .lfacts, .m .lppl { font-size: 13px; }

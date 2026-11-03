@@ -1794,7 +1794,7 @@ class Relay:
         """POST /api/library/preread {id} 或 {show}：电脑版打开了片库的详情页，先把「播放」会放的那一段（这个人上次
         看到的地方，没看过从头）下到本机（librarypre.py），点下去少等。剧（show 是剧的键）挑这个人最近看的那一集
         （看完了是下一集，没看过是第一集，librarypre.PreRead.pick）。只给登录的家里人；没有片库、不是网盘上的、
-        直接放原文件的不读（queued 为假）。"""
+        直接放原文件的不读（queued 为假）。剧的详情页另外把这部剧还没有分集封面的各集排到截封面的最前面。"""
         library = library_api.wired(self)
         iid, show = body.get("id"), body.get("show")
         if caller.guest or caller.user is None:
@@ -1802,6 +1802,7 @@ class Relay:
         if isinstance(show, str) and re.fullmatch(r"[0-9a-f]{12}", show):
             if library is None:
                 raise NotFound("library")
+            library.thumbs.bump(show)               # 这部剧还没有分集封面的排到最前面（librarythumb.py）
             iid = library.pre.pick(caller.user, show)
             if iid is None:
                 return {"ok": True, "queued": False}

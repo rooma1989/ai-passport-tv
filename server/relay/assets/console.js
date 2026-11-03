@@ -6963,12 +6963,16 @@ async function libMetaCall(path, body, btn) {
   if (answer && answer.ok) { lib.match = null; lib.at = 0; await loadLib(true); loadHome(true); }
   return answer;
 }
+// 剧的一集：封面是这一集自己的（c.art：视频旁边的图片，或中转没人在看时截的一帧，librarythumb.py），还没有时是画的图，
+// 从不用剧的海报。管理员多一个「换封面」：重新截一张（POST api/admin/library/thumb，从下一个位置截）。
 function libEpisode(c) {
   const id = reg({ id: "lib:" + c.id, title: c.show + " " + c.title, subtitle: c.show, art: { url: c.art, ratio: "wide" },
                    play: { kind: "library", id: c.id, playable: c.playable } });
   const se = c.season ? "第 " + c.season + " 季" : "";
-  return `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
+  const row = `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
     <span class="htx"><b>${esc(c.title)}</b><small>${esc([se, c.playable ? "" : "放不了", c.source, libCached(c)].filter(Boolean).join(" · "))}</small></span></button>`;
+  if (!isAdmin()) return row;
+  return `<div class="lerow">${row}<button class="ghost sm" data-libthumb="${esc(c.id)}" data-k="lt-${esc(c.id)}" aria-label="${esc(c.title)}：重新截一张封面" title="从这一集里重新截一张封面（没人在看时截）">换封面</button></div>`;
 }
 function libSourceRow(s, admin, scan) {
   const busy = scan && scan.running && scan.source === s.id;
@@ -7278,6 +7282,11 @@ $("libBox").addEventListener("click", async (event) => {
     lib.show = ""; lib.item = ""; lib.match = null; renderLib(); const c = qs("#libBox " + was); if (c) c.focus(); return;
   }
   if (ds.libmore) { lib.more = !lib.more; renderLib(); return; }
+  if (ds.libthumb) {
+    const answer = await libAdmin("api/admin/library/thumb", { id: ds.libthumb }, t);
+    if (answer && answer.ok) toast("排上了：没人在看时重新截一张，过一会儿刷新就能看到");
+    return;
+  }
   if (ds.libseason) { lib.season = Number(ds.libseason); lib.match = null; lib.more = false; renderLib(); return; }
   if (ds.libmatch) {
     const d = lib.data, seasons = d.shows.flatMap((s) => (s.season_rows || []).map((r) => ({ key: r.key, guess: libSeasonGuess(s, r.n) })));
