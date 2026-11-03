@@ -9,7 +9,9 @@ other subject types and foreign image hosts dropped, a garbage or block answer i
 marking for a movie, a show and a season (TMDB ids never count; the season wins when a show and its first season
 share an id); lists are cached, fetched in the background only (the page never waits), never refetched within the
 TTL, kept when a refetch fails, and nothing is sent while Douban blocks us or online details are off; comments and
-recommendations per Douban id the same way; posters only for ids the relay already knows, fetched once and then
+recommendations per Douban id the same way; only the list on screen is fetched, "load more" pages on from where the
+list ends up to Douban's total (Top 250 to 250) and LIST_MAX; a Douban detail view from the mobile subject API only
+(never the captcha-guarded subject page), cached and bounded; posters only for ids the relay already knows, fetched once and then
 served from disk; the wishlist per user (add only what the relay listed, remove, bounds, isolation, file mode 600,
 refused when already in the library) and the home row once a scan or a match puts a wished title in the library;
 who may call what (family yes, guests and signed-out callers 404 or ok: false, no library 404); the
@@ -53,14 +55,16 @@ def movie_row(did, title, year, rating=8.1, shape="cover"):
     return row
 
 
-def collection(*rows, name="movie_showing"):
-    return json.dumps({"start": 0, "count": len(rows), "total": 99, "subject_collection_items": list(rows),
+def collection(*rows, name="movie_showing", total=None):
+    return json.dumps({"start": 0, "count": len(rows), "total": len(rows) if total is None else total,
+                       "subject_collection_items": list(rows),
                        "subject_collection": {"id": name, "name": "x"}}, ensure_ascii=False)
 
 
 SHOWING = collection(movie_row("2000001", "某电影", 2010), movie_row("4000001", "新片", 2026),
                      {"id": "5", "type": "book", "title": "一本书"},
-                     dict(movie_row("4000002", "外链", 2026), cover={"url": "https://evil.example.com/p.jpg"}))
+                     dict(movie_row("4000002", "外链", 2026), cover={"url": "https://evil.example.com/p.jpg"}),
+                     total=3)
 HOT = collection(movie_row("4000003", "热门片", 2025, shape="pic"), name="movie_hot_gaia")
 TV = collection(dict(movie_row("2000002", "X医生 第2季", 2013, shape="pic"), type="tv"),
                 dict(movie_row("2000000", "X医生", 2012, shape="pic"), type="tv"), name="tv_hot")
@@ -72,6 +76,12 @@ INTERESTS = json.dumps({"start": 0, "count": 3, "total": 3, "interests": [
     {"comment": "没打分的。", "create_time": "2026-11-02 01:47:58", "id": "2", "vote_count": 3, "rating": None,
      "user": {"name": "乙"}},
     {"comment": "", "create_time": "2026-11-02", "id": "3", "user": {"name": "空的"}}]}, ensure_ascii=False)
+MOBILE_NEW = json.dumps({
+    "id": "4000001", "title": "新片", "original_title": "New Film", "year": "2026", "type": "movie",
+    "rating": {"count": 4321, "max": 10, "value": 7.0}, "genres": ["剧情"], "countries": ["美国"],
+    "directors": [{"name": "导演丙"}], "actors": [{"name": "演员丁"}], "intro": "简介。", "durations": ["118分钟"],
+    "languages": ["英语"], "pubdate": ["2026-10-01(美国)"], "pic": {"large": IMG.format(n=9, p="4000001")}},
+    ensure_ascii=False)
 RECS = json.dumps([dict(movie_row("2000001", "某电影", None, shape="pic"), year=None),
                    dict(movie_row("4000009", "推荐片", None, shape="pic")),
                    dict(movie_row("2000002", "X医生 第2季", None, shape="pic"), type="tv")], ensure_ascii=False)
@@ -79,10 +89,18 @@ RECS = json.dumps([dict(movie_row("2000001", "某电影", None, shape="pic"), ye
 
 def serve_lists(fake: FakeDouban) -> None:
     for name, body in (("movie_showing", SHOWING), ("movie_hot_gaia", HOT), ("tv_hot", TV), ("movie_top250", TOP)):
-        fake.add(libmeta.COLLECTION_URL.format(name, libdouban.LIST_COUNT), body)
+        fake.add(libmeta.COLLECTION_URL.format(name, 0, libdouban.PAGE), body)
     for did in ("2000001", "4000001", "4000003", "2000002", "2000000", "1292052"):
         fake.add(IMG.format(n=3, p=did), JPEG)
         fake.add(IMG.format(n=9, p=did), JPEG)
+
+
+SERVED = ("movie_showing", "movie_hot_gaia", "tv_hot", "movie_top250")
+
+
+def open_lists(lib, user=1) -> dict:
+    """The page opens each served list in turn: {name: its row with items}."""
+    return {name: next(r for r in lib.boards.lists_view(user, name)["lists"] if r["name"] == name) for name in SERVED}
 
 
 def serve_subject(fake: FakeDouban, did: str) -> None:
@@ -191,8 +209,9 @@ class BoardsTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def items(self, view, name):
-        return {c["id"]: c for c in next(r for r in view["lists"] if r["name"] == name)["items"]}
+    def items(self, name, user=1):
+        return {c["id"]: c for c in next(r for r in self.lib.boards.lists_view(user, name)["lists"]
+                                         if r["name"] == name)["items"]}
 
     def test_index_marks_movie_show_and_season(self):
         index = self.lib.douban_index()
@@ -206,86 +225,149 @@ class BoardsTests(unittest.TestCase):
         self.lib.meta.put("m0123456789abcdef", {"state": "matched", "id": "7777777", "title": "gone", "q": "", "at": 1})
         self.assertNotIn("7777777", self.lib.douban_index(), "no longer in the library")
 
-    def test_lists_load_in_the_background_and_are_marked(self):
-        view = self.lib.boards.lists_view(1)
+    def test_only_the_list_on_screen_is_fetched(self):
+        view = self.lib.boards.lists_view(1, "movie_showing")
         self.assertEqual(self.fake.calls, [], "the page never waits on Douban")
-        self.assertTrue(all(r["loading"] and not r["items"] for r in view["lists"]))
-        self.assertEqual([r["title"] for r in view["lists"]], ["正在热映", "热门电影", "热门剧集", "高分 Top250"])
+        rows = {r["name"]: r for r in view["lists"]}
+        self.assertEqual([r["name"] for r in view["lists"]], [n for n, _, _ in libdouban.LISTS])
+        self.assertEqual({g["id"] for g in view["groups"]}, {r["group"] for r in view["lists"]})
+        self.assertTrue(rows["movie_showing"]["loading"])
+        self.assertFalse(any(r["loading"] or "items" in r for n, r in rows.items() if n != "movie_showing"),
+                         "other lists are neither fetched nor sent")
+        self.assertEqual(drain(self.lib), 1)
+        self.assertEqual(self.fake.urls(), [libmeta.COLLECTION_URL.format("movie_showing", 0, libdouban.PAGE)])
+
+    def test_lists_load_in_the_background_and_are_marked(self):
+        open_lists(self.lib)
         self.assertEqual(drain(self.lib), 4)
-        urls = self.fake.urls()
-        self.assertEqual(len(urls), 4)
+        self.assertEqual(len(self.fake.calls), 4)
         for url, headers in self.fake.calls:
             name = url.split("/subject_collection/")[1].split("/")[0]
             self.assertEqual(headers["Referer"], libmeta.COLLECTION_REFERER.format(name))
             self.assertNotIn("Cookie", headers)
-        view = self.lib.boards.lists_view(1)
-        self.assertFalse(any(r["loading"] for r in view["lists"]))
-        self.assertNotIn("doubanio", json.dumps(view, ensure_ascii=False), "the page never gets Douban image addresses")
-        showing = self.items(view, "movie_showing")
+        rows = open_lists(self.lib)
+        self.assertFalse(any(r["loading"] for r in rows.values()))
+        self.assertNotIn("doubanio", json.dumps(rows, ensure_ascii=False), "the page never gets Douban image addresses")
+        showing = self.items("movie_showing")
         self.assertEqual(showing["2000001"]["have"], {"item": self.keys["movie"][1:]})
         self.assertEqual(showing["2000001"]["art"], "api/library/douban/poster/2000001")
         self.assertNotIn("have", showing["4000001"])
         self.assertEqual(showing["4000002"]["art"], "", "a foreign image host is dropped")
-        tv = self.items(view, "tv_hot")
+        tv = self.items("tv_hot")
         self.assertEqual(tv["2000002"]["have"], {"show": self.keys["show"][1:], "season": 2})
         self.assertEqual(tv["2000000"]["have"], {"show": self.keys["show"][1:]})
-        self.assertNotIn("have", self.items(view, "movie_top250")["1292052"], "TMDB-matched does not count")
+        self.assertNotIn("have", self.items("movie_top250")["1292052"], "TMDB-matched does not count")
+        self.assertEqual((rows["movie_showing"]["count"], rows["movie_showing"]["more"]), (3, False),
+                         "Douban says 3 in all: no more pages")
         stored = self.lib.boards.lists_path
         self.assertEqual(stat.S_IMODE(os.stat(stored).st_mode), 0o600)
 
     def test_no_refetch_within_the_ttl(self):
-        self.lib.boards.lists_view(1)
+        open_lists(self.lib)
         drain(self.lib)
         calls = len(self.fake.calls)
         self.clock.now += libdouban.LIST_TTL_S - 60
-        self.lib.boards.lists_view(1)
+        open_lists(self.lib)
         self.assertEqual(drain(self.lib), 0)
         reborn = libdouban.Boards(self.lib)          # a restart reads the stored lists
-        self.assertEqual(len(next(r for r in reborn._lists.values())["items"]) > 0, True)
+        self.assertTrue(reborn._lists["movie_showing"]["items"])
         self.lib.boards = reborn
-        self.lib.boards.lists_view(1)
+        open_lists(self.lib)
         self.assertEqual(drain(self.lib), 0)
         self.assertEqual(len(self.fake.calls), calls)
         self.clock.now += 120
-        view = self.lib.boards.lists_view(1)
-        self.assertTrue(all(r["loading"] and r["items"] for r in view["lists"]), "old lists shown while refreshing")
+        rows = open_lists(self.lib)
+        self.assertTrue(all(r["loading"] and r["items"] for r in rows.values()), "old lists shown while refreshing")
         self.assertEqual(drain(self.lib), 4)
 
     def test_a_failed_refetch_keeps_the_old_list_and_waits(self):
-        self.lib.boards.lists_view(1)
+        open_lists(self.lib)
         drain(self.lib)
         self.clock.now += libdouban.LIST_TTL_S + 1
-        self.fake.add(libmeta.COLLECTION_URL.format("movie_showing", libdouban.LIST_COUNT), "<html>维护中</html>")
-        self.lib.boards.lists_view(1)
+        self.fake.add(libmeta.COLLECTION_URL.format("movie_showing", 0, libdouban.PAGE), "<html>维护中</html>")
+        open_lists(self.lib)
         drain(self.lib)
         self.assertTrue(any("看不懂" in m for m in self.logs), self.logs)
-        view = self.lib.boards.lists_view(1)
-        self.assertIn("2000001", self.items(view, "movie_showing"), "kept")
+        self.assertIn("2000001", self.items("movie_showing"), "kept")
         calls = len(self.fake.calls)
         self.clock.now += libdouban.RETRY_S - 10
-        self.lib.boards.lists_view(1)
+        open_lists(self.lib)
         self.assertEqual(drain(self.lib), 0, "not again within RETRY_S")
         self.assertEqual(len(self.fake.calls), calls)
 
     def test_blocked_or_offline_sends_nothing(self):
         self.fake.blocked = True
-        self.lib.boards.lists_view(1)
+        open_lists(self.lib)
         drain(self.lib)
         self.assertEqual(len(self.fake.calls), 1, "the first block stops the rest")
         self.assertTrue(self.lib.douban.blocked())
-        view = self.lib.boards.lists_view(1)
+        view = self.lib.boards.lists_view(1, "movie_showing")
         self.assertTrue(view["blocked"])
-        self.assertFalse(any(r["loading"] for r in view["lists"]))
+        self.assertFalse(any(r["loading"] for r in open_lists(self.lib).values()))
         self.assertEqual(drain(self.lib), 0)
         self.assertEqual(self.lib.boards.subject_view(1, "2000001")["state"], "none")
+        self.assertEqual(self.lib.boards.detail_view(1, "2000001")["state"], "none")
+        self.assertFalse(self.lib.boards.more("movie_top250").get("queued"), "nothing to page")
         self.assertEqual(len(self.fake.calls), 1)
         self.fake.blocked = False
         self.clock.now += libmeta.BACKOFF_S + 1
         self.lib.set_online(False)
-        view = self.lib.boards.lists_view(1)
-        self.assertFalse(view["online"] or any(r["loading"] for r in view["lists"]))
+        view = self.lib.boards.lists_view(1, "movie_showing")
+        self.assertFalse(view["online"] or any(r["loading"] for r in open_lists(self.lib).values()))
         self.assertEqual(drain(self.lib), 0)
         self.assertEqual(len(self.fake.calls), 1, "online details off: not one request")
+
+    def test_load_more_pages_up_to_the_end(self):
+        """Top250: 50 first, each 「加载更多」 the next 50 from where the list ends, never past Douban's total or LIST_MAX;
+        a refresh after the TTL starts again from the first page."""
+        pages = {start: collection(*[movie_row(str(5000000 + start + i), f"片{start + i}", 1990) for i in range(n)],
+                                   name="movie_top250", total=120)
+                 for start, n in ((0, 50), (50, 50), (100, 20))}
+        for start, body in pages.items():
+            self.fake.add(libmeta.COLLECTION_URL.format("movie_top250", start, libdouban.PAGE), body)
+        boards = self.lib.boards
+        self.assertEqual(boards.more("movie_top250"), {"ok": True, "queued": False}, "nothing to page yet")
+        boards.lists_view(1, "movie_top250")
+        drain(self.lib)
+        row = next(r for r in boards.lists_view(1, "movie_top250")["lists"] if r["name"] == "movie_top250")
+        self.assertEqual((row["count"], row["more"], len(row["items"])), (50, True, 50))
+        self.assertEqual(boards.more("movie_top250"), {"ok": True, "queued": True})
+        row = next(r for r in boards.lists_view(1, "movie_top250")["lists"] if r["name"] == "movie_top250")
+        self.assertTrue(row["loading"], "the page keeps asking while the next page is queued")
+        self.assertEqual(drain(self.lib), 1)
+        self.assertEqual(self.fake.urls()[-1], libmeta.COLLECTION_URL.format("movie_top250", 50, libdouban.PAGE))
+        boards.more("movie_top250")
+        drain(self.lib)
+        row = next(r for r in boards.lists_view(1, "movie_top250")["lists"] if r["name"] == "movie_top250")
+        self.assertEqual((row["count"], row["more"]), (120, False), "Douban's total reached")
+        self.assertEqual(len({c["id"] for c in row["items"]}), 120)
+        calls = len(self.fake.calls)
+        self.assertEqual(boards.more("movie_top250"), {"ok": True, "queued": False})
+        self.assertEqual(drain(self.lib), 0)
+        self.assertEqual(len(self.fake.calls), calls)
+        self.assertFalse(boards.more("../x")["ok"])
+        self.clock.now += libdouban.LIST_TTL_S + 1
+        boards.lists_view(1, "movie_top250")
+        drain(self.lib)
+        self.assertEqual(len(self.items("movie_top250")), 50, "a refresh starts from the first page again")
+        with mock.patch.object(libdouban, "LIST_MAX", 60):
+            boards.more("movie_top250")
+            drain(self.lib)
+            self.assertEqual(len(self.items("movie_top250")), 60, "bounded by LIST_MAX")
+            self.assertEqual(boards.more("movie_top250"), {"ok": True, "queued": False})
+
+    def test_a_page_that_brings_nothing_new_ends_the_list(self):
+        first = collection(*[movie_row(str(6000000 + i), f"片{i}", 2000) for i in range(50)], name="movie_hot_gaia",
+                           total=300)
+        self.fake.add(libmeta.COLLECTION_URL.format("movie_hot_gaia", 0, libdouban.PAGE), first)
+        self.fake.add(libmeta.COLLECTION_URL.format("movie_hot_gaia", 50, libdouban.PAGE), first)
+        boards = self.lib.boards
+        boards.lists_view(1, "movie_hot_gaia")
+        drain(self.lib)
+        boards.more("movie_hot_gaia")
+        drain(self.lib)
+        row = next(r for r in boards.lists_view(1, "movie_hot_gaia")["lists"] if r["name"] == "movie_hot_gaia")
+        self.assertEqual((row["count"], row["more"]), (50, False), "only repeats: the end")
 
     def test_comments_and_recommendations(self):
         serve_subject(self.fake, "2000001")
@@ -308,6 +390,60 @@ class BoardsTests(unittest.TestCase):
         drain(self.lib)                                  # 404 from the fake: Failed
         self.assertEqual(boards.subject_view(1, "123")["state"], "none", "a failure hides the block")
 
+    def test_douban_detail(self):
+        """A Douban card not in the library opens a detail view: only the mobile subject API (never the subject page,
+        whose captcha redirect would count as a block), cached for DETAIL_TTL_S, what the list knew shown meanwhile, the
+        poster allowed for an id first seen there, no Douban image address to the page."""
+        boards = self.lib.boards
+        boards.lists_view(1, "movie_showing")
+        drain(self.lib)
+        calls = len(self.fake.calls)
+        first = boards.detail_view(1, "4000001")
+        self.assertEqual((first["state"], first["detail"]["title"], first["detail"]["art"]),
+                         ("loading", "新片", "api/library/douban/poster/4000001"), "what the list knew, at once")
+        self.assertEqual(len(self.fake.calls), calls, "the page never waits on Douban")
+        self.fake.add(libmeta.MOBILE_URL.format("4000001"), MOBILE_NEW)
+        self.assertEqual(drain(self.lib), 1)
+        self.assertEqual(self.fake.urls()[calls:], [libmeta.MOBILE_URL.format("4000001")])
+        view = boards.detail_view(1, "4000001")
+        detail = view["detail"]
+        self.assertEqual(view["state"], "ready")
+        self.assertEqual((detail["title"], detail["original"], detail["votes"], detail["durations"], detail["countries"],
+                          detail["directors"], detail["pubdate"]),
+                         ("新片", "New Film", 4321, ["118分钟"], ["美国"], ["导演丙"], ["2026-10-01(美国)"]))
+        self.assertNotIn("episodes", detail, "a film")
+        self.assertNotIn("doubanio", json.dumps(view, ensure_ascii=False))
+        self.assertNotIn("have", detail)
+        self.clock.now += libdouban.DETAIL_TTL_S - 60
+        boards.detail_view(1, "4000001")
+        self.assertEqual(drain(self.lib), 0, "cached")
+        # An id seen only on a detail (opened from a recommendation, say): its poster is allowed.
+        self.fake.add(libmeta.MOBILE_URL.format("4300009"), MOBILE_NEW.replace("4000001", "4300009"))
+        self.fake.add(IMG.format(n=9, p="4300009"), JPEG)
+        self.assertEqual(boards.detail_view(1, "4300009")["detail"], None, "nothing known yet")
+        drain(self.lib)
+        handler = Handler()
+        boards.serve_poster(handler, "4300009")
+        self.assertEqual(handler.sent[-1][0], 200)
+        self.assertTrue(boards.wish(1, {"id": "4300009", "on": True})["ok"], "wishable from its detail")
+        # The library's own: marked, and a failure never falls back to the subject page.
+        self.assertEqual(boards.detail_view(1, "2000001")["detail"]["have"], {"item": self.keys["movie"][1:]})
+        drain(self.lib)
+        self.assertNotIn(libmeta.SUBJECT_URL.format("2000001"), self.fake.urls())
+        self.assertFalse(self.lib.douban.blocked())
+        self.assertEqual(boards.detail_view(1, "2000001")["state"], "none", "a failure: no detail block, no retry soon")
+        stored = libdouban.Boards(self.lib)._details
+        self.assertEqual(stored["4000001"]["data"]["title"], "新片", "kept across a restart")
+
+    def test_details_are_bounded(self):
+        with mock.patch.object(libdouban, "DETAILS_MAX", 2):
+            for did in ("21", "22", "23"):
+                self.fake.add(libmeta.MOBILE_URL.format(did), MOBILE_NEW.replace("4000001", did))
+                self.lib.boards.detail_view(1, did)
+                drain(self.lib)
+                self.clock.now += 5
+            self.assertEqual(sorted(self.lib.boards._details), ["22", "23"])
+
     def test_subjects_are_bounded(self):
         with mock.patch.object(libdouban, "SUBJECTS_MAX", 2):
             for did in ("11", "12", "13"):
@@ -329,7 +465,7 @@ class BoardsTests(unittest.TestCase):
         boards.serve_poster(handler, "2000001")
         self.assertEqual(handler.sent[-1][0], 404, "not listed yet")
         self.assertEqual(self.fake.calls, [])
-        boards.lists_view(1)
+        open_lists(self.lib)
         drain(self.lib)
         calls = len(self.fake.calls)
         boards.serve_poster(handler, "2000001")
@@ -354,7 +490,7 @@ class WishTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.clock = Clock()
         self.lib, self.fake, self.keys = build(Path(self.tmp.name), self.clock)
-        self.lib.boards.lists_view(1)
+        open_lists(self.lib)
         drain(self.lib)
         self.boards = self.lib.boards
 
@@ -373,9 +509,9 @@ class WishTests(unittest.TestCase):
         self.assertTrue(self.boards.wish(1, {"id": "4000003", "on": True})["ok"])
         self.assertEqual([w["id"] for w in self.boards.wish_view(1)], ["4000003", "4000001"], "newest first")
         self.assertEqual(self.boards.wish_view(2), [], "each person has their own")
-        view = self.boards.lists_view(1)
-        self.assertTrue(next(c for r in view["lists"] for c in r["items"] if c["id"] == "4000001")["wished"])
-        self.assertFalse(any(c.get("wished") for r in self.boards.lists_view(2)["lists"] for c in r["items"]))
+        rows = open_lists(self.lib)
+        self.assertTrue(next(c for r in rows.values() for c in r["items"] if c["id"] == "4000001")["wished"])
+        self.assertFalse(any(c.get("wished") for r in open_lists(self.lib, 2).values() for c in r["items"]))
         self.assertEqual(stat.S_IMODE(os.stat(self.boards.wishes.path).st_mode), 0o600)
         self.assertTrue(self.boards.wish(1, {"id": "4000001", "on": False})["ok"])
         self.assertEqual([w["id"] for w in self.boards.wish_view(1)], ["4000003"])
@@ -439,12 +575,18 @@ class EndpointTests(unittest.TestCase):
         self.tearDown_relay()
 
     def test_family_browses_and_keeps_their_own_wishes(self):
-        status, view = self.call("alice", "GET", "/tv/api/library/douban")
+        status, view = self.call("alice", "GET", "/tv/api/library/douban?list=movie_showing")
         self.assertEqual(status, 200)
-        self.assertTrue(all(r["loading"] for r in view["lists"]))
+        self.assertTrue(view["lists"][0]["loading"])
         drain(self.relay.library)
-        view = self.call("alice", "GET", "/tv/api/library/douban")[1]
+        view = self.call("alice", "GET", "/tv/api/library/douban?list=movie_showing")[1]
         self.assertEqual(len(view["lists"][0]["items"]), 3)
+        self.assertNotIn("items", view["lists"][1], "only the list asked for")
+        detail = self.call("alice", "GET", "/tv/api/library/douban/detail/4000001")[1]
+        self.assertEqual((detail["state"], detail["detail"]["title"]), ("loading", "新片"))
+        self.assertEqual(self.request("GET", "/tv/api/library/douban/detail/x1", "alice")[0], 404)
+        self.assertEqual(self.call("alice", "POST", "/tv/api/library/douban/more", {"list": "movie_showing"})[1],
+                         {"ok": True, "queued": False}, "all three are there already")
         status, response, body = self.request("GET", "/tv/api/library/douban/poster/2000001", "alice")
         self.assertEqual((status, response.getheader("Content-Type"), body), (200, "image/jpeg", JPEG))
         self.assertEqual(self.call("alice", "GET", "/tv/api/library/douban/subject/2000001")[1]["state"], "loading")
@@ -462,14 +604,18 @@ class EndpointTests(unittest.TestCase):
         drain(self.relay.library)
         for who in ("guest", None):
             for path in ("/tv/api/library/douban", "/tv/api/library/douban/subject/2000001",
-                         "/tv/api/library/douban/poster/2000001"):
+                         "/tv/api/library/douban/poster/2000001", "/tv/api/library/douban/detail/2000001"):
                 self.assertEqual(self.request("GET", path, who)[0], 404, (who, path))
         status, answer = self.call("guest", "POST", "/tv/api/library/wish", {"id": "4000001", "on": True})
         self.assertEqual((status, answer["ok"]), (200, False))
         self.assertEqual(self.call(None, "POST", "/tv/api/library/wish", {"id": "4000001", "on": True})[0], 404)
+        status, answer = self.call("guest", "POST", "/tv/api/library/douban/more", {"list": "movie_top250"})
+        self.assertEqual((status, answer["ok"]), (200, False))
+        self.assertEqual(self.call(None, "POST", "/tv/api/library/douban/more", {"list": "movie_top250"})[0], 404)
         self.relay.library = None                       # the cloud relay has no library
         self.assertEqual(self.request("GET", "/tv/api/library/douban", "alice")[0], 404)
         self.assertEqual(self.call("alice", "POST", "/tv/api/library/wish", {"id": "4000001", "on": True})[0], 404)
+        self.assertEqual(self.call("alice", "POST", "/tv/api/library/douban/more", {"list": "movie_top250"})[0], 404)
 
 
 

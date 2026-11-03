@@ -3421,6 +3421,10 @@ def _manage_handler(relay: Relay):
                 # 片库「豆瓣」页的想看（libdouban.py）：每个人自己的，只存在这台中转上。
                 self._json(libdouban.wish(relay, caller, body))
                 return
+            if path == "/api/library/douban/more":
+                # 片库「豆瓣」页的「加载更多」：榜单往后再取一页（libdouban.py，后台的队）。
+                self._json(libdouban.more(relay, caller, body))
+                return
             if path == "/api/yt/prefetch":
                 self._json(relay.yt_prefetch(caller, body))
                 return

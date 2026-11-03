@@ -1,13 +1,19 @@
-"""片库的「豆瓣」页（M7）：豆瓣榜单、片库详情页的短评和推荐、本机的「想看」。不登录豆瓣，永远。
+"""片库的「豆瓣」页（M7）：豆瓣榜单、豆瓣的详情、片库详情页的短评和推荐、本机的「想看」。不登录豆瓣，永远。
 
 为什么这样做：片库里的片子已经对上了豆瓣（libmeta.py），家里人想知道「最近有什么好看的」「这部别人怎么说」「还有
 什么类似的」，再把想看的记下来，等网盘里有了提醒一声。豆瓣手机版的几个接口不登录也照常回答，就用它们。
 
-- 榜单（LISTS）：正在热映、热门电影、热门剧集、高分 Top250，各取前 LIST_COUNT 部（libmeta.Douban.collection）。
-  页面打开「豆瓣」时只读存好的（library-douban/lists.json），过了 LIST_TTL_S 的排进后台的队，页面从不等豆瓣。
+- 榜单（LISTS，按 GROUPS 分成电影、剧集、综艺 · 动画三组）：正在热映、热门电影、一周口碑、高分 Top250；热门剧集、
+  国产剧、美剧、韩剧、日剧、口碑剧集；热门综艺、动画（2026-11-03 实测这些名字都在，一次给到 100 部也照常回答）。
+  先取第一页 PAGE 部，页面点「加载更多」再往后取一页（start = 已有的部数，libmeta.Douban.collection），每个榜单至多
+  LIST_MAX 部（Top250 取得到 250），豆瓣说一共几部（total）就到几部为止。页面只问正看着的那个榜单：读存好的
+  （library-douban/lists.json），过了 LIST_TTL_S 的把第一页排进后台的队重取（往后的页不留，要时再点），页面从不等豆瓣。
+- 豆瓣的详情（GET api/library/douban/detail/<豆瓣 id>）：点开片库里没有的一部，看海报、片名和原名、年份、评分和评分
+  人数、类型、地区、片长或集数、导演主演、简介。只取手机版的 subject/<id>（libmeta.Douban.mobile，从不碰会跳验证页的
+  条目页），后台取，存在 details.json（至多 DETAILS_MAX 部、DETAIL_TTL_S）；还没取到时先给榜单、推荐里已经有的几样。
 - 详情页的短评和推荐：对上了豆瓣的电影、剧（有好几季时是看着的那一季）打开时，页面再问一次
   GET api/library/douban/subject/<豆瓣 id>；有存的（subjects.json，SUBJECT_TTL_S 内）马上给，没有就排队、页面过一会
-  儿再问。取不到就不显示这一块。
+  儿再问。取不到就不显示这一块。豆瓣的详情下面也是这一块。
 - 每一部都标「片库里有」：片库里对上了这个豆瓣 id 的电影、剧、剧的一季（Library.douban_index，TMDB 的不算），
   点了打开片库的详情页；没有的给「想看」。
 - 想看（Wishes）：每个人自己的，存在 library-douban/wish.json（600），每人至多 WISH_MAX 部；只在这台中转上，从不
@@ -17,7 +23,7 @@
 - 客气：都走 library.douban（libmeta.Douban：一次一个请求、至少隔 GAP_S、被拦了歇一个小时、不带 Cookie、不发
   任何关于这家人的东西）。后台一件一件做（队里至多 QUEUE_MAX 件），两件之间再歇 TASK_GAP_S；取不成的
   RETRY_S 内不再取同一件；片库的「在线资料」关着时一个请求也不发。
-- 海报一律经中转（GET api/library/douban/poster/<豆瓣 id>）：只取存好的榜单、推荐、想看里有的那一张（地址早就
+- 海报一律经中转（GET api/library/douban/poster/<豆瓣 id>）：只取存好的榜单、推荐、详情、想看里有的那一张（地址早就
   按 libmeta.good_image_url 只认 doubanio.com），存在 library-douban/img/（至多 IMG_FILES_MAX 张、IMG_BYTES_MAX
   字节，最旧的先删）。页面从不直接连豆瓣，也拿不到豆瓣的图片地址。
 - 谁能看：登录的家里人（library.get 的规矩，访客、没登录、云端 404）；POST /api/library/wish 访客 ok: false。
@@ -39,14 +45,21 @@ from typing import Callable
 from . import libmeta
 from .tenants import NotFound
 
-LISTS = (("movie_showing", "正在热映"), ("movie_hot_gaia", "热门电影"), ("tv_hot", "热门剧集"),
-         ("movie_top250", "高分 Top250"))
-LIST_COUNT = 30
+GROUPS = (("movie", "电影"), ("tv", "剧集"), ("more", "综艺 · 动画"))
+LISTS = (("movie_showing", "正在热映", "movie"), ("movie_hot_gaia", "热门电影", "movie"),
+         ("movie_weekly_best", "一周口碑", "movie"), ("movie_top250", "高分 Top250", "movie"),
+         ("tv_hot", "热门剧集", "tv"), ("tv_domestic", "国产剧", "tv"), ("tv_american", "美剧", "tv"),
+         ("tv_korean", "韩剧", "tv"), ("tv_japanese", "日剧", "tv"), ("tv_global_best_weekly", "口碑剧集", "tv"),
+         ("show_hot", "热门综艺", "more"), ("tv_animation", "动画", "more"))
+# 一页取几部（第一页、「加载更多」都是）；一个榜单至多存几部。
+PAGE = 50
+LIST_MAX = 250
 COMMENTS = 6
 RECOMMENDATIONS = 10
 # 存好的榜单、一部的短评和推荐多久算旧（旧了照样先给，后台再取）；取不成的过这么久再试。
 LIST_TTL_S = 6 * 3600.0
 SUBJECT_TTL_S = 86400.0
+DETAIL_TTL_S = 3 * 86400.0
 RETRY_S = 1800.0
 # 后台：两件事之间至少歇这么久（libmeta.Douban 自己还有 GAP_S）；没事时每 TICK_S 看一眼。
 TASK_GAP_S = 8.0
@@ -54,6 +67,7 @@ TICK_S = 600.0
 QUEUE_MAX = 12
 # 存盘的上限：短评和推荐至多存这么多部（最久没用的先丢）；海报。
 SUBJECTS_MAX = 200
+DETAILS_MAX = 300
 IMG_FILES_MAX = 400
 IMG_BYTES_MAX = 60 * 1024 * 1024
 IMG_RETRY_S = 600.0
@@ -64,10 +78,15 @@ WISH_NEW_S = 14 * 86400.0
 _DOUBAN_ID = re.compile(r"^\d{1,12}$")
 _IMG_FILE = re.compile(r"^(\d{1,12})\.(jpg|png|webp)$")
 _SUBJECT = re.compile(r"^/api/library/douban/subject/(\d{1,12})$")
+_DETAIL = re.compile(r"^/api/library/douban/detail/(\d{1,12})$")
 _POSTER = re.compile(r"^/api/library/douban/poster/(\d{1,12})$")
 IMAGE_TYPES = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 # 存进想看的：和榜单卡片一样的几样（img 是豆瓣的图片地址，只给中转自己取海报用，从不给页面）。
 _CARD_KEYS = ("id", "title", "year", "type", "rating", "info", "img")
+# 详情存下来的（libmeta.parse_mobile 的几样）和给页面的（没有 img）。
+_DETAIL_KEYS = ("id", "title", "original", "year", "type", "rating", "votes", "genres", "countries", "directors",
+                "actors", "plot", "episodes", "durations", "languages", "pubdate", "aka", "img")
+_DETAIL_VIEW = tuple(k for k in _DETAIL_KEYS if k != "img")
 
 
 def _write(path: Path, data: dict) -> None:
@@ -99,6 +118,16 @@ def _card(row) -> dict | None:
     if not libmeta.good_image_url(card["img"]):
         card["img"] = ""
     return card
+
+
+def _detail(row) -> dict | None:
+    """一部的详情（parse_mobile 的，或存盘里读回来的）→ 只留认得的几样；不像样的 None。"""
+    if not isinstance(row, dict) or not _DOUBAN_ID.match(str(row.get("id") or "")) or not row.get("title"):
+        return None
+    data = {k: row.get(k) for k in _DETAIL_KEYS if row.get(k) not in (None, "", [])}
+    if not libmeta.good_image_url(data.get("img")):
+        data.pop("img", None)
+    return data
 
 
 def poster_url(did: str) -> str:
@@ -200,7 +229,7 @@ class Wishes:
 
 
 class Boards:
-    """榜单、短评和推荐的存盘、后台的队、海报；想看（self.wishes）。library 是 library.Library（用它的 douban、
+    """榜单、详情、短评和推荐的存盘、后台的队、海报；想看（self.wishes）。library 是 library.Library（用它的 douban、
     online、douban_index、clock，测试里会换掉，所以每次现取）。"""
 
     def __init__(self, library, log: Callable[[str], None] = print):
@@ -210,9 +239,11 @@ class Boards:
         self.img_dir = self.dir / "img"
         self.lists_path = self.dir / "lists.json"
         self.subjects_path = self.dir / "subjects.json"
+        self.details_path = self.dir / "details.json"
         self._lock = threading.RLock()
         self._lists: dict[str, dict] = self._load_lists()
         self._subjects: dict[str, dict] = self._load_subjects()
+        self._details: dict[str, dict] = self._load_details()
         self._queue: deque[tuple[str, str]] = deque()
         self._wake = threading.Event()
         self._img_failed: dict[str, float] = {}
@@ -222,11 +253,13 @@ class Boards:
 
     def _load_lists(self) -> dict[str, dict]:
         found = {}
-        names = {name for name, _ in LISTS}
+        names = {name for name, _, _ in LISTS}
         for name, entry in _read(self.lists_path).items():
             if name in names and isinstance(entry, dict):
-                items = [c for c in (_card(r) for r in entry.get("items") or []) if c is not None]
-                found[name] = {"at": float(entry.get("at") or 0), "tried": float(entry.get("tried") or 0), "items": items}
+                items = [c for c in (_card(r) for r in entry.get("items") or []) if c is not None][:LIST_MAX]
+                total = entry.get("total")
+                found[name] = {"at": float(entry.get("at") or 0), "tried": float(entry.get("tried") or 0), "items": items,
+                               "total": total if isinstance(total, int) and not isinstance(total, bool) else None}
         return found
 
     def _load_subjects(self) -> dict[str, dict]:
@@ -239,15 +272,35 @@ class Boards:
                               "used": float(entry.get("used") or 0), "comments": comments, "recs": recs}
         return found
 
+    def _load_details(self) -> dict[str, dict]:
+        found = {}
+        for did, entry in _read(self.details_path).items():
+            if _DOUBAN_ID.match(did) and isinstance(entry, dict):
+                data = _detail(entry.get("data")) if entry.get("at") else {}
+                if entry.get("at") and data is None:
+                    continue
+                found[did] = {"at": float(entry.get("at") or 0), "tried": float(entry.get("tried") or 0),
+                              "used": float(entry.get("used") or 0), "data": data or {}}
+        return found
+
     def _save_lists(self) -> None:
         _write(self.lists_path, self._lists)
 
+    @staticmethod
+    def _bound(store: dict[str, dict], cap: int) -> None:
+        """至多 cap 部：最久没用的先丢。"""
+        if len(store) > cap:
+            order = sorted(store, key=lambda d: store[d].get("used") or store[d]["at"])
+            for gone in order[:len(store) - cap]:
+                del store[gone]
+
     def _save_subjects(self) -> None:
-        if len(self._subjects) > SUBJECTS_MAX:
-            order = sorted(self._subjects, key=lambda d: self._subjects[d].get("used") or self._subjects[d]["at"])
-            for gone in order[:len(self._subjects) - SUBJECTS_MAX]:
-                del self._subjects[gone]
+        self._bound(self._subjects, SUBJECTS_MAX)
         _write(self.subjects_path, self._subjects)
+
+    def _save_details(self) -> None:
+        self._bound(self._details, DETAILS_MAX)
+        _write(self.details_path, self._details)
 
     # ---- 后台 ----
 
@@ -258,6 +311,17 @@ class Boards:
         if now - (entry.get("tried") or 0) < RETRY_S:
             return False                        # 刚取过没取成：过一会儿再说
         return now - (entry.get("at") or 0) >= ttl
+
+    @staticmethod
+    def _cap(entry: dict) -> int:
+        """这个榜单至多能有几部：豆瓣说的一共几部（没说时不限），再不超过 LIST_MAX。"""
+        total = entry.get("total")
+        return min(LIST_MAX, total) if isinstance(total, int) else LIST_MAX
+
+    def _more_due(self, entry: dict | None) -> bool:
+        """能往后再取一页：第一页取到了、还没到头、刚才没取失败。"""
+        return bool(entry and entry["at"] and len(entry["items"]) < self._cap(entry)
+                    and self.lib.clock() - (entry.get("tried") or 0) >= RETRY_S)
 
     def can(self) -> bool:
         """现在能往豆瓣发：片库的在线资料开着、豆瓣没拦着。"""
@@ -276,8 +340,21 @@ class Boards:
         self._wake.set()
         return True
 
+    def _store(self, kind: str) -> tuple[dict, float]:
+        return {"list": (self._lists, LIST_TTL_S), "more": (self._lists, LIST_TTL_S),
+                "subject": (self._subjects, SUBJECT_TTL_S), "detail": (self._details, DETAIL_TTL_S)}[kind]
+
+    def _save(self, kind: str) -> None:
+        if kind in ("list", "more"):
+            self._save_lists()
+        elif kind == "subject":
+            self._save_subjects()
+        else:
+            self._save_details()
+
     def step(self) -> bool:
-        """做队里的一件（往豆瓣发了请求时 True）；关着、拦着、没事做 False。"""
+        """做队里的一件（往豆瓣发了请求时 True）；关着、拦着、没事做 False。几件事：list（榜单的第一页，旧了重取）、
+        more（榜单往后的一页）、subject（一部的短评和推荐）、detail（一部的详情）。"""
         if not self.can():
             return False
         with self._lock:
@@ -285,39 +362,59 @@ class Boards:
                 if not self._queue:
                     return False
                 kind, key = self._queue.popleft()
-                entry = (self._lists if kind == "list" else self._subjects).get(key)
-                if self._due(entry, LIST_TTL_S if kind == "list" else SUBJECT_TTL_S):
+                store, ttl = self._store(kind)
+                if kind == "more" and self._more_due(store.get(key)):
+                    start = len(store[key]["items"])
+                    break
+                if kind != "more" and self._due(store.get(key), ttl):
                     break                       # 排队时已经取好了的跳过，不发请求
         douban = self.lib.douban
         try:
             if kind == "list":
-                found = {"items": douban.collection(key, LIST_COUNT)}
-            else:
+                items, total = douban.collection(key, PAGE)
+                found = {"items": items[:LIST_MAX], "total": total}
+            elif kind == "more":
+                items, total = douban.collection(key, PAGE, start)
+            elif kind == "subject":
                 # 一部要两个请求：短评没取成就不取推荐（多半是被拦了）。
                 found = {"comments": douban.interests(key, COMMENTS)}
                 found["recs"] = douban.recommendations(key, RECOMMENDATIONS)
+            else:
+                found = {"data": _detail(douban.mobile(key)) or {}}
         except (libmeta.Blocked, libmeta.Failed) as error:
+            now = self.lib.clock()
             with self._lock:
-                store = self._lists if kind == "list" else self._subjects
                 old = store.get(key)
                 if old is not None:
-                    old["tried"] = self.lib.clock()
+                    old["tried"] = now
                 else:
-                    store[key] = {"at": 0.0, "tried": self.lib.clock(), "items": []} if kind == "list" else \
-                        {"at": 0.0, "tried": self.lib.clock(), "used": self.lib.clock(), "comments": [], "recs": []}
-                self._save_lists() if kind == "list" else self._save_subjects()
+                    store[key] = {"at": 0.0, "tried": now, **{"list": {"items": [], "total": None},
+                                                              "subject": {"used": now, "comments": [], "recs": []},
+                                                              "detail": {"used": now, "data": {}}}[kind]}
+                self._save(kind)
             if isinstance(error, libmeta.Failed):
-                self.log(f"豆瓣{'榜单' if kind == 'list' else '短评和推荐'}没取成：{error}")
+                what = {"list": "榜单", "more": "榜单的下一页", "subject": "短评和推荐", "detail": "详情"}[kind]
+                self.log(f"豆瓣{what}没取成：{error}")
             return True
         with self._lock:
             now = self.lib.clock()
             if kind == "list":
                 self._lists[key] = {"at": now, "tried": 0.0, **found}
-                self._save_lists()
+            elif kind == "more":
+                entry = self._lists.get(key)
+                if entry is None or len(entry["items"]) != start:
+                    return True                 # 取的时候榜单重取过了：这一页对不上，不要了
+                have = {c["id"] for c in entry["items"]}
+                new = [c for c in items if c["id"] not in have]
+                entry["items"] = (entry["items"] + new)[:LIST_MAX]
+                if total is not None:
+                    entry["total"] = total
+                if not new:
+                    entry["total"] = len(entry["items"])       # 再往后没有了（或者都是重复的）：到头
             else:
-                used = (self._subjects.get(key) or {}).get("used") or now
-                self._subjects[key] = {"at": now, "tried": 0.0, "used": used, **found}
-                self._save_subjects()
+                used = (store.get(key) or {}).get("used") or now
+                store[key] = {"at": now, "tried": 0.0, "used": used, **found}
+            self._save(kind)
         return True
 
     def pending(self) -> bool:
@@ -338,9 +435,9 @@ class Boards:
     # ---- 给页面的 ----
 
     @staticmethod
-    def _shown(card: dict, index: dict, wished: set[str]) -> dict:
+    def _shown(card: dict, index: dict, wished: set[str], keys=("id", "title", "year", "type", "rating", "info")) -> dict:
         """给页面的一部：没有豆瓣的图片地址（海报经中转），标着片库里有没有、想没想看。"""
-        row = {k: card.get(k) for k in ("id", "title", "year", "type", "rating", "info") if card.get(k) not in (None, "")}
+        row = {k: card.get(k) for k in keys if card.get(k) not in (None, "", [])}
         row["art"] = poster_url(card["id"]) if card.get("img") else ""
         have = index.get(card["id"])
         if have is not None:
@@ -349,23 +446,41 @@ class Boards:
             row["wished"] = True
         return row
 
-    def lists_view(self, user: int) -> dict:
-        """GET /api/library/douban：几个榜单（存好的；旧了的排进后台的队，loading 为真时页面过一会儿再问）和这个人的想看。"""
+    def lists_view(self, user: int, name: str | None = None) -> dict:
+        """GET /api/library/douban[?list=<名字>]：各个榜单有几部、能不能再往后取，name 那一个带上全部的片子（存好的；
+        旧了的排进后台的队，loading 为真时页面过一会儿再问）；还有这个人的想看。只有页面正看着的那个榜单会去豆瓣取。"""
         index = self.lib.douban_index()
         self.wishes.settle(user, index)
         wished = self.wishes.ids(user)
         can = self.can()
         rows = []
-        for name, title in LISTS:
+        for lname, title, group in LISTS:
             with self._lock:
-                entry = self._lists.get(name)
-                items = list(entry["items"]) if entry else []
+                entry = self._lists.get(lname)
+                items = list(entry["items"]) if entry and lname == name else []
                 due = self._due(entry, LIST_TTL_S)
-            loading = bool(due and can and self.want("list", name))
-            rows.append({"name": name, "title": title, "at": int(entry["at"]) if entry and entry["at"] else 0,
-                         "loading": loading, "items": [self._shown(c, index, wished) for c in items]})
-        return {"ok": True, "online": self.lib.online(), "blocked": self.lib.douban.blocked(), "lists": rows,
-                "wish": self.wish_view(user, index)}
+                more = self._more_due(entry)
+                paging = ("more", lname) in self._queue
+            loading = lname == name and can and (bool(due and self.want("list", lname)) or paging)
+            row = {"name": lname, "title": title, "group": group, "at": int(entry["at"]) if entry and entry["at"] else 0,
+                   "count": len(entry["items"]) if entry else 0, "more": more, "loading": loading}
+            if lname == name:
+                row["items"] = [self._shown(c, index, wished) for c in items]
+            rows.append(row)
+        return {"ok": True, "online": self.lib.online(), "blocked": self.lib.douban.blocked(),
+                "groups": [{"id": g, "title": t} for g, t in GROUPS], "lists": rows, "wish": self.wish_view(user, index)}
+
+    def more(self, name) -> dict:
+        """POST /api/library/douban/more {list}：这个榜单往后再取一页（后台的队；页面接着问 lists_view）。"""
+        if name not in {n for n, _, _ in LISTS}:
+            return {"ok": False, "error": "没有这个榜单"}
+        with self._lock:
+            due = self._more_due(self._lists.get(name))
+        if not due:
+            return {"ok": True, "queued": False}
+        if not self.can():
+            return {"ok": False, "error": "豆瓣暂时不让查了，过一会儿再来" if self.lib.online() else "片库的在线资料关着"}
+        return {"ok": True, "queued": self.want("more", name)}
 
     def wish_view(self, user: int, index: dict | None = None) -> list[dict]:
         index = self.lib.douban_index() if index is None else index
@@ -394,24 +509,40 @@ class Boards:
         return {"ok": True, "state": "ready", "comments": have["comments"],
                 "recs": [self._shown(c, index, wished) for c in have["recs"] if c["id"] != did]}
 
+    def detail_view(self, user: int, did: str) -> dict:
+        """GET /api/library/douban/detail/<id>：一部的详情（手机版的 subject，存 DETAIL_TTL_S）。还没取到时先给榜单、推荐、
+        想看里已经有的那几样（片名、年份、评分、海报），state 是 loading（排上了）或 none（取不到）。"""
+        with self._lock:
+            entry = self._details.get(did)
+            if entry is not None and entry["at"]:
+                entry["used"] = self.lib.clock()
+            data = dict(entry["data"]) if entry is not None and entry["at"] else None
+            due = self._due(entry, DETAIL_TTL_S)
+        if due and self.can():
+            self.want("detail", did)
+        index = self.lib.douban_index()
+        wished = self.wishes.ids(user)
+        if data is None:
+            card = self._known(did) or self.wishes.find(did)
+            return {"ok": True, "state": "loading" if due and self.can() else "none",
+                    "detail": self._shown(card, index, wished) if card else None}
+        return {"ok": True, "state": "ready", "detail": self._shown(data, index, wished, _DETAIL_VIEW)}
+
     def _known(self, did: str) -> dict | None:
-        """存好的榜单、推荐、想看里的这一部（海报只替这些取）。"""
+        """存好的榜单、推荐、详情里的这一部（海报只替这些和想看里的取）。"""
         with self._lock:
             for entry in self._lists.values():
                 for card in entry["items"]:
                     if card["id"] == did:
-                        return card
+                        return dict(card)
             for entry in self._subjects.values():
                 for card in entry["recs"]:
                     if card["id"] == did:
-                        return card
+                        return dict(card)
+            entry = self._details.get(did)
+            if entry is not None and entry["data"].get("title"):
+                return dict(entry["data"])
         return None
-
-    def known(self, user: int, did: str) -> dict | None:
-        found = self._known(did)
-        if found is None:
-            found = next((r for r in self.wishes.rows(user) if r["id"] == did), None)
-        return found
 
     def image_url(self, did: str) -> str:
         found = self._known(did) or self.wishes.find(did)
@@ -510,11 +641,15 @@ def get(handler, library, caller, path: str) -> bool:
     """library.get 已经查过是登录的家里人（访客、没登录、云端 404）。"""
     boards = library.boards
     if path == "/api/library/douban":
-        handler._json(boards.lists_view(caller.user))
+        handler._json(boards.lists_view(caller.user, handler._query().get("list")))
         return True
     match = _SUBJECT.match(path)
     if match:
         handler._json(boards.subject_view(caller.user, match.group(1)))
+        return True
+    match = _DETAIL.match(path)
+    if match:
+        handler._json(boards.detail_view(caller.user, match.group(1)))
         return True
     match = _POSTER.match(path)
     if match:
@@ -533,6 +668,16 @@ def wish(relay, caller, body: dict) -> dict:
     answer = library.boards.wish(caller.user, body)
     relay.forget_home(caller)
     return answer
+
+
+def more(relay, caller, body: dict) -> dict:
+    """POST /api/library/douban/more {list}：榜单往后再取一页。登录的家里人；访客 ok: false，没有片库（云端）404。"""
+    library = getattr(relay, "library", None)
+    if caller.guest or caller.user is None:
+        return {"ok": False, "error": "请求格式不对"}
+    if library is None:
+        raise NotFound("library")
+    return library.boards.more(body.get("list"))
 
 
 def home_rows(relay, caller) -> list[dict]:
