@@ -652,7 +652,8 @@ addEventListener("resize", () => applyLayout(false));
 function renderMe() {
   const rows = [["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["live", "直播和分组", "live"],
                 ["devices", "设备", "tv"], ["settings", "设置", "set"], ["admin", "管理", "sliders"]]
-    .filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && (id !== "admin" || isAdmin()));
+    .filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && (id !== "admin" || isAdmin())
+      && liteRoute(id, EDITION) === id);   // 精简版：剧集、片库不显示
   $("meList").innerHTML = rows.map(([id, t, i]) => `<a class="li" href="#/${id === "settings" && ytAlert() ? "settings/youtube" : id}"><span class="ico">${ic(i, 18)}</span><span class="tx">${t}</span>${id === "settings" && ytAlert() ? '<i class="adot" title="YouTube 要求重新登录"></i>' : ""}<em>›</em></a>`).join("")
     + `<div class="li"><span class="me">${esc(me ? [...me.name][0] : "?")}</span><span class="tx">${esc(me ? me.name : "")}<small>${me && me.role === "admin" ? "管理员" : isGuest() ? "访客" : "家人"}</small></span></div>`;
 }

@@ -22,6 +22,8 @@ assert.deepEqual(liteNav(sets, "lite", "settings").map(([id]) => id), ["general"
 const adm = [["overview"], ["users"], ["devices"], ["channels"], ["audit"], ["system"]];
 assert.deepEqual(liteNav(adm, "lite", "admin").map(([id]) => id), ["overview", "devices", "pack", "system"],
   'the channel editor becomes the pack page');
+assert.deepEqual(liteNav([["home"],["live"]], "lite", "tabs").map(([id]) => id), ["home", "live"]);
+assert.deepEqual(liteNav([["x"]], "lite", "nope"), [["x"]]);
 assert.equal(liteRoute("lib", "lite"), "home", 'a hidden route falls back to home');
 assert.equal(liteRoute("lib", "full"), "lib");
 assert.equal(liteRoute("live", "lite"), "live");
