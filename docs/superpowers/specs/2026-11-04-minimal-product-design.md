@@ -36,7 +36,8 @@ With `EDITION=lite`:
 
 - The supervisor (`build_children` in `server/selfhost/__main__.py`) starts no YouTube node, no cloud-drive component, no phone listening and no Passport media server.
 - The relay (`_serve_tenants` in `server/relay/__main__.py`) skips library, cloud-drive and YouTube setup.
-- Disabled endpoints return 404 in `server/relay/web.py`; the console reads the edition from `/api/state` and shows only the lite pages.
+- Disabled endpoints return 410 in `server/relay/web.py` (not 404: the console treats 404 as signed out); the console reads the edition from `/api/state` and shows only the lite pages.
+- As built: the lite edition has no PC playback target either (play always goes to a device; with none bound it leads to binding one). The cast slot stays in the device channel table because Bilibili recommended and followed videos play through it.
 - All modules stay in the package (YouTube, library and Bilibili code import each other; removing them is fragile).
 
 | Lite keeps | Lite turns off |
@@ -53,7 +54,8 @@ Tenancy stays: pairing and Bilibili login depend on it, and a single household i
 
 - **Owner's maintenance tool** (runs daily): reads a few public m3u lists and maps lines to fixed channel IDs by name; grabs one frame from each line and records format and liveness; **new lines need the owner to approve a screenshot on a web page** (lists contain mislabelled channels and advert loops); approved lines are only checked for liveness; writes `channels.json`, signs it with the owner's private key and publishes it on the project's static site.
 - **On the user's side**: the installer carries a copy; the app fetches at start-up and every 12 hours, verifies with a built-in public key and ignores anything that fails; channel IDs are fixed so device channel numbers do not move; for each channel the app records per-line success locally and prefers the line that works best on that home network (existing `linecheck`/`linequality`).
-- Users can hide and reorder channels, not edit lines.
+- Users can hide and reorder channels, not edit lines. The lite edition replaces the channel-table editor with a "Channels" admin page (hide and reorder only).
+- As built: the owner's signing key lives outside the repo (`~/.config/xiaozhi-tv/channels-signing.key`); only the public key is in `server/channelpack.py`. The first bundled pack is built from the repo's `channels.txt` (93 channels) until the P1b maintenance tool replaces it.
 - v1 scope: CCTV1–17, provincial satellite channels and a few children's channels, about 60 in all, listed first on the device.
 - The full edition keeps its "no content" rule; only the lite edition ships a table.
 

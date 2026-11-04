@@ -499,6 +499,7 @@ const LITE_TEXT = Object.freeze({
   creatorLink: "B 站 UP 主主页，或他们的任意视频链接",
   fwWhere: "（「设置 → B 站账号」）",
   fwEmpty: "在 B 站关注的 UP 主会自动列在这里，不用一个个添加。",
+  noTvHint: "绑定以后，点任何节目都能播到它上面；订阅现在就可以先加。",
   upCard: "B 站的 UP 主，每个都变成一个台，新视频自动排上。",
 });
 function liteOff(feature, edition) {
@@ -8629,7 +8630,7 @@ function renderHome() {
   o += H.length ? '<div class="after">' : `<header class="ph"><h1 class="lt">首页</h1></header><div>`;
   if (data && !hasTv() && !isGuest()) {
     o += data.watch ? banner("info", "没有小电视也能用" + BRAND_ZH, "点任何节目都会在这台电脑上播放。以后买了小电视，输入屏幕上的绑定码就能「播放到」它。", "绑定小电视", "#/devices")
-      : banner("info", "还没有小电视", "绑定以后，点任何节目都能播到它上面；订阅、剧集现在就可以先加。", "绑定小电视", "#/devices");
+      : banner("info", "还没有小电视", liteText("noTvHint", "绑定以后，点任何节目都能播到它上面；订阅、剧集现在就可以先加。", EDITION), "绑定小电视", "#/devices");
   }
   if (data && data.youtube && data.youtube.state === "unreachable") o += banner("warn", "YouTube 暂时不可用", $("noticeText").textContent || "", "", "");
   if (data && data.youtube && data.youtube.state === "login") o += banner("warn", "YouTube 需要重新登录", ytLoginText(), isAdmin() && data.youtube.kind === "local" ? "去设置" : "", "#/settings/youtube");

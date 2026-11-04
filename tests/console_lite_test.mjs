@@ -41,6 +41,8 @@ assert.equal(liteText("adminSub", "用户、设备、频道表、节目单", "fu
 assert.equal(liteText("nope", "原样", "lite"), "原样", 'unlisted keys keep the full wording');
 assert.equal(liteText("upCard", "B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。", "lite"),
   "B 站的 UP 主，每个都变成一个台，新视频自动排上。", 'the home onboarding card drops YouTube');
+assert.equal(liteText("noTvHint", "绑定以后，点任何节目都能播到它上面；订阅、剧集现在就可以先加。", "lite"),
+  "绑定以后，点任何节目都能播到它上面；订阅现在就可以先加。", 'no-device card does not mention series');
 const quick = ["series", "up", "lib", "live"];
 assert.deepEqual(quick.filter((id) => liteRoute(id, "lite") === id), ["up", "live"], 'home quick links in lite');
 assert.deepEqual(quick.filter((id) => liteRoute(id, "full") === id), quick, 'home quick links in full');
