@@ -40,6 +40,15 @@ def current() -> str:
     return value if value in EDITIONS else EDITION
 
 
+def describe() -> str:
+    """启动时打一行：现在是哪个版本、从哪来的。"""
+    if BAKED:
+        return f"版本：{EDITION}（打包时写死）"
+    if current() != EDITION or os.environ.get(ENV, "").strip():
+        return f"版本：{current()}（开发用环境变量 {ENV}）"
+    return f"版本：{EDITION}（默认）"
+
+
 def is_lite() -> bool:
     return current() == "lite"
 

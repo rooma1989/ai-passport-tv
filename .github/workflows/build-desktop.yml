@@ -137,6 +137,7 @@ jobs:
           path: packaging/desktop/firmware
 
       - name: Build the core
+        # Builds the full edition; a lite build is: python tools/build_core.py --edition lite --channels-url https://…
         run: python tools/build_core.py
 
       - name: Build

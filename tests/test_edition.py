@@ -61,9 +61,6 @@ class EditionTests(unittest.TestCase):
             self.assertFalse(edition.blocked("/api/youtube/status"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class StampTests(unittest.TestCase):
     def setUp(self):
@@ -105,3 +102,20 @@ class StampTests(unittest.TestCase):
     def test_quotes_and_backslashes_cannot_break_the_module(self):
         url = 'https://a.example/p?x=\'"\\'
         self.assertEqual(self.stamped("lite", url)["CHANNELS_URL"], url)
+
+
+class DescribeTests(unittest.TestCase):
+    def test_three_sources(self):
+        with mock.patch.object(edition, "BAKED", True), mock.patch.object(edition, "EDITION", "lite"):
+            self.assertEqual(edition.describe(), "版本：lite（打包时写死）")
+        with mock.patch.object(edition, "BAKED", False), mock.patch.object(edition, "EDITION", "full"), \
+                mock.patch.dict(os.environ, {"TV_EDITION": "lite"}):
+            self.assertEqual(edition.describe(), "版本：lite（开发用环境变量 TV_EDITION）")
+        with mock.patch.object(edition, "BAKED", False), mock.patch.object(edition, "EDITION", "full"), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("TV_EDITION", None)
+            self.assertEqual(edition.describe(), "版本：full（默认）")
+
+
+if __name__ == "__main__":
+    unittest.main()

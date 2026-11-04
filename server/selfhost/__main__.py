@@ -366,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
         log(line)
     for line in banner.flash_lines(config.lan_port, firmware, in_container):
         log(line)
+    from .. import edition
+    log(edition.describe())
     children = build_children(layout, config, ffmpeg, device_address, public_url, log, in_container, firmware)
     running = {"config": config}
 
