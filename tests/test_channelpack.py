@@ -79,6 +79,14 @@ class WrapTests(unittest.TestCase):
                 channelpack.unwrap(channelpack.wrap(pack(channels=channels), SECRET), PUBLIC)
 
 
+class LimitsTests(unittest.TestCase):
+    def test_limits_match_the_tv_parser(self):
+        from server import live      # 只在测试里导入：channelpack 自己不能拖进 server.live
+        self.assertEqual(channelpack.ID_MAX, live.TV_CHANNEL_ID_MAX - 1)
+        self.assertEqual(channelpack.LINE_MAX, live.MAX_CHANNEL_LINE_BYTES)
+        self.assertEqual(channelpack.CHANNELS_MAX, live.TV_TABLE_MAX)
+
+
 class ApplyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

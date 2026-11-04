@@ -14,17 +14,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import ed25519, live, routes
+from . import channel_groups, ed25519, routes
 from .relay import channeltable
 
 SCHEMA = 1
 PUBLIC_KEY_HEX = ""          # 任务 11 填：主人频道签名密钥的公钥（公开的，可以进仓库）
 ID_MAX = channeltable.ID_MAX
+LINE_MAX = channeltable.LINE_MAX     # 频道表一行的字节上限
 NAME_MAX = channeltable.NAME_MAX
 URL_MAX = channeltable.URL_MAX
 LINES_MAX = routes.BACKUPS_MAX + 1
 AGENT_MAX = routes.AGENT_MAX
-CHANNELS_MAX = live.TV_TABLE_MAX    # 再多电视服务读表时会悄悄丢掉
+CHANNELS_MAX = channel_groups.TABLE_MAX + channel_groups.CHANNEL_MAX    # 再多电视服务读表时会悄悄丢掉；不 import server.live（它拖进 numpy），测试里核对没跑偏
 PREFS_NAME = "channels-prefs.json"
 STATE_NAME = "channels-pack.json"   # 上次用上的那份（原样，带签名），改偏好时用它重写频道表
 
@@ -84,7 +85,7 @@ def validate(pack) -> None:
         if not isinstance(ch, dict):
             raise PackError(f"第 {n} 个台格式不对")
         cid = ch.get("id")
-        if not _text(cid, min(ID_MAX, live.TV_CHANNEL_ID_MAX - 1)) or cid.startswith("#") \
+        if not _text(cid, ID_MAX) or cid.startswith("#") \
                 or not all("!" <= c <= "~" for c in cid) or cid in seen:
             raise PackError(f"第 {n} 个台的 id 不对或重复")
         seen.add(cid)
@@ -103,7 +104,7 @@ def validate(pack) -> None:
             if field in ch and channeltable.clean_meta({field: ch[field]}) != {field: ch[field]}:
                 raise PackError(f"台 {cid} 的 {field} 不对")
         row = {"id": cid, "name": ch["name"], "url": lines[0]["url"], "agent": lines[0].get("ua", "")}
-        if len(channeltable.line_of(row).encode("utf-8")) >= live.MAX_CHANNEL_LINE_BYTES:
+        if len(channeltable.line_of(row).encode("utf-8")) > LINE_MAX:
             raise PackError(f"台 {cid} 在频道表里的一行太长")
 
 
