@@ -63,3 +63,45 @@ class EditionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StampTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import build_core
+        self.build_core = build_core
+        self.target = ROOT / "server" / "_edition_build.py"
+        self.assertFalse(self.target.exists(), "never committed")
+        self.addCleanup(build_core.clear_edition)
+
+    def stamped(self, edition, url):
+        import runpy
+        self.build_core.stamp_edition(edition, url)
+        values = runpy.run_path(str(self.target))
+        return {"EDITION": values["EDITION"], "CHANNELS_URL": values["CHANNELS_URL"]}
+
+    def test_stamp_writes_and_clears_the_build_module(self):
+        self.assertEqual(self.stamped("lite", "https://pack.example/channels.json"),
+                         {"EDITION": "lite", "CHANNELS_URL": "https://pack.example/channels.json"})
+        self.build_core.clear_edition()
+        self.assertFalse(self.target.exists())
+        self.build_core.clear_edition()  # idempotent
+        self.assertEqual(self.stamped("full", ""), {"EDITION": "full", "CHANNELS_URL": ""})
+
+    def test_stamp_overwrites_a_leftover_file(self):
+        self.stamped("lite", "")
+        self.assertEqual(self.stamped("full", "")["EDITION"], "full")
+
+    def test_bad_values_are_refused_and_write_nothing(self):
+        for edition, url in [("pro", ""), ("lite", "http://pack.example/c.json"), ("lite", "https://"),
+                             ("lite", "https:///x"), ("lite", "https://a.example/x y"),
+                             ("lite", "https://a.example/x\n"), ("lite", "https://a.example/\x00"),
+                             ("lite", "ftp://a.example/")]:
+            with self.subTest(edition=edition, url=url):
+                with self.assertRaises(SystemExit):
+                    self.build_core.stamp_edition(edition, url)
+                self.assertFalse(self.target.exists())
+
+    def test_quotes_and_backslashes_cannot_break_the_module(self):
+        url = 'https://a.example/p?x=\'"\\'
+        self.assertEqual(self.stamped("lite", url)["CHANNELS_URL"], url)

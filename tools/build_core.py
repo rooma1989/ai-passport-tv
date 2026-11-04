@@ -23,6 +23,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "packaging" / "desktop" / "rootv-core.spec"
@@ -36,6 +37,36 @@ sys.path.insert(0, str(ROOT))
 from tools.console import use_utf8  # noqa: E402
 
 use_utf8()
+
+
+EDITION_MODULE = ROOT / "server" / "_edition_build.py"
+
+
+def check_edition(edition: str, channels_url: str) -> None:
+    if edition not in ("full", "lite"):
+        raise SystemExit(f"--edition 只能是 full 或 lite，收到 {edition!r}")
+    if channels_url:
+        bad = any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in channels_url)
+        try:
+            parts = urlsplit(channels_url)
+            ok = parts.scheme == "https" and bool(parts.hostname)
+        except ValueError:
+            ok = False
+        if bad or not ok:
+            raise SystemExit("--channels-url 要么留空，要么是带主机名、没有空白和控制字符的 https:// 地址")
+
+
+def stamp_edition(edition: str, channels_url: str) -> None:
+    """把版本写死进这次打的包（server/edition.py 读它）；打完 clear_edition() 删掉，从不进仓库。"""
+    check_edition(edition, channels_url)
+    EDITION_MODULE.write_text(f"EDITION = {edition!r}\nCHANNELS_URL = {channels_url!r}\n", encoding="utf-8")
+
+
+def clear_edition() -> None:
+    try:
+        EDITION_MODULE.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def executable() -> Path:
@@ -68,7 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the PC client's core (onedir).")
     parser.add_argument("--clean", action="store_true", help="remove previous build output first")
     parser.add_argument("--archive", action="store_true", help="also zip the folder for upload")
+    parser.add_argument("--edition", default="full", help="full (RooTV) or lite (the minimal edition)")
+    parser.add_argument("--channels-url", default="", help="lite: where the signed channel pack is fetched (https)")
     args = parser.parse_args(argv)
+    check_edition(args.edition, args.channels_url)
     try:
         import PyInstaller  # noqa: F401
     except ImportError:
@@ -81,8 +115,12 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(OUTPUT)
     OUTPUT.mkdir(exist_ok=True)
     print(f"正在为 {platform.system()}/{platform.machine()} 构建核心…", flush=True)
-    result = subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--distpath", str(DIST),
-                             "--workpath", str(WORK), str(SPEC)], cwd=ROOT)
+    stamp_edition(args.edition, args.channels_url)
+    try:
+        result = subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--distpath", str(DIST),
+                                 "--workpath", str(WORK), str(SPEC)], cwd=ROOT)
+    finally:
+        clear_edition()
     if result.returncode != 0:
         print("构建失败。", file=sys.stderr)
         return result.returncode
