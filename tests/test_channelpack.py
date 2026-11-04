@@ -378,6 +378,37 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(ok.returncode, 0, ok.stderr)
             self.assertIn("2026-11-04.1", ok.stdout)
 
+    def test_tool_refuses_versions_that_are_not_dates(self):
+        """主人的工具只签 YYYY-MM-DD.N：打错的版本号会比以后的都大，各家就再也换不了包。"""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("channelpack_tool", ROOT / "tools" / "channelpack.py")
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        for good in ("2026-11-04.1", "2026-02-28.12", "2028-02-29.3"):
+            self.assertIsNone(tool.check_version(good), good)
+        for bad in ("20261-11-04.1", "2026-11-04", "2026-11-04.0", "2026-11-04.01", "2026-13-01.1", "2026-02-30.1",
+                    "2026-11-4.1", "2026-11-04.1.2", "v1", "", None, 1, "２０２６-11-04.1", "2026-11-04.１", "+2026-1-04.1"):
+            self.assertIsNotNone(tool.check_version(bad), bad)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            key = tmp / "signing.key"
+            self.assertEqual(self.run_tool("keygen", "--out", str(key)).returncode, 0)
+            table = tmp / "channels.txt"
+            table.write_text("cctv1 | CCTV1 | http://a.example/1.m3u8\n", encoding="utf-8")
+            draft = tmp / "pack.json"
+            refused = self.run_tool("from-table", str(table), "--version", "20261-11-04.1", "--out", str(draft))
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn("版本号", refused.stderr)
+            self.assertFalse(draft.exists())
+            draft.write_text(json.dumps(pack(version="2026-11-04")), encoding="utf-8")
+            signed = tmp / "signed.json"
+            refused = self.run_tool("sign", str(draft), "--key", str(key), "--out", str(signed))
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn("2026-11-04.1", refused.stderr, "the error shows the expected shape")
+            self.assertFalse(signed.exists())
+            draft.write_text(json.dumps(pack(version="2026-11-04.2")), encoding="utf-8")
+            self.assertEqual(self.run_tool("sign", str(draft), "--key", str(key), "--out", str(signed)).returncode, 0)
+
     def test_from_table_skips_rows_the_pack_would_refuse(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

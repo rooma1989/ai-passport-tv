@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
+import re
 import secrets
 import sys
 from pathlib import Path
@@ -57,6 +59,10 @@ def _channel_of(raw: str, meta: dict) -> dict:
 
 
 def from_table(table: Path, version: str, out: Path) -> int:
+    problem = check_version(version)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
     meta = routes.read_meta(table)
     channels, seen, skipped = [], set(), []
     for raw in table.read_text(encoding="utf-8").splitlines():
@@ -83,9 +89,30 @@ def from_table(table: Path, version: str, out: Path) -> int:
     return 0
 
 
+VERSION_RE = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})\.[1-9][0-9]{0,8}", re.ASCII)
+VERSION_HELP = "版本号要写成 年-月-日.第几份，例如 2026-11-04.1（日期是真的日期，第几份从 1 起）"
+
+
+def check_version(version) -> str | None:
+    """主人签的版本号必须是 YYYY-MM-DD.N：各家只会换到更大的版本，打错一个字（比如 20261-11-04.1）
+    以后发的包就都用不上了。客户端那边（server/channelpack.validate）照旧只要求是几段数字。返回出错的话或 None。"""
+    match = VERSION_RE.fullmatch(version) if isinstance(version, str) else None
+    try:
+        if match is None:
+            raise ValueError
+        datetime.date.fromisoformat(match.group(1))
+    except ValueError:
+        return f"版本号 {version!r} 不对：{VERSION_HELP}"
+    return None
+
+
 def sign(draft: Path, key: Path, out: Path) -> int:
-    secret = bytes.fromhex(key.expanduser().read_text().strip())
     pack = json.loads(draft.read_text(encoding="utf-8"))
+    problem = check_version(pack.get("version") if isinstance(pack, dict) else None)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 1
+    secret = bytes.fromhex(key.expanduser().read_text().strip())
     out.write_bytes(channelpack.wrap(pack, secret))
     print(f"签好了：{pack['version']}，{len(pack['channels'])} 个台 → {out}")
     return 0

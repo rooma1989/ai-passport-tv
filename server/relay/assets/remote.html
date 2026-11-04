@@ -388,10 +388,10 @@
       <section class="page" id="sessions" aria-labelledby="sessTitle">
         <button class="linkbtn" data-back="mine">‹ 我的</button>
         <header class="ph"><h1 class="lt" id="sessTitle">已登录的设备</h1></header>
-        <p class="hint">你的手机、电脑，和你的小电视上的访客。不认识的就退出它。</p>
+        <p class="hint" data-lite-text="sessionsHint">你的手机、电脑，和你的小电视上的访客。不认识的就退出它。</p>
         <div class="list" id="sessionList"></div>
         <button class="btn red" id="logoutOthers" style="width:100%">退出其他所有登录</button>
-        <p class="hint">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机可以在这里「让另一部手机登录」，电脑要再扫码）；
+        <p class="hint" data-lite-text="logoutOthersHint">「退出其他所有登录」会让你别的手机和电脑都要重新登录（手机可以在这里「让另一部手机登录」，电脑要再扫码）；
           访客不受影响，可以单独退出。</p>
       </section>
     </div>
@@ -436,7 +436,14 @@ const LITE_TEXT = {
   searchHint: "粘贴 B 站视频链接（App 里「分享 → 复制链接」）就能投到小电视上。找台请用「直播」页。",
   adminTitle: "管理",
   adminSub: "设备、频道（在电脑版里，电脑上更好用）",
+  sessionsHint: "你的手机和电脑。不认识的就退出它。",
+  logoutOthersHint: "「退出其他所有登录」会让你别的手机和电脑都要重新登录。",
+  logoutOthersAsk: "退出你在别的手机和电脑上的登录？它们要重新登录才能用。",
+  logoutAsk: "退出登录？这台手机上的遥控就打不开了，要再用得重新登录。",
+  loggedOut: "已经退出登录。要再用遥控，请重新登录。",
 };
+// 写在脚本里的说法：精简版换成 LITE_TEXT 里不提它没有的功能的那句。
+const liteSay = (key, full) => (LITE && LITE_TEXT[key]) || full;
 function applyLite(edition) {
   const lite = edition === "lite";
   if (lite === LITE) return;
@@ -1707,7 +1714,7 @@ async function openSessions() {
 }
 
 $("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
-  if (!confirm("退出你在别的手机和电脑上的登录？它们要重新登录才能用。访客不受影响。")) return;
+  if (!confirm(liteSay("logoutOthersAsk", "退出你在别的手机和电脑上的登录？它们要重新登录才能用。访客不受影响。"))) return;
   const answer = await call("POST", "api/sessions/revoke", { others: true });
   if (!answer.ok) { toast(answer.error, true); return; }
   toast("已退出 " + answer.count + " 处登录");
@@ -1715,11 +1722,11 @@ $("logoutOthers").onclick = () => busy($("logoutOthers"), async () => {
 });
 
 $("logout").onclick = () => busy($("logout"), async () => {
-  if (!confirm("退出登录？这台手机上的遥控就打不开了。要再用，得让已登录的手机或电脑「让手机登录」，或用新的邀请链接。")) return;
+  if (!confirm(liteSay("logoutAsk", "退出登录？这台手机上的遥控就打不开了。要再用，得让已登录的手机或电脑「让手机登录」，或用新的邀请链接。"))) return;
   await call("POST", "api/logout", {});
   clearTimeout(timer);
   try { history.replaceState(null, "", location.pathname); } catch (error) {}
-  $("gateText").textContent = "已经退出登录。要再用遥控，请让已登录的手机或电脑「让手机登录」，或向管理员要一个邀请链接。";
+  $("gateText").textContent = liteSay("loggedOut", "已经退出登录。要再用遥控，请让已登录的手机或电脑「让手机登录」，或向管理员要一个邀请链接。");
   $("gate").className = "gate on";
 });
 
