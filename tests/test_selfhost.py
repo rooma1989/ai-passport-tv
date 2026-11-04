@@ -18,9 +18,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from server import edition
 from server.selfhost import banner, bootstrap, config
 from server.selfhost.__main__ import build_children
 from server.tenancy import db
@@ -223,6 +225,18 @@ class BannerTests(unittest.TestCase):
 
 
 class ChildrenTests(unittest.TestCase):
+    def test_lite_runs_only_the_xingzhi_server_and_no_listening(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {edition.ENV: "lite"}):
+            layout = bootstrap.Layout(Path(tmp))
+            settings = config.Config(youtube_mode="local")
+            children = build_children(layout, settings, "/usr/bin/ffmpeg", "", "", log=lambda _m: None)
+        by_name = {child.name: child for child in children}
+        self.assertEqual(list(by_name), ["relay", "xingzhi", "front"], "no Passport, no ytnode, no openlist")
+        self.assertNotIn("TV_LISTEN_PORT", by_name["xingzhi"].env)
+        self.assertNotIn("--listen", by_name["front"].argv)
+        self.assertNotIn("--ytlocal", by_name["relay"].argv)
+        self.assertEqual(by_name["relay"].env.get(edition.ENV), "lite", "the relay is told the edition")
+
     def test_children_run_in_self_host_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             layout = bootstrap.Layout(Path(tmp))

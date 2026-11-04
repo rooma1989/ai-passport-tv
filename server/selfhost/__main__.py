@@ -196,10 +196,14 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
     """firmware：网页刷机用的固件文件夹（bootstrap.firmware_dir），没有时 None。
     desktop：电脑客户端——子进程经 tools/packaged_entry.py 的分派启动、随监督进程结束、工作目录是数据目录。"""
     from .supervisor import Child, child_command, is_frozen
+    from .. import edition
+    lite = edition.is_lite()
+    models = [m for m in MODELS if not lite or m[0] == "xingzhi"]   # 精简版只卖星智 S3
     root = Path(__file__).resolve().parents[2]
     from ..proxyenv import loopback_bypass
     # 本机的中转播放流不能走用户的代理（ffmpeg 只认小写 no_proxy），见 server/proxyenv.py。
     base_env = dict(loopback_bypass(os.environ), PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+    base_env[edition.ENV] = edition.current()   # 子进程知道版本（打包时已写死，这里管开发时用环境变量的情况）
     base_env["PYTHONPATH"] = str(root) + (os.pathsep + base_env["PYTHONPATH"] if base_env.get("PYTHONPATH") else "")
     watch = desktop or is_frozen()
     cwd = layout.root if desktop else None
@@ -221,8 +225,8 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
     if warm:
         relay += ["--pc-warm", str(warm)]
     relay += pc_stream_caps(config)
-    local_youtube = config.youtube_mode == "local"
-    if config.youtube_mode == "node" and layout.youtube_node.is_file():
+    local_youtube = config.youtube_mode == "local" and not lite
+    if not lite and config.youtube_mode == "node" and layout.youtube_node.is_file():
         relay += ["--cstone", str(layout.youtube_node)]
     elif local_youtube:
         from . import bootstrap
@@ -235,13 +239,16 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
     if firmware is not None:
         relay_env["TV_FIRMWARE_MANIFEST"] = str(firmware / "manifest.json")
     children = [child("relay", relay, relay_env)]
-    for name, port_attr, geometry, fps, rate, listen_port in MODELS:
+    for name, port_attr, geometry, fps, rate, listen_port in models:
         env = dict(base_env, TV_GEOMETRY=geometry, TV_FPS=str(fps), TV_RATE_START=str(rate),
                    TV_DB=str(layout.db), TV_DEVICES_DIR=str(layout.devices), TV_CHANNELS_FILE=str(layout.channels),
                    TV_NO_BUILTIN_CHANNELS="1", TV_ALLOW_PUBLIC="1" if config.allow_internet else "0",
                    TV_DECODER_CONNECT_TIMEOUT_S="30",
                    TV_LISTEN_PORT=str(listen_port), TV_LISTEN_ROUTE=name, TV_LISTEN_KEY_FILE=str(layout.relay_key),
                    TV_PCM_QUEUE_CHUNKS="600", TV_VIDEO_QUEUE_S="24")
+        if lite:   # 精简版不给「用手机听」
+            for key in ("TV_LISTEN_PORT", "TV_LISTEN_ROUTE", "TV_LISTEN_KEY_FILE"):
+                env.pop(key)
         if config.asr_socket.startswith("http://"):
             # 电脑客户端的本机识别服务走回环 TCP（Windows 没有 Unix 套接字；server/voice/asr.py）。
             env.update(TV_ASR_URL=config.asr_socket, TV_RELAY_KEY_FILE=str(layout.relay_key))
@@ -252,8 +259,9 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         children.append(child(name, argv, env))
     front = child_command("server.front", desktop) + ["--bind", config.bind, "--lan-port", str(config.lan_port),
                       "--signup", config.signup_via_device, "--status-file", str(layout.status)]
-    for name, _, _, _, _, listen_port in MODELS:
-        front += ["--listen", f"{name}={listen_port}"]
+    if not lite:
+        for name, _, _, _, _, listen_port in models:
+            front += ["--listen", f"{name}={listen_port}"]
     if config.public_port:
         # 给隧道的端口：容器里要让隧道容器连得到（compose 不把它映射到主机上）；不用 Docker 时隧道程序
         # （Tailscale serve、cloudflared）在同一台机器上，只听本机。
@@ -275,7 +283,7 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         children.append(child("ytnode", argv, node_env))
     # 网盘组件（openlist.py）：管理员在片库里装好、没停用时才有；只听 127.0.0.1。装、更新、停用后中转放
     # run/refresh-request，这里重新算一遍，只起停这一个子进程。
-    drive = openlist_child_args(layout)
+    drive = None if lite else openlist_child_args(layout)
     if drive is not None:
         children.append(child("openlist", child_command("server.selfhost.openlist", desktop) + drive, base_env))
     return children
