@@ -1751,6 +1751,8 @@ function liveNeighbours(ids, id) {
 
 // 视频（不是直播）的缓冲：往前至多 AHEAD_S 秒、往回 BEHIND_S 秒，码率高（片库的 4K 文件只换封装，一秒两三 MB）时
 // 按字节封顶，免得超出 Chrome 给一个 SourceBuffer 的一百多 MB（超了 appendBuffer 抛 QuotaExceededError）。
+// 看门狗（WatchPlayer.unstick）：画面卡住不动多久算卡住、缓冲里至少还有几秒才归它管、往前推几秒。
+const STUCK = { TICK_MS: 500, AFTER_MS: 1500, AHEAD_S: 1, NUDGE_S: 0.1, JUMP_S: 1, TRIES: 3 };
 // 缓冲满了时等着腾地方，至多试这么多次（一秒一次）。
 const QUOTA_TRIES = 30;
 // GOP_S：身后至少留这么多秒。浏览器删画面时会连着删到下一个关键帧为止（后面的帧要靠前面的才解得出），蓝光压制的
@@ -1903,6 +1905,29 @@ class WatchPlayer {
     this.onEnded = () => { if (this.alive) opts.ended(); };
     video.addEventListener("waiting", this.onWaiting);
     video.addEventListener("ended", this.onEnded);
+    // 看门狗（视频）：画面卡住不动、缓冲里却还有数据时往前推一下（unstick）。
+    this.stuck = null;
+    this.watchdog = this.live ? 0 : setInterval(() => this.unstick(), STUCK.TICK_MS);
+  }
+  // 蓝光片子只换封装时时间戳偶尔是乱的（ffmpeg 说 non monotonically increasing dts），浏览器的解码器在那一帧停住：在放、
+  // 缓冲里往后还有 STUCK.AHEAD_S 秒以上、位置却 STUCK.AFTER_MS 没动（readyState 停在 2），自己永远不会走。往前推
+  // NUDGE_S 秒（连着推了 STUCK.TRIES 次还不动就推 JUMP_S 秒）就接着放了（《肖申克的救赎》1:00:15 量过）。没数据的卡
+  // （缓冲不够）不归这里管：那是 gate 攒缓冲的事。
+  unstick() {
+    const v = this.video;
+    if (!this.alive || !this.started || this.hold || !this.sb || v.paused || v.seeking || v.readyState > 2) { this.stuck = null; return; }
+    const t = v.currentTime, b = v.buffered;
+    let end = -1;
+    for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.05 && t < b.end(i)) end = b.end(i);
+    if (end - t < STUCK.AHEAD_S) { this.stuck = null; return; }
+    const now = performance.now();
+    if (!this.stuck || Math.abs(this.stuck.t - t) > 0.01) { this.stuck = { t, since: now, n: this.stuck ? this.stuck.n : 0 }; return; }
+    if (now - this.stuck.since < STUCK.AFTER_MS) return;
+    this.stuck.n++;
+    this.stuck.since = now;
+    const step = this.stuck.n > STUCK.TRIES ? STUCK.JUMP_S : STUCK.NUDGE_S;
+    diagNote("nudge", { step, n: this.stuck.n });
+    v.currentTime = Math.min(end - 0.05, t + step);
   }
   async start() {
     const v = this.video;
@@ -2085,6 +2110,8 @@ class WatchPlayer {
     const end = b.end(b.length - 1);
     let inside = -1;
     for (let i = 0; i < b.length; i++) if (v.currentTime >= b.start(i) - 0.05 && v.currentTime <= b.end(i)) inside = i;
+    // 停在一截的末尾（不到 0.1 秒）、后面还有一截：那也是空档（缝多半是声音转码和画面分段没对齐的那一点点）。
+    if (inside >= 0 && inside + 1 < b.length && b.end(inside) - v.currentTime < 0.1) inside = -1;
     // 视频起播：要的那一秒（媒体时间就是 origin；片库的文件时间轴照原样，第一段从它之前的关键帧起）在缓冲里时
     // 从它起，不从关键帧起。
     const at = !this.started && !this.live && this.origin != null
@@ -2180,6 +2207,7 @@ class WatchPlayer {
   }
   stop() {
     this.alive = false;
+    clearInterval(this.watchdog);
     const v = this.video;
     v.removeEventListener("waiting", this.onWaiting);
     v.removeEventListener("ended", this.onEnded);

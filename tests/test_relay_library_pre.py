@@ -310,6 +310,10 @@ class EndpointTests(unittest.TestCase):
                                      "片库播放诊断：「肖申克的救赎」1:30 取字幕出错（HTTP 502），第 2 次，过一会儿再试"])
             logs.clear()
             self.call("alice", "POST", "/tv/api/library/playdiag",
+                      {"id": "0123456789abcdef", "events": [{"kind": "nudge", "at": 3600, "step": 0.1, "n": 1}]})
+            self.assertEqual(logs, ["片库播放诊断：「肖申克的救赎」1:00:00 画面卡住不动（缓冲里有数据），往前推了 0.1 秒（第 1 次）"])
+            logs.clear()
+            self.call("alice", "POST", "/tv/api/library/playdiag",
                       {"id": "0123456789abcdef", "events": [{"kind": "jump", "at": i, "extra": 1} for i in range(9)]})
             self.assertEqual(len(logs), 6, "at most five lines and one summary")
             self.assertIn("另有 4 条", logs[-1])

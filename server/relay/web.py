@@ -1864,7 +1864,7 @@ class Relay:
     def library_playdiag(self, caller: Caller, body: dict) -> dict:
         """POST /api/library/playdiag {id, events: [...]}：电脑上放片库的片子时页面攒的播放诊断（console.js 的 playDiag）：
         gap（播放器跳过了缓冲里的空档：gap 秒、ranges 缓冲的几截）、jump（位置突然多走了 extra 秒）、dropped（10 秒里
-        丢了 n 帧，共 of 帧）、stall（卡住等了 secs 秒）、subs（取字幕出错了：why，接连第 fails 次，过一会儿再试）。每条记一行日志（至多 PLAYDIAG_LOG 行，多的合成一句），
+        丢了 n 帧，共 of 帧）、stall（卡住等了 secs 秒）、subs（取字幕出错了：why，接连第 fails 次，过一会儿再试）、nudge（画面卡住不动、缓冲里却有数据，往前推了 step 秒）。每条记一行日志（至多 PLAYDIAG_LOG 行，多的合成一句），
         「偶尔跳一下」时看得出是哪一种、在片子的哪儿。"""
         library = library_api.wired(self)
         iid, events = body.get("id"), body.get("events")
@@ -1900,6 +1900,8 @@ class Relay:
                 lines.append(f"{at} 前 10 秒丢了 {int(num(row, 'n'))} 帧（共 {int(num(row, 'of'))} 帧）")
             elif kind == "stall":
                 lines.append(f"{at} 卡住等数据 {num(row, 'secs', 3600):.1f} 秒")
+            elif kind == "nudge":
+                lines.append(f"{at} 画面卡住不动（缓冲里有数据），往前推了 {num(row, 'step', 60):g} 秒（第 {int(num(row, 'n', 99))} 次）")
             elif kind == "subs":
                 why = str(row.get("why") or "")[:20]
                 lines.append(f"{at} 取字幕出错（{why}），第 {int(num(row, 'fails', 99))} 次，过一会儿再试")
