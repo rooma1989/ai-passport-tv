@@ -1168,7 +1168,9 @@ class PageFieldTests(unittest.TestCase):
                   "epg",
                   # M6 phone remote: the 常看 group (data.frequent, livetally.py), the sleep timer (data.sleep,
                   # POST /api/sleep in home.py) and the search tab (GET /api/search/local, localsearch.py).
-                  "frequent", "sleep", "sections"}
+                  "frequent", "sleep", "sections",
+                  # GET /api/state: which product (server/edition.py); the lite edition hides its turned-off parts.
+                  "edition"}
         self.assertTrue(used, "no field reads found; the pattern no longer matches the page")
         self.assertLessEqual(used, served)
 
