@@ -296,7 +296,8 @@ class EndpointTests(unittest.TestCase):
                 "source": "s"}
         events = [{"kind": "gap", "at": 3725.4, "gap": 0.42, "ranges": [[3600, 3725.3], [3725.8, 3790]]},
                   {"kind": "jump", "at": 61, "extra": 1.3}, {"kind": "dropped", "at": 70, "n": 12, "of": 240},
-                  {"kind": "stall", "at": 80, "secs": 1.24}, {"kind": "bogus"}, "x"]
+                  {"kind": "stall", "at": 80, "secs": 1.24}, {"kind": "subs", "at": 90, "why": "HTTP 502", "fails": 2},
+                  {"kind": "bogus"}, "x"]
         with mock.patch.object(lib, "item", return_value=item):
             status, answer = self.call("alice", "POST", "/tv/api/library/playdiag", {"id": "0123456789abcdef",
                                                                                     "events": events})
@@ -305,7 +306,8 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(lines, ["片库播放诊断：「肖申克的救赎」1:02:05 跳过了 0.42 秒的空档（缓冲 1:00:00–1:02:05 1:02:05–1:03:10）",
                                      "片库播放诊断：「肖申克的救赎」1:01 位置突然往前多走了 1.30 秒",
                                      "片库播放诊断：「肖申克的救赎」1:10 前 10 秒丢了 12 帧（共 240 帧）",
-                                     "片库播放诊断：「肖申克的救赎」1:20 卡住等数据 1.2 秒"])
+                                     "片库播放诊断：「肖申克的救赎」1:20 卡住等数据 1.2 秒",
+                                     "片库播放诊断：「肖申克的救赎」1:30 取字幕出错（HTTP 502），第 2 次，过一会儿再试"])
             logs.clear()
             self.call("alice", "POST", "/tv/api/library/playdiag",
                       {"id": "0123456789abcdef", "events": [{"kind": "jump", "at": i, "extra": 1} for i in range(9)]})

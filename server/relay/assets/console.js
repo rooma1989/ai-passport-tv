@@ -3573,7 +3573,10 @@ function vodFallback() {
 // 网盘上的内嵌字幕是边放边抽的（live）：隔 SUBS_POLL_MS 再取一次，只要新的。选了什么记在这个浏览器里（按语言），
 // 没选过时：有默认的就用默认的，没有就用中文的那条，都没有就关着。
 const SUBS_POLL_MS = 8000;
-const subs = { n: -1, seen: new Set(), timer: 0, after: 0, gen: 0, last: -1, lastSid: "" };   // last：C 键关掉前开的那条
+// 取字幕出错了（中转重启、前端一时回 502、断网）：隔这么久再试，接连出错翻倍，至多 SUBS_RETRY_MAX_MS。以前出一次错
+// 就再也不取，放到抽好的那些用完，字幕就「没了」（关掉再开才又有）。
+const SUBS_RETRY_MAX_MS = 60000;
+const subs = { n: -1, seen: new Set(), timer: 0, after: 0, gen: 0, last: -1, lastSid: "", fails: 0 };   // last：C 键关掉前开的那条
 let subsTrack = null;
 function subsTextTrack() {
   // 只建一次（addTextTrack 建的轨删不掉）：换片、换字幕时清空它的字幕。
@@ -3582,7 +3585,7 @@ function subsTextTrack() {
 }
 function subsClear() {
   clearTimeout(subs.timer);
-  subs.gen++; subs.n = -1; subs.seen = new Set(); subs.after = 0;
+  subs.gen++; subs.n = -1; subs.seen = new Set(); subs.after = 0; subs.fails = 0;
   if (!subsTrack) return;
   subsTrack.mode = "hidden";
   for (const cue of Array.from(subsTrack.cues || [])) subsTrack.removeCue(cue);
@@ -3647,11 +3650,19 @@ async function subsLoad(n) {
   // 封装着放的：要等列表给了 origin 才知道怎么挪。
   if (!p.vod && p.origin == null) { subs.timer = setTimeout(() => { if (subs.gen === gen) subsLoad(n); }, 500); return; }
   const shift = p.vod ? 0 : p.origin - (w.start || 0);
+  // 还是这一条字幕：同一个片子的字幕地址没变（watching 换了个对象也算，比如又点了一下同一个），没换片、没关字幕。
+  const still = () => subs.gen === gen && !!watching && watching.subsUrl === w.subsUrl;
   let partial = false;
   try {
     const response = await fetch(w.subsUrl + n + ".vtt" + (subs.after ? "?after=" + subs.after.toFixed(3) : ""), { credentials: "same-origin", cache: "no-store" });
-    if (subs.gen !== gen || watching !== w) return;
-    if (!response.ok) { if (!subs.after) toast("这条字幕取不到", true); return; }
+    if (!still()) return;
+    if (!response.ok) {
+      // 一条都还没取到就说放不了（这条字幕本来就放不了）；取到过的是一时出错：过一会儿再试，别就此不取了。
+      if (!subs.after && !subs.seen.size && response.status === 404) { toast("这条字幕取不到", true); return; }
+      subsRetry(n, gen, still, "HTTP " + response.status);
+      return;
+    }
+    subs.fails = 0;
     partial = response.headers.get("X-RTV-Partial") === "1";
     for (const [a, b, body] of vttCues(await response.text())) {
       const key = a + "|" + b + "|" + body;
@@ -3660,9 +3671,19 @@ async function subsLoad(n) {
       subs.after = Math.max(subs.after, b);
       try { track.addCue(new VTTCue(a + shift, b + shift, body)); } catch (error) { /* 时间不对的那一条不要 */ }
     }
-  } catch (error) { if (subs.gen !== gen) return; }
+  } catch (error) {
+    if (!still()) return;
+    subsRetry(n, gen, still, "连不上");
+    return;
+  }
   // 网盘上的内嵌字幕还在边放边抽：过一会儿再取新的。
-  if (partial || (s && s.live)) subs.timer = setTimeout(() => { if (subs.gen === gen && watching === w) subsLoad(n); }, SUBS_POLL_MS);
+  if (partial || (s && s.live)) subs.timer = setTimeout(() => { if (still()) subsLoad(n); }, SUBS_POLL_MS);
+}
+function subsRetry(n, gen, still, why) {
+  subs.fails++;
+  diagNote("subs", { why, fails: subs.fails });
+  clearTimeout(subs.timer);
+  subs.timer = setTimeout(() => { if (still()) subsLoad(n); }, Math.min(SUBS_RETRY_MAX_MS, SUBS_POLL_MS * 2 ** (subs.fails - 1)));
 }
 
 // 不动鼠标 3 秒后收起控制条和上面的标题（暂停、选集、菜单或快捷键表开着、焦点在控制条或标题栏的按钮上时不收）。
