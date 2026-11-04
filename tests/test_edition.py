@@ -20,11 +20,23 @@ from server import edition
 
 
 class EditionTests(unittest.TestCase):
+    @unittest.skipIf((ROOT / "server" / "_edition_build.py").exists(), "a packaged build file is present")
     def test_default_is_full(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
+        with mock.patch.dict(os.environ):
             os.environ.pop(edition.ENV, None)
-            self.assertEqual(edition.current(), edition.EDITION)
+            self.assertEqual(edition.current(), "full")
             self.assertIn(edition.EDITION, edition.EDITIONS)
+
+    def test_baked_edition_ignores_environment(self):
+        with mock.patch.dict(os.environ, {edition.ENV: "full"}), \
+                mock.patch.object(edition, "BAKED", True), mock.patch.object(edition, "EDITION", "lite"):
+            self.assertEqual(edition.current(), "lite")
+
+    def test_every_blocked_prefix_blocks_itself_and_children(self):
+        with mock.patch.dict(os.environ, {edition.ENV: "lite"}):
+            for prefix in edition.LITE_BLOCKED:
+                self.assertTrue(edition.blocked(prefix), prefix)
+                self.assertTrue(edition.blocked(prefix + "/x"), prefix)
 
     def test_environment_switches_and_ignores_nonsense(self):
         with mock.patch.dict(os.environ, {edition.ENV: "LITE"}):
