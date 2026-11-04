@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -42,6 +43,22 @@ _LOCK = threading.Lock()
 
 class PackError(ValueError):
     """频道包不能用：消息给人看（中文）。"""
+
+
+# 版本号是用 - 和 . 隔开的几段数字（例如 2026-11-04.1），按数字一段一段比大小：只认更新的版本，旧的一律不用
+# （可能是有人把以前签过的包重放回来）。
+VERSION_RE = re.compile(r"[0-9]{1,9}(?:[-.][0-9]{1,9}){0,7}")
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    """版本号排序用的键；版本号的样子不对就抛 PackError。"""
+    if not isinstance(version, str) or not VERSION_RE.fullmatch(version):
+        raise PackError("频道包的版本号不对")
+    return tuple(int(part) for part in re.split(r"[-.]", version))
+
+
+def newer(version: str, than: str) -> bool:
+    return version_key(version) > version_key(than)
 
 
 def wrap(pack: dict, secret: bytes) -> bytes:
@@ -85,6 +102,7 @@ def validate(pack) -> None:
     """检查频道包的每一项；凡是通过的，写出来的 channels.txt 电视服务都读得进、读回来一样。"""
     if not isinstance(pack, dict) or pack.get("v") != SCHEMA or not _text(pack.get("version"), 40):
         raise PackError("频道包的版本号不对")
+    version_key(pack["version"])
     channels = pack.get("channels")
     if not isinstance(channels, list) or not channels:
         raise PackError("频道包里没有台")
@@ -234,6 +252,8 @@ def set_prefs(channels_path: Path | None, public_hex: str, body) -> dict:
                 or not all(isinstance(x, str) and x in known for x in hidden + order):
             return {"ok": False, "error": "请求格式不对"}
         prefs = {"hidden": list(dict.fromkeys(hidden)), "order": list(dict.fromkeys(order))}
+        if known <= set(prefs["hidden"]):
+            return {"ok": False, "error": "至少留一个台"}
         result = apply(pack, channels_path, prefs)    # 先写频道表，成功了才记偏好
         save_prefs(channels_path, prefs)
         return {"ok": True, **result}
@@ -246,28 +266,38 @@ FETCH_MAX = 2 * 1024 * 1024
 
 
 def seed(channels_path: Path, public_hex: str, bundled: Path = BUNDLED) -> bool:
-    """第一次启动：还没用过频道包时把随包带的那份写进频道表。返回是不是写了。"""
+    """启动时：还没用过频道包，或者随包带的那份比用着的新（程序升级了），就把它写进频道表。返回是不是写了。
+
+    先写频道表、成功了才记下这份包：写失败（抛出去）下次启动还会再写。"""
     try:
         raw = Path(bundled).read_bytes()
         pack = unwrap(raw, public_hex)
     except (OSError, PackError):
         return False
     with _LOCK:
-        if remembered(channels_path, public_hex) is not None:
+        old = remembered(channels_path, public_hex)
+        if old is not None and not newer(pack["version"], old["version"]):
             return False
-        remember(raw, channels_path)
         apply(pack, channels_path, read_prefs(channels_path))
+        remember(raw, channels_path)
     return True
+
+
+class TooLarge(Exception):
+    """取来的频道包超过 FETCH_MAX。"""
 
 
 def _fetch(url: str) -> bytes:
     request = urllib.request.Request(url, headers={"User-Agent": "XiaozhiTV-lite"})
     with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_S) as response:
-        return response.read(FETCH_MAX + 1)[:FETCH_MAX]
+        body = response.read(FETCH_MAX + 1)
+    if len(body) > FETCH_MAX:
+        raise TooLarge(f"超过 {FETCH_MAX} 字节")
+    return body
 
 
 class Updater:
-    """启动时和每 12 小时取一次频道包；验签过了、版本变了才写频道表。从不抛：后台线程不能死。"""
+    """启动时和每 12 小时取一次频道包；验签过了、版本比用着的新才写频道表。从不抛：后台线程不能死。"""
 
     def __init__(self, channels_path: Path, url: str, public_hex: str, fetch=_fetch, log=print):
         self.channels_path, self.url, self.public_hex = Path(channels_path), url, public_hex
@@ -280,16 +310,22 @@ class Updater:
         except PackError as error:
             self.log(f"频道包不能用：{error}")
             return None
+        except TooLarge as error:
+            self.log(f"频道包太大：{error}")
+            return None
         except Exception as error:  # noqa: BLE001 网络不通等：下一轮再试
             self.log(f"取频道包失败：{type(error).__name__}")
             return None
         try:
             with _LOCK:
                 old = remembered(self.channels_path, self.public_hex)
-                if old is not None and old["version"] == pack["version"]:
+                if old is not None and not newer(pack["version"], old["version"]):
+                    if old["version"] != pack["version"]:
+                        self.log(f"频道包 {pack['version']} 比用着的 {old['version']} 旧，不用")
                     return None
-                remember(raw, self.channels_path)
+                # 先写频道表，成功了才记下：写失败时下一轮还会再试
                 result = apply(pack, self.channels_path, read_prefs(self.channels_path))
+                remember(raw, self.channels_path)
         except Exception as error:  # noqa: BLE001 磁盘写不进去等：下一轮再试
             self.log(f"写频道表失败：{type(error).__name__}")
             return None

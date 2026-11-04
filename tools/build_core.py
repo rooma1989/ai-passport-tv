@@ -16,6 +16,7 @@ platform on its own runner (.github/workflows/build-desktop-core.yml).
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import platform
 import shutil
@@ -56,17 +57,33 @@ def check_edition(edition: str, channels_url: str) -> None:
             raise SystemExit("--channels-url 要么留空，要么是带主机名、没有空白和控制字符的 https:// 地址")
 
 
-def stamp_edition(edition: str, channels_url: str) -> None:
+def stamp_edition(edition: str, channels_url: str, target: Path = EDITION_MODULE) -> None:
     """把版本写死进这次打的包（server/edition.py 读它）；打完 clear_edition() 删掉，从不进仓库。"""
     check_edition(edition, channels_url)
-    EDITION_MODULE.write_text(f"EDITION = {edition!r}\nCHANNELS_URL = {channels_url!r}\n", encoding="utf-8")
+    Path(target).write_text(f"EDITION = {edition!r}\nCHANNELS_URL = {channels_url!r}\n", encoding="utf-8")
 
 
-def clear_edition() -> None:
+def clear_edition(target: Path = EDITION_MODULE) -> None:
     try:
-        EDITION_MODULE.unlink()
+        Path(target).unlink()
     except FileNotFoundError:
         pass
+
+
+def stamped_edition(target: Path = EDITION_MODULE) -> str:
+    """这次构建写死的版本（rootv-core.spec 用它决定带不带精简版的频道包）；没有生成文件就是 full。
+
+    只解析不执行：读 EDITION = '...' 这一行的字面值。"""
+    try:
+        tree = ast.parse(Path(target).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "full"
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "EDITION" for t in node.targets):
+            value = ast.literal_eval(node.value)
+            if value in ("full", "lite"):
+                return value
+    raise SystemExit(f"{target} 里没有 full 或 lite 的 EDITION")
 
 
 def executable() -> Path:

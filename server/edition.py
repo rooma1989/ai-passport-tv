@@ -54,7 +54,7 @@ def is_lite() -> bool:
 
 
 def blocked(path: str) -> bool:
-    """path must already be parsed: no query string, /tv prefix stripped (web.py `_path()`)."""
+    """精简版拦不拦这个路径。path 要先解析好：去掉查询串和 /tv 前缀（web.py 的 `_path()`）。"""
     if not is_lite():
         return False
     return any(path == prefix or path.startswith(prefix + "/") for prefix in LITE_BLOCKED)

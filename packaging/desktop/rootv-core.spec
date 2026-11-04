@@ -24,6 +24,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(SPECPATH).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from tools.build_core import stamped_edition  # noqa: E402
 from tools.ytdlp_run import POSIX_ONLY, STDLIB_MODULES, STDLIB_PACKAGES, WINDOWS_ONLY  # noqa: E402
 
 
@@ -64,7 +65,7 @@ datas = [
     (str(ROOT / "packaging" / "flash"), "packaging/flash"),
     (str(ROOT / "LICENSE"), "."),
 ]
-if (ROOT / "server" / "data").is_dir():     # 精简版随包带的频道包（任务 11 生成）
+if stamped_edition() == "lite":     # 精简版随包带的频道包（server/data/channels-pack.json）；完整版不带
     datas.append((str(ROOT / "server" / "data"), "server/data"))
 firmware = ROOT / "packaging" / "desktop" / "firmware"
 if (firmware / "manifest.json").is_file():

@@ -114,6 +114,8 @@ class WebTests(unittest.TestCase):
         status, answer = self.request("GET", "/tv/api/admin/pack")
         self.assertEqual(status, 200)
         self.assertEqual(answer, {"ok": True, "configured": False})
+        status, answer = self.request("POST", "/tv/api/admin/pack/prefs", {"hidden": [], "order": []})
+        self.assertEqual((status, answer), (200, {"ok": False, "error": "还没有频道包"}))
 
     def test_state_and_login_status_carry_the_edition(self):
         self.assertEqual(self.request("GET", "/tv/api/state")[1]["edition"], self.which)
@@ -147,7 +149,9 @@ class FullWebTests(WebTests):
         self.assertEqual(status, 200, "the full edition keeps the channel editor")
 
     def test_pack_admin_endpoints(self):
-        self.assertEqual(self.request("GET", "/tv/api/admin/pack")[1], {"ok": True, "configured": False})
+        """完整版没有频道包的接口：和任何不认识的管理路径一样 404。"""
+        self.assertEqual(self.request("GET", "/tv/api/admin/pack")[0], 404)
+        self.assertEqual(self.request("POST", "/tv/api/admin/pack/prefs", {"hidden": [], "order": []})[0], 404)
 
     def test_no_pc_target_in_lite(self):
         """完整版照旧：自建时「这台电脑」在最后，没有小电视时它就是默认。"""

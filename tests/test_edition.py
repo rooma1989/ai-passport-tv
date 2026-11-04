@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -67,22 +68,23 @@ class StampTests(unittest.TestCase):
         sys.path.insert(0, str(ROOT / "tools"))
         import build_core
         self.build_core = build_core
-        self.target = ROOT / "server" / "_edition_build.py"
-        self.assertFalse(self.target.exists(), "never committed")
-        self.addCleanup(build_core.clear_edition)
+        self.assertEqual(build_core.EDITION_MODULE, ROOT / "server" / "_edition_build.py")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.target = Path(tmp.name) / "_edition_build.py"   # 不碰仓库里真的那个文件
 
     def stamped(self, edition, url):
         import runpy
-        self.build_core.stamp_edition(edition, url)
+        self.build_core.stamp_edition(edition, url, self.target)
         values = runpy.run_path(str(self.target))
         return {"EDITION": values["EDITION"], "CHANNELS_URL": values["CHANNELS_URL"]}
 
     def test_stamp_writes_and_clears_the_build_module(self):
         self.assertEqual(self.stamped("lite", "https://pack.example/channels.json"),
                          {"EDITION": "lite", "CHANNELS_URL": "https://pack.example/channels.json"})
-        self.build_core.clear_edition()
+        self.build_core.clear_edition(self.target)
         self.assertFalse(self.target.exists())
-        self.build_core.clear_edition()  # idempotent
+        self.build_core.clear_edition(self.target)  # idempotent
         self.assertEqual(self.stamped("full", ""), {"EDITION": "full", "CHANNELS_URL": ""})
 
     def test_stamp_overwrites_a_leftover_file(self):
@@ -96,12 +98,26 @@ class StampTests(unittest.TestCase):
                              ("lite", "ftp://a.example/")]:
             with self.subTest(edition=edition, url=url):
                 with self.assertRaises(SystemExit):
-                    self.build_core.stamp_edition(edition, url)
+                    self.build_core.stamp_edition(edition, url, self.target)
                 self.assertFalse(self.target.exists())
 
     def test_quotes_and_backslashes_cannot_break_the_module(self):
         url = 'https://a.example/p?x=\'"\\'
         self.assertEqual(self.stamped("lite", url)["CHANNELS_URL"], url)
+
+    def test_spec_reads_the_stamped_edition(self):
+        """rootv-core.spec 只给精简版带频道包（server/data）：它用 stamped_edition() 看这次构建是哪个版本。"""
+        self.assertEqual(self.build_core.stamped_edition(self.target), "full", "no stamp: full")
+        self.stamped("lite", "https://pack.example/c.json")
+        self.assertEqual(self.build_core.stamped_edition(self.target), "lite")
+        self.stamped("full", "")
+        self.assertEqual(self.build_core.stamped_edition(self.target), "full")
+        self.target.write_text("EDITION = 'pro'\n", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            self.build_core.stamped_edition(self.target)
+        spec = (ROOT / "packaging" / "desktop" / "rootv-core.spec").read_text(encoding="utf-8")
+        self.assertIn('if stamped_edition() == "lite":', spec)
+        self.assertIn('"server/data"', spec)
 
 
 class DescribeTests(unittest.TestCase):

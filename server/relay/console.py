@@ -19,6 +19,7 @@ import re
 import urllib.parse
 from pathlib import Path
 
+from .. import edition
 from ..tenancy import db
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.tickets import Limited, describe_agent
@@ -148,7 +149,6 @@ def get(handler, relay, path: str) -> bool:
         info = _session(relay, handler)
         me = {"name": info["name"], "role": info["role"], "kind": info["kind"]} if info else None
         answer = {"ok": True, "signed_in": info is not None, "me": me}
-        from .. import edition
         answer["edition"] = edition.current()
         notice = recovery_notice(relay, info["user_id"], handler._cookie()) if info and info["user_id"] else None
         if notice:

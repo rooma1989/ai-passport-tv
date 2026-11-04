@@ -72,6 +72,20 @@ class WrapTests(unittest.TestCase):
             with self.assertRaises(channelpack.PackError, msg=channels):
                 channelpack.unwrap(signed(pack(channels=channels)), PUBLIC)
 
+    def test_version_must_be_dotted_numbers(self):
+        for version in ("v1", "", "2026-11-04.", "2026--11", ".1", "1.2a", "2026-11-04 1", "1" * 10, "1.2.3.4.5.6.7.8.9"):
+            with self.subTest(version=version), self.assertRaises(channelpack.PackError):
+                channelpack.unwrap(signed(pack(version=version)), PUBLIC)
+        for version in ("1", "2026-11-04.1", "2026.11.04-2"):
+            self.assertEqual(channelpack.unwrap(signed(pack(version=version)), PUBLIC)["version"], version)
+
+    def test_versions_compare_as_numbers(self):
+        self.assertTrue(channelpack.newer("2026-11-04.10", "2026-11-04.9"))
+        self.assertTrue(channelpack.newer("2026-11-04.1", "2026-11-04"))
+        self.assertTrue(channelpack.newer("2026-12-01.1", "2026-11-30.9"))
+        self.assertFalse(channelpack.newer("2026-11-04.1", "2026-11-04.1"))
+        self.assertFalse(channelpack.newer("2026-11-03.5", "2026-11-04.1"))
+
     def test_bad_content_is_refused_even_when_signed(self):
         for channels in ([{"id": "a|b", "name": "x", "lines": [{"url": "http://x"}]}],
                          [{"id": "c1", "name": "x", "lines": []}],
@@ -152,6 +166,15 @@ class ApplyTests(unittest.TestCase):
         self.assertNotIn("cctv2 |", self.path.read_text(encoding="utf-8"))
         self.assertFalse(channelpack.set_prefs(self.path, PUBLIC, {"hidden": "x"})["ok"])
 
+    def test_set_prefs_keeps_at_least_one_channel(self):
+        channelpack.remember(channelpack.wrap(pack(), SECRET), self.path)
+        channelpack.apply(pack(), self.path, {})
+        before = self.path.read_text(encoding="utf-8")
+        answer = channelpack.set_prefs(self.path, PUBLIC, {"hidden": ["cctv1", "cctv2"], "order": []})
+        self.assertEqual(answer, {"ok": False, "error": "至少留一个台"})
+        self.assertEqual(self.path.read_text(encoding="utf-8"), before)
+        self.assertEqual(channelpack.read_prefs(self.path), {"hidden": [], "order": []})
+
     def test_set_prefs_dedupes_and_needs_a_remembered_pack(self):
         self.assertEqual(channelpack.admin_view(self.path, PUBLIC), {"ok": True, "configured": False})
         self.assertFalse(channelpack.set_prefs(self.path, PUBLIC, {"hidden": [], "order": []})["ok"])
@@ -172,10 +195,92 @@ class SeedAndUpdateTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def updater(self, raw, logs=None):
+        return channelpack.Updater(self.path, "http://pack.example/channels.json", PUBLIC,
+                                   fetch=lambda url: raw, log=(logs if logs is not None else []).append)
+
+    def failing_once(self):
+        """channeltable.save that raises OSError on its first call and works afterwards."""
+        real = channelpack.channeltable.save
+        calls = []
+
+        def save(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("disk")
+            return real(*args, **kwargs)
+
+        return mock.patch.object(channelpack.channeltable, "save", side_effect=save)
+
     def test_seed_writes_the_bundled_pack_once(self):
         self.assertTrue(channelpack.seed(self.path, PUBLIC, self.bundled))
         self.assertIn("cctv1 | CCTV1", self.path.read_text(encoding="utf-8"))
-        self.assertFalse(channelpack.seed(self.path, PUBLIC, self.bundled), "already has a pack")
+        self.assertFalse(channelpack.seed(self.path, PUBLIC, self.bundled), "same version: already has it")
+
+    def test_seed_applies_a_newer_bundled_pack(self):
+        channelpack.seed(self.path, PUBLIC, self.bundled)
+        self.bundled.write_bytes(channelpack.wrap(pack(version="2026-11-04.2", channels=pack()["channels"][:1]), SECRET))
+        self.assertTrue(channelpack.seed(self.path, PUBLIC, self.bundled), "an app upgrade ships a newer pack")
+        self.assertNotIn("cctv2", self.path.read_text(encoding="utf-8"))
+        self.assertEqual(channelpack.remembered(self.path, PUBLIC)["version"], "2026-11-04.2")
+
+    def test_seed_never_goes_back_to_an_older_bundled_pack(self):
+        self.assertEqual(self.updater(channelpack.wrap(pack(version="2026-11-05.1"), SECRET)).check(), "2026-11-05.1")
+        self.assertFalse(channelpack.seed(self.path, PUBLIC, self.bundled))
+        self.assertEqual(channelpack.remembered(self.path, PUBLIC)["version"], "2026-11-05.1")
+
+    def test_seed_retries_after_a_failed_write(self):
+        with self.failing_once():
+            with self.assertRaises(OSError):
+                channelpack.seed(self.path, PUBLIC, self.bundled)
+            self.assertIsNone(channelpack.remembered(self.path, PUBLIC), "not remembered when the write failed")
+            self.assertTrue(channelpack.seed(self.path, PUBLIC, self.bundled), "the next start applies it")
+        self.assertIn("cctv1 | CCTV1", self.path.read_text(encoding="utf-8"))
+        self.assertEqual(channelpack.remembered(self.path, PUBLIC)["version"], "2026-11-04.1")
+
+    def test_updater_retries_after_a_failed_write(self):
+        channelpack.seed(self.path, PUBLIC, self.bundled)
+        newer = channelpack.wrap(pack(version="2026-11-05.1", channels=pack()["channels"][:1]), SECRET)
+        logs = []
+        updater = self.updater(newer, logs)
+        with self.failing_once():
+            self.assertIsNone(updater.check())
+            self.assertEqual(channelpack.remembered(self.path, PUBLIC)["version"], "2026-11-04.1")
+            self.assertEqual(updater.check(), "2026-11-05.1", "the next check applies it")
+        self.assertNotIn("cctv2", self.path.read_text(encoding="utf-8"))
+        self.assertTrue(any("写频道表失败" in line for line in logs), logs)
+
+    def test_updater_ignores_older_and_equal_versions(self):
+        channelpack.seed(self.path, PUBLIC, self.bundled)
+        self.assertEqual(self.updater(channelpack.wrap(pack(version="2026-11-05.1"), SECRET)).check(), "2026-11-05.1")
+        table = self.path.read_text(encoding="utf-8")
+        logs = []
+        older = channelpack.wrap(pack(version="2026-11-04.9", channels=pack()["channels"][:1]), SECRET)
+        self.assertIsNone(self.updater(older, logs).check(), "older: possible replay")
+        self.assertTrue(any("旧" in line for line in logs), logs)
+        equal = channelpack.wrap(pack(version="2026-11-05.1", channels=pack()["channels"][:1]), SECRET)
+        self.assertIsNone(self.updater(equal).check(), "equal: nothing to do")
+        self.assertEqual(self.path.read_text(encoding="utf-8"), table)
+        self.assertEqual(channelpack.remembered(self.path, PUBLIC)["version"], "2026-11-05.1")
+
+    def test_fetch_refuses_an_oversized_body(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n):
+                return b"x" * n
+
+        with mock.patch.object(channelpack.urllib.request, "urlopen", return_value=Response()):
+            with self.assertRaises(channelpack.TooLarge):
+                channelpack._fetch("https://pack.example/c.json")
+            logs = []
+            channelpack.Updater(self.path, "https://pack.example/c.json", PUBLIC, log=logs.append).check()
+        self.assertTrue(any("频道包太大" in line for line in logs), logs)
+        self.assertFalse(any("签名" in line for line in logs), logs)
 
     def test_seed_without_a_bundled_file_does_nothing(self):
         self.assertFalse(channelpack.seed(self.path, PUBLIC, Path(self.tmp.name) / "missing.json"))
@@ -265,13 +370,13 @@ class ToolTests(unittest.TestCase):
             table.write_text("# t\ncctv1 | CCTV1 | http://a.example/1.m3u8 | UA\n", encoding="utf-8")
             routes.write_meta(table, {"cctv1": {"routes": [{"url": "http://b.example/1.m3u8"}], "good": "x"}})
             draft = tmp / "pack.json"
-            self.assertEqual(self.run_tool("from-table", str(table), "--version", "v1", "--out", str(draft)).returncode, 0)
+            self.assertEqual(self.run_tool("from-table", str(table), "--version", "2026-11-04.1", "--out", str(draft)).returncode, 0)
             self.assertEqual(json.loads(draft.read_text())["channels"][0]["lines"][1]["url"], "http://b.example/1.m3u8")
             signed = tmp / "signed.json"
             self.assertEqual(self.run_tool("sign", str(draft), "--key", str(key), "--out", str(signed)).returncode, 0)
             ok = self.run_tool("verify", str(signed), "--public", public)
             self.assertEqual(ok.returncode, 0, ok.stderr)
-            self.assertIn("v1", ok.stdout)
+            self.assertIn("2026-11-04.1", ok.stdout)
 
     def test_from_table_skips_rows_the_pack_would_refuse(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -286,7 +391,7 @@ class ToolTests(unittest.TestCase):
                 "good2 | Good2 | http://a.example/5.m3u8",
             ]) + "\n", encoding="utf-8")
             draft = tmp / "pack.json"
-            result = self.run_tool("from-table", str(table), "--version", "v1", "--out", str(draft))
+            result = self.run_tool("from-table", str(table), "--version", "2026-11-04.1", "--out", str(draft))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual([c["id"] for c in json.loads(draft.read_text())["channels"]], ["good1", "good2"])
             for needle in ("bad url", "ftp", "toolongidentifier_xx", "short"):
