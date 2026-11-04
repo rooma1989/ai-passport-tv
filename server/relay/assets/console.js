@@ -1751,7 +1751,14 @@ function liveNeighbours(ids, id) {
 
 // 视频（不是直播）的缓冲：往前至多 AHEAD_S 秒、往回 BEHIND_S 秒，码率高（片库的 4K 文件只换封装，一秒两三 MB）时
 // 按字节封顶，免得超出 Chrome 给一个 SourceBuffer 的一百多 MB（超了 appendBuffer 抛 QuotaExceededError）。
-const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024 };
+// 缓冲满了时等着腾地方，至多试这么多次（一秒一次）。
+const QUOTA_TRIES = 30;
+// GOP_S：身后至少留这么多秒。浏览器删画面时会连着删到下一个关键帧为止（后面的帧要靠前面的才解得出），蓝光压制的
+// 关键帧至多隔十来秒（《肖申克的救赎》量过 10.4 秒）：留得比这少，删的时候会把正在放的那一截也带走，播放器只好往前跳
+// 几秒（播放诊断：「跳过了 4.31 秒的空档」）。
+const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024, GOP_S: 12 };
+// 往回留几秒：至多 BEHIND_S，码率高（字节 / 秒）时按 BYTES_BEHIND 少留，但从不少于 GOP_S。
+function vodBehind(rate) { return rate ? Math.max(VOD_BUFFER.GOP_S, Math.min(VOD_BUFFER.BEHIND_S, VOD_BUFFER.BYTES_BEHIND / rate)) : VOD_BUFFER.BEHIND_S; }
 
 // ---- 视频缓冲的几个纯函数（tests/console_buffer_test.mjs 截出这一段单独测）----
 // 视频（HLS，不是直播）起播、断粮时先攒一截再放，不放几秒停几秒（网盘一会儿 4 一会儿 80 Mbit/s，4K 只换封装的
@@ -2028,11 +2035,16 @@ class WatchPlayer {
         await this.trim();
         try { await this.append(chunk); }
         catch (error) {
-          // 缓冲满了（Chrome 一个 SourceBuffer 至多一百多 MB）：清掉现在位置以前的，等一下再接。
+          // 缓冲满了（Chrome 一个 SourceBuffer 至多一百多 MB）：清掉现在位置 GOP_S 秒以前的，等一下再接；腾出来的还
+          // 不够就等画面往前放一点再清、再接（至多 QUOTA_TRIES 次，一秒一次）。
           if (!this.alive || this.live || !error || error.name !== "QuotaExceededError") throw error;
-          await this.squeeze();
-          await sleep(1000);
-          await this.append(chunk);
+          for (let tries = 1; ; tries++) {
+            await this.squeeze();
+            await sleep(1000);
+            if (!this.alive) break;
+            try { await this.append(chunk); break; }
+            catch (again) { if (!again || again.name !== "QuotaExceededError" || tries >= QUOTA_TRIES) throw again; }
+          }
         }
         this.gotBytes += chunk.byteLength; this.gotSecs += durs[this.next] || 0;
         if (!this.live) { this.feed.push({ t: performance.now(), secs: durs[this.next] || 0 }); if (this.feed.length > 32) this.feed.splice(0, this.feed.length - 32); }
@@ -2157,13 +2169,14 @@ class WatchPlayer {
     const v = this.video, b = this.sb.buffered;
     if (!b.length) return;
     if (this.live) { if (v.currentTime - b.start(0) > 90) await this.remove(b.start(0), v.currentTime - 30); return; }
-    // 视频：往回留 BEHIND_S 秒，码率高时按 BYTES_BEHIND 少留一点。
-    const r = this.rate(), keep = r ? Math.max(2, Math.min(VOD_BUFFER.BEHIND_S, VOD_BUFFER.BYTES_BEHIND / r)) : VOD_BUFFER.BEHIND_S;
+    // 视频：往回留 BEHIND_S 秒，码率高时按 BYTES_BEHIND 少留一点，但至少 GOP_S（vodBehind）。
+    const keep = vodBehind(this.rate());
     if (v.currentTime - b.start(0) > keep + 10) await this.remove(b.start(0), v.currentTime - keep);
   }
+  // 缓冲满了：清掉现在位置 GOP_S 秒以前的（不能更近：浏览器会连着删到下一个关键帧，把正在放的也带走）。
   async squeeze() {
     const v = this.video, b = this.sb.buffered;
-    if (b.length && v.currentTime - 2 > b.start(0)) await this.remove(b.start(0), v.currentTime - 2);
+    if (b.length && v.currentTime - VOD_BUFFER.GOP_S > b.start(0)) await this.remove(b.start(0), v.currentTime - VOD_BUFFER.GOP_S);
   }
   stop() {
     this.alive = false;
