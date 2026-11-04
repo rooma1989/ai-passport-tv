@@ -22,7 +22,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .. import channel_groups, listen as listen_audio, now_playing
+from .. import channel_groups, edition, listen as listen_audio, now_playing
 from ..tenancy import db as tenancy_db, files as tenancy_files
 from ..tenancy.claimguard import ClaimGuard
 from ..tenancy.phonelinks import PhoneLinks
@@ -3075,6 +3075,13 @@ def _manage_handler(relay: Relay):
         def _not_found(self) -> None:
             self._send(404, NOT_FOUND.encode(), "text/html; charset=utf-8")
 
+        def _edition_off(self, path: str) -> bool:
+            """精简版拦掉的接口回 410（不是 404：控制台把 404 当成登录失效）。"""
+            if not edition.blocked(path):
+                return False
+            self._json({"ok": False, "error": edition.OFF_MESSAGE, "edition": "lite"}, 410)
+            return True
+
         def _login(self) -> None:
             """验证过密钥或扫码码：发一个 180 天的会话 cookie，跳到遥控页。多用户时登录的是管理员。"""
             if relay.tenant:
@@ -3134,6 +3141,8 @@ def _manage_handler(relay: Relay):
 
         def _get(self):
             path = self._path()
+            if self._edition_off(path):
+                return
             if path in ASSETS:
                 kind, data = ASSETS[path]
                 if relay.selfhost is not None and data is ASSETS["/wifi"][1]:
@@ -3206,6 +3215,7 @@ def _manage_handler(relay: Relay):
                 static.send(self, PACKED_PAGES["remote"])
             elif path == "/api/state":
                 summary = relay.summary(caller, device)
+                summary["edition"] = edition.current()
                 if relay.tenant and not caller.guest and caller.user is not None:
                     # 别的手机通过设备「恢复登录」登进了这个账号：遥控页提示一次（console.recovery_notice）。
                     notice = console.recovery_notice(relay, caller.user, self._cookie() or self._query().get("s"))
@@ -3343,6 +3353,8 @@ def _manage_handler(relay: Relay):
 
         def _post(self):
             path = self._path()
+            if self._edition_off(path):
+                return
             if setup.post(self, relay, path):
                 return
             if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)
@@ -3566,6 +3578,8 @@ def _manage_handler(relay: Relay):
             self._not_found()
 
         def _delete(self):
+            if self._edition_off(self._path()):
+                return
             if setup.pending(relay):
                 self._not_found()
                 return
