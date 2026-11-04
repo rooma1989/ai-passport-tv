@@ -226,7 +226,7 @@ function adminRoute(sub) {
     adm.timer = 0;
     return;
   }
-  const known = (id) => ADM_SECTIONS.some(([x]) => x === id);
+  const known = (id) => liteNav(ADM_SECTIONS, EDITION, "admin").some(([x]) => x === id);
   const sec = known(sub) ? sub : known(lsGet("rootv.admin", "")) ? lsGet("rootv.admin", "") : "overview";
   if (sec !== sub) { history.replaceState(null, "", "#/admin/" + sec); lastHash = location.hash; }
   if (adm.on && adm.sec === sec) return;
@@ -250,7 +250,7 @@ function adminCanLeave(hash) {
 addEventListener("beforeunload", (event) => { if (adm.on && adm.sec === "channels" && achDirty()) { event.preventDefault(); event.returnValue = ""; } });
 
 function admShell() {
-  const nav = ADM_SECTIONS.map(([id, t, i]) => `<a href="#/admin/${id}" data-k="adm-${id}"${id === adm.sec ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}${id === "users" && adm.review ? `<em>${adm.review}</em>` : ""}</a>`).join("");
+  const nav = liteNav(ADM_SECTIONS, EDITION, "admin").map(([id, t, i]) => `<a href="#/admin/${id}" data-k="adm-${id}"${id === adm.sec ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}${id === "users" && adm.review ? `<em>${adm.review}</em>` : ""}</a>`).join("");
   const k = focusKey();      // 用键盘在分区标签上按回车：重画后焦点还在那个标签上
   $("admBody").innerHTML = `<header class="ph"><h1 class="lt">管理</h1></header>
     <nav class="chips asub" aria-label="管理分区">${nav}</nav><div id="admSec"><p class="aload">正在读取…</p></div>`;
@@ -287,7 +287,10 @@ function admLoad() {
   else if (adm.sec === "channels") achLoad();
   else if (adm.sec === "audit") admAudit(false);
   else if (adm.sec === "system") admSystem();
+  else if (adm.sec === "pack") packLoad();
 }
+// 频道包页的占位（精简版）；任务 9 替换成真正的实现。
+function packLoad() { $("admSec").innerHTML = '<p class="aload">正在读取…</p>'; }
 function admTick() {
   if (!adm.on || route !== "admin" || document.hidden || anyOverlay()) return;
   if (adm.sec === "overview") admOverview(false);

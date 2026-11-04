@@ -8,6 +8,8 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -119,6 +121,14 @@ class FullWebTests(WebTests):
     def test_blocked_paths_answer_410_with_json(self):
         status, _answer = self.request("GET", "/tv/api/admin/channels")
         self.assertEqual(status, 200, "the full edition keeps the channel editor")
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class ConsoleLiteTests(unittest.TestCase):
+    def test_console_lite_navigation(self):
+        result = subprocess.run(["node", str(ROOT / "tests" / "console_lite_test.mjs")], capture_output=True,
+                                text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

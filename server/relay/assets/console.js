@@ -366,6 +366,7 @@ async function boot() {
   catch (error) { setTimeout(boot, 3000); return; }
   if (!status.signed_in) { showLogin(); return; }
   me = status.me;
+  EDITION = status.edition || "full";
   showApp();
   recoveryNotice(status.notice);
 }
@@ -482,6 +483,23 @@ const GUEST_ROUTES = ["home", "live", "search", "settings", "remote", "me"];
 // 搜索不在中间的标签里：是右上角那组按钮的第一个（放大镜），窗口窄的时候中间的标签也不会被挤掉。
 const TOPT = [["home", "首页"], ["live", "直播"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"]];
 const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search", "搜索", "search"], ["remote", "遥控", "remote"], ["me", "我的", "set"]];
+// ---- 精简版导航的纯函数（tests/console_lite_test.mjs 单独取出来测）
+// 精简版（/api/login/status 的 edition，server/edition.py）不显示的页和分区；管理里的「频道表」换成「频道」（频道包）。
+const LITE_HIDE = Object.freeze({
+  top: ["series", "lib"], tabs: [], settings: ["youtube", "history"], admin: ["users", "audit"],
+  routes: ["series", "lib"],
+});
+function liteNav(list, edition, kind) {
+  if (edition !== "lite") return list;
+  const hide = LITE_HIDE[kind] || [];
+  const out = list.filter(([id]) => !hide.includes(id));
+  return kind === "admin" ? out.map((item) => (item[0] === "channels" ? ["pack", "频道", item[2]] : item)) : out;
+}
+function liteRoute(name, edition) {
+  return edition === "lite" && LITE_HIDE.routes.includes(name) ? "home" : name;
+}
+// ---- 精简版导航的纯函数到此
+let EDITION = "full";
 
 function showApp() {
   ticketRun++;
@@ -517,6 +535,7 @@ function showRoute() {
   if (!me) return;
   let name = parseRoute();
   if (!TITLES[name]) name = "home";
+  name = liteRoute(name, EDITION);
   if (isGuest() && !GUEST_ROUTES.includes(name)) name = "home";
   if (name === "admin" && !isAdmin()) name = "home";
   // 进不去的地址（访客、不是管理员打开 #/admin）：地址栏也改成真正显示的那一页。
@@ -594,7 +613,7 @@ function tabOf(name) { return name; }
 function renderTop() {
   const cur = tabOf(route);
   const cr = (id) => (cur === id ? 'aria-current="page"' : "");
-  const tabs = TOPT.filter(([id]) => !isGuest() || GUEST_ROUTES.includes(id));
+  const tabs = liteNav(TOPT, EDITION, "top").filter(([id]) => !isGuest() || GUEST_ROUTES.includes(id));
   const initial = me ? [...me.name][0] || "?" : "?";
   const role = me ? (me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人") : "";
   $("top").innerHTML = `<div class="tl"><a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${iconSVG(40, true)}${wordmarkSVG(28, false)}</a></div>
@@ -610,7 +629,7 @@ function renderTop() {
 }
 function renderTabs() {
   const cur = ["series", "up", "lib", "devices", "settings", "admin"].includes(route) ? "me" : route;
-  $("tabs").innerHTML = TABS.map(([id, t, i]) => `<a href="#/${id}" ${id === cur ? 'aria-current="page"' : ""}>${ic(i, 24)}${t}</a>`).join("");
+  $("tabs").innerHTML = liteNav(TABS, EDITION, "tabs").map(([id, t, i]) => `<a href="#/${id}" ${id === cur ? 'aria-current="page"' : ""}>${ic(i, 24)}${t}</a>`).join("");
 }
 // 滚动时：顶栏从透明变成毛玻璃；手机上大标题滚走后，导航栏中间出现小标题。
 function updateTop() {
@@ -656,7 +675,7 @@ function setTabOn(id) {
 function settingsNav() {
   if (!me) return;
   const want = route === "settings" ? routeParts()[1] || "" : "";
-  const tabs = SET_TABS.filter(([id]) => setTabOn(id));
+  const tabs = liteNav(SET_TABS, EDITION, "settings").filter(([id]) => setTabOn(id));
   const cur = tabs.some(([id]) => id === want) ? want : "general";
   const html = tabs.map(([id, t, i]) => `<a href="#/settings/${id}" data-k="set-${id}"${id === cur ? ' aria-current="page"' : ""}>${ic(i, 16)}${t}${id === "youtube" && ytAlert() ? '<i class="adot" aria-label="要处理"></i>' : ""}</a>`).join("");
   if (html !== setNavHTML) {
