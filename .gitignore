@@ -86,3 +86,6 @@ packaging/docker/firmware/*
 
 # UI screenshots taken while developing (not part of the repository).
 .shots/
+
+# tools/build_core.py --edition 生成（server/edition.py）
+server/_edition_build.py
