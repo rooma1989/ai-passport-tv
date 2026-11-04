@@ -259,3 +259,7 @@ label.ghost { cursor: pointer; }
 #modal .bkopt span { color: var(--label); }
 #modal .bkopt small { display: block; margin-top: 3px; font: 400 12px/1.5 var(--sans); color: var(--label-3); }
 #modal td.bklog { color: var(--warn); }
+.plist{list-style:none;padding:0;margin:12px 0}
+.prow{display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--sep)}
+.prow.off b{opacity:.45;text-decoration:line-through}
+.pbtns{display:flex;gap:6px}
