@@ -1547,7 +1547,7 @@ function retryWatch() {
   // 这一路没了（sourceGone）：和「重连」一样，从现在的位置、同一集重连。
   if (lost.gone) { lostManual(); return; }
   // 视频：从现在的位置重起（还没放起来时 pcPos 就是这次要的起点，不从 0、不换一集）；别的（直播）重新要一次。
-  if (watching.seekable && watching.player) { seekRestart(pcPos()); return; }
+  if (watching.seekable && watching.player) { seekRestart(pcPos(), "retry"); return; }
   if (watching.mode === "direct") startDirect(watching.again, { group: watching.group, again: true, hls: watching.hls });
   else startWatch(false, true, undefined, watching.hls);
 }
@@ -1620,7 +1620,7 @@ async function lostAttempt(gen) {
     if (gen !== lost.gen) return;
     if (watching !== w || watchKey(data.now) !== w.key || w.device !== deviceId()) { lostReset(); if (data) renderWatch(); return; }
   }
-  const at = w.seekable ? { start: Math.round(pcPos() * 10) / 10 } : {};
+  const at = w.seekable ? { start: Math.round(pcPos() * 10) / 10, why: "reconnect" } : {};
   const request = w.mode === "direct" ? vodAsk(Object.assign({ viewer }, w.again, at), w.hls) : vodAsk(withDevice(Object.assign({ viewer }, at)), w.hls);
   if (w.mode === "direct" && request.channel === "cast" && deviceId()) request.device = deviceId();
   let answer = null, why = "";
@@ -2623,7 +2623,7 @@ function playerFor(answer) {
     // 暂停太久、中转那边已经往前转过了：暂停着就等按「播放」时再从这里重起（那之前不占 ffmpeg），在放就马上重起。
     gap: () => {
       if (!watching || watching.player !== player) return;
-      if ($("watchVideo").paused && !player.hold) watching.stale = true; else seekRestart(pcPos());
+      if ($("watchVideo").paused && !player.hold) watching.stale = true; else seekRestart(pcPos(), "gap");
     },
   });
   return player;
@@ -2869,7 +2869,9 @@ function pcSeek(target, now) {
   clearTimeout(seekTimer);
   seekTimer = setTimeout(() => seekRestart(target), now ? 0 : 450);
 }
-async function seekRestart(target) {
+// why：为什么重起（中转记进日志，「偶尔卡一下、跳一下」查得出是谁起的）：seek 拖动、快进快退、点了某一秒；gap 中转的
+// 窗口里已经没有要的那一段了；stale 暂停太久中转往前转过了；retry 点了重试；start 从头放。
+async function seekRestart(target, why) {
   if (!watching) return;
   if (watching.player.vod && !watching.player.failed) { pcSeek(target); return; }
   clearTimeout(seekTimer);
@@ -2880,7 +2882,7 @@ async function seekRestart(target) {
   // 点播的播放器坏了（地址过期、这一路被收了）才会走到这里：同一路也要换一个新的播放器（again）。
   const again = !!watching.player.vod;
   const ok = watching.mode === "direct"
-    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10 }), { group: watching.group, seek: true, again, hls: watching.hls })
+    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10, why: why || "seek" }), { group: watching.group, seek: true, again, hls: watching.hls })
     : await startWatch(false, true, Math.round(target * 10) / 10, watching.hls);
   if (!ok && watching) { watching.seeking = null; watchSay(""); renderPc(); }
 }
@@ -3156,12 +3158,12 @@ function pcTogglePlay() {
   const p = watching.player;
   if (p.hold) { p.userPause(); renderPc(); renderMini(); return; }
   if (v.paused) {
-    if (watching.stale) { watching.stale = false; seekRestart(pcPos()); return; }
+    if (watching.stale) { watching.stale = false; seekRestart(pcPos(), "stale"); return; }
     // 真放完了才从头放（mediaDone）：HLS 数据接完时往往还有一分钟没放，那时暂停再按是接着放。
     if (watching.kind === "video" && mediaDone(p.ended, v.ended, v.currentTime, v.duration)) {
       hideUpNext();
       if (p.vod && !p.failed) { p.seek(0); v.play().catch(() => {}); return; }
-      seekRestart(watching.seekable ? 0 : pcPos());
+      seekRestart(watching.seekable ? 0 : pcPos(), "start");
       return;
     }
     v.play().catch(() => {});
@@ -3773,7 +3775,7 @@ $("pcMenu").addEventListener("keydown", (event) => {
     items[(at + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
   }
 });
-$("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0); };
+$("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0, "start"); };
 $("pcResumeX").onclick = () => { $("pcResume").hidden = true; };
 // 触屏：标题和控制条收着时，点一下画面只是把它们叫出来（不暂停），关闭、全屏这些按钮才点得到。
 let pcTapShow = false;
@@ -3792,7 +3794,7 @@ document.addEventListener("fullscreenchange", () => { renderPc(); pcActive(); })
   v.muted = lsGet("rootv.muted", "0") === "1";
 }
 for (const ev of ["play", "pause", "volumechange", "progress", "seeked", "ratechange", "durationchange"]) $("watchVideo").addEventListener(ev, () => { renderPc(); if (ev === "play" || ev === "pause") { renderMini(); pcActive(); pipSync(); } });
-$("watchVideo").addEventListener("play", () => { if (watching && watching.stale) { watching.stale = false; seekRestart(pcPos()); } });
+$("watchVideo").addEventListener("play", () => { if (watching && watching.stale) { watching.stale = false; seekRestart(pcPos(), "stale"); } });
 $("watchVideo").addEventListener("timeupdate", () => { renderPc(); renderMiniProgress(); });
 
 // ---- 播放器快捷键的纯函数（tests/console_keys_test.mjs 把这一段切出来单独跑） ----
