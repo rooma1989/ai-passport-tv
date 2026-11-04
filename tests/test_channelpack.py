@@ -7,6 +7,7 @@ Design: docs/superpowers/specs/2026-11-04-minimal-product-design.md section 4.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -242,6 +243,54 @@ class SeedAndUpdateTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         self.assertTrue(ids)
         self.assertEqual(list(Path(self.tmp.name).glob("*.tmp")), [])
+
+
+class ToolTests(unittest.TestCase):
+    def run_tool(self, *args):
+        return subprocess.run([sys.executable, str(ROOT / "tools" / "channelpack.py"), *args],
+                              capture_output=True, text=True, encoding="utf-8", timeout=60)
+
+    def test_keygen_from_table_sign_verify(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            key = tmp / "signing.key"
+            result = self.run_tool("keygen", "--out", str(key))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            public = result.stdout.strip()
+            self.assertEqual(len(public), 64)
+            self.assertNotIn(key.read_text().strip(), result.stdout, "the private key is never printed")
+            self.assertEqual(oct(key.stat().st_mode & 0o777), "0o600")
+            self.assertNotEqual(self.run_tool("keygen", "--out", str(key)).returncode, 0, "never overwrites")
+            table = tmp / "channels.txt"
+            table.write_text("# t\ncctv1 | CCTV1 | http://a.example/1.m3u8 | UA\n", encoding="utf-8")
+            routes.write_meta(table, {"cctv1": {"routes": [{"url": "http://b.example/1.m3u8"}], "good": "x"}})
+            draft = tmp / "pack.json"
+            self.assertEqual(self.run_tool("from-table", str(table), "--version", "v1", "--out", str(draft)).returncode, 0)
+            self.assertEqual(json.loads(draft.read_text())["channels"][0]["lines"][1]["url"], "http://b.example/1.m3u8")
+            signed = tmp / "signed.json"
+            self.assertEqual(self.run_tool("sign", str(draft), "--key", str(key), "--out", str(signed)).returncode, 0)
+            ok = self.run_tool("verify", str(signed), "--public", public)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertIn("v1", ok.stdout)
+
+    def test_from_table_skips_rows_the_pack_would_refuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            table = tmp / "channels.txt"
+            table.write_text("\n".join([
+                "good1 | Good | http://a.example/1.m3u8",
+                "bad url | Bad | ftp://a.example/2",
+                "good1 | Dup | http://a.example/3.m3u8",
+                "toolongidentifier_xx | Long | http://a.example/4.m3u8",
+                "short",
+                "good2 | Good2 | http://a.example/5.m3u8",
+            ]) + "\n", encoding="utf-8")
+            draft = tmp / "pack.json"
+            result = self.run_tool("from-table", str(table), "--version", "v1", "--out", str(draft))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([c["id"] for c in json.loads(draft.read_text())["channels"]], ["good1", "good2"])
+            for needle in ("bad url", "ftp", "toolongidentifier_xx", "short"):
+                self.assertIn(needle, result.stderr)
 
 
 if __name__ == "__main__":

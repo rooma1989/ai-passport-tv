@@ -23,7 +23,7 @@ from . import channel_groups, ed25519, routes
 from .relay import channeltable
 
 SCHEMA = 1
-PUBLIC_KEY_HEX = ""          # 任务 11 填：主人频道签名密钥的公钥（公开的，可以进仓库）
+PUBLIC_KEY_HEX = "659131ec15c3825f9944833b08d619a439567d0e5585d37564716d091e15d88d"   # 主人频道签名密钥的公钥（公开的，可以进仓库）
 ID_MAX = channeltable.ID_MAX
 LINE_MAX = channeltable.LINE_MAX     # 频道表一行的字节上限
 NAME_MAX = channeltable.NAME_MAX
