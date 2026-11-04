@@ -721,7 +721,7 @@ function admDeviceRow(d, firmware) {
   const status = (ADM_STATUS[d.status] || d.status) + (d.online ? " · 在线" : d.status === "active" ? " · 离线" : "") + (d.repair ? " · 等新密钥" : "");
   const where = el("small", d.status === "banned" ? "bad" : d.online ? "live" : "",
                    status + (d.online && (d.channel_name || d.channel) ? " · 正在播 " + (d.channel_name || d.channel) : "") +
-                   " · 最后连接 " + when(d.last_seen) + (d.network ? " · " + d.network : "") + (d.guests ? " · " + d.guests + " 个访客" : ""));
+                   " · 最后连接 " + when(d.last_seen) + (d.network ? " · " + d.network : "") + (d.guests && !liteOff("guests", EDITION) ? " · " + d.guests + " 个访客" : ""));
   const acts = [], k = "d" + d.id;
   if (d.status === "active") {
     acts.push(admBtn("重连", "", k + "-re", async () => { await admAct("api/admin/devices/" + d.id + "/reconnect", {}, "已让它重连"); }),
@@ -883,7 +883,8 @@ async function admSystem() {
        "自己注册：每个网段每小时最多 " + s.signup_limits.net + " 个、全站每小时 " + s.signup_limits.all + " 个；注册的人会在「用户」里标成「待查看」。");
   item("未绑定的设备", "只显示「扫码绑定」画面和绑定码，不转码、不播任何台", "没有试看时间。");
   item("恢复登录", "设备状态页上的手势，给主人一个一次性手机登录链接", "每台设备每小时最多 " + s.recover_limit + " 个。");
-  item("登录有效期", "手机 " + s.sessions_days.phone + " 天，电脑 " + s.sessions_days.pc + " 天，访客 " + s.sessions_days.guest + " 天");
+  item("登录有效期", "手机 " + s.sessions_days.phone + " 天，电脑 " + s.sessions_days.pc + " 天"
+       + (liteOff("guests", EDITION) ? "" : "，访客 " + s.sessions_days.guest + " 天"));
   // 自建：没有旧设备、没有共享令牌，不给这个开关。
   if (!s.selfhost) {
     const toggle = admBtn(s.legacy_token ? "关闭" : "打开", s.legacy_token ? "linkbtn red" : "linkbtn on", "adm-legacy", async () => {

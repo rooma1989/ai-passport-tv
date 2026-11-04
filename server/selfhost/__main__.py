@@ -249,10 +249,11 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
         if lite:   # 精简版不给「用手机听」
             for key in ("TV_LISTEN_PORT", "TV_LISTEN_ROUTE", "TV_LISTEN_KEY_FILE"):
                 env.pop(key)
-        if config.asr_socket.startswith("http://"):
+        # 精简版没有语音：不给电视服务识别服务的地址和中转密钥。
+        if not lite and config.asr_socket.startswith("http://"):
             # 电脑客户端的本机识别服务走回环 TCP（Windows 没有 Unix 套接字；server/voice/asr.py）。
             env.update(TV_ASR_URL=config.asr_socket, TV_RELAY_KEY_FILE=str(layout.relay_key))
-        elif config.asr_socket:
+        elif not lite and config.asr_socket:
             env.update(TV_ASR_SOCKET=config.asr_socket, TV_RELAY_KEY_FILE=str(layout.relay_key))
         argv = child_command("server.tv_server", desktop) + ["live", "--port", str(getattr(config, port_attr)),
                                                              "--bind", config.bind, "--ffmpeg", ffmpeg]

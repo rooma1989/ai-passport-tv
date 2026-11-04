@@ -148,7 +148,7 @@ SYNC_S = 10
 
 
 def attach_features(relay, args) -> None:
-    """中转启动时挂上的功能模块。精简版（server/edition.py）不挂 YouTube、片库、网盘和直播源订阅：
+    """中转启动时挂上的功能模块。精简版（server/edition.py）不挂 YouTube、节目单、片库、网盘和直播源订阅：
     这些对象留着 None，用到它们的代码本来就按云端（没有它们）的情况处理过。"""
     from .. import edition
     from . import clouddrive, epg, library, linecheck, livetally, subscriptions, ytsettings, ytupdate
@@ -158,8 +158,9 @@ def attach_features(relay, args) -> None:
         ytsettings.autostart(relay)
         # 本机模式的 yt-dlp 自动更新：每天查一次、解析失败像是 yt-dlp 跟不上时马上查（ytupdate.py）。
         ytupdate.attach(relay)
-    # 节目单（epg.py）：默认关着；总后台打开后在数据库旁边的 epg/ 里存下好的文件。
-    epg.attach(relay, args.db.parent / "epg")
+    if not lite:
+        # 节目单（epg.py）：默认关着；总后台打开后在数据库旁边的 epg/ 里存下好的文件。精简版没有节目单（接口 410）。
+        epg.attach(relay, args.db.parent / "epg")
     # 直播台线路的后台自检和真画面封面（linecheck.py）：只在自建 / 电脑客户端（有「在电脑上看」时）开，
     # 封面存在数据库旁边的 covers/live/。
     linecheck.attach(relay, args.db.parent / "covers" / "live")

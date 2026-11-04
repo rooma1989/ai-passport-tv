@@ -53,8 +53,8 @@ class AttachTests(unittest.TestCase):
     def test_full_attaches_everything(self):
         self.assertEqual(self.attached("full"), set(self.NAMES))
 
-    def test_lite_skips_youtube_library_drives_and_subscriptions(self):
-        self.assertEqual(self.attached("lite"), {"epg.attach", "linecheck.attach", "livetally.attach"})
+    def test_lite_skips_youtube_epg_library_drives_and_subscriptions(self):
+        self.assertEqual(self.attached("lite"), {"linecheck.attach", "livetally.attach"})
 
 
 KEY = "k" * 32
@@ -140,6 +140,14 @@ class WebTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(answer["message"], follows.NO_ACCOUNT_LITE)
 
+    def test_youtube_is_not_offered(self):
+        """精简版不提「设置 → YouTube」：/api/state 没有 youtube_off，粘贴 YouTube 链接直说不支持。"""
+        self.assertNotIn("youtube_off", self.request("GET", "/tv/api/state")[1])
+        for path in ("/tv/api/cast", "/tv/api/creators"):
+            answer = self.request("POST", path, {"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})[1]
+            self.assertEqual((answer["ok"], answer["error"]), (False, web.YOUTUBE_OFF_LITE), path)
+            self.assertNotIn("设置", answer["error"])
+
 
 class FullWebTests(WebTests):
     which = "full"
@@ -163,6 +171,13 @@ class FullWebTests(WebTests):
 
     def test_follows_message_without_youtube(self):
         self.assertEqual(self.request("GET", "/tv/api/follows")[1]["message"], follows.NO_ACCOUNT)
+
+    def test_youtube_is_not_offered(self):
+        """完整版照旧：自建没开 YouTube 时 /api/state 有 youtube_off，粘贴链接指向「设置 → YouTube」。"""
+        self.assertIs(self.request("GET", "/tv/api/state")[1]["youtube_off"], True)
+        for path in ("/tv/api/cast", "/tv/api/creators"):
+            answer = self.request("POST", path, {"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})[1]
+            self.assertEqual((answer["ok"], answer["error"]), (False, web.YOUTUBE_OFF_SELFHOST), path)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")

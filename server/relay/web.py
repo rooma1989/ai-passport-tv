@@ -2586,13 +2586,15 @@ class Relay:
             summary["youtube"] = {"state": self.youtube_state()}
             if getattr(self, "youtube_kind", "") == "local":
                 summary["youtube"]["kind"] = "local"   # 自建的本机模式：遥控页的提示不说「海外节点」
-        elif self.selfhost is not None:
-            # 家庭服务器、电脑客户端：投屏页提示去「设置 → YouTube」打开它。
+        elif self.selfhost is not None and not edition.is_lite():
+            # 家庭服务器、电脑客户端：投屏页提示去「设置 → YouTube」打开它。精简版没有 YouTube，不提。
             summary["youtube_off"] = True
         return summary
 
     def _youtube_off(self, cloud: str) -> str:
-        """YouTube 没配置时的回答：自建的指向「设置 → YouTube」，云端照旧。"""
+        """YouTube 没配置时的回答：精简版直说不支持，自建的指向「设置 → YouTube」，云端照旧。"""
+        if edition.is_lite():
+            return YOUTUBE_OFF_LITE
         return YOUTUBE_OFF_SELFHOST if self.selfhost is not None else cloud
 
     def add_creator(self, text: str, caller: Caller = LEGACY) -> dict:
@@ -2898,6 +2900,7 @@ class Relay:
 
 _SITE_NAMES = {"bilibili": "B 站", "youtube": "YouTube "}
 YOUTUBE_OFF_SELFHOST = "YouTube 还没开启：去「设置 → YouTube」填代理即可"
+YOUTUBE_OFF_LITE = "精简版不支持 YouTube，只能看 B 站视频"
 
 
 def _phone_device(device: dict | None) -> dict | None:

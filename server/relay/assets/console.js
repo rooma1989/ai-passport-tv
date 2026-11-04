@@ -489,8 +489,10 @@ const LITE_HIDE = Object.freeze({
   top: ["series", "lib"], tabs: [], settings: ["youtube", "history"], admin: ["users", "audit"],
   routes: ["series", "lib"],
   // 关掉的功能，页面上也不提：pc 在电脑上看（服务端也不列「这台电脑」、/api/state 没有 watch），cast 直播页的
-  // 「我的投屏」组，youtube 设置 → YouTube 的接口，invites 设置里的「家人和邀请」。
-  off: ["pc", "cast", "youtube", "invites"],
+  // 「我的投屏」组，youtube 设置 → YouTube 的接口和搜索的「B 站 / YouTube」切换，invites 设置里的「家人和邀请」，
+  // phoneLink「让手机登录」（/api/phone-link），pets 遥控里的宠物（/api/pet），guests 访客码和说访客的话，
+  // localsearch 搜索框上面的自家结果（/api/search/local）。
+  off: ["pc", "cast", "youtube", "invites", "phoneLink", "pets", "guests", "localsearch"],
 });
 // 精简版换掉的说法（没有 YouTube、没有多用户和节目单）；没列的照完整版。
 const LITE_TEXT = Object.freeze({
@@ -501,6 +503,9 @@ const LITE_TEXT = Object.freeze({
   fwEmpty: "在 B 站关注的 UP 主会自动列在这里，不用一个个添加。",
   noTvHint: "绑定以后，点任何节目都能播到它上面；订阅现在就可以先加。",
   upCard: "B 站的 UP 主，每个都变成一个台，新视频自动排上。",
+  accountSub: "手机和电脑",
+  sessionsSub: "手机和电脑",
+  logoutHint: "退出其他登录后，别的手机和电脑要重新扫码。",
 });
 function liteOff(feature, edition) {
   return edition === "lite" && LITE_HIDE.off.includes(feature);
@@ -543,6 +548,11 @@ function showApp() {
   for (const b of qsa(".noguest")) b.hidden = isGuest();
   $("adminList").hidden = !isAdmin();            // 「管理」（console-admin.js）：服务端也只给管理员
   applyLite();
+  if (liteOff("youtube", EDITION) && searchSrc === "yt") {   // 精简版只搜 B 站（切换按钮也藏了）
+    searchSrc = "bili";
+    renderSearchSource();
+    bsSay(BS_HELLO);
+  }
   chosen = lsGet("console.device", "");
   targetPref = lsGet("rootv.target:" + me.name, "");
   remember = lsGet("rootv.remember", "1") !== "0";
@@ -1164,7 +1174,7 @@ function renderTargetRows() {
       <span class="ic">${ic(t.kind === "pc" ? "pc" : "tv", 24)}</span><span><b><span class="dot ${on ? "" : "off"}"></span>${esc(t.name)}${t.id === targetPref ? ' <span class="last">上次用的</span>' : ""}</b><span class="sub">${esc(targetSub(t))}</span></span>
       <span class="chk">${picked ? ic("check") : ""}</span></button>`;
   }).join("");
-  const none = !rows.length ? `<div class="offbox">${ic("tv", 48)}<b>还没有小电视</b><p>${isGuest() ? "" : "到「设备」页输入小电视屏幕上的绑定码，所有「播放」就能播到它。"}</p>${isGuest() ? "" : '<a class="btn pri sm" href="#/devices">绑定小电视</a>'}</div>` : "";
+  const none = !rows.length ? `<div class="offbox">${ic("tv", 48)}<b>还没有小电视</b><p>${isGuest() ? "" : "到「设备」页输入小电视屏幕上的绑定码，所有「播放」就能播到它。"}</p>${isGuest() || EDITION !== "lite" ? "" : '<a class="btn pri sm" href="#/devices">绑定小电视</a>'}</div>` : "";
   const bind = !isGuest() && !rows.some((t) => t.kind === "tv") && rows.length ? `<p class="hint">还没有小电视。<a href="#/devices" class="linkbtn">绑定一台 ›</a></p>` : "";
   body.innerHTML = (msg ? `<p class="pmsg">${esc(msg)}</p>` : "") + pend + `<div role="radiogroup" aria-label="播放到">${list}</div>` + none + bind
     + `<div class="opt"><span>记住这次的选择<small>下次点「播放」直接播到这里，不再问</small></span><button class="sw" role="switch" aria-checked="${remember}" data-remember aria-label="记住这次的选择"></button></div>`
@@ -5425,7 +5435,8 @@ function aggSoon() { clearTimeout(agg.timer); agg.timer = setTimeout(aggSearch, 
 async function aggSearch() {
   clearTimeout(agg.timer);
   const q = aggQuery();
-  if (!q || q.length > 40 || LINKY.test(q)) {
+  // 精简版没有自家结果（/api/search/local 是 410）：只搜 B 站。
+  if (!q || q.length > 40 || LINKY.test(q) || liteOff("localsearch", EDITION)) {
     agg.run++;
     if (agg.q || agg.sections.length) { agg.q = ""; agg.sections = []; renderAgg(); }
     return;
@@ -5961,7 +5972,7 @@ function renderDevices() {
     const card = el("div", "dev" + (d.online ? "" : " off"));
     const [n, g] = d.online ? where(d) : ["--", ""];
     card.innerHTML = `<header>${ic("tv")}<b>${esc(d.name)}</b><small><span class="dot ${d.online ? "" : "off"}"></span>${d.online ? "在线" : "离线" + (d.last_seen ? " · " + ago(d.last_seen) + "在线" : "")}</small></header>
-      <div class="model">${esc(d.model_name + (d.fw ? " · " + d.fw : "") + (d.legacy ? " · 旧固件" : ""))} · ${d.mine ? "我的" : "家人共用"}${d.mine && d.guests ? " · 访客 " + d.guests + " 个" : ""}</div>
+      <div class="model">${esc(d.model_name + (d.fw ? " · " + d.fw : "") + (d.legacy ? " · 旧固件" : ""))} · ${d.mine ? "我的" : "家人共用"}${d.mine && d.guests && !liteOff("guests", EDITION) ? " · 访客 " + d.guests + " 个" : ""}</div>
       <div class="tvbox"><div class="tvscr ${d.online ? "" : "dark"}"><span class="g">${esc(g)}</span><div class="n">${esc(n)}</div><div class="x">${esc(d.online ? d.channel_name || d.channel || "—" : "离线")}</div><div class="y">${esc(d.online ? d.title || "" : "")}</div></div></div>`;
     const row = el("div", "row");
     const remote = button("遥控", "btn pri sm", () => openRemote(d.id));
@@ -5974,7 +5985,7 @@ function renderDevices() {
     if (d.mine) {
       const more = el("div", "more");
       more.append(button("改名", "linkbtn", () => renameDevice(d)), button("Wi-Fi", "linkbtn", () => openWifi(d)),
-                  button("访客码", "linkbtn", () => guestCode(d)),
+                  ...(liteOff("guests", EDITION) ? [] : [button("访客码", "linkbtn", () => guestCode(d))]),
                   ...(d.legacy ? [] : [button("重新配对", "linkbtn", () => repairDevice(d)), button("解绑", "linkbtn red", () => unbindDevice(d))]));
       card.appendChild(more);
     }

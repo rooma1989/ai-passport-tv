@@ -152,7 +152,7 @@
       <!-- 搜索：自己的直播台、节目单、片库、订阅（聚合搜索），B 站或 YouTube 搜索 + 粘贴链接即播 -->
       <section class="page" data-route="search" aria-label="搜索">
         <header class="ph"><h1 class="lt">搜索</h1>
-          <div class="segc noguest" id="srcSwitch" role="group" aria-label="在哪儿搜">
+          <div class="segc noguest" id="srcSwitch" data-lite-off="youtube" role="group" aria-label="在哪儿搜">
             <button data-src="bili" aria-pressed="true">B 站</button>
             <button data-src="yt" aria-pressed="false">YouTube</button>
           </div></header>
@@ -184,10 +184,10 @@
         <div class="devs" id="devCards"></div>
         <div class="h2" style="margin-bottom:14px"><h2>手机遥控</h2></div>
         <div class="list noguest">
-          <button class="li" id="phoneLink1"><span class="ico" data-ic="remote" data-ics="18"></span><span class="tx">让手机登录<small>手机扫码后就是遥控器，出门在外也能用</small></span><em>›</em></button>
-          <a class="li" href="#/settings/account"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">登录的地方和家人<small>手机、电脑和访客；管理员可以邀请家人</small></span><em>›</em></a>
+          <button class="li" id="phoneLink1" data-lite-off="phoneLink"><span class="ico" data-ic="remote" data-ics="18"></span><span class="tx">让手机登录<small>手机扫码后就是遥控器，出门在外也能用</small></span><em>›</em></button>
+          <a class="li" href="#/settings/account"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">登录的地方和家人<small data-lite-text="accountSub">手机、电脑和访客；管理员可以邀请家人</small></span><em>›</em></a>
         </div>
-        <p class="hint">「访客码」给家里来的客人扫：只能遥控这一台，看不到你的订阅；「换码」后扫旧码进来的访客要重新扫。</p>
+        <p class="hint" data-lite-off="guests">「访客码」给家里来的客人扫：只能遥控这一台，看不到你的订阅；「换码」后扫旧码进来的访客要重新扫。</p>
       </section>
 
       <!-- 设置：分成几个标签（#/settings/<标签>），一次只显示一个，标签条由 console.js 的 settingsNav 画 -->
@@ -218,13 +218,13 @@
         </div>
 
         <div class="spane" data-pane="account">
-          <div class="list noguest" id="sessionsList"><h3>登录的地方 <small>手机、电脑和访客</small></h3><div class="rows" id="sessionRows"></div></div>
+          <div class="list noguest" id="sessionsList"><h3>登录的地方 <small data-lite-text="sessionsSub">手机、电脑和访客</small></h3><div class="rows" id="sessionRows"></div></div>
           <div class="inline">
-            <button class="ghost noguest" id="phoneLink2">让手机登录</button>
+            <button class="ghost noguest" id="phoneLink2" data-lite-off="phoneLink">让手机登录</button>
             <button class="ghost noguest" id="logoutOthers">退出其他所有登录</button>
             <button class="ghost" id="logout2">退出这台电脑</button>
           </div>
-          <p class="hint noguest">退出其他登录后，别的手机和电脑要重新扫码；访客不受影响。</p>
+          <p class="hint noguest" data-lite-text="logoutHint">退出其他登录后，别的手机和电脑要重新扫码；访客不受影响。</p>
         </div>
 
         <!-- B 站账号：家庭服务器和电脑客户端，每个人登录自己的（bililogin.py）；云端没有。 -->
@@ -462,7 +462,7 @@
             <div class="dial"><span class="ico" data-ic="ear"></span><span>只听</span><em id="listenNote">只放声音，屏幕只显示宠物</em><button class="sw" role="switch" aria-checked="false" id="listen" aria-label="只听"></button></div>
             <div class="dial"><span class="ico" data-ic="moon"></span><span>定时关</span><span class="seg" id="sleepSeg" role="group" aria-label="定时关"></span><b id="sleepv"></b></div>
           </div>
-          <div class="rsec" id="pets"><b>宠物</b> <span class="hint" id="petNote"></span><div class="petgrid" id="petgrid" role="group" aria-label="宠物"></div></div>
+          <div class="rsec" id="pets" data-lite-off="pets"><b>宠物</b> <span class="hint" id="petNote"></span><div class="petgrid" id="petgrid" role="group" aria-label="宠物"></div></div>
           <div class="actions"><a class="btn ghost-t sm" href="#/live">频道和分组</a><a class="btn ghost-t sm" href="#/devices">设备</a></div>
         </div>
       </div>

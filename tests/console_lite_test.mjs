@@ -31,7 +31,7 @@ assert.equal(liteRoute("live", "lite"), "live");
 assert.ok(Object.isFrozen(LITE_HIDE));
 assert.ok(Object.isFrozen(LITE_TEXT));
 
-for (const f of ["pc", "cast", "youtube", "invites"]) {
+for (const f of ["pc", "cast", "youtube", "invites", "phoneLink", "pets", "guests", "localsearch"]) {
   assert.equal(liteOff(f, "lite"), true, f + ' is off in lite');
   assert.equal(liteOff(f, "full"), false, f + ' stays in full');
 }
@@ -57,4 +57,14 @@ assert.deepEqual(lite.map((g) => g.name), ["UP 主", "央视"], 'the cast group 
 assert.equal(lite[0], groups[1], 'untouched groups are passed through');
 assert.deepEqual(lite[1].channels.map((c) => c.id), ["cctv1"]);
 assert.equal(groups[2].channels.length, 2, 'the input is not mutated');
+// console.html：每个 data-lite-off / data-lite-text / data-lite-ph 的键都在表里（拼错了 applyLite 就静静地不管它）；
+// 精简版会 410 的几处都挂上了。
+const html = readFileSync(join(ROOT, 'server/relay/assets/console.html'), 'utf8');
+for (const [, key] of html.matchAll(/data-lite-off="([^"]+)"/g)) assert.ok(LITE_HIDE.off.includes(key), 'data-lite-off ' + key);
+for (const [, key] of html.matchAll(/data-lite-(?:text|ph)="([^"]+)"/g)) assert.ok(Object.hasOwn(LITE_TEXT, key), 'data-lite-text/ph ' + key);
+const tagOf = (id) => (html.match(new RegExp('<[^>]*\\bid="' + id + '"[^>]*>')) || [''])[0];
+for (const [id, key] of [["phoneLink1", "phoneLink"], ["phoneLink2", "phoneLink"], ["pets", "pets"], ["srcSwitch", "youtube"]]) {
+  assert.ok(tagOf(id).includes('data-lite-off="' + key + '"'), '#' + id + ' is hidden in lite');
+}
+assert.ok(!/访客|邀请/.test(LITE_TEXT.accountSub + LITE_TEXT.sessionsSub + LITE_TEXT.logoutHint), 'lite texts do not mention guests');
 console.log('console_lite_test: ok');

@@ -47,6 +47,8 @@
   body.tenant [data-tenant] { display: block; }
   body:not(.tenant) .tenantonly { display: none !important; }
   body.guest .noguest { display: none !important; }
+  /* 精简版（/api/state 的 edition，server/edition.py）：关掉的功能（接口 410）这一页也不显示。 */
+  body.lite .nolite { display: none !important; }
 
   /* 底部标签：console.css 给的是链接，这里是按钮；访客只有三个，列数跟着走。 */
   .m #tabs { grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
@@ -236,7 +238,7 @@
           </div>
           <audio id="earAudio" preload="none" playsinline></audio>
         </div>
-        <div class="list" style="margin-top:14px">
+        <div class="list nolite" style="margin-top:14px">
           <button class="li pets-li" id="petline"><span class="pv"><img class="pix" id="petface" width="32" height="32" alt=""></span><span class="tx">宠物<small>等待、暂停、出错时它出现在电视上</small></span><em id="petname">--</em><i class="chev" aria-hidden="true">›</i></button>
         </div>
       </section>
@@ -252,18 +254,19 @@
         <p class="hint" id="liveHint">点一台，小电视就换过去。</p>
       </section>
 
-      <!-- 搜索：自己的台、节目单、片库、订阅（/api/search/local）；粘贴 B 站或 YouTube 链接就是投屏。 -->
+      <!-- 搜索：自己的台、节目单、片库、订阅（/api/search/local）；粘贴 B 站或 YouTube 链接就是投屏。
+           精简版没有本地搜索（接口 410），只剩粘贴 B 站链接投屏。 -->
       <section class="page" id="search" aria-labelledby="searchTitle">
         <header class="ph"><h1 class="lt" id="searchTitle">搜索</h1></header>
         <label class="bigsearch"><span data-ic="search"></span>
-          <input type="search" id="q" placeholder="台名、节目、剧集，或粘贴视频链接" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-label="搜索，或粘贴 B 站、YouTube 视频链接"></label>
+          <input type="search" id="q" placeholder="台名、节目、剧集，或粘贴视频链接" data-lite-ph="qPh" autocomplete="off" spellcheck="false" enterkeyhint="search" aria-label="搜索，或粘贴 B 站、YouTube 视频链接"></label>
         <div class="castbox" id="castbox" hidden>
           <div class="linkhit"><span class="ico" data-ic="link"></span><span class="tx"><b>播放这个链接</b><small id="castUrl"></small></span>
             <button class="go" id="play" aria-label="在小电视上播放这个链接">播放</button></div>
         </div>
         <p class="bsstate" id="searchState" aria-live="polite"></p>
         <div id="results"></div>
-        <p class="hint" id="searchHint">粘贴 B 站或 YouTube 视频链接（App 里「分享 → 复制链接」）就能投到小电视上。</p>
+        <p class="hint" id="searchHint" data-lite-text="searchHint">粘贴 B 站或 YouTube 视频链接（App 里「分享 → 复制链接」）就能投到小电视上。</p>
         <div class="noguest">
           <h2 class="h3">放过的</h2>
           <div class="list" id="history"></div>
@@ -316,6 +319,7 @@
         </div>
         <div class="list" id="creatorList"></div>
         <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播。</p>
+        <div class="nolite">
         <h2 class="h3">剧集 <span class="tag" id="seriesCount"></span></h2>
         <input type="text" id="seriesLink" placeholder="B 站番剧 / 多集视频 / 合集，或 YouTube 播放列表链接" aria-label="剧集链接">
         <div class="stack-row" style="margin-top:10px">
@@ -324,6 +328,7 @@
         </div>
         <div class="list" id="seriesList"></div>
         <p class="hint">每部剧是一个台（在「动画影视」组里），从第 1 集按顺序播，换台回来接着上次的地方。点一部剧可以选集。番剧只播免费的集；YouTube 每集第一次播要等 20～40 秒。</p>
+        </div>
       </section>
 
       <!-- 我的：账号、我的设备、登录其他设备、邀请家人（管理员）、更多。单用户时只有「更多」。访客没有这一页。 -->
@@ -342,17 +347,17 @@
           <div class="list"><h3>登录其他设备</h3>
             <button class="li" id="scanpc"><span class="tx">扫码登录电脑<small>扫电脑屏幕上的二维码</small></span><i class="chev" aria-hidden="true">›</i></button>
             <a class="li" href="login"><span class="tx">输入登录码<small>电脑屏幕上的 6 位码</small></span><i class="chev" aria-hidden="true">›</i></a>
-            <button class="li" id="phonelink"><span class="tx">让另一部手机登录<small>新手机用相机扫</small></span><i class="chev" aria-hidden="true">›</i></button>
+            <button class="li nolite" id="phonelink"><span class="tx">让另一部手机登录<small>新手机用相机扫</small></span><i class="chev" aria-hidden="true">›</i></button>
             <button class="li" id="sessionsopen"><span class="tx">已登录的设备</span><em id="sessionCount"></em><i class="chev" aria-hidden="true">›</i></button>
           </div>
           <div id="adminBox" hidden>
-            <div class="list"><h3>邀请家人</h3>
-              <div class="li"><span class="tx"><span class="stack-row" style="margin:0">
+            <div class="list"><h3 data-lite-text="adminTitle">邀请家人</h3>
+              <div class="li nolite"><span class="tx"><span class="stack-row" style="margin:0">
                 <input type="text" id="inviteName" placeholder="家人的名字（可不填）" maxlength="20" aria-label="家人的名字">
                 <button class="btn pri" id="invite">邀请</button></span>
                 <span class="linkbox" id="inviteLink" hidden></span>
                 <small>邀请链接 7 天内有效、只能用一次：发给家人，在手机浏览器里打开。</small></span></div>
-              <a class="li" href="console#/admin"><span class="tx">管理<small>用户、设备、频道表（在电脑版里，电脑上更好用）</small></span><i class="chev" aria-hidden="true">›</i></a>
+              <a class="li" href="console#/admin"><span class="tx">管理<small data-lite-text="adminSub">用户、设备、频道表（在电脑版里，电脑上更好用）</small></span><i class="chev" aria-hidden="true">›</i></a>
             </div>
           </div>
         </div>
@@ -423,6 +428,24 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 let data = null;
+// 精简版（/api/state 的 edition）：宠物、剧集、邀请、让手机登录、本地搜索、节目单、用手机听、访客码都不显示
+// （这些接口在 server/edition.py 的 LITE_BLOCKED 里，问了是 410）。粘贴 B 站链接投屏（/api/cast）照旧。
+let LITE = false;
+const LITE_TEXT = {
+  qPh: "粘贴 B 站视频链接",
+  searchHint: "粘贴 B 站视频链接（App 里「分享 → 复制链接」）就能投到小电视上。找台请用「直播」页。",
+  adminTitle: "管理",
+  adminSub: "设备、频道（在电脑版里，电脑上更好用）",
+};
+function applyLite(edition) {
+  const lite = edition === "lite";
+  if (lite === LITE) return;
+  LITE = lite;
+  document.body.classList.toggle("lite", lite);
+  if (!lite) return;
+  for (const n of document.querySelectorAll("[data-lite-text]")) n.textContent = LITE_TEXT[n.dataset.liteText] || n.textContent;
+  for (const n of document.querySelectorAll("[data-lite-ph]")) n.placeholder = LITE_TEXT[n.dataset.litePh] || n.placeholder;
+}
 let group = "";
 // 点了换台 / 投屏之后，到小电视真的切过去之前的那段时间。
 let pending = null;
@@ -1357,6 +1380,7 @@ function renderEar() {
   if (!data) return;
   const info = data.now.online ? data.now.listen : null;
   const row = $("earRow");
+  if (LITE) { row.hidden = true; return; }    // 精简版没有用手机听（/api/listen 是 410）
   // 服务器没开「用手机听」就整行不显示；开过的话设备离线、固件旧时照样显示，说明为什么用不了。
   if (info) lastEarOffered = true;
   row.hidden = !ear.on && !info && !(lastEarOffered && !data.now.online);
@@ -1483,7 +1507,7 @@ function renderDeviceList() {
     const bits = [dv.online ? "在线" : "离线", dv.model_name, dv.legacy ? "旧固件" : "", dv.mine ? "" : "家人的设备"].filter(Boolean);
     const sub = el("small", "", bits.join(" · "));
     if (dv.online && dv.channel_name) sub.append(" · 正在播 " + dv.channel_name);
-    if (dv.guests) sub.append(" · " + dv.guests + " 位访客");
+    if (dv.guests && !LITE) sub.append(" · " + dv.guests + " 位访客");
     tx.append(name, sub);
     row.append(face, tx);
     if (dv.mine) {
@@ -1501,7 +1525,7 @@ function renderDeviceList() {
         await refresh();
         loadMine();
       };
-      act.append(wifiButton, guest, rename);
+      act.append(wifiButton, ...(LITE ? [] : [guest]), rename);   // 精简版没有访客
       if (!dv.legacy) {
         const unbind = el("button", "linkbtn red", "解绑");
         unbind.onclick = async () => {
@@ -1853,11 +1877,16 @@ function onSearchInput() {
   $("castUrl").textContent = link ? text : "";
   $("searchHint").hidden = !!text;
   clearTimeout(searchTimer);
-  if (!text || link) { searchSeq++; searchShown = ""; $("results").replaceChildren(); $("searchState").textContent = ""; return; }
+  if (!text || link || LITE) {
+    searchSeq++; searchShown = ""; $("results").replaceChildren();
+    // 精简版没有本地搜索（/api/search/local 是 410）：只能粘贴 B 站链接投屏。
+    $("searchState").textContent = LITE && text && !link ? "这里只能粘贴 B 站视频链接；找台请用「直播」页" : "";
+    return;
+  }
   searchTimer = setTimeout(() => runSearch(text), 280);
 }
 async function runSearch(text) {
-  if (text === searchShown) return;
+  if (LITE || text === searchShown) return;
   const seq = ++searchSeq;
   $("searchState").textContent = "正在找…";
   let answer;
@@ -1950,6 +1979,7 @@ function render() {
 
 async function refresh() {
   try { data = await call("GET", "api/state"); } catch (error) { return; }
+  applyLite(data && data.edition);
   // 别的手机通过设备「恢复登录」登进了这个账号：提示一次（按 id 记在这台手机上）。
   if (data && data.notice) {
     let seen = "";
@@ -1971,7 +2001,7 @@ async function refresh() {
 // 台名下面写现在的节目和进度，节目按开始、结束时间在这里自己换。
 let epg = {}, epgAt = 0;
 async function loadEpg() {
-  if (!data || !data.epg) { epg = {}; return; }
+  if (!data || !data.epg || LITE) { epg = {}; return; }
   if (Date.now() - epgAt < 60000) return;
   epgAt = Date.now();
   try { epg = (await call("GET", "api/epg")).channels || {}; } catch (error) { return; }
