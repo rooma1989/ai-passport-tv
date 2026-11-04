@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import ed25519, routes
+from . import ed25519, live, routes
 from .relay import channeltable
 
 SCHEMA = 1
@@ -23,6 +23,8 @@ ID_MAX = channeltable.ID_MAX
 NAME_MAX = channeltable.NAME_MAX
 URL_MAX = channeltable.URL_MAX
 LINES_MAX = routes.BACKUPS_MAX + 1
+AGENT_MAX = routes.AGENT_MAX
+CHANNELS_MAX = live.TV_TABLE_MAX    # 再多电视服务读表时会悄悄丢掉
 PREFS_NAME = "channels-prefs.json"
 STATE_NAME = "channels-pack.json"   # 上次用上的那份（原样，带签名），改偏好时用它重写频道表
 
@@ -32,6 +34,7 @@ class PackError(ValueError):
 
 
 def wrap(pack: dict, secret: bytes) -> bytes:
+    """校验后签名，返回信封的字节（只在主人电脑上用）。"""
     validate(pack)
     payload = json.dumps(pack, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     sig = ed25519.sign(secret, payload.encode("utf-8")).hex()
@@ -39,6 +42,7 @@ def wrap(pack: dict, secret: bytes) -> bytes:
 
 
 def unwrap(raw: bytes, public_hex: str) -> dict:
+    """验签并校验从网上取来的字节，返回频道包；任何不对都只抛 PackError。"""
     try:
         envelope = json.loads(raw)
         payload, sig = envelope["payload"], bytes.fromhex(envelope["sig"])
@@ -60,22 +64,28 @@ def unwrap(raw: bytes, public_hex: str) -> dict:
 
 
 def _text(value, limit: int) -> bool:
+    """能原样写进频道表一格的文字：单行、首尾没有空白、没有 |、不超长。"""
     return isinstance(value, str) and 0 < len(value) <= limit and "|" not in value \
+        and value == value.strip() and len(value.splitlines()) == 1 \
         and not any(ord(c) < 32 for c in value)
 
 
 def validate(pack) -> None:
+    """检查频道包的每一项；凡是通过的，写出来的 channels.txt 电视服务都读得进、读回来一样。"""
     if not isinstance(pack, dict) or pack.get("v") != SCHEMA or not _text(pack.get("version"), 40):
         raise PackError("频道包的版本号不对")
     channels = pack.get("channels")
     if not isinstance(channels, list) or not channels:
         raise PackError("频道包里没有台")
+    if len(channels) > CHANNELS_MAX:
+        raise PackError(f"频道包的台太多（最多 {CHANNELS_MAX} 个）")
     seen = set()
     for n, ch in enumerate(channels, start=1):
         if not isinstance(ch, dict):
             raise PackError(f"第 {n} 个台格式不对")
         cid = ch.get("id")
-        if not _text(cid, ID_MAX) or not cid.isascii() or not cid.isprintable() or " " in cid or cid in seen:
+        if not _text(cid, min(ID_MAX, live.TV_CHANNEL_ID_MAX - 1)) or cid.startswith("#") \
+                or not all("!" <= c <= "~" for c in cid) or cid in seen:
             raise PackError(f"第 {n} 个台的 id 不对或重复")
         seen.add(cid)
         if not _text(ch.get("name"), NAME_MAX):
@@ -87,8 +97,14 @@ def validate(pack) -> None:
             url = line.get("url") if isinstance(line, dict) else None
             if not _text(url, URL_MAX) or not url.startswith(("http://", "https://")) or " " in url:
                 raise PackError(f"台 {cid} 有一条线路地址不对")
-            if "ua" in line and not _text(line["ua"], 200):
+            if "ua" in line and not _text(line["ua"], AGENT_MAX):
                 raise PackError(f"台 {cid} 有一条线路的 User-Agent 不对")
+        for field in ("tvg_id", "logo"):
+            if field in ch and channeltable.clean_meta({field: ch[field]}) != {field: ch[field]}:
+                raise PackError(f"台 {cid} 的 {field} 不对")
+        row = {"id": cid, "name": ch["name"], "url": lines[0]["url"], "agent": lines[0].get("ua", "")}
+        if len(channeltable.line_of(row).encode("utf-8")) >= live.MAX_CHANNEL_LINE_BYTES:
+            raise PackError(f"台 {cid} 在频道表里的一行太长")
 
 
 def read_prefs(channels_path: Path) -> dict:
@@ -96,15 +112,16 @@ def read_prefs(channels_path: Path) -> dict:
         data = json.loads((Path(channels_path).parent / PREFS_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"hidden": [], "order": []}
-    hidden = [x for x in data.get("hidden", []) if isinstance(x, str)] if isinstance(data, dict) else []
-    order = [x for x in data.get("order", []) if isinstance(x, str)] if isinstance(data, dict) else []
-    return {"hidden": hidden, "order": order}
+    def ids(key):
+        found = data.get(key, []) if isinstance(data, dict) else []
+        return list(dict.fromkeys(x for x in found if isinstance(x, str))) if isinstance(found, list) else []
+    return {"hidden": ids("hidden"), "order": ids("order")}
 
 
 def ordered(pack: dict, prefs: dict) -> list[dict]:
     """包里的台按用户的顺序（没排过的接在后面，按包里的顺序），去掉隐藏的。"""
     by_id = {ch["id"]: ch for ch in pack["channels"]}
-    order = [cid for cid in prefs.get("order", []) if cid in by_id]
+    order = list(dict.fromkeys(cid for cid in prefs.get("order", []) if cid in by_id))
     order += [ch["id"] for ch in pack["channels"] if ch["id"] not in order]
     hidden = set(prefs.get("hidden", []))
     return [by_id[cid] for cid in order if cid not in hidden]
