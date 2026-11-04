@@ -12,6 +12,11 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
+import time
+import urllib.request
 from pathlib import Path
 
 from . import channel_groups, ed25519, routes
@@ -28,6 +33,11 @@ AGENT_MAX = routes.AGENT_MAX
 CHANNELS_MAX = channel_groups.TABLE_MAX + channel_groups.CHANNEL_MAX    # 再多电视服务读表时会悄悄丢掉；不 import server.live（它拖进 numpy），测试里核对没跑偏
 PREFS_NAME = "channels-prefs.json"
 STATE_NAME = "channels-pack.json"   # 上次用上的那份（原样，带签名），改偏好时用它重写频道表
+
+
+# 频道表、meta、记下的包和偏好是一组东西：后台更新线程和管理网页（多线程的 HTTP 服务）都会读改写它们，
+# 凡是“读—改—写”的一段都在这把锁里做（取网络、验签不在里面）。
+_LOCK = threading.Lock()
 
 
 class PackError(ValueError):
@@ -164,12 +174,21 @@ def apply(pack: dict, channels_path: Path, prefs: dict) -> dict:
 
 
 def _write(target: Path, text: str | bytes) -> None:
-    tmp = target.with_name(target.name + ".tmp")
-    if isinstance(text, bytes):
-        tmp.write_bytes(text)
-    else:
-        tmp.write_text(text, encoding="utf-8")
-    tmp.replace(target)
+    data = text if isinstance(text, bytes) else text.encode("utf-8")
+    # 临时文件名每次都不一样，两个写的人不会踩到对方
+    with tempfile.NamedTemporaryFile(dir=target.parent, prefix=target.name + ".", suffix=".tmp", delete=False) as f:
+        tmp = Path(f.name)
+        try:
+            f.write(data)
+        except BaseException:
+            f.close()
+            tmp.unlink(missing_ok=True)
+            raise
+    try:
+        tmp.replace(target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def remember(raw: bytes, channels_path: Path) -> None:
@@ -202,15 +221,84 @@ def admin_view(channels_path: Path | None, public_hex: str) -> dict:
 
 def set_prefs(channels_path: Path | None, public_hex: str, body) -> dict:
     """保存隐藏和排序，并用记下的那份包重写频道表。"""
-    pack = remembered(channels_path, public_hex) if channels_path is not None else None
-    if pack is None:
+    if channels_path is None:
         return {"ok": False, "error": "还没有频道包"}
-    hidden = body.get("hidden") if isinstance(body, dict) else None
-    order = body.get("order") if isinstance(body, dict) else None
-    known = {ch["id"] for ch in pack["channels"]}
-    if not isinstance(hidden, list) or not isinstance(order, list) \
-            or not all(isinstance(x, str) and x in known for x in hidden + order):
-        return {"ok": False, "error": "请求格式不对"}
-    prefs = {"hidden": list(dict.fromkeys(hidden)), "order": list(dict.fromkeys(order))}
-    save_prefs(channels_path, prefs)
-    return {"ok": True, **apply(pack, channels_path, prefs)}
+    with _LOCK:
+        pack = remembered(channels_path, public_hex)
+        if pack is None:
+            return {"ok": False, "error": "还没有频道包"}
+        hidden = body.get("hidden") if isinstance(body, dict) else None
+        order = body.get("order") if isinstance(body, dict) else None
+        known = {ch["id"] for ch in pack["channels"]}
+        if not isinstance(hidden, list) or not isinstance(order, list) \
+                or not all(isinstance(x, str) and x in known for x in hidden + order):
+            return {"ok": False, "error": "请求格式不对"}
+        prefs = {"hidden": list(dict.fromkeys(hidden)), "order": list(dict.fromkeys(order))}
+        result = apply(pack, channels_path, prefs)    # 先写频道表，成功了才记偏好
+        save_prefs(channels_path, prefs)
+        return {"ok": True, **result}
+
+
+BUNDLED = Path(__file__).resolve().parent / "data" / "channels-pack.json"
+UPDATE_EVERY_S = 12 * 3600
+FETCH_TIMEOUT_S = 20
+FETCH_MAX = 2 * 1024 * 1024
+
+
+def seed(channels_path: Path, public_hex: str, bundled: Path = BUNDLED) -> bool:
+    """第一次启动：还没用过频道包时把随包带的那份写进频道表。返回是不是写了。"""
+    try:
+        raw = Path(bundled).read_bytes()
+        pack = unwrap(raw, public_hex)
+    except (OSError, PackError):
+        return False
+    with _LOCK:
+        if remembered(channels_path, public_hex) is not None:
+            return False
+        remember(raw, channels_path)
+        apply(pack, channels_path, read_prefs(channels_path))
+    return True
+
+
+def _fetch(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "XiaozhiTV-lite"})
+    with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_S) as response:
+        return response.read(FETCH_MAX + 1)[:FETCH_MAX]
+
+
+class Updater:
+    """启动时和每 12 小时取一次频道包；验签过了、版本变了才写频道表。从不抛：后台线程不能死。"""
+
+    def __init__(self, channels_path: Path, url: str, public_hex: str, fetch=_fetch, log=print):
+        self.channels_path, self.url, self.public_hex = Path(channels_path), url, public_hex
+        self.fetch, self.log = fetch, log
+
+    def check(self) -> str | None:
+        try:
+            raw = self.fetch(self.url)
+            pack = unwrap(raw, self.public_hex)
+        except PackError as error:
+            self.log(f"频道包不能用：{error}")
+            return None
+        except Exception as error:  # noqa: BLE001 网络不通等：下一轮再试
+            self.log(f"取频道包失败：{type(error).__name__}")
+            return None
+        try:
+            with _LOCK:
+                old = remembered(self.channels_path, self.public_hex)
+                if old is not None and old["version"] == pack["version"]:
+                    return None
+                remember(raw, self.channels_path)
+                result = apply(pack, self.channels_path, read_prefs(self.channels_path))
+        except Exception as error:  # noqa: BLE001 磁盘写不进去等：下一轮再试
+            self.log(f"写频道表失败：{type(error).__name__}")
+            return None
+        self.log(f"频道包更新到 {result['version']}：{result['channels']} 个台")
+        return pack["version"]
+
+    def start(self) -> None:
+        def loop():
+            while True:
+                self.check()
+                time.sleep(UPDATE_EVERY_S)
+        threading.Thread(target=loop, daemon=True, name="channelpack").start()

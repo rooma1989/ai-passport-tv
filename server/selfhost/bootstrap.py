@@ -87,6 +87,9 @@ def prepare(layout: Layout) -> None:
             "NAS 上多半是文件夹权限：把这个文件夹的读写权限给容器用的用户（PUID/PGID），"
             "或者在 compose.yaml 里把 PUID、PGID 改成这个文件夹主人的编号。") from None
     os.chmod(layout.secrets, 0o700)
+    from .. import channelpack, edition
+    if edition.is_lite() and channelpack.seed(layout.channels, channelpack.PUBLIC_KEY_HEX):
+        return      # 精简版：随包带的频道包（server/data/channels-pack.json）已经写进频道表
     if not layout.channels.exists():
         layout.channels.write_text(CHANNELS_HEADER, encoding="utf-8")
 

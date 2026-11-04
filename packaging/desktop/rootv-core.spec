@@ -64,6 +64,8 @@ datas = [
     (str(ROOT / "packaging" / "flash"), "packaging/flash"),
     (str(ROOT / "LICENSE"), "."),
 ]
+if (ROOT / "server" / "data").is_dir():     # 精简版随包带的频道包（任务 11 生成）
+    datas.append((str(ROOT / "server" / "data"), "server/data"))
 firmware = ROOT / "packaging" / "desktop" / "firmware"
 if (firmware / "manifest.json").is_file():
     datas.append((str(firmware), "firmware"))

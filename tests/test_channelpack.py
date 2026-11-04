@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -158,6 +160,88 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(json.loads((self.path.parent / channelpack.PREFS_NAME).read_text(encoding="utf-8")),
                          {"hidden": ["cctv2"], "order": ["cctv1"]})
 
+
+class SeedAndUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "channels.txt"
+        self.bundled = Path(self.tmp.name) / "bundled.json"
+        self.bundled.write_bytes(channelpack.wrap(pack(), SECRET))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_seed_writes_the_bundled_pack_once(self):
+        self.assertTrue(channelpack.seed(self.path, PUBLIC, self.bundled))
+        self.assertIn("cctv1 | CCTV1", self.path.read_text(encoding="utf-8"))
+        self.assertFalse(channelpack.seed(self.path, PUBLIC, self.bundled), "already has a pack")
+
+    def test_seed_without_a_bundled_file_does_nothing(self):
+        self.assertFalse(channelpack.seed(self.path, PUBLIC, Path(self.tmp.name) / "missing.json"))
+        self.assertFalse(self.path.exists())
+
+    def test_updater_applies_newer_and_ignores_bad(self):
+        channelpack.seed(self.path, PUBLIC, self.bundled)
+        logs = []
+        newer = channelpack.wrap(pack(version="2026-11-05.1", channels=pack()["channels"][:1]), SECRET)
+        updater = channelpack.Updater(self.path, "http://pack.example/channels.json", PUBLIC,
+                                      fetch=lambda url: newer, log=logs.append)
+        self.assertEqual(updater.check(), "2026-11-05.1")
+        self.assertNotIn("cctv2", self.path.read_text(encoding="utf-8"))
+        self.assertIsNone(updater.check(), "same version: nothing to do")
+        bad = channelpack.Updater(self.path, "http://pack.example/channels.json", PUBLIC,
+                                  fetch=lambda url: b'{"v":1,"payload":"{}","sig":"00"}', log=logs.append)
+        self.assertIsNone(bad.check())
+        self.assertIn("cctv1", self.path.read_text(encoding="utf-8"), "a bad pack never touches the table")
+        self.assertTrue(any("签名" in line for line in logs))
+
+    def test_set_prefs_does_not_save_when_apply_fails(self):
+        channelpack.seed(self.path, PUBLIC, self.bundled)
+        with mock.patch.object(channelpack, "apply", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                channelpack.set_prefs(self.path, PUBLIC, {"hidden": ["cctv2"], "order": []})
+        self.assertEqual(channelpack.read_prefs(self.path), {"hidden": [], "order": []})
+
+    def test_concurrent_set_prefs_and_updates_keep_the_table_consistent(self):
+        channelpack.seed(self.path, PUBLIC, self.bundled)
+        versions = [channelpack.wrap(pack(version=f"2026-12-{n:02d}.1"), SECRET) for n in range(1, 41)]
+        counter = iter(range(1000))
+        errors = []
+
+        def update():
+            updater = channelpack.Updater(self.path, "http://x", PUBLIC, log=lambda m: None,
+                                          fetch=lambda url: versions[next(counter) % len(versions)])
+            for _ in range(10):
+                updater.check()
+
+        def prefs():
+            for n in range(10):
+                answer = channelpack.set_prefs(self.path, PUBLIC, {"hidden": ["cctv2"] if n % 2 else [], "order": []})
+                if not answer["ok"]:
+                    errors.append(answer)
+
+        def guarded(fn):
+            def run():
+                try:
+                    fn()
+                except Exception as error:  # noqa: BLE001
+                    errors.append(error)
+            return run
+
+        threads = [threading.Thread(target=guarded(fn)) for fn in (update, prefs, update, prefs)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        ids = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith("#"):
+                self.assertIn(line.count("|"), (2, 3), line)
+                ids.append(line.split("|")[0].strip())
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(ids)
+        self.assertEqual(list(Path(self.tmp.name).glob("*.tmp")), [])
 
 
 if __name__ == "__main__":

@@ -173,6 +173,11 @@ def attach_features(relay, args) -> None:
         clouddrive.attach(relay)
     # 每个人常看的直播台（livetally.py）：直播页的「常看」分组，存在数据库旁边的 live-plays.json。
     livetally.attach(relay, args.db.parent)
+    # 精简版：后台取频道包（server/channelpack.py），验签通过、版本变了才写频道表。
+    if lite and relay.main_channels is not None and edition.CHANNELS_URL:
+        from .. import channelpack
+        channelpack.Updater(relay.main_channels, edition.CHANNELS_URL, channelpack.PUBLIC_KEY_HEX,
+                            log=relay.log).start()
 
 
 def _serve_tenants(args, key: str, youtube) -> int:
