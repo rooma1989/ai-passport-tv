@@ -289,8 +289,47 @@ function admLoad() {
   else if (adm.sec === "system") admSystem();
   else if (adm.sec === "pack") packLoad();
 }
-// 频道包页的占位（精简版）；任务 9 替换成真正的实现。
-function packLoad() { $("admSec").innerHTML = '<p class="aload">正在读取…</p>'; }
+// ======================================================================= 频道（精简版：频道包）
+// 精简版的线路由主人签名的频道包管（server/channelpack.py），这里只能隐藏和排序。
+const pk = { list: [], version: "", run: 0 };
+async function packLoad() {
+  const run = ++pk.run;
+  const box = $("admSec");
+  if (!box) return;
+  box.innerHTML = '<p class="aload">正在读取…</p>';
+  let data;
+  try { data = await admCall("GET", "api/admin/pack"); }
+  catch (error) { if (run === pk.run && adm.sec === "pack") box.innerHTML = `<p class="aload">${esc(error.message)}，刷新一下再试</p>`; return; }
+  if (run !== pk.run || adm.sec !== "pack") return;
+  if (!data.configured) { box.innerHTML = '<p class="aload">还没有频道包：联网后会自动取一份。</p>'; return; }
+  pk.list = data.channels;
+  pk.version = data.version;
+  packRender();
+}
+function packRender() {
+  const box = $("admSec");
+  if (!box || adm.sec !== "pack") return;
+  const rows = pk.list.map((c, i) => `<li class="prow${c.hidden ? " off" : ""}"><b>${esc(c.name)}</b>
+      <span class="pbtns"><button class="btn sm" data-up="${i}" ${i === 0 ? "disabled" : ""} aria-label="上移">↑</button>
+      <button class="btn sm" data-down="${i}" ${i === pk.list.length - 1 ? "disabled" : ""} aria-label="下移">↓</button>
+      <button class="btn sm" data-hide="${i}">${c.hidden ? "显示" : "隐藏"}</button></span></li>`).join("");
+  // 点击处理挂在分区里面的一层，不挂在共用的 #admSec 上：换分区时整层被替换掉，不会漏给别的分区。
+  box.innerHTML = `<div id="packBox"><p class="ahint">频道包版本 ${esc(pk.version)}。线路由我们统一维护、自动更新；这里可以隐藏不看的台、调整顺序。</p>
+    <ol class="plist">${rows}</ol><p><button class="btn" id="packSave">保存</button></p></div>`;
+  $("packBox").onclick = (event) => {
+    const t = event.target.closest("button");
+    if (!t || t.disabled) return;
+    if (t.dataset.up) { const i = +t.dataset.up; [pk.list[i - 1], pk.list[i]] = [pk.list[i], pk.list[i - 1]]; packRender(); }
+    else if (t.dataset.down) { const i = +t.dataset.down; [pk.list[i + 1], pk.list[i]] = [pk.list[i], pk.list[i + 1]]; packRender(); }
+    else if (t.dataset.hide) { const c = pk.list[+t.dataset.hide]; c.hidden = !c.hidden; packRender(); }
+    else if (t.id === "packSave") busy(t, async () => {
+      const answer = await admCall("POST", "api/admin/pack/prefs",
+        { hidden: pk.list.filter((c) => c.hidden).map((c) => c.id), order: pk.list.map((c) => c.id) });
+      if (!answer.ok) throw new Error(answer.error || "没保存上");
+      toast(`已保存：设备上显示 ${answer.channels} 个台`);
+    });
+  };
+}
 function admTick() {
   if (!adm.on || route !== "admin" || document.hidden || anyOverlay()) return;
   if (adm.sec === "overview") admOverview(false);

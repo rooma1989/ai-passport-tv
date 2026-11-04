@@ -1374,3 +1374,7 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m .lsrc .lstx { flex: 1; }
 .m .lformbox { padding: 14px; }
 .m #libBox .card.p .badge { font-size: 9px; padding: 3px 4px; top: 6px; left: 6px; }
+.plist{list-style:none;padding:0;margin:12px 0}
+.prow{display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-bottom:1px solid var(--sep)}
+.prow.off b{opacity:.45;text-decoration:line-through}
+.pbtns{display:flex;gap:6px}
