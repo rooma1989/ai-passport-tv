@@ -147,6 +147,34 @@ def main(argv: list[str] | None = None) -> int:
 SYNC_S = 10
 
 
+def attach_features(relay, args) -> None:
+    """中转启动时挂上的功能模块。精简版（server/edition.py）不挂 YouTube、片库、网盘和直播源订阅：
+    这些对象留着 None，用到它们的代码本来就按云端（没有它们）的情况处理过。"""
+    from .. import edition
+    from . import clouddrive, epg, library, linecheck, livetally, subscriptions, ytsettings, ytupdate
+    lite = edition.is_lite()
+    if not lite:
+        # 「设置 → YouTube」：本机模式第一次用，组件还没装好就在后台下载（server/relay/ytsettings.py）。
+        ytsettings.autostart(relay)
+        # 本机模式的 yt-dlp 自动更新：每天查一次、解析失败像是 yt-dlp 跟不上时马上查（ytupdate.py）。
+        ytupdate.attach(relay)
+    # 节目单（epg.py）：默认关着；总后台打开后在数据库旁边的 epg/ 里存下好的文件。
+    epg.attach(relay, args.db.parent / "epg")
+    # 直播台线路的后台自检和真画面封面（linecheck.py）：只在自建 / 电脑客户端（有「在电脑上看」时）开，
+    # 封面存在数据库旁边的 covers/live/。
+    linecheck.attach(relay, args.db.parent / "covers" / "live")
+    if not lite:
+        # 直播源订阅（subscriptions.py）：自建 / 电脑客户端定时重新取订阅的播放列表，新线路并进频道表；精简版的线路归频道包管。
+        subscriptions.attach(relay)
+        # 我的片库（library.py）：自建 / 电脑客户端的网盘（OpenList 的 WebDAV）和本机文件夹，定时重新扫描；
+        # 来源和索引存在数据库旁边的 library.json、library-index.json，网盘的海报缓存在 library-art/。
+        library.attach(relay)
+        # 网盘组件（clouddrive.py、server/selfhost/openlist.py）：组件在跑时片库里有一个受管的「网盘」来源。
+        clouddrive.attach(relay)
+    # 每个人常看的直播台（livetally.py）：直播页的「常看」分组，存在数据库旁边的 live-plays.json。
+    livetally.attach(relay, args.db.parent)
+
+
 def _serve_tenants(args, key: str, youtube) -> int:
     from ..tenancy.accounts import Accounts
     accounts = Accounts(args.db)
@@ -183,16 +211,7 @@ def _serve_tenants(args, key: str, youtube) -> int:
             relay.watch.max_copy = max(1, args.pc_copy)
         if args.pc_transcode is not None:
             relay.watch.max_encode = max(0, args.pc_transcode)
-    # 本机模式第一次用：组件还没装好就在后台下载（server/relay/ytsettings.py）。
-    from . import ytsettings
-    ytsettings.autostart(relay)
-    # 本机模式的 yt-dlp 自动更新：每天查一次、解析失败像是 yt-dlp 跟不上时马上查（ytupdate.py）。
-    from . import ytupdate
-    ytupdate.attach(relay)
     relay.sync_devices(force=True)
-    # 节目单（epg.py）：默认关着；总后台打开后在数据库旁边的 epg/ 里存下好的文件。
-    from . import epg
-    epg.attach(relay, args.db.parent / "epg")
     # 电脑版首页的台标（logos.py）：用到时取一次，存在数据库旁边的 logos/ 里；频道表里没写台标的台用节目单的，
     # 节目单也没有的按台名用公开台标库的（logoset.py，总后台频道表里能关）。
     from . import logoset
@@ -200,23 +219,7 @@ def _serve_tenants(args, key: str, youtube) -> int:
     relay.logos = LogoCache(args.db.parent / "logos", relay.main_channels, log=lambda message: print(message, flush=True),
                             extra=lambda: relay.guide.icons() if relay.guide is not None and relay.guide.enabled else {},
                             public=lambda: logoset.enabled(relay))
-    # 直播台线路的后台自检和真画面封面（linecheck.py）：只在自建 / 电脑客户端（有「在电脑上看」时）开，
-    # 封面存在数据库旁边的 covers/live/。
-    from . import linecheck
-    linecheck.attach(relay, args.db.parent / "covers" / "live")
-    # 直播源订阅（subscriptions.py）：自建 / 电脑客户端定时重新取订阅的播放列表，新线路并进频道表。
-    from . import subscriptions
-    subscriptions.attach(relay)
-    # 我的片库（library.py）：自建 / 电脑客户端的网盘（OpenList 的 WebDAV）和本机文件夹，定时重新扫描；
-    # 来源和索引存在数据库旁边的 library.json、library-index.json，网盘的海报缓存在 library-art/。
-    from . import library
-    library.attach(relay)
-    # 网盘组件（clouddrive.py、server/selfhost/openlist.py）：组件在跑时片库里有一个受管的「网盘」来源。
-    from . import clouddrive
-    clouddrive.attach(relay)
-    # 每个人常看的直播台（livetally.py）：直播页的「常看」分组，存在数据库旁边的 live-plays.json。
-    from . import livetally
-    livetally.attach(relay, args.db.parent)
+    attach_features(relay, args)
     # 手机上管理设备的 Wi-Fi：中转的私钥（第一次启动时生成），公钥进数据库给电视服务放进 CONFIG。
     from . import wifi as wifi_api
     wifi_api.setup_key(relay, args.wifi_key)
