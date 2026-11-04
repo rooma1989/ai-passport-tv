@@ -38,7 +38,7 @@ With `EDITION=lite`:
 - The relay (`_serve_tenants` in `server/relay/__main__.py`) skips library, cloud-drive and YouTube setup.
 - Disabled endpoints return 410 in `server/relay/web.py` (not 404: the console treats 404 as signed out); the console reads the edition from `/api/state` and shows only the lite pages.
 - As built: the lite edition has no PC playback target either (play always goes to a device; with none bound it leads to binding one). The cast slot stays in the device channel table because Bilibili recommended and followed videos play through it.
-- As built: the relay skips the EPG too, and the supervisor gives the TV server no voice (`TV_ASR_*`) settings. The phone remote (`remote.html`) reads the edition from `/api/state` and hides pets, series, invites, guest codes, "log in another phone", phone listening, the guide and local search; pasting a Bilibili link to play it stays. Pasting a YouTube link answers "精简版不支持 YouTube" instead of pointing at Settings.
+- As built: the relay skips the EPG too, and the supervisor gives the TV server no voice (`TV_ASR_*`) settings. The phone remote (`remote.html`) reads the edition from `/api/state` and hides pets, series, invites, guest codes, "log in another phone", phone listening, the guide and local search; pasting a Bilibili link to play it stays. Pasting a YouTube link says the lite edition does not support YouTube instead of pointing at Settings.
 - All modules stay in the package (YouTube, library and Bilibili code import each other; removing them is fragile).
 
 | Lite keeps | Lite turns off |
