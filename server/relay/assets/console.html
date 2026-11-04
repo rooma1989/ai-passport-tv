@@ -111,9 +111,9 @@
         </div>
         <div class="list"><h3>小电视上的 UP 主台 <small id="upCount2"></small></h3><div class="rows" id="creatorRows"></div></div>
         <div class="panel">
-          <h3>订阅 UP 主 <small>B 站 UP 主 / YouTube 频道</small></h3>
+          <h3>订阅 UP 主 <small data-lite-text="creatorKinds">B 站 UP 主 / YouTube 频道</small></h3>
           <div class="inline">
-            <input type="text" id="creatorLink" placeholder="B 站 UP 主 / YouTube 频道主页，或他们的任意视频链接" autocomplete="off" spellcheck="false">
+            <input type="text" id="creatorLink" data-lite-ph="creatorLink" placeholder="B 站 UP 主 / YouTube 频道主页，或他们的任意视频链接" autocomplete="off" spellcheck="false">
             <button class="go" id="addCreator">添加</button>
           </div>
           <div class="inline" id="biliImportRow" hidden>
@@ -204,11 +204,11 @@
             <!-- 首页壁纸（server/relay/wallpaper.py）：家庭服务器和电脑客户端才有；记在这个浏览器里，默认开 -->
             <div class="li" id="wallRow" hidden><span class="ico" data-ic="pic" data-ics="18"></span><span class="tx">首页壁纸<small>大图后面随机垫一张 dharmx/walls 的壁纸，图由这台服务器下载</small></span><button class="sw" role="switch" aria-checked="true" id="wallSw" aria-label="首页壁纸"></button></div>
           </div>
-          <!-- 家人和邀请（管理员）：在「管理 → 用户」里 -->
+          <!-- 家人和邀请（管理员）：在「管理 → 用户」里。data-lite-*：精简版藏起来、换说法（console.js 的 applyLite） -->
           <div class="list" id="adminList" hidden>
             <h3>家庭</h3>
-            <a class="li" href="#/admin/users"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">家人和邀请</span><em>›</em></a>
-            <a class="li" href="#/admin"><span class="ico" data-ic="shield" data-ics="18"></span><span class="tx">管理<small>用户、设备、频道表、节目单</small></span><em>›</em></a>
+            <a class="li" href="#/admin/users" data-lite-off="invites"><span class="ico" data-ic="up" data-ics="18"></span><span class="tx">家人和邀请</span><em>›</em></a>
+            <a class="li" href="#/admin"><span class="ico" data-ic="shield" data-ics="18"></span><span class="tx">管理<small data-lite-text="adminSub">用户、设备、频道表、节目单</small></span><em>›</em></a>
           </div>
           <div class="list">
             <h3>关于</h3>

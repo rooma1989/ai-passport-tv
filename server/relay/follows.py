@@ -24,6 +24,7 @@ import re
 import threading
 import time
 
+from .. import edition
 from . import home
 from .bilibili import SourceError
 from .youtube import channel_url
@@ -40,6 +41,7 @@ _CHANNEL_URL = re.compile(r"^https://www\.youtube\.com/channel/(UC[0-9A-Za-z_-]{
 _HANDLE_URL = re.compile(r"^https://www\.youtube\.com/(@[^/?#\s]+)$")
 
 NO_ACCOUNT = "登录 B 站（或导入 YouTube cookies）后，这里会自动列出你关注的 UP 主"
+NO_ACCOUNT_LITE = "登录 B 站后，这里会自动列出你关注的 UP 主"   # 精简版没有 YouTube
 TV_FULL = "小电视内存小，最多 {max} 个 UP 主台：先关掉一个再放"
 TV_NO_ROOM = "小电视的频道列表放不下了（设置包的大小有限）：先关掉一个台再放"
 
@@ -344,7 +346,7 @@ class Follows:
                   "tv": {"count": count, "max": MAX_CREATORS, "room": self.relay.room(caller=caller)},
                   "settings": dict(data["settings"])}
         if bili == "off" and gate:
-            answer["message"] = NO_ACCOUNT
+            answer["message"] = NO_ACCOUNT_LITE if edition.is_lite() else NO_ACCOUNT
         return answer
 
     # ---- 放到小电视 ----

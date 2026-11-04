@@ -488,7 +488,34 @@ const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search",
 const LITE_HIDE = Object.freeze({
   top: ["series", "lib"], tabs: [], settings: ["youtube", "history"], admin: ["users", "audit"],
   routes: ["series", "lib"],
+  // 关掉的功能，页面上也不提：pc 在电脑上看（服务端也不列「这台电脑」、/api/state 没有 watch），cast 直播页的
+  // 「我的投屏」组，youtube 设置 → YouTube 的接口，invites 设置里的「家人和邀请」。
+  off: ["pc", "cast", "youtube", "invites"],
 });
+// 精简版换掉的说法（没有 YouTube、没有多用户和节目单）；没列的照完整版。
+const LITE_TEXT = Object.freeze({
+  adminSub: "设备、频道",
+  creatorKinds: "B 站 UP 主",
+  creatorLink: "B 站 UP 主主页，或他们的任意视频链接",
+  fwWhere: "（「设置 → B 站账号」）",
+  fwEmpty: "在 B 站关注的 UP 主会自动列在这里，不用一个个添加。",
+});
+function liteOff(feature, edition) {
+  return edition === "lite" && LITE_HIDE.off.includes(feature);
+}
+function liteText(key, full, edition) {
+  return edition === "lite" && Object.prototype.hasOwnProperty.call(LITE_TEXT, key) ? LITE_TEXT[key] : full;
+}
+// 直播页的分组：精简版去掉投屏台（只有它的「我的投屏」组跟着没了）；没去掉什么的组原样给。
+function liteGroups(groups, edition) {
+  if (!liteOff("cast", edition)) return groups;
+  const out = [];
+  for (const g of groups) {
+    const channels = g.channels.filter((c) => c.id !== "cast");
+    if (channels.length) out.push(channels.length === g.channels.length ? g : Object.assign({}, g, { channels }));
+  }
+  return out;
+}
 function liteNav(list, edition, kind) {
   if (edition !== "lite") return list;
   const hide = LITE_HIDE[kind] || [];
@@ -500,6 +527,12 @@ function liteRoute(name, edition) {
 }
 // ---- 精简版导航的纯函数到此
 let EDITION = "full";
+// 页面上写死的几处（data-lite-off / data-lite-text / data-lite-ph）：精简版藏起来、换成不提 YouTube 和多用户的说法。
+function applyLite() {
+  for (const n of qsa("[data-lite-off]")) if (liteOff(n.dataset.liteOff, EDITION)) n.hidden = true;
+  for (const n of qsa("[data-lite-text]")) n.textContent = liteText(n.dataset.liteText, n.textContent, EDITION);
+  for (const n of qsa("[data-lite-ph]")) n.placeholder = liteText(n.dataset.litePh, n.placeholder, EDITION);
+}
 
 function showApp() {
   ticketRun++;
@@ -507,6 +540,7 @@ function showApp() {
   $("app").hidden = false;
   for (const b of qsa(".noguest")) b.hidden = isGuest();
   $("adminList").hidden = !isAdmin();            // 「管理」（console-admin.js）：服务端也只给管理员
+  applyLite();
   chosen = lsGet("console.device", "");
   targetPref = lsGet("rootv.target:" + me.name, "");
   remember = lsGet("rootv.remember", "1") !== "0";
@@ -962,7 +996,10 @@ function groupOf(id) {
 
 // ======================================================================= 播放到
 
-function canPc() { return !!(data && data.watch) || !!(targetsData && targetsData.targets.some((t) => t.id === PC)); }
+function canPc() {
+  if (liteOff("pc", EDITION)) return false;   // 精简版没有在电脑上看：播放到小电视，没有小电视时去绑定
+  return !!(data && data.watch) || !!(targetsData && targetsData.targets.some((t) => t.id === PC));
+}
 function tvRows() {
   if (targetsData) return targetsData.targets.filter((t) => t.kind === "tv");
   return ((data && data.devices) || []).map((d) => ({ id: d.id, kind: "tv", name: d.name, online: d.online, auto: d.target }));
@@ -1125,7 +1162,7 @@ function renderTargetRows() {
       <span class="ic">${ic(t.kind === "pc" ? "pc" : "tv", 24)}</span><span><b><span class="dot ${on ? "" : "off"}"></span>${esc(t.name)}${t.id === targetPref ? ' <span class="last">上次用的</span>' : ""}</b><span class="sub">${esc(targetSub(t))}</span></span>
       <span class="chk">${picked ? ic("check") : ""}</span></button>`;
   }).join("");
-  const none = !rows.length ? `<div class="offbox">${ic("tv", 48)}<b>还没有小电视</b><p>${isGuest() ? "" : "到「设备」页输入小电视屏幕上的绑定码，所有「播放」就能播到它。"}</p></div>` : "";
+  const none = !rows.length ? `<div class="offbox">${ic("tv", 48)}<b>还没有小电视</b><p>${isGuest() ? "" : "到「设备」页输入小电视屏幕上的绑定码，所有「播放」就能播到它。"}</p>${isGuest() ? "" : '<a class="btn pri sm" href="#/devices">绑定小电视</a>'}</div>` : "";
   const bind = !isGuest() && !rows.some((t) => t.kind === "tv") && rows.length ? `<p class="hint">还没有小电视。<a href="#/devices" class="linkbtn">绑定一台 ›</a></p>` : "";
   body.innerHTML = (msg ? `<p class="pmsg">${esc(msg)}</p>` : "") + pend + `<div role="radiogroup" aria-label="播放到">${list}</div>` + none + bind
     + `<div class="opt"><span>记住这次的选择<small>下次点「播放」直接播到这里，不再问</small></span><button class="sw" role="switch" aria-checked="${remember}" data-remember aria-label="记住这次的选择"></button></div>`
@@ -4420,10 +4457,11 @@ function renderLiveHint() {
 }
 // 小电视没在播时，默认选第一个有直播台的组（不是只有一张投屏卡片的「我的投屏」）。
 function defaultGroup() {
-  const names = data.groups.map((g) => g.name);
+  const groups = liteGroups(data.groups, EDITION);
+  const names = groups.map((g) => g.name);
   if (data.now.group && names.includes(data.now.group) && data.now.online) return data.now.group;
-  const live = data.groups.find((g) => g.channels.some((c) => !isRelay(c.id)));
-  return (live || data.groups[0] || {}).name || "";
+  const live = groups.find((g) => g.channels.some((c) => !isRelay(c.id)));
+  return (live || groups[0] || {}).name || "";
 }
 let groupsSig = "";
 // 直播页最前面的「常看」：这个人看得最多的台（中转按看了多久算，livetally.py；/api/state 的 frequent）。
@@ -4434,16 +4472,18 @@ function frequentGroup() {
   const channels = ((data && data.frequent) || []).map(channelById).filter(Boolean);
   return channels.length ? { name: FREQUENT, channels } : null;
 }
+// 精简版没有投屏：不显示「我的投屏」组（liteGroups；小电视的频道表里还有投屏位，B 站推荐、关注的视频放在它上面）。
 function liveGroups() {
   const f = frequentGroup();
-  return f ? [f].concat(data.groups) : data.groups;
+  const groups = liteGroups(data.groups, EDITION);
+  return f ? [f].concat(groups) : groups;
 }
 const nameKey = (s) => String(s).replace(/[\s\-_]+/g, "").toLowerCase();
 // 直播页现在显示的那一组：「找台」里有字时是所有分组里台名对得上的台，不然是选中的分组（含「常看」）。
 function shownGroup() {
   if (liveFilter) {
     const key = nameKey(liveFilter), seen = new Set(), channels = [];
-    for (const g of data.groups) for (const c of g.channels) {
+    for (const g of liteGroups(data.groups, EDITION)) for (const c of g.channels) {
       if (!seen.has(c.id) && nameKey(c.name).includes(key)) { seen.add(c.id); channels.push(c); }
     }
     // 名字一样的在前，再是开头对上的（打「cctv1」时 CCTV1 在 CCTV10 前面），其余照频道表的顺序。
@@ -6461,7 +6501,7 @@ let yt = null, ytEdited = false, ytPoll = 0;
 const YT_MODES = { off: "关闭", local: "本机", node: "自己的节点" };
 
 async function loadYouTube() {
-  if (!me || me.role !== "admin") return;
+  if (!me || me.role !== "admin" || liteOff("youtube", EDITION)) return;   // 精简版没有 YouTube（接口 410）
   let answer;
   try { answer = await call("GET", "api/youtube/settings"); }
   catch (error) { $("ytLocal").hidden = true; return; }   // 云端没有这个接口（404）
@@ -7086,7 +7126,7 @@ function renderFollows() {
   $("fwSum").textContent = parts.join(" · ");
   $("fwSync").disabled = !!fw.syncing;
   const notes = [];
-  if (fw.message) notes.push(fw.message + "（「设置 → B 站账号」或「设置 → YouTube」）");
+  if (fw.message) notes.push(fw.message + liteText("fwWhere", "（「设置 → B 站账号」或「设置 → YouTube」）", EDITION));
   if (s.bilibili && s.bilibili.state === "login") notes.push("B 站：" + (s.bilibili.error || "登录已失效，请重新扫码"));
   else if (s.bilibili && s.bilibili.state === "error") notes.push("B 站这次没同步上：" + s.bilibili.error + "（先用上次的列表）");
   if (s.youtube && s.youtube.state === "login") notes.push("YouTube：" + s.youtube.error);
@@ -7104,7 +7144,7 @@ function renderFollows() {
   const q = fwQuery.toLowerCase();
   const list = fwSorted().filter((f) => fwMatch(f, fwFilter) && (!q || f.name.toLowerCase().includes(q) || (f.sign || "").toLowerCase().includes(q)));
   if (!fw.items.length) {
-    $("fwList").innerHTML = `<div class="empty" style="grid-column:1/-1;padding:40px 24px"><div class="eic">${ic("up", 36)}</div><b>${fw.syncing ? "正在同步你关注的 UP 主…" : "还没有关注的 UP 主"}</b><p>${esc(fw.message || "在 B 站关注的 UP 主（和 YouTube 订阅的频道）会自动列在这里，不用一个个添加。")}</p>${fw.message ? '<a class="btn pri sm" href="#/settings/bili">去登录</a>' : ""}</div>`;
+    $("fwList").innerHTML = `<div class="empty" style="grid-column:1/-1;padding:40px 24px"><div class="eic">${ic("up", 36)}</div><b>${fw.syncing ? "正在同步你关注的 UP 主…" : "还没有关注的 UP 主"}</b><p>${esc(fw.message || liteText("fwEmpty", "在 B 站关注的 UP 主（和 YouTube 订阅的频道）会自动列在这里，不用一个个添加。", EDITION))}</p>${fw.message ? '<a class="btn pri sm" href="#/settings/bili">去登录</a>' : ""}</div>`;
   } else if (!list.length) {
     $("fwList").innerHTML = '<p class="hint" style="grid-column:1/-1">没有找到</p>';
   } else {

@@ -7,7 +7,7 @@
   同一种「节目」：{id, kind, title, subtitle, art, progress?, live?, source, play}。play 原样交给
   POST /api/play。按调用者算，HOME_CACHE_S 秒内同一个人再问直接给上次的；访客只有直播。
 - GET /api/targets：「播放到」的每一行：调用者能遥控的每台小电视（在线、最后在线、型号、正在播什么、能做什么），
-  加上「这台电脑」（只有家庭服务器、电脑客户端才有：云端没有在电脑上看）。
+  加上「这台电脑」（只有家庭服务器、电脑客户端才有：云端和精简版没有在电脑上看）。
 - POST /api/play {target, item, viewer}：一个入口，按目标和节目分到原来的换台、订阅播放、选集、投屏、
   重播和「在电脑上看」上。失败时 reason 是 offline / needs_login / youtube_off / no_device / bad。
 - POST /api/sleep {device, minutes}：遥控面板的「定时关」，用语音命令那个定时（voicecmds.set_timer：到点调暗
@@ -33,7 +33,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from .. import channel_groups
+from .. import channel_groups, edition
 from . import table, voicecmds
 from .tenants import Caller, NotFound
 
@@ -321,7 +321,8 @@ def _last_seen(relay, caller: Caller) -> dict[str, float]:
 
 
 def _pc_allowed(relay, caller: Caller) -> bool:
-    return relay.watch is not None and not caller.guest and caller.user is not None
+    # 精简版没有在电脑上看（edition.LITE_BLOCKED 拦了 /api/watch）：不列「这台电脑」，也不拿它当默认。
+    return relay.watch is not None and not caller.guest and caller.user is not None and not edition.is_lite()
 
 
 def targets(relay, caller: Caller) -> dict:
@@ -412,6 +413,8 @@ def play(relay, caller: Caller, body: dict) -> dict:
             (target is not None and not isinstance(target, str)):
         return _bad()
     if target == "pc":
+        if edition.is_lite():
+            return {"ok": False, "reason": "off", "error": edition.OFF_MESSAGE, "edition": "lite"}
         if relay.watch is None:
             raise NotFound("watch")
         request = _pc_body(item)

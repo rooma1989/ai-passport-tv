@@ -2548,8 +2548,8 @@ class Relay:
                    "group_names": list(channel_groups.GROUPS[2:])}
         if self.tenant:
             summary["me"] = {"name": caller.name, "role": caller.role}
-            if self.watch is not None and not caller.guest:
-                # 在电脑上看（watch.py）：只有自建 / 电脑客户端有，电脑版据此显示按钮。
+            if self.watch is not None and not caller.guest and not edition.is_lite():
+                # 在电脑上看（watch.py）：只有自建 / 电脑客户端有，电脑版据此显示按钮。精简版没有（/api/watch 拦了）。
                 summary["watch"] = True
                 if self.watch.warm_max:
                     # 换台快一点：电脑版看直播时让中转预热相邻的台（watch_warm）。

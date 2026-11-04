@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from server import edition
 from server.relay import __main__ as relay_main
-from server.relay import setup, web
+from server.relay import follows, home, setup, web
 from server.relay.bilibili import Bilibili
 from server.tenancy.accounts import Accounts
 
@@ -119,6 +119,25 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/tv/api/state")[1]["edition"], self.which)
         self.assertEqual(self.request("GET", "/tv/api/login/status")[1]["edition"], self.which)
 
+    def test_no_pc_target_in_lite(self):
+        """精简版没有在电脑上看：「播放到」不列这台电脑、不拿它当默认，/api/state 没有 watch，点名它也不放。"""
+        status, answer = self.request("GET", "/tv/api/targets")
+        self.assertEqual(status, 200)
+        self.assertEqual(answer["targets"], [])
+        self.assertEqual(answer["auto"], "")
+        self.assertNotIn("watch", self.request("GET", "/tv/api/state")[1])
+        status, answer = self.request("POST", "/tv/api/play", {"target": "pc", "item": {"kind": "live", "channel": "cctv1"}})
+        self.assertEqual(status, 200)
+        self.assertEqual((answer["ok"], answer["reason"], answer["error"]), (False, "off", edition.OFF_MESSAGE))
+        # 没有小电视时点「播放」（不点名）：照旧说还没有绑定，页面带去绑定。
+        answer = self.request("POST", "/tv/api/play", {"item": {"kind": "live", "channel": "cctv1"}})[1]
+        self.assertEqual(answer["reason"], "no_device")
+
+    def test_follows_message_without_youtube(self):
+        status, answer = self.request("GET", "/tv/api/follows")
+        self.assertEqual(status, 200)
+        self.assertEqual(answer["message"], follows.NO_ACCOUNT_LITE)
+
 
 class FullWebTests(WebTests):
     which = "full"
@@ -129,6 +148,17 @@ class FullWebTests(WebTests):
 
     def test_pack_admin_endpoints(self):
         self.assertEqual(self.request("GET", "/tv/api/admin/pack")[1], {"ok": True, "configured": False})
+
+    def test_no_pc_target_in_lite(self):
+        """完整版照旧：自建时「这台电脑」在最后，没有小电视时它就是默认。"""
+        answer = self.request("GET", "/tv/api/targets")[1]
+        self.assertEqual([t["id"] for t in answer["targets"]], ["pc"])
+        self.assertEqual(answer["targets"][0]["name"], home.PC_NAME)
+        self.assertEqual(answer["auto"], "pc")
+        self.assertTrue(self.request("GET", "/tv/api/state")[1]["watch"])
+
+    def test_follows_message_without_youtube(self):
+        self.assertEqual(self.request("GET", "/tv/api/follows")[1]["message"], follows.NO_ACCOUNT)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
