@@ -135,6 +135,30 @@ class ApplyTests(unittest.TestCase):
         body = [l.split(" |")[0] for l in self.path.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")]
         self.assertEqual(body, ["cctv2", "cctv1"])
 
+    def test_admin_view_and_set_prefs_rewrite_the_table(self):
+        raw = channelpack.wrap(pack(), SECRET)
+        channelpack.remember(raw, self.path)
+        channelpack.apply(pack(), self.path, {})
+        view = channelpack.admin_view(self.path, PUBLIC)
+        self.assertEqual(view["version"], "2026-11-04.1")
+        self.assertEqual([(c["id"], c["hidden"]) for c in view["channels"]], [("cctv1", False), ("cctv2", False)])
+        answer = channelpack.set_prefs(self.path, PUBLIC, {"hidden": ["cctv2"], "order": ["cctv2", "cctv1"]})
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual([(c["id"], c["hidden"]) for c in channelpack.admin_view(self.path, PUBLIC)["channels"]],
+                         [("cctv2", True), ("cctv1", False)])
+        self.assertNotIn("cctv2 |", self.path.read_text(encoding="utf-8"))
+        self.assertFalse(channelpack.set_prefs(self.path, PUBLIC, {"hidden": "x"})["ok"])
+
+    def test_set_prefs_dedupes_and_needs_a_remembered_pack(self):
+        self.assertEqual(channelpack.admin_view(self.path, PUBLIC), {"ok": True, "configured": False})
+        self.assertFalse(channelpack.set_prefs(self.path, PUBLIC, {"hidden": [], "order": []})["ok"])
+        channelpack.remember(channelpack.wrap(pack(), SECRET), self.path)
+        channelpack.set_prefs(self.path, PUBLIC, {"hidden": ["cctv2", "cctv2"], "order": ["cctv1", "cctv1"]})
+        self.assertEqual(channelpack.read_prefs(self.path), {"hidden": ["cctv2"], "order": ["cctv1"]})
+        self.assertEqual(json.loads((self.path.parent / channelpack.PREFS_NAME).read_text(encoding="utf-8")),
+                         {"hidden": ["cctv2"], "order": ["cctv1"]})
+
+
 
 if __name__ == "__main__":
     unittest.main()

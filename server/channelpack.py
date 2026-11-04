@@ -161,3 +161,56 @@ def apply(pack: dict, channels_path: Path, prefs: dict) -> dict:
     if current != text:
         channeltable.save(channels_path, text)
     return {"version": pack["version"], "channels": len(rows)}
+
+
+def _write(target: Path, text: str | bytes) -> None:
+    tmp = target.with_name(target.name + ".tmp")
+    if isinstance(text, bytes):
+        tmp.write_bytes(text)
+    else:
+        tmp.write_text(text, encoding="utf-8")
+    tmp.replace(target)
+
+
+def remember(raw: bytes, channels_path: Path) -> None:
+    """记下上次用上的那份频道包（原样），改偏好时用它重写频道表。"""
+    _write(Path(channels_path).parent / STATE_NAME, raw)
+
+
+def remembered(channels_path: Path, public_hex: str) -> dict | None:
+    try:
+        return unwrap((Path(channels_path).parent / STATE_NAME).read_bytes(), public_hex)
+    except (OSError, PackError):
+        return None
+
+
+def save_prefs(channels_path: Path, prefs: dict) -> None:
+    _write(Path(channels_path).parent / PREFS_NAME, json.dumps(prefs, ensure_ascii=False))
+
+
+def admin_view(channels_path: Path | None, public_hex: str) -> dict:
+    """管理 → 频道：包的版本、所有台（用户的顺序）、哪些隐藏了。"""
+    pack = remembered(channels_path, public_hex) if channels_path is not None else None
+    if pack is None:
+        return {"ok": True, "configured": False}
+    prefs = read_prefs(channels_path)
+    hidden = set(prefs["hidden"])
+    everything = ordered(pack, {"order": prefs["order"], "hidden": []})
+    return {"ok": True, "configured": True, "version": pack["version"],
+            "channels": [{"id": ch["id"], "name": ch["name"], "hidden": ch["id"] in hidden} for ch in everything]}
+
+
+def set_prefs(channels_path: Path | None, public_hex: str, body) -> dict:
+    """保存隐藏和排序，并用记下的那份包重写频道表。"""
+    pack = remembered(channels_path, public_hex) if channels_path is not None else None
+    if pack is None:
+        return {"ok": False, "error": "还没有频道包"}
+    hidden = body.get("hidden") if isinstance(body, dict) else None
+    order = body.get("order") if isinstance(body, dict) else None
+    known = {ch["id"] for ch in pack["channels"]}
+    if not isinstance(hidden, list) or not isinstance(order, list) \
+            or not all(isinstance(x, str) and x in known for x in hidden + order):
+        return {"ok": False, "error": "请求格式不对"}
+    prefs = {"hidden": list(dict.fromkeys(hidden)), "order": list(dict.fromkeys(order))}
+    save_prefs(channels_path, prefs)
+    return {"ok": True, **apply(pack, channels_path, prefs)}

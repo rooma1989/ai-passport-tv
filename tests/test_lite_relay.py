@@ -110,6 +110,11 @@ class WebTests(unittest.TestCase):
             self.assertEqual(status, 410, path)
             self.assertEqual(answer, {"ok": False, "error": edition.OFF_MESSAGE, "edition": "lite"}, path)
 
+    def test_pack_admin_endpoints(self):
+        status, answer = self.request("GET", "/tv/api/admin/pack")
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, {"ok": True, "configured": False})
+
     def test_state_and_login_status_carry_the_edition(self):
         self.assertEqual(self.request("GET", "/tv/api/state")[1]["edition"], self.which)
         self.assertEqual(self.request("GET", "/tv/api/login/status")[1]["edition"], self.which)
@@ -121,6 +126,9 @@ class FullWebTests(WebTests):
     def test_blocked_paths_answer_410_with_json(self):
         status, _answer = self.request("GET", "/tv/api/admin/channels")
         self.assertEqual(status, 200, "the full edition keeps the channel editor")
+
+    def test_pack_admin_endpoints(self):
+        self.assertEqual(self.request("GET", "/tv/api/admin/pack")[1], {"ok": True, "configured": False})
 
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")

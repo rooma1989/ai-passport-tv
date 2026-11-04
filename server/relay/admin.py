@@ -24,7 +24,7 @@ import threading
 import time
 from pathlib import Path
 
-from .. import channel_groups, now_playing, routes
+from .. import channel_groups, channelpack, now_playing, routes
 from ..tenancy import files as tenancy_files, phonelinks, signup
 from ..tenancy.accounts import MODEL_NAMES, SESSION_S
 from ..tenancy.gate import LEGACY_TOKEN_KEY
@@ -117,6 +117,9 @@ def get(handler, relay, path: str) -> bool:
     elif settingsbackup.get(handler, relay, path, caller):
         # 系统 → 备份和恢复（settingsbackup.py、server/selfhost/backup.py）：自建 / 电脑客户端。
         pass
+    elif path == "/api/admin/pack":
+        # 精简版的「管理 → 频道」（server/channelpack.py）：没有频道包时回 configured: False，完整版也一样。
+        handler._json(channelpack.admin_view(relay.main_channels, channelpack.PUBLIC_KEY_HEX))
     elif path == "/api/admin/channels":
         handler._json(channels(relay))
     elif path == "/api/admin/epg":
@@ -673,6 +676,9 @@ def post(handler, relay, path: str) -> bool:
         handler._json({"ok": False, "error": "请求格式不对（或太大）"}, 400)
         return True
     ip = handler._ip()
+    if path == "/api/admin/pack/prefs":
+        handler._json(channelpack.set_prefs(relay.main_channels, channelpack.PUBLIC_KEY_HEX, body))
+        return True
     if path == "/api/admin/channels":
         handler._json(save_channels(relay, body, caller, ip))
         return True
