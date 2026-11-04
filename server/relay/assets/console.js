@@ -499,6 +499,7 @@ const LITE_TEXT = Object.freeze({
   creatorLink: "B 站 UP 主主页，或他们的任意视频链接",
   fwWhere: "（「设置 → B 站账号」）",
   fwEmpty: "在 B 站关注的 UP 主会自动列在这里，不用一个个添加。",
+  upCard: "B 站的 UP 主，每个都变成一个台，新视频自动排上。",
 });
 function liteOff(feature, edition) {
   return edition === "lite" && LITE_HIDE.off.includes(feature);
@@ -8632,7 +8633,9 @@ function renderHome() {
   }
   if (data && data.youtube && data.youtube.state === "unreachable") o += banner("warn", "YouTube 暂时不可用", $("noticeText").textContent || "", "", "");
   if (data && data.youtube && data.youtube.state === "login") o += banner("warn", "YouTube 需要重新登录", ytLoginText(), isAdmin() && data.youtube.kind === "local" ? "去设置" : "", "#/settings/youtube");
-  if (!isGuest()) o += `<div class="chips qchips" aria-label="分类"><a href="#/series">${ic("series", 16)}剧集与番剧</a><a href="#/up">${ic("up", 16)}UP 主</a><a href="#/lib">${ic("lib", 16)}片库</a><a href="#/live">${ic("live", 16)}直播</a></div>`;
+  // 分类：精简版没有的页（剧集、片库，liteRoute 会把它们带回首页）不列。
+  const qchips = [["series", "剧集与番剧"], ["up", "UP 主"], ["lib", "片库"], ["live", "直播"]].filter(([id]) => liteRoute(id, EDITION) === id);
+  if (!isGuest()) o += `<div class="chips qchips" aria-label="分类">${qchips.map(([id, t]) => `<a href="#/${id}">${ic(id, 16)}${t}</a>`).join("")}</div>`;
   SHELF.continue = { title: "继续观看", items: () => homeData.continue, card: cardContinue };
   SHELF.live = { title: "直播 · 正在播", items: () => homeData.live_now, card: cardLive, link: ["#/live", "直播页"] };
   SHELF.creators = { title: "UP 主更新", items: () => homeData.creator_updates, card: cardVideo, link: ["#/up", "UP 主"] };
@@ -8644,8 +8647,8 @@ function renderHome() {
     const none = !homeData.creator_updates.length && !homeData.series_updates.length && data && !data.creators.length && !(data.series || []).length;
     if (none) {
       o += `<div class="h2"><h2>开始收集你爱看的</h2></div><div class="onb">
-        <a href="#/search"><b>${ic("up")}订阅一个 UP 主</b><p>B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。</p></a>
-        <a href="#/series"><b>${ic("series")}加一部剧</b><p>番剧、多集视频、合集、播放列表都行，按顺序播，接着上次的地方。</p></a>
+        <a href="#/search"><b>${ic("up")}订阅一个 UP 主</b><p>${esc(liteText("upCard", "B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。", EDITION))}</p></a>
+        ${liteRoute("series", EDITION) === "series" ? `<a href="#/series"><b>${ic("series")}加一部剧</b><p>番剧、多集视频、合集、播放列表都行，按顺序播，接着上次的地方。</p></a>` : ""}
         ${homeData.library && homeData.library.enabled ? `<a href="#/lib/local"><b>${ic("lib")}我的片库</b><p>网盘或电脑上的电影、剧集和家庭视频。</p></a>` : ""}</div>`;
     } else {
       if (homeData.creator_updates.length) o += shelf("UP 主更新", homeData.creator_updates.length + " 个没看的视频", homeData.creator_updates.map(cardVideo).join(""), "", "", "creators");

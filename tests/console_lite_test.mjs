@@ -39,6 +39,11 @@ assert.equal(liteOff("live", "lite"), false);
 assert.equal(liteText("adminSub", "用户、设备、频道表、节目单", "lite"), "设备、频道");
 assert.equal(liteText("adminSub", "用户、设备、频道表、节目单", "full"), "用户、设备、频道表、节目单");
 assert.equal(liteText("nope", "原样", "lite"), "原样", 'unlisted keys keep the full wording');
+assert.equal(liteText("upCard", "B 站或 YouTube 的 UP 主，每个都变成一个台，新视频自动排上。", "lite"),
+  "B 站的 UP 主，每个都变成一个台，新视频自动排上。", 'the home onboarding card drops YouTube');
+const quick = ["series", "up", "lib", "live"];
+assert.deepEqual(quick.filter((id) => liteRoute(id, "lite") === id), ["up", "live"], 'home quick links in lite');
+assert.deepEqual(quick.filter((id) => liteRoute(id, "full") === id), quick, 'home quick links in full');
 assert.equal(liteText("toString", "原样", "lite"), "原样", 'no prototype keys');
 for (const [k, v] of Object.entries(LITE_TEXT)) assert.ok(!/YouTube|用户|节目单/.test(v), k + ' mentions nothing lite lacks');
 
