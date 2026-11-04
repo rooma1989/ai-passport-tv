@@ -1751,8 +1751,9 @@ function liveNeighbours(ids, id) {
 
 // 视频（不是直播）的缓冲：往前至多 AHEAD_S 秒、往回 BEHIND_S 秒，码率高（片库的 4K 文件只换封装，一秒两三 MB）时
 // 按字节封顶，免得超出 Chrome 给一个 SourceBuffer 的一百多 MB（超了 appendBuffer 抛 QuotaExceededError）。
-// 看门狗（WatchPlayer.unstick）：画面卡住不动多久算卡住、缓冲里至少还有几秒才归它管、往前推几秒。
-const STUCK = { TICK_MS: 500, AFTER_MS: 1500, AHEAD_S: 1, NUDGE_S: 0.1, JUMP_S: 1, TRIES: 3 };
+// 看门狗（WatchPlayer.unstick）：画面卡住不动多久算卡住、缓冲里至少还有几秒才归它管、往前推几秒、一级一级试哪几招。
+const STUCK = { TICK_MS: 500, AFTER_MS: 1500, AHEAD_S: 1, NUDGE_S: 0.1, JUMP_S: 1, RELAYOUT_MS: 200,
+                LADDER: ["nudge", "relayout", "jump"] };
 // 缓冲满了时等着腾地方，至多试这么多次（一秒一次）。
 const QUOTA_TRIES = 30;
 // GOP_S：身后至少留这么多秒。浏览器删画面时会连着删到下一个关键帧为止（后面的帧要靠前面的才解得出），蓝光压制的
@@ -1910,24 +1911,54 @@ class WatchPlayer {
     this.watchdog = this.live ? 0 : setInterval(() => this.unstick(), STUCK.TICK_MS);
   }
   // 蓝光片子只换封装时时间戳偶尔是乱的（ffmpeg 说 non monotonically increasing dts），浏览器的解码器在那一帧停住：在放、
-  // 缓冲里往后还有 STUCK.AHEAD_S 秒以上、位置却 STUCK.AFTER_MS 没动（readyState 停在 2），自己永远不会走。往前推
-  // NUDGE_S 秒（连着推了 STUCK.TRIES 次还不动就推 JUMP_S 秒）就接着放了（《肖申克的救赎》1:00:15 量过）。没数据的卡
-  // （缓冲不够）不归这里管：那是 gate 攒缓冲的事。
+  // 缓冲里往后还有 STUCK.AHEAD_S 秒以上、位置却 STUCK.AFTER_MS 没动，自己永远不会走（《肖申克的救赎》1:00:15 量过）。
+  // 一级一级试（STUCK.LADDER）：往前推 NUDGE_S 秒 → 重排一下画面（跟手动缩小一样：放大时暂停久了再放，推了也不走，
+  // 一缩小就接着放了，1:01:26 那次）→ 往前跳 JUMP_S 秒（之后每次都跳；不用暂停再放，那会当成用户暂停、同步给别的页面）。卡在「跳转中」出不来、
+  // readyState 说有数据却不走的也算。缓冲不够的卡不归这里管：那是 gate 攒缓冲的事。
+  // 每次出手记一条诊断（nudge：第几次、怎么推的、readyState、在不在跳转、放没放大），走起来了再记一条（unstuck：
+  // 卡了多久、试到第几次、中间放大缩小过没有），下回看日志就知道哪一招管用。
   unstick() {
     const v = this.video;
-    if (!this.alive || !this.started || this.hold || !this.sb || v.paused || v.seeking || v.readyState > 2) { this.stuck = null; return; }
+    if (!this.alive || !this.started || this.hold || !this.sb || v.paused) { this.unstuck(); return; }
     const t = v.currentTime, b = v.buffered;
     let end = -1;
     for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.05 && t < b.end(i)) end = b.end(i);
-    if (end - t < STUCK.AHEAD_S) { this.stuck = null; return; }
     const now = performance.now();
-    if (!this.stuck || Math.abs(this.stuck.t - t) > 0.01) { this.stuck = { t, since: now, n: this.stuck ? this.stuck.n : 0 }; return; }
-    if (now - this.stuck.since < STUCK.AFTER_MS) return;
-    this.stuck.n++;
-    this.stuck.since = now;
-    const step = this.stuck.n > STUCK.TRIES ? STUCK.JUMP_S : STUCK.NUDGE_S;
-    diagNote("nudge", { step, n: this.stuck.n });
-    v.currentTime = Math.min(end - 0.05, t + step);
+    if (end - t < STUCK.AHEAD_S) { this.unstuck(); return; }
+    const s = this.stuck;
+    if (!s) { this.stuck = { t, since: now, from: now, n: 0, big: pcBig() }; return; }
+    if (Math.abs(s.t - t) > 0.01) {
+      // 走了：推出去的那一下（往前推、跳）不算走，再看 AFTER_MS。
+      if (s.n && s.pushed != null && Math.abs(t - s.pushed) < 0.05) { s.t = t; s.since = now; return; }
+      if (s.n) { this.unstuck(); this.stuck = { t, since: now, from: now, n: 0, big: pcBig() }; return; }
+      s.t = t; s.since = now; s.from = now; s.big = pcBig();
+      return;
+    }
+    if (now - s.since < STUCK.AFTER_MS) return;
+    s.n++;
+    s.since = now;
+    s.pushed = null;
+    const how = STUCK.LADDER[Math.min(s.n, STUCK.LADDER.length) - 1];
+    diagNote("nudge", { n: s.n, how, step: how === "nudge" ? STUCK.NUDGE_S : how === "jump" ? STUCK.JUMP_S : 0,
+                        rs: v.readyState, seeking: v.seeking ? 1 : 0, big: pcBig() ? 1 : 0 });
+    if (how === "nudge" || how === "jump") {
+      s.pushed = Math.min(end - 0.05, t + (how === "jump" ? STUCK.JUMP_S : STUCK.NUDGE_S));
+      v.currentTime = s.pushed;
+    } else if (how === "relayout") {
+      // 跟缩小一样让画面换个大小重新排（少 1 像素、STUCK.RELAYOUT_MS 后还原，看不出来）。
+      v.style.width = "calc(100% - 1px)";
+      setTimeout(() => { v.style.width = ""; }, STUCK.RELAYOUT_MS);
+    }
+  }
+  // 卡住的那一阵过去了（走起来了，或者停了、换片了）：出过手的话记一条 unstuck。
+  unstuck() {
+    const s = this.stuck;
+    this.stuck = null;
+    const v = this.video;
+    if (!s || !s.n || !this.alive) return;
+    const moved = Math.abs(v.currentTime - s.t) > 0.01 && !v.paused;
+    diagNote("unstuck", { n: s.n, secs: Math.round((performance.now() - s.from) / 100) / 10, moved: moved ? 1 : 0,
+                          resized: s.big !== pcBig() ? 1 : 0 });
   }
   async start() {
     const v = this.video;
@@ -4272,6 +4303,7 @@ new MutationObserver(() => {
 const PCW = { LAND: 520, PORT: 360, MIN: 240, PARTS: 300, PARTS_BELOW: 240, MARGIN: 18, BOTTOM: 104, STEP: 40 };
 let pcAr = 16 / 9;
 const pcWidths = {};
+function pcBig() { return $("pcwin").classList.contains("big"); }
 function pcPortrait() { return pcAr < 0.9; }
 function pcSizeKey() { return pcPortrait() ? "portrait" : "landscape"; }
 function pcWantWidth() {

@@ -24,7 +24,7 @@ it runs dry) and its "really ended" rule are tested as pure JS under Node
 mid-play (keep playing the cache, reconnect from the current position, accurate
 messages: console_reconnect_test.mjs); so are the player's keyboard shortcuts (console_keys_test.mjs) and the
 canvas picture-in-picture's size and subtitle layout (console_pip_test.mjs), and the playback diagnostics' jump and
-dropped-frame rules (console_diag_test.mjs).
+dropped-frame rules and the stuck-decoder watchdog (console_diag_test.mjs).
 """
 
 from __future__ import annotations
