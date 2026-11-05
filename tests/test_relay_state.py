@@ -301,5 +301,37 @@ class HistoryAndSessionTests(unittest.TestCase):
         self.assertEqual(again.ensure_code(), code)
 
 
+class FavoriteSlotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_favourites_get_their_own_ids_and_limit(self):
+        path = Path(self.tmp.name) / "relay-state.json"
+        state = State(path)
+        v = [Video("BV1a", "a", 1, 1)]
+        first = state.add("bilibili", "fav111", "默认收藏夹", v, 0.0, kind="series",
+                          prefix=relay_state.FAV_PREFIX, most=relay_state.MAX_FAVS)
+        self.assertEqual(first.id, "fv01")
+        self.assertEqual(first.kind, "series")
+        series = state.add("bilibili", "ss1", "某剧", v, 0.0, kind="series")
+        self.assertEqual(series.id, "sr01", "series numbering is unaffected")
+        for n in range(2, relay_state.MAX_FAVS + 1):
+            state.add("bilibili", f"fav{n}", f"收藏{n}", v, 0.0, kind="series",
+                      prefix=relay_state.FAV_PREFIX, most=relay_state.MAX_FAVS)
+        with self.assertRaises(ValueError):
+            state.add("bilibili", "fav999", "多一个", v, 0.0, kind="series",
+                      prefix=relay_state.FAV_PREFIX, most=relay_state.MAX_FAVS)
+        with self.assertRaises(ValueError):
+            state.add("bilibili", "fav111", "重复", v, 0.0, kind="series",
+                      prefix=relay_state.FAV_PREFIX, most=relay_state.MAX_FAVS)
+        # 存盘后重新读回，fv01 还在，仍是剧集类。
+        state.save()
+        again = State(path).get("fv01")
+        self.assertIsNotNone(again)
+        self.assertEqual(again.kind, "series")
+        self.assertEqual(State(path).get("sr01").source, "ss1")
+
+
 if __name__ == "__main__":
     unittest.main()

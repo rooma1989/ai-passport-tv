@@ -31,6 +31,10 @@ RESUME_BACK_S = 10
 MAX_CREATORS = 12
 # 剧集台的个数上限；实际多半先碰到设备频道列表的字节上限（见 channel_groups.CONFIG_MAX）。
 MAX_SERIES = 40
+# 收藏夹台（P1c）：行为和剧集一样（kind="series"，按顺序播、记进度），台 id 用自己的前缀，
+# 设备上单独一组「B站收藏」（channel_groups.FAVS），最多这么多个。
+FAV_PREFIX = "fv"
+MAX_FAVS = 8
 # 台的种类：id 前缀、个数上限、保留的视频数、列表缓存时间。
 KINDS = {"up": ("up", MAX_CREATORS, LIST_SIZE, LIST_MAX_AGE_S),
          "series": ("sr", MAX_SERIES, SERIES_SIZE, SERIES_MAX_AGE_S)}
@@ -182,16 +186,20 @@ class State:
             return next((c for c in self.creators if c.id == cid), None)
 
     def add(self, site: str, source: str, name: str, videos: list[Video],
-            now: float, kind: str = "up") -> Creator:
-        prefix, most, size, _ = KINDS[kind]
+            now: float, kind: str = "up", prefix: str | None = None, most: int | None = None) -> Creator:
+        default_prefix, default_most, size, _ = KINDS[kind]
+        prefix = prefix or default_prefix
+        most = most if most is not None else default_most
         with self.lock:
             if any(c.site == site and c.source == source and c.kind == kind for c in self.creators):
-                raise ValueError("这个 UP 主已经添加过了" if kind == "up" else "这部剧已经添加过了")
+                raise ValueError("这个 UP 主已经添加过了" if kind == "up"
+                                 else "这个收藏夹已经添加过了" if prefix == FAV_PREFIX else "这部剧已经添加过了")
             used = {c.id for c in self.creators}
-            free = [f"{prefix}{n:02d}" for n in range(1, most + 1)
-                    if f"{prefix}{n:02d}" not in used]
-            if not free:
+            mine = [c for c in self.creators if c.id[:len(prefix)] == prefix and c.id[len(prefix):].isdigit()]
+            free = [f"{prefix}{n:02d}" for n in range(1, most + 1) if f"{prefix}{n:02d}" not in used]
+            if not free or len(mine) >= most:
                 raise ValueError(f"最多只能添加 {most} 个 UP 主" if kind == "up"
+                                 else f"最多只能添加 {most} 个收藏夹" if prefix == FAV_PREFIX
                                  else f"最多只能添加 {most} 部剧")
             creator = Creator(id=free[0], site=site, source=source, name=name,
                               videos=list(videos[:size]), fetched_at=now, kind=kind)
