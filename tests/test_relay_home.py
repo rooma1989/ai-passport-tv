@@ -853,6 +853,29 @@ class ContinueCoverTests(unittest.TestCase):
         self.assertEqual(self.relay._cover_warm._queue, [("series", "ss8")])
         self.assertEqual(len(self.held), 1)
 
+    def test_a_favourite_folder_is_never_looked_up_or_fetched_for_a_cover(self):
+        """收藏夹（fav…）的列表要主人自己的登录：封面只用那个视频自己的，补取时取那个视频，不取收藏夹。"""
+        from server.relay.state import Creator, Video
+        asked = []
+        covers = {"BVfav0000001": "https://i0.hdslb.com/bfs/archive/fav1.jpg"}
+        self.client.cover = lambda key: (asked.append(key), covers.get(key, ""))[1]
+        fav = Creator(id="fv01", site="bilibili", source="fav111", name="收藏", kind="series",
+                      videos=[Video(bvid="BVfav0000001", title="1", duration=1000, pubdate=0),
+                              Video(bvid="BVfav0000002", title="2", duration=1000, pubdate=0)],
+                      positions={"BVfav0000001": 120.0, "BVfav0000002": 130.0})
+        self.put("fv01", bvid="BVfav0000002", site="bilibili")
+        art = self.rows([fav])
+        self.assertEqual(art["pc:fv01"], "")
+        self.assertEqual(art["tv:fv01:1"], home.thumb(covers["BVfav0000001"]), "the video's own cover")
+        self.assertNotIn("fav111", asked)
+        self.assertEqual(self.relay._cover_warm._queue, [("video", "BVfav0000002")])
+
+    def test_cover_warm_never_fetches_a_favourite_folder(self):
+        self.relay._cover_warm.want("series", "fav111")
+        self.assertEqual((self.relay._cover_warm._queue, self.held), ([], []))
+        home._warm(self.relay, "series", "bilibili", "fav222")
+        self.assertEqual(self.relay._cover_warm._queue, [])
+
     def test_collection_episode_covers_come_with_the_video_info(self):
         client = bilibili.Bilibili(fetch_json=lambda *_a, **_k: {})
         client._keep_view("BV1", {"pic": "https://i0.hdslb.com/bfs/archive/1.jpg", "ugc_season": {"sections": [

@@ -146,7 +146,9 @@ class CoverWarm:
 
     def want(self, kind: str, source: str) -> None:
         """kind 是 "up"（投稿列表）、"series"（剧集）或 "video"（一个视频）；source 是 UP 主的 mid、剧集的 ss…/BV 号、
-        视频的 BV 号。"""
+        视频的 BV 号。收藏夹（fav…）不取：它的列表要主人自己的 B 站登录，这里没有（封面用视频自己的）。"""
+        if kind == "series" and str(source).startswith("fav"):
+            return
         key = (kind, str(source))
         now = self.clock()
         with self.lock:
@@ -610,8 +612,10 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                         ("episode" if series else "index"): index}
                 subtitle = f"第 {index} 集" if series else found[0]
                 # 剧集：这一集的，没有时用订阅的剧集封面（番剧的 ss…、多集视频的 BV 号）；UP 主的就是那个视频的。
-                covers = (bvid, found[4]) if series else (bvid,)
-                warm = ("series", found[4]) if series else ("video", bvid)
+                # 收藏夹（fav…）也只用那个视频的：收藏夹没有封面，它的列表要主人自己的登录，不在这里取。
+                whole = series and not is_fav(key)
+                covers = (bvid, found[4]) if whole else (bvid,)
+                warm = ("series", found[4]) if whole else ("video", bvid)
             title = rec.get("title") or ""
             if key.startswith("v:") and title.strip().isdigit() and rec.get("name"):
                 # 番剧、电视剧的集名常常只是「1」：标题用剧名，下面写第几集。
@@ -644,7 +648,8 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                              "title": video.title, "subtitle": f"{c.name} · 第 {n} 集" if series else c.name,
                              "source": c.site,
                              "art": {"url": thumb(raw_cover(relay, c.site, video.bvid,
-                                                            c.source if series else "")), "ratio": "wide"},
+                                                            c.source if series and not is_fav(c.id) else "")),
+                                     "ratio": "wide"},
                              "progress": {"position": int(position), "duration": int(video.duration or 0),
                                           "device": "小电视", "updated_at": 0},
                              "play": {"kind": "episode", "channel": c.id, "episode": n} if series

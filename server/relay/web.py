@@ -37,7 +37,7 @@ from . import localsearch
 from . import detail
 from .bilibili import EPISODE_MEMBER_HINT, PC_QUALITY, PC_QUALITY_VIP, REFERER as BILIBILI_REFERER, \
     UA as BILIBILI_UA, BilibiliError, MemberOnly, SourceError, parse_series_link, pgc_refusal
-from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video
+from .state import KINDS, RESUME_BACK_S, SESSION_S, CastSlot, State, Video, is_fav
 from .tenants import LEGACY, Caller, DeviceStore, NotFound, NullStore, UserStore
 
 # 一次请求里最多跳过几个放不了的视频，之后返回 503，让电视服务稍后再来。
@@ -2463,7 +2463,8 @@ class Relay:
         meta = {"title": video.title, "name": creator.name, "duration": video.duration, "index": n,
                 "total": len(videos), "series": series, "site": video.site}
         # 继续观看的封面：这一集的，没有时用订阅的剧集封面。
-        cover = home.raw_cover(self, video.site, video.bvid, creator.source if series else "")
+        cover = home.raw_cover(self, video.site, video.bvid,
+                               creator.source if series and not is_fav(creator.id) else "")
         if cover:
             meta["cover"] = cover
         source = self._video_source(("video", cid, video.site, video.bvid), video, offset,
