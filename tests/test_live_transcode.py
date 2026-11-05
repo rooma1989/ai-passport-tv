@@ -524,12 +524,12 @@ class ConfigContractTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "channels.txt"
-                path.write_text("".join(f"ch{n:03d} | Ningxia Satellite Channel {n:03d} | http://x/{n}\n"
+                path.write_text("".join(f"ch{n:03d} | 第{n:03d}号非常非常长的名字宁夏卫视 | http://x/{n}\n"
                                         for n in range(120)), encoding="utf-8")
                 live.load_channels(path)
                 config = live.channel_config()
                 names = [row["name"] for row in config["channel_list"]]
-                self.assertTrue(any("Satellite" not in name for name in names), "the list had to be shortened")
+                self.assertTrue(any("卫视" not in name for name in names), "the list had to be shortened")
                 self.assertEqual(config["groups"], ["卫视"])
         finally:
             for table, before in zip(tables, saved[0]):

@@ -354,6 +354,31 @@ class FitNamesTests(unittest.TestCase):
                 self.assertEqual(v, relay[k], "relay and cast names are never shortened")
         self.assertLessEqual(cg.config_bytes(fitted), cg.DEVICE_BUDGET)
 
+    def test_short_latin_names_are_left_alone_and_no_two_names_become_the_same(self):
+        # Chinese costs 6 bytes a character in CONFIG (\uXXXX), Latin 1: cut where the bytes are. Cutting
+        # by characters turned CCTV10…CCTV14 into five "CCTV1" (P1c measurement).
+        long_relay = [(f"up{i:02d}", "很长很长的名字一(B站)") for i in range(1, 13)] + \
+                     [(f"fv{i:02d}", f"收藏夹{i:02d}号名字长(B站)") for i in range(1, 9)]
+        names = [("cast", "我的投屏")] + long_relay + self.bundled_live()
+        fitted = cg.device_list(names)
+        self.assertEqual(len(fitted), len(names))
+        full = dict(names)
+        live = [(k, v) for k, v in fitted if not (k == "cast" or k[:2] in cg.RELAY_PREFIXES)]
+        for k, v in live:
+            self.assertTrue(full[k].startswith(v.rstrip()) or full[k].startswith(v), (full[k], v))
+            if len(full[k].encode("ascii", "ignore")) == len(full[k]) and len(full[k]) <= 24:
+                self.assertEqual(v, full[k], "a short Latin name costs little and is kept whole")
+        shown = [v for _, v in live]
+        before = {full[k] for k, _ in live}
+        self.assertEqual(len(set(shown)), len(before), "shortening never gives two channels the same name")
+
+    def test_a_cut_never_ends_inside_an_open_bracket(self):
+        rows = cg._shortened([("ch1", "RT Documentary（英语纪录）"), ("ch2", "薛之谦精选30首(2小时)")], 48)
+        for _, v in rows:
+            self.assertNotIn("（", v)
+            self.assertNotIn("(", v)
+        self.assertEqual(rows[0][1], "RT Documentary")
+
 
 if __name__ == "__main__":
     unittest.main()

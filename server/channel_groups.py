@@ -181,31 +181,61 @@ def _prefix(sizes: list[int], budget: int, limit: int) -> int:
 DEVICE_BUDGET = CONFIG_MAX - CONFIG_SPARE_BYTES
 
 
-# 放不下时直播台的名字最短缩到几个字（再短就认不出是哪个台了）；从多长开始试。
-NAME_SHORTEST = 4
-NAME_LONGEST = 16
+# 放不下时直播台的名字按 CONFIG 里占的字节缩短（汉字在 JSON 里是 \\uXXXX，一个 6 字节；字母 1 字节）：
+# 先截占地方的中文长名，短的英文名（CCTV10）几乎不占地方，不动。最多缩到 NAME_LEAST_BYTES（4 个汉字），
+# 从 NAME_MOST_BYTES（16 个汉字）开始试。按字数截曾把 CCTV10…CCTV14 都截成了「CCTV1」。
+NAME_LEAST_BYTES = 4 * 6
+NAME_MOST_BYTES = 16 * 6
+_OPEN = "(（[【《"
 
 
-def _shortened(names: list[tuple[str, str]], longest: int) -> list[tuple[str, str]]:
-    """直播台的名字截到 longest 个字（中转的台、投屏台不动：它们的名字已经限过长，还带网站标记）。"""
+def _name_bytes(text: str) -> int:
+    return len(json.dumps(text, ensure_ascii=True)) - 2
+
+
+def _cut(name: str, most: int) -> str:
+    """name 在 CONFIG 里不超过 most 字节的最长前缀；截在没配对的括号里时连括号一起去掉（「RT Documentary（英」
+    → 「RT Documentary」），去掉后什么都不剩就留着括号前的半截。"""
+    if _name_bytes(name) <= most:
+        return name
+    used, end = 0, 0
+    for end, char in enumerate(name):
+        used += _name_bytes(char)
+        if used > most:
+            break
+    cut = name[:end].rstrip()
+    opened = max(cut.rfind(c) for c in _OPEN)
+    if opened > 0 and not any(c in cut[opened:] for c in ")）]】》"):
+        cut = cut[:opened].rstrip() or cut
+    return cut
+
+
+def _shortened(names: list[tuple[str, str]], most: int) -> list[tuple[str, str]]:
+    """直播台的名字缩到 CONFIG 里不超过 most 字节（中转的台、投屏台不动：它们的名字已经限过长，还带网站标记）。
+    缩完和别的台重名的（「湖南卫视4K」→「湖南卫视」）不缩，宁可多占几个字节也不让两个台同名。"""
+    def relay(k):
+        return k == "cast" or (k[:2] in RELAY_PREFIXES and k[2:].isdigit())
+    cuts = [v if relay(k) else _cut(v, most) for k, v in names]
+    seen: dict[str, int] = {}
+    for v in cuts:
+        seen[v] = seen.get(v, 0) + 1
     out = []
-    for k, v in names:
-        relay = k == "cast" or (k[:2] in RELAY_PREFIXES and k[2:].isdigit())
-        out.append((k, v if relay or len(v) <= longest else v[:longest].rstrip()))
+    for (k, v), c in zip(names, cuts):
+        out.append((k, v if c != v and seen[c] > 1 else c))
     return out
 
 
 def _fit_names(names: list[tuple[str, str]], budget: int, limit: int) -> list[tuple[str, str]]:
-    """全部放得下就原样；否则逐步缩短直播台的名字，直到全部放得下或缩到 NAME_SHORTEST 个字。"""
+    """全部放得下就原样；否则逐步缩短直播台的名字，直到全部放得下或缩到 NAME_LEAST_BYTES。"""
     def fits(rows):
         return _prefix([_entry_bytes(k, v) for k, v in rows], budget, limit) == len(rows)
     if fits(names):
         return names
-    for longest in range(NAME_LONGEST, NAME_SHORTEST - 1, -1):
-        rows = _shortened(names, longest)
+    for most in range(NAME_MOST_BYTES, NAME_LEAST_BYTES - 1, -1):
+        rows = _shortened(names, most)
         if fits(rows):
             return rows
-    return _shortened(names, NAME_SHORTEST)
+    return _shortened(names, NAME_LEAST_BYTES)
 
 
 def device_list(names, keep: str = "", budget: int = DEVICE_BUDGET,
