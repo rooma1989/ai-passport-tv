@@ -319,6 +319,12 @@
         </div>
         <div class="list" id="creatorList"></div>
         <p class="hint">每个 UP 主是一个台，从最新的没看过的视频开始播。</p>
+        <!-- B 站收藏夹加成的台（fv01…）：两个版本都有；加台在电脑版的「UP 主」页 -->
+        <div id="favBox" hidden>
+        <h2 class="h3">B站收藏 <span class="tag" id="favCount"></span></h2>
+        <div class="list" id="favList"></div>
+        <p class="hint">每个收藏夹是一个台，按收藏的先后从头放。加收藏夹在电脑版的「UP 主」页。</p>
+        </div>
         <div class="nolite">
         <h2 class="h3">剧集 <span class="tag" id="seriesCount"></span></h2>
         <input type="text" id="seriesLink" placeholder="B 站番剧 / 多集视频 / 合集，或 YouTube 播放列表链接" aria-label="剧集链接">
@@ -574,6 +580,15 @@ function withImage(box, src) {
 }
 const logoOf = (id) => "api/art/logo/" + encodeURIComponent(id);
 const isRelay = (id) => /^(up|sr|fv)\d\d$/.test(id) || id === "cast";
+// ---- 收藏夹台的纯函数（和 console.js 的同一段一样；tests/console_fav_test.mjs 两边都测）----
+// 收藏夹台（fv01…，P1c）在 /api/state 里和剧集一起（series），但不算剧集：不数进「N 部」，单独列一块
+// （精简版没有剧集那块，收藏夹台照样能删）。投屏、UP 主、B站收藏三组按台 id 固定，「常看」只是页面上的一组：都不能调整分组。
+const FIXED_GROUPS = Object.freeze(["我的投屏", "UP 主", "B站收藏"]);
+const isFav = (id) => /^fv\d\d$/.test(id);
+function favChannels(series) { return (series || []).filter((s) => isFav(s.id)); }
+function seriesOnly(series) { return (series || []).filter((s) => !isFav(s.id)); }
+function movableGroup(name) { return !FIXED_GROUPS.includes(name) && name !== "常看"; }
+// ---- 收藏夹台的纯函数到此
 
 // label：跳转类等待时台号屏上的说明（默认「跳转中…」）。
 function startPending(channel, name, at, slow, kind, target, label) {
@@ -819,7 +834,7 @@ function renderChannels() {
   for (const cr of data.creators) sites[cr.id] = cr.site;
   for (const sr of data.series || []) sites[sr.id] = sr.site;
   // 投屏台、UP 主、常看和找台的结果不能在这里调整分组。
-  const movable = !current.found && ![FREQUENT, "我的投屏", "UP 主"].includes(current.name);
+  const movable = !current.found && movableGroup(current.name);
   const minute = Math.floor(Date.now() / 60000);
   const sig = JSON.stringify([current.name, liveFilter, adjusting && movable, current.channels.map((c) => c.id + c.name), data.now.channel,
                               data.now.online, pending && pending.channel, epgAt, minute]);
@@ -832,7 +847,7 @@ function renderChannels() {
     const row = el(adjusting && movable ? "div" : "button", "li" + (air ? " air" : "") + (going ? " pending" : ""));
     const p = epgNow(c.id);
     const tx = rowText(c.name, p ? p.title + " " + hm(p.start) + "–" + hm(p.end)
-      : sites[c.id] ? siteTag(sites[c.id]) + (/^sr/.test(c.id) ? " · 剧集" : " · UP 主") : c.id === "cast" ? "投屏" : "");
+      : sites[c.id] ? siteTag(sites[c.id]) + (/^sr/.test(c.id) ? " · 剧集" : isFav(c.id) ? " · 收藏夹" : " · UP 主") : c.id === "cast" ? "投屏" : "");
     if (p) {
       const bar = el("span", "lbar"), fill = el("i");
       fill.style.width = Math.min(100, Math.max(0, (Date.now() / 1000 - p.start) / Math.max(1, p.end - p.start) * 100)).toFixed(1) + "%";
@@ -941,9 +956,10 @@ function renderSeries() {
   const list = $("seriesList");
   list.replaceChildren();
   const room = data.room || {};
-  $("seriesCount").textContent = (data.series || []).length + " 部" + (room.fits === false ? " · 列表已满" : "");
-  if (!(data.series || []).length) { list.appendChild(el("div", "li", "还没有添加剧集")); return; }
-  for (const sr of data.series) {
+  const series = seriesOnly(data.series);
+  $("seriesCount").textContent = series.length + " 部" + (room.fits === false ? " · 列表已满" : "");
+  if (!series.length) { list.appendChild(el("div", "li", "还没有添加剧集")); return; }
+  for (const sr of series) {
     const row = el("div", "li");
     const open = el("button", "tx");
     open.style.textAlign = "left";
@@ -956,6 +972,33 @@ function renderSeries() {
       if (!confirm("删除「" + sr.name + "」这个台？看到哪一集也会忘掉。")) return;
       const answer = await call("DELETE", "api/series/" + sr.id);
       if (!answer.ok) toast(answer.error, true);
+      refresh();
+    };
+    row.append(open, remove);
+    list.appendChild(row);
+  }
+}
+
+// 收藏夹台：点一行选集，「删除」走 DELETE api/creators/<台 id>（精简版也开着，不像 api/series）。
+function renderFavs() {
+  const list = $("favList");
+  const favs = favChannels(data.series);
+  $("favBox").hidden = !favs.length;
+  $("favCount").textContent = favs.length + " / 8";
+  list.replaceChildren();
+  for (const fv of favs) {
+    const row = el("div", "li");
+    const open = el("button", "tx");
+    open.style.textAlign = "left";
+    open.append(el("b", "", fv.name), el("small", "", siteTag(fv.site) + "收藏夹 · 第 " + fv.episode + " / " + fv.total + " 个 · 选集 ›"));
+    open.setAttribute("aria-label", "「" + fv.name + "」选集");
+    open.onclick = () => openEpisodes(fv.id, "creators");
+    const remove = el("button", "linkbtn red", "删除");
+    remove.setAttribute("aria-label", "删除「" + fv.name + "」");
+    remove.onclick = async () => {
+      if (!confirm("删除「" + fv.name + "」这个台？看到哪里也会忘掉；以后可以在电脑版再加。")) return;
+      const answer = await call("DELETE", "api/creators/" + fv.id);
+      if (!answer.ok) toast(answer.error, true); else toast("删掉了「" + fv.name + "」");
       refresh();
     };
     row.append(open, remove);
@@ -1980,6 +2023,7 @@ function render() {
   renderChannels();
   renderHistory();
   renderCreators();
+  renderFavs();
   renderSeries();
   followEpisodes();
 }

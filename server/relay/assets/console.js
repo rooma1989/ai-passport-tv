@@ -4644,6 +4644,7 @@ const liveDead = (id) => !!(data && data.live_status && data.live_status.dead.in
 function relayLine(c, sites) {
   if (c.id === "cast") return "投屏：手机或电脑投过来的视频";
   if (/^up/.test(c.id)) return (sites[c.id] ? siteTag(sites[c.id]) + " · " : "") + "UP 主的视频，一个接一个播";
+  if (isFav(c.id)) return (sites[c.id] ? siteTag(sites[c.id]) + " · " : "") + "收藏夹，按收藏的先后接着上次播";
   return (sites[c.id] ? siteTag(sites[c.id]) + " · " : "") + "剧集，按顺序接着上次播";
 }
 function relaySites() {
@@ -5021,6 +5022,16 @@ $("openEps").onclick = () => { if (data && data.now.total) openEpisodes(data.now
 
 // ======================================================================= 订阅：剧集和 UP 主
 
+// ---- 收藏夹台的纯函数（tests/console_fav_test.mjs 截出这一段单独测；remote.html 有同样的一段）----
+// 收藏夹台（fv01…，P1c）在 /api/state 里和剧集一起（series，kind 一样），但不算剧集：不数进「N 部」、不上剧集页，
+// 单独列在 UP 主页。投屏、UP 主、B站收藏三组按台 id 固定，「常看」只是页面上的一组：都不能调整分组。
+const FIXED_GROUPS = Object.freeze(["我的投屏", "UP 主", "B站收藏"]);
+const isFav = (id) => /^fv\d\d$/.test(id);
+function favChannels(series) { return (series || []).filter((s) => isFav(s.id)); }
+function seriesOnly(series) { return (series || []).filter((s) => !isFav(s.id)); }
+function movableGroup(name) { return !FIXED_GROUPS.includes(name) && name !== "常看"; }
+// ---- 收藏夹台的纯函数到此
+
 function removeButton(kind, item) {
   return button("删除", "linkbtn red", async (event) => {
     event.stopPropagation();
@@ -5083,9 +5094,25 @@ function renderSubs() {
     row.onclick = () => { location.hash = "#/up/" + c.id; };
     ups.appendChild(row);
   }
+  renderFavRows();
   const room = data.room || {};
-  $("seriesCount").textContent = (data.series || []).length + " 部" + (room.fits === false ? " · 频道列表已满" : "");
+  $("seriesCount").textContent = seriesOnly(data.series).length + " 部" + (room.fits === false ? " · 频道列表已满" : "");
   markSubscribed();
+}
+// UP 主页上的收藏夹台：一个收藏夹一行，能播放、选集、删除（DELETE api/creators/<fv 台 id>，和删 UP 主台一样）。
+// 没有收藏夹台、也没登录 B 站（加不了）时整块藏起来。
+function renderFavRows() {
+  const favs = favChannels(data.series), box = $("favRows");
+  $("favBox").hidden = !favs.length && !biliOn();
+  $("favCount").textContent = favs.length + " / 8";
+  box.replaceChildren();
+  if (!favs.length) box.appendChild(emptyRow("还没有收藏夹台：点下面的「从 B 站收藏夹加台」"));
+  for (const c of favs) {
+    const meta = c.id.toUpperCase() + " · " + siteTag(c.site) + "收藏夹 · 第 " + (c.episode || 1) + " / " + c.total + " 个"
+      + (onAir(c.id) ? " · " + deviceName() + "正在播" : "");
+    const eps = button("选集", "linkbtn", (event) => { event.stopPropagation(); openEpisodes(c.id); });
+    box.appendChild(listRow(onAir(c.id) ? "air" : "", c.name, meta, [playButton(c), eps, removeButton("creators", c)]));
+  }
 }
 // ======================================================================= 资料页：剧集、UP 主（server/relay/detail.py）
 // 剧集海报墙（GET api/detail/series）、一部剧（#/series/<台 id>，GET api/detail/series/<台 id>）、一个 UP 主
@@ -6649,6 +6676,15 @@ function renderFav() {
     ? `你有 ${fav.items.length} 个收藏夹；小电视上已有 ${fav.count} / ${fav.max} 个收藏夹台。`
     : "你还没有建收藏夹（或都是空的）。";
   list.replaceChildren(...fav.items.map((f) => {
+    if (f.subscribed && f.channel) {
+      // 已经是小电视上的台：不打勾，给「移除」（删掉这个台，位子空出来可以再加别的收藏夹）。
+      const row = el("div", "frow had");
+      row.style.gridTemplateColumns = "22px minmax(0, 1fr) auto auto";
+      const drop = button("移除", "linkbtn red", () => favRemove(f));
+      drop.setAttribute("aria-label", "从小电视上移除「" + f.title + "」");
+      row.append(el("span"), el("div", "n", f.title), el("span", "tag2", "已在小电视上 · " + f.channel.toUpperCase()), drop);
+      return row;
+    }
     const row = el("label", "frow" + (f.subscribed ? " had" : ""));
     row.style.gridTemplateColumns = "22px minmax(0, 1fr) auto";
     const tick = el("input");
@@ -6661,6 +6697,22 @@ function renderFav() {
     return row;
   }));
   go2.disabled = fav.picked.size === 0;
+}
+async function favRemove(f) {
+  if (!confirm("删除「" + f.title + "」这个台？看到哪里也会忘掉；以后可以再加。")) return;
+  let answer;
+  try { answer = await call("DELETE", "api/creators/" + f.channel); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  if (!answer.ok) { toast(answer.error || "没删成", true); return; }
+  toast("删掉了「" + f.title + "」");
+  if (fav && fav.items) {
+    Object.assign(f, { subscribed: false });
+    delete f.channel;
+    fav.count = Math.max(0, fav.count - 1);
+    renderFav();
+  }
+  refresh();
+  loadHome(true);
 }
 async function favImport() {
   const go2 = $("favGo");
