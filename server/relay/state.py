@@ -35,6 +35,12 @@ MAX_SERIES = 40
 # 设备上单独一组「B站收藏」（channel_groups.FAVS），最多这么多个。
 FAV_PREFIX = "fv"
 MAX_FAVS = 8
+
+
+def is_fav(cid: str) -> bool:
+    """收藏夹台（fv01…）：kind 是 series，但没有剧集资料页，不上剧集海报墙、首页「剧集追更」和搜索的剧集。"""
+    return cid[:len(FAV_PREFIX)] == FAV_PREFIX and cid[len(FAV_PREFIX):].isdigit()
+
 # 台的种类：id 前缀、个数上限、保留的视频数、列表缓存时间。
 KINDS = {"up": ("up", MAX_CREATORS, LIST_SIZE, LIST_MAX_AGE_S),
          "series": ("sr", MAX_SERIES, SERIES_SIZE, SERIES_MAX_AGE_S)}

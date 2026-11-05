@@ -35,6 +35,7 @@ import re
 import time
 
 from . import home
+from .state import is_fav
 from .tenants import Caller, NotFound
 
 PROGRESS_KEYS = 300
@@ -218,7 +219,7 @@ def series_list(relay, caller: Caller) -> dict:
     marks = Marks(relay, caller, account)
     with account.lock:
         # 收藏夹台（fv）也是 kind=series，但不上剧集海报墙。
-        series = [c for c in account.creators if c.kind == "series" and not c.id.startswith("fv")]
+        series = [c for c in account.creators if c.kind == "series" and not is_fav(c.id)]
         rows = [_poster(relay, c, marks) for c in series]
     for row in rows:
         row["on_tv"] = _on_tv(relay, caller, row["id"])

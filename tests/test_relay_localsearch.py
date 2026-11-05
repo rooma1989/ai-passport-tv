@@ -211,6 +211,14 @@ class SearchTests(unittest.TestCase):
         self.assertEqual((series["episode"], series["total"]), (3, 36))
         self.assertEqual(series["play"], {"kind": "episode", "channel": "sr01", "episode": 3})
 
+    def test_favourite_channels_are_not_series_results(self):
+        """收藏夹台（fv，kind=series）没有剧集资料页：搜索不把它当剧集给（点了会去 #/series/fv01）。"""
+        fav = creator("fv01", "庆余年 收藏", "series", 4)
+        fav.source = "fav111"
+        self.account.creators.append(fav)
+        found, _ = self.sections("庆余年")
+        self.assertEqual([x["series"]["id"] for x in found["series"]], ["sr01"])
+
     def test_guest_and_empty(self):
         guest = Caller(role="guest", device="aaaaaaaaaaa1")
         found, _ = self.sections("庆余年", guest)

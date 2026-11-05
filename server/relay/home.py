@@ -35,6 +35,7 @@ from pathlib import Path
 
 from .. import channel_groups, edition
 from . import table, voicecmds
+from .state import is_fav
 from .tenants import Caller, NotFound
 
 HOME_CACHE_S = 4.0
@@ -684,7 +685,8 @@ def _series_rows(relay, account, marks=None) -> list[dict]:
         marks = Marks(relay, None, account)
     rows = []
     with account.lock:
-        series = [c for c in account.creators if c.kind == "series"]
+        # 收藏夹台（fv）也是 kind=series，但没有剧集资料页：不进「剧集追更」和大图（继续观看里照样有）。
+        series = [c for c in account.creators if c.kind == "series" and not is_fav(c.id)]
         for c in series:
             mark = marks.channel(c)
             total, watched, done, upcoming = mark["total"], mark["watched"], mark["finished"], mark["episode"]

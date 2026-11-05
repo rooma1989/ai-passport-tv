@@ -23,6 +23,7 @@ import re
 import unicodedata
 
 from . import epg, home
+from .state import is_fav
 from .tenants import Caller, NotFound
 
 # 关键词最长多少个字（和 B 站搜索一样）。
@@ -227,7 +228,8 @@ def _subscriptions(relay, caller: Caller, query: Query) -> tuple[list, list]:
         score = query.score([name])
         if score is None:
             continue
-        if kind == "series":
+        if kind == "series" and not is_fav(cid):
+            # 收藏夹台（fv）没有剧集资料页，不当剧集给（点了会去 #/series/fv01）。
             series.append((score, order, {"id": f"sr:{cid}", "kind": "series", "title": name, "site": site,
                                           "episode": episode, "total": total,
                                           "art": home._cover(relay, site, source, "p"),

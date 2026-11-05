@@ -287,6 +287,22 @@ class HomeTests(unittest.TestCase):
         self.assertEqual((guest["creator_updates"], guest["continue"]), ([], []))
         self.assertEqual(len(guest["live_now"]), 2)
 
+    def test_favourite_channels_are_not_series_rows_or_hero_but_continue(self):
+        """收藏夹台（fv，kind=series）没有剧集资料页：不进「剧集追更」和大图（点了会去 #/series/fv01），
+        看到一半的照样在「继续观看」里（播放走得通）。"""
+        from server.relay import state as state_mod
+        from server.relay.state import Video
+        state = self.relay.user_state(self.alice)
+        fav = state.add("bilibili", "fav111", "我的收藏", [Video("BVfav1", "收藏的视频", 600, 1)], self.now,
+                        kind="series", prefix=state_mod.FAV_PREFIX, most=state_mod.MAX_FAVS)
+        state.save_position(fav.id, "BVfav1", 120)
+        state.save()
+        answer = self.call("GET", "/api/home")[1]
+        self.assertEqual(answer["series_updates"], [])
+        self.assertFalse([h for h in answer["hero"] if (h.get("series") or {}).get("id") == "fv01"], answer["hero"])
+        self.assertEqual([x["id"] for x in answer["continue"]], ["tv:fv01:1"])
+        self.assertEqual(answer["continue"][0]["play"], {"kind": "episode", "channel": "fv01", "episode": 1})
+
     def test_home_is_cached_and_dropped_after_a_play(self):
         first = home.home(self.relay, web.Caller(user=self.alice, role="user"))
         self.assertIs(home.home(self.relay, web.Caller(user=self.alice, role="user")), first)

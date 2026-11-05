@@ -19,7 +19,7 @@ from pathlib import Path
 from .. import listen
 from . import voicecmds
 from .bilibili import QUALITIES, SELFHOST_QUALITY, Bilibili, DEFAULT_QUALITY
-from .state import State
+from .state import State, is_fav
 from .web import Relay, make_servers
 from .youtube import YouTube
 
@@ -133,7 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"视频中转已启动：播放流 127.0.0.1:{args.stream_port}，"
           f"管理网页 127.0.0.1:{args.manage_port}，"
           f"{sum(c.kind == 'up' for c in state.creators)} 个 UP 主，"
-          f"{sum(c.kind == 'series' for c in state.creators)} 部剧，"
+          f"{sum(c.kind == 'series' and not is_fav(c.id) for c in state.creators)} 部剧，"
+          f"{sum(is_fav(c.id) for c in state.creators)} 个收藏夹，"
           f"{len(relay.devices)} 台设备，"
           f"YouTube {'已配置' if youtube else '未配置'}", flush=True)
     try:
