@@ -37,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from server import now_playing
 from server.relay import detail, setup, web
 from server.relay.bilibili import Bilibili
+from server.relay.state import Video
 from server.tenancy import files as device_files
 from server.tenancy.accounts import Accounts
 
@@ -162,6 +163,12 @@ class DetailTests(unittest.TestCase):
 
     # ---- detail pages ----
 
+    def test_favourite_folders_stay_off_the_series_wall(self):
+        self.state.add("bilibili", "fav111", "默认收藏夹", [Video("BV1a", "a", 60, 1)], self.now, kind="series",
+                       prefix="fv", most=8)
+        self.assertEqual([c.id for c in self.state.creators if c.kind == "series"], ["sr01", "fv01"])
+        self.assertEqual([s["id"] for s in self.call("/api/detail/series")[1]["items"]], ["sr01"])
+
     def test_series_wall_and_detail(self):
         self.pc.put(self.alice, "sr01", {"bvid": "ep2/2", "position": 95, "duration": 600})
         self.state.mark_watched("sr01", "ep1/1")
@@ -223,6 +230,12 @@ class DetailTests(unittest.TestCase):
         self.assertNotIn("ta", [x["title"] for x in home["creator_updates"]], "finished on the PC: not new")
         creator = self.state.get("up01")
         self.assertEqual((creator.watched, self.state.get("sr01").watched), ([], []), "the TV's state is untouched")
+
+
+class FavouriteDetailTests(unittest.TestCase):
+    def test_channel_key_accepts_fv(self):
+        self.assertEqual(detail._CHANNEL_KEY.match("ch:fv01").group(1), "fv01")
+        self.assertIsNone(detail._CHANNEL_KEY.match("ch:xx01"))
 
 
 class BilibiliDescTests(unittest.TestCase):

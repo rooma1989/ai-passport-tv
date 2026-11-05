@@ -573,7 +573,7 @@ function withImage(box, src) {
   return box;
 }
 const logoOf = (id) => "api/art/logo/" + encodeURIComponent(id);
-const isRelay = (id) => /^(up|sr)\d\d$/.test(id) || id === "cast";
+const isRelay = (id) => /^(up|sr|fv)\d\d$/.test(id) || id === "cast";
 
 // label：跳转类等待时台号屏上的说明（默认「跳转中…」）。
 function startPending(channel, name, at, slow, kind, target, label) {

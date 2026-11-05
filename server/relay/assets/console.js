@@ -1369,7 +1369,7 @@ async function stepTv(delta) {
   const next = list[((at < 0 ? 0 : at) + delta + list.length) % list.length];
   try {
     const answer = await call("POST", "api/switch", withDevice({ channel: next.id }));
-    if (answer.ok) { toast("换到 " + next.name); startPending(next.id, next.name, answer.at, /^(up|sr)\d\d$|^cast$/.test(next.id)); }
+    if (answer.ok) { toast("换到 " + next.name); startPending(next.id, next.name, answer.at, /^(up|sr|fv)\d\d$|^cast$/.test(next.id)); }
     else toast(answer.error, true);
   } catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); }
 }
@@ -1529,7 +1529,7 @@ function renderMini2() {
     return;
   }
   const v = now.video;
-  const live = !/^(up|sr)\d\d$|^cast$/.test(now.channel);
+  const live = !/^(up|sr|fv)\d\d$|^cast$/.test(now.channel);
   const title = now.title || now.name || now.channel;
   const sub = deviceName() + (now.device && now.device.audio_only === 1 ? " · 只听" : "") + " · " + (now.title ? now.name : (epgLine(now.channel) || now.group || ""));
   const paused = !!(v && v.paused);
@@ -1811,7 +1811,7 @@ function liveRate(ahead, rate) { return ahead < LIVE.LOW ? LIVE.SLOW : ahead >= 
 function livePoll(ahead, sinceStartMs) { return ahead < LIVE.OK && sinceStartMs < LIVE.STARTUP_MS ? LIVE.FAST_POLL_MS : LIVE.POLL_MS; }
 // 一组台里 id 的上一台、下一台（首尾相接）；只有直播台（不是 UP 主、剧集、投屏）。没有时 null。
 function liveNeighbours(ids, id) {
-  const live = ids.filter((x) => !/^(up|sr)\d\d$/.test(x) && x !== "cast");
+  const live = ids.filter((x) => !/^(up|sr|fv)\d\d$/.test(x) && x !== "cast");
   const at = live.indexOf(id);
   if (at < 0 || live.length < 2) return { prev: null, next: null };
   return { prev: live[(at - 1 + live.length) % live.length], next: live[(at + 1) % live.length] };
@@ -3110,7 +3110,7 @@ function partReq(n) {
     const item = watching.parts.items[n - 1];
     return item ? { library: item.id } : null;
   }
-  if (/^(up|sr)\d\d$/.test(watching.channel)) return { channel: watching.channel, episode: n };
+  if (/^(up|sr|fv)\d\d$/.test(watching.channel)) return { channel: watching.channel, episode: n };
   if (watching.video) return { video: watching.video, part: n };
   return null;
 }
@@ -4335,7 +4335,7 @@ function renderWatch() {
   const direct = watching.mode === "direct";
   $("watchPrevCh").hidden = $("watchNextCh").hidden = !direct || watching.channel === "cast";
   renderLine();
-  const video = direct && watching.kind === "video" && /^(up|sr)\d\d$/.test(watching.channel);
+  const video = direct && watching.kind === "video" && /^(up|sr|fv)\d\d$/.test(watching.channel);
   $("watchFollowBox").hidden = !online;
   const d = data.now.device;
   // 只在跟着小电视看时说一句（两边不同步）；直接在电脑上看不用解释。
@@ -4621,7 +4621,7 @@ function renderGroups() {
   }
   restoreFocus(fk);
 }
-const isRelay = (id) => /^(up|sr)\d\d$/.test(id) || id === "cast";
+const isRelay = (id) => /^(up|sr|fv)\d\d$/.test(id) || id === "cast";
 // 点一个台：播到「播放到」选的地方（小电视在播的这个台、又是对着它，就打开遥控）。
 function playChannel(c) {
   if (!c) return;

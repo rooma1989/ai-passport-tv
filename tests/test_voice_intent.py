@@ -614,14 +614,14 @@ class ListTests(unittest.TestCase):
         self.assertEqual(d.reply, "央视有 17 个台")
         self.assertEqual(len(d.choices), intent.CHOICES_MAX)
         self.assertEqual([c["label"] for c in d.choices[:5]], ["CCTV1", "CCTV2", "CCTV3", "CCTV4", "CCTV5"])
-        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 12 个", "lead": "", "ref": "ls:..2:5"})
-        d = intent.list_page("ls:..2:5", TODAY)
+        self.assertEqual(d.choices[5], {"label": "下一页 · 还有 12 个", "lead": "", "ref": "ls:..3:5"})
+        d = intent.list_page("ls:..3:5", TODAY)
         self.assertEqual(d.reply, "央视 第 6-10 个，共 17 个")
         self.assertEqual(d.choices[0]["label"], "CCTV6")
-        self.assertEqual(d.choices[5]["ref"], "ls:..2:10")
-        d = intent.list_page("ls:..2:10", TODAY)
+        self.assertEqual(d.choices[5]["ref"], "ls:..3:10")
+        d = intent.list_page("ls:..3:10", TODAY)
         self.assertEqual(d.choices[5]["label"], "下一页 · 还有 2 个")
-        d = intent.list_page("ls:..2:15", TODAY)
+        d = intent.list_page("ls:..3:15", TODAY)
         self.assertEqual([c["label"] for c in d.choices], ["CCTV16", "CCTV17"])
         self.assertEqual(d.reply, "央视 第 16-17 个，共 17 个")
         # Six fit without a "next page" row; seven do not.
@@ -666,9 +666,9 @@ class ListTests(unittest.TestCase):
 
     def test_stale_and_bad_refs(self):
         # The list got shorter between the pages: start again.
-        d = intent.list_page("ls:..2:40", TODAY)
+        d = intent.list_page("ls:..3:40", TODAY)
         self.assertEqual(d.choices[0]["label"], "CCTV1")
-        for bad in ("ls:", "ls:xx..:0", "ls:..99:0", "ls:..2:", "ep:sr01:3", "ls:..2:5;"):
+        for bad in ("ls:", "ls:xx..:0", "ls:..99:0", "ls:..3:", "ep:sr01:3", "ls:..3:5;"):
             self.assertIsNone(intent.list_page(bad, TODAY), bad)
 
 
@@ -820,7 +820,7 @@ class SearchIntentTests(unittest.TestCase):
             self.assertLessEqual(len(ref), 31)
             self.assertTrue(all(" " <= ch < "\x7f" and ch not in '"\\' for ch in ref), ref)
             self.assertEqual(intent.parse_search_ref(ref), (op, 9999, str(arg)))
-        for bad in ("", "sv:", "sv:1", "sx:1:1", "sv:12345:1", "sv:1:1;", "ls:..2:5", "ep:sr01:3", "sv:1:-1"):
+        for bad in ("", "sv:", "sv:1", "sx:1:1", "sv:12345:1", "sv:1:1;", "ls:..3:5", "ep:sr01:3", "sv:1:-1"):
             self.assertIsNone(intent.parse_search_ref(bad), bad)
 
     def test_which_sites_are_searched(self):

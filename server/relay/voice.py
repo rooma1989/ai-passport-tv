@@ -78,7 +78,7 @@ def catalog(relay, key, caller: Caller = LEGACY) -> dict:
                     for c in state.creators if c.kind != "series"]
     episode = 0
     paused = False
-    if playing["online"] and cid[:2] == "sr":
+    if playing["online"] and cid[:2] in ("sr", "fv"):
         episode = relay._episode_of(state, cid, relay._on_air(device, cid))
     if playing["online"]:
         paused = relay._paused_on(device, cid) is not None

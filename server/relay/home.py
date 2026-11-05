@@ -383,7 +383,7 @@ def _pc_body(item: dict) -> dict | None:
     channel = item.get("channel")
     if kind in ("live", "channel") and isinstance(channel, str) and channel:
         return {"channel": channel}
-    if kind in ("episode", "video") and isinstance(channel, str) and channel[:2] in ("up", "sr"):
+    if kind in ("episode", "video") and isinstance(channel, str) and channel[:2] in channel_groups.RELAY_PREFIXES:
         n = _int(item.get("episode") if kind == "episode" else item.get("index"))
         return {"channel": channel, "episode": n} if n else {"channel": channel}
     if kind == "cast" and isinstance(item.get("url"), str):
@@ -444,7 +444,7 @@ def play(relay, caller: Caller, body: dict) -> dict:
         if not isinstance(cid, str):
             return _bad()
         answer = relay.switch(cid, caller, dev["id"])
-    elif kind in ("channel", "video") and isinstance(cid, str) and cid[:2] in ("up", "sr"):
+    elif kind in ("channel", "video") and isinstance(cid, str) and cid[:2] in channel_groups.RELAY_PREFIXES:
         answer = relay.play_subscription(cid, caller, dev["id"])
         index = _int(item.get("index"))
         if answer.get("ok") and kind == "video" and index:
@@ -454,7 +454,7 @@ def play(relay, caller: Caller, body: dict) -> dict:
             if creator is not None and upcoming is not None and 1 <= index <= len(creator.videos) and \
                     creator.videos[index - 1].bvid != upcoming.bvid:
                 note = f"小电视从「{creator.name}」下一个没看的视频播起"
-    elif kind == "episode" and isinstance(cid, str) and cid[:2] == "sr":
+    elif kind == "episode" and isinstance(cid, str) and cid[:2] in ("sr", "fv"):
         n = _int(item.get("episode"))
         if not n:
             return _bad()
@@ -623,7 +623,7 @@ def _continue_rows(relay, caller: Caller, account) -> list[dict]:
                     store.set_cover(caller.user, key, art)
                 elif not art:
                     _warm(relay, warm[0], site, warm[1])
-            rows.append({"id": f"pc:{key}", "kind": "episode" if key[:2] == "sr" else "video",
+            rows.append({"id": f"pc:{key}", "kind": "episode" if key[:2] in ("sr", "fv") else "video",
                          "title": title, "subtitle": subtitle, "source": site,
                          "art": {"url": thumb(art), "ratio": "wide"},
                          "progress": {"position": int(position), "duration": int(duration), "device": PC_NAME,

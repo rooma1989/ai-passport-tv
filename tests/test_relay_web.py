@@ -696,6 +696,18 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.status(f"http://127.0.0.1:{self.streams.server_address[1]}/x")[0], 404)
 
 
+class FavouriteChannelIdTests(unittest.TestCase):
+    def test_fv_channels_are_relay_channels(self):
+        for cid in ("fv01", "fv08", "sr01", "up01", "cast"):
+            self.assertTrue(web._relay_channel(cid), cid)
+        for pattern in (web._CHANNEL, web._INFO):
+            self.assertTrue(pattern.match(("/ch/" if pattern is web._CHANNEL else "/info/") + "fv01"))
+        self.assertTrue(web._EPISODES.match("/api/series/fv01/episodes"))
+        self.assertTrue(web._CREATOR.match("/api/series/fv01"))
+        for cid in ("fvx", "ch000", "fv", "zz01"):
+            self.assertFalse(web._relay_channel(cid), cid)
+
+
 class DeviceTests(unittest.TestCase):
     """Two devices on their own media servers: the phone follows the one in use."""
 

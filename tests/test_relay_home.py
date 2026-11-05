@@ -766,6 +766,13 @@ class PcProgressTests(unittest.TestCase):
             self.assertNotIn("cover", store.get(1, "sr01"), "another episode does not inherit it")
 
 
+class FavouriteChannelKeyTests(unittest.TestCase):
+    def test_fv_progress_item_is_an_episode_of_the_channel(self):
+        self.assertEqual(home._pc_body({"kind": "episode", "channel": "fv01", "episode": 3}),
+                         {"channel": "fv01", "episode": 3})
+        self.assertEqual(home._pc_body({"kind": "video", "channel": "fv01"}), {"channel": "fv01"})
+
+
 class ContinueCoverTests(unittest.TestCase):
     """ui-08: series watched on the PC (bangumi, multi-part, collections, YouTube playlists) have a cover in
     Continue watching: the one kept at play time, else the episode's own, else the whole video's or the

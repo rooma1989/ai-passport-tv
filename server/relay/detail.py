@@ -47,7 +47,7 @@ _SERIES_ID = re.compile(r"^sr\d\d$")
 _UP_ID = re.compile(r"^up\d\d$")
 _VIDEO_KEY = re.compile(r"^v:(bilibili|youtube):([0-9A-Za-z_/-]{1,80})$")
 _LIB_KEY = re.compile(r"^lib:([0-9A-Za-z_-]{1,80})$")
-_CHANNEL_KEY = re.compile(r"^ch:((?:up|sr)\d\d)$")
+_CHANNEL_KEY = re.compile(r"^ch:((?:up|sr|fv)\d\d)$")
 
 
 def _finished_at(position: float, duration: float) -> bool:
@@ -217,7 +217,8 @@ def series_list(relay, caller: Caller) -> dict:
     account = _account(relay, caller)
     marks = Marks(relay, caller, account)
     with account.lock:
-        series = [c for c in account.creators if c.kind == "series"]
+        # 收藏夹台（fv）也是 kind=series，但不上剧集海报墙。
+        series = [c for c in account.creators if c.kind == "series" and not c.id.startswith("fv")]
         rows = [_poster(relay, c, marks) for c in series]
     for row in rows:
         row["on_tv"] = _on_tv(relay, caller, row["id"])

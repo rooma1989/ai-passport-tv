@@ -204,8 +204,8 @@ class State:
             creator = Creator(id=free[0], site=site, source=source, name=name,
                               videos=list(videos[:size]), fetched_at=now, kind=kind)
             self.creators.append(creator)
-            # UP 主在前，剧集在后，各自按编号排。
-            self.creators.sort(key=lambda c: (c.kind != "up", c.id))
+            # UP 主在前，剧集在中间，收藏夹在后，各自按编号排（加收藏夹不挪动已有的剧集台）。
+            self.creators.sort(key=lambda c: (c.kind != "up", c.id.startswith(FAV_PREFIX), c.id))
             return creator
 
     def remove(self, cid: str) -> bool:

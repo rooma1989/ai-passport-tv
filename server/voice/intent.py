@@ -50,8 +50,8 @@ LABEL_COLUMNS = 20
 PAGE_SIZE = 5
 
 # 与 server/relay/table.py、channel_groups.py 的 id 规则一致：中转推流的台。
-_RELAY_ID = re.compile(r"^(cast|up\d+|sr\d+)$")
-_SERIES_ID = re.compile(r"^sr\d+$")
+_RELAY_ID = re.compile(r"^(cast|up\d+|sr\d+|fv\d+)$")
+_SERIES_ID = re.compile(r"^(?:sr|fv)\d+$")   # 收藏夹台 fv 和剧集台一样按顺序播
 _CREATOR_ID = re.compile(r"^up\d+$")
 
 REPLY_UNKNOWN = "没听懂，再说一次？"
@@ -1823,7 +1823,7 @@ def _unfollow_confirm(channel: Channel) -> Decision:
 
 def removal_ref(ref: str) -> str | None:
     """rm:up04 → up04；不是删台的 ref 为 None。"""
-    found = re.match(r"^rm:((?:up|sr)\d{1,4})$", ref or "")
+    found = re.match(r"^rm:((?:up|sr|fv)\d{1,4})$", ref or "")
     return found.group(1) if found else None
 
 

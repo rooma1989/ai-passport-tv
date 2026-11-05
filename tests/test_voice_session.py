@@ -390,7 +390,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([c.get("do") for c in result["choices"][:5]],
                          [{"channel": f"ch{n:03d}"} for n in range(5)])
         last = result["choices"][5]
-        self.assertEqual((last["label"], last["ref"]), ("下一页 · 还有 3 个", "ls:..2:5"))
+        self.assertEqual((last["label"], last["ref"]), ("下一页 · 还有 3 个", "ls:..3:5"))
         self.voice.take(ctl("pick", 1, ref=last["ref"]), ctx)
         page = json.loads(self.voice.results()[0])
         self.assertEqual((page["id"], page["intent"]), (1, "list"))
@@ -398,7 +398,7 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn("do", page)
         self.assertEqual(self.relay.calls, [], "listing never calls the relay's actions")
         # The first page's ref is no longer offered once the second page replaced it.
-        self.voice.take(ctl("pick", 1, ref="ls:..2:5"), ctx)
+        self.voice.take(ctl("pick", 1, ref="ls:..3:5"), ctx)
         self.assertEqual(json.loads(self.voice.results()[0])["reply"], "这个选项已经过期了")
 
     def test_sites_come_from_the_relay(self):

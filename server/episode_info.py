@@ -22,7 +22,7 @@ EPISODE_MAX = 100000
 
 _RELAY_STREAM = re.compile(
     r"^(http://(?:127\.0\.0\.1|localhost)(?::\d{1,5})?)/ch/"
-    r"((?:[0-9a-f]{12}/|legacy-[a-z0-9]{1,20}/)?(?:up\d\d|sr\d\d|cast))$")
+    r"((?:[0-9a-f]{12}/|legacy-[a-z0-9]{1,20}/)?(?:up\d\d|sr\d\d|fv\d\d|cast))$")
 
 
 def info_url(stream_url: str | None) -> str | None:

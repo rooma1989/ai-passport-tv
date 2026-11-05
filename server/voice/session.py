@@ -53,7 +53,7 @@ WAV_DIR_ENV = "TV_VOICE_WAV_DIR"
 # 结果里「听到的话」最多这么多字：设备顶栏只放得下一行。
 HEARD_MAX = 40
 REPLY_MAX = 40
-_REF = re.compile(r"^ep:(sr\d{1,4}):(\d{1,4})$")
+_REF = re.compile(r"^ep:((?:sr|fv)\d{1,4}):(\d{1,4})$")
 _ID_MAX = 0x7FFFFFFF
 
 REPLY_ASR_DOWN = "服务器没回应，稍后再试"

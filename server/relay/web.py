@@ -54,15 +54,15 @@ PLAYDIAG_MAX = 20
 PLAYDIAG_LOG = 5
 # 看门狗出手的几种（console.js 的 STUCK.LADDER）：日志里怎么说。
 STUCK_HOW = {"nudge": "往前推了 {step:g} 秒", "relayout": "重排了一下画面（跟缩小一样）", "jump": "往前跳了 {step:g} 秒"}
-_CHANNEL = re.compile(r"^/ch/(up\d\d|sr\d\d|cast)$")
+_CHANNEL = re.compile(r"^/ch/(up\d\d|sr\d\d|fv\d\d|cast)$")
 # 多用户：/ch/<设备 id>/<台>
-_DEVICE_CHANNEL = re.compile(r"^/ch/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|cast)$")
+_DEVICE_CHANNEL = re.compile(r"^/ch/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|fv\d\d|cast)$")
 # 电视服务问「这一路流放的是什么」（标题、第几集）：播放流地址把 /ch/ 换成 /info/。
-_INFO = re.compile(r"^/info/(up\d\d|sr\d\d|cast)$")
-_DEVICE_INFO = re.compile(r"^/info/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|cast)$")
-_CREATOR = re.compile(r"^/api/(?:creators|series)/(up\d\d|sr\d\d)$")
-_EPISODES = re.compile(r"^/api/series/(sr\d\d)/episodes$")
-_EPISODE_PLAY = re.compile(r"^/api/series/(sr\d\d)/play$")
+_INFO = re.compile(r"^/info/(up\d\d|sr\d\d|fv\d\d|cast)$")
+_DEVICE_INFO = re.compile(r"^/info/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|fv\d\d|cast)$")
+_CREATOR = re.compile(r"^/api/(?:creators|series)/(up\d\d|sr\d\d|fv\d\d)$")
+_EPISODES = re.compile(r"^/api/series/(sr\d\d|fv\d\d)/episodes$")
+_EPISODE_PLAY = re.compile(r"^/api/series/(sr\d\d|fv\d\d)/play$")
 # 剧集、UP 主的资料页（detail.py）：/api/detail/series/<台 id>、/api/detail/up/<台 id 或关注的键>。
 _DETAIL = re.compile(r"^/api/detail/(series|up)/([0-9A-Za-z:_-]{1,40})$")
 _HISTORY = re.compile(r"^/api/history/(bilibili|youtube)/([A-Za-z0-9_-]{1,32})$")
@@ -170,8 +170,8 @@ class _LibraryPlay:
 
 
 def _relay_channel(cid: str) -> bool:
-    """中转推流的台：投屏、UP 主、剧集。"""
-    return cid == table.CAST_ID or (cid[:2] in ("up", "sr") and cid[2:].isdigit())
+    """中转推流的台：投屏、UP 主、剧集、收藏夹。"""
+    return cid == table.CAST_ID or (cid[:2] in channel_groups.RELAY_PREFIXES and cid[2:].isdigit())
 
 
 class Relay:
@@ -1243,7 +1243,7 @@ class Relay:
             title = self._titles.get((dev["slot"], cid), "")
         # 剧集台：正在播第几集、共几集；不是剧集台或还不知道播的是哪集时为 0。
         episode = total = 0
-        creator = state.get(cid) if cid[:2] == "sr" else None
+        creator = state.get(cid) if cid[:2] in ("sr", "fv") else None
         if creator is not None and creator.kind == "series":
             video = self._on_air(dev, cid)
             episode, total = self._episode_of(state, cid, video), len(creator.videos)
@@ -1721,7 +1721,7 @@ class Relay:
             if who != user:
                 continue
             record = {k: v for k, v in cursor.items() if k not in ("stream", "offset", "position", "bvid")}
-            record.update(channel=key if key[:2] in ("up", "sr") else "cast", bvid=cursor["bvid"],
+            record.update(channel=key if key[:2] in channel_groups.RELAY_PREFIXES else "cast", bvid=cursor["bvid"],
                           position=round(self._pc_position(cursor), 1))
             self.pc_progress.put(user, key, record)
 

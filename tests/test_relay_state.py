@@ -325,6 +325,8 @@ class FavoriteSlotTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             state.add("bilibili", "fav111", "重复", v, 0.0, kind="series",
                       prefix=relay_state.FAV_PREFIX, most=relay_state.MAX_FAVS)
+        self.assertEqual([c.id for c in state.creators][:2], ["sr01", "fv01"],
+                         "favourites sort after series, so a new one never reorders the series channels")
         # 存盘后重新读回，fv01 还在，仍是剧集类。
         state.save()
         again = State(path).get("fv01")

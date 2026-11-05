@@ -557,7 +557,7 @@ def unsubscribe(relay, key, caller: Caller = LEGACY, body: dict | None = None, k
         rows = [row_id for row_id, _ in relay.channel_rows(dev)]
         rec = _view(relay, dev)
         target = next((c for c in back_channels(rec, cid) if c in rows and c != table.CAST_ID), None)
-        target = target or next((c for c in rows if c != table.CAST_ID and c[:2] not in ("up", "sr")), None)
+        target = target or next((c for c in rows if c != table.CAST_ID and c[:2] not in channel_groups.RELAY_PREFIXES), None)
         if target:
             relay._event(dev, "switch", channel=target)
     return {"ok": True, "id": cid, "name": creator.name, "kind": creator.kind}
