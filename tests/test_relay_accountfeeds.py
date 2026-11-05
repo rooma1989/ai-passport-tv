@@ -106,7 +106,7 @@ class FeedBili(FakeBili):
                     raise self.fail
                 return self.fail, {}
             if "/feed/rcmd" in url:
-                return self.rcmd, {}
+                return (self.rcmd(url) if callable(self.rcmd) else self.rcmd), {}
             if "/history/cursor" in url:
                 return self.history, {}
             if "/web-dynamic/" in url:
@@ -516,6 +516,89 @@ class FeedRowTests(FeedHarness):
             answer = accountfeeds.play_tv(self.relay, self.relay_caller(self.kid), dev,
                                           {"kind": "feed", "site": "youtube", "id": "recrecrec01"})
             self.assertEqual(casts[-1][0].site, "youtube")
+
+class PageTests(FeedHarness):
+    """The top-bar 「B 站」 and 「YouTube」 pages (2026-11-05): the sites' home recommendations as whole pages."""
+
+    def setUp(self):
+        super().setUp()
+        self.slept = []
+        self.feeds.sleep = self.slept.append
+
+        def rcmd(url):
+            n = int(url.split("fresh_idx=")[1].split("&")[0])
+            # Bilibili repeats a few across screens: the first of each page is the last of the one before.
+            items = [dict(RCMD["data"]["item"][0], bvid=f"BV1page{n:02d}{i:03d}"[:12].ljust(12, "x"),
+                          title=f"第 {n} 屏 {i}") for i in range(accountfeeds.PAGE_N)]
+            if n > 1:
+                items[0] = dict(items[0], bvid=f"BV1page{n - 1:02d}{accountfeeds.PAGE_N - 1:03d}"[:12].ljust(12, "x"))
+            return {"code": 0, "data": {"item": items + [{"goto": "ad", "title": "广告"}]}}
+        self.fake.rcmd = rcmd
+
+    def page(self, user, site="bilibili", **query):
+        q = "&".join(f"{k}={v}" for k, v in query.items())
+        return self.request("GET", f"/tv/api/feeds/page?site={site}" + ("&" + q if q else ""), user=user)[1]
+
+    def test_bilibili_pages_follow_the_home_feed_down(self):
+        self.assertEqual(self.page(self.kid, page=1)["state"], "login", "not signed in: a login card")
+        self.assertEqual(self.fake.count("/feed/rcmd"), 0)
+        self.sign_in(self.kid)
+        first = self.page(self.kid, page=1)
+        self.assertEqual((first["state"], len(first["items"]), first["more"]), ("ready", accountfeeds.PAGE_N, True))
+        self.assertEqual(first["items"][0]["play"]["kind"], "feed")
+        url = [c for c in self.fake.calls if "/feed/rcmd" in c[0]][-1][0]
+        self.assertIn("fresh_idx=1&", url)
+        self.assertIn(f"ps={accountfeeds.PAGE_N}", url)
+        self.assertIn("w_rid=", url)
+        second = self.page(self.kid, page=2)
+        self.assertIn("fresh_idx=2&", [c for c in self.fake.calls if "/feed/rcmd" in c[0]][-1][0])
+        self.assertEqual(len(second["items"]), accountfeeds.PAGE_N - 1, "the repeat from screen 1 is dropped")
+        self.assertEqual(len(self.slept), 1, "turning pages at once waits PAGE_GAP_S")
+        # Asking again for a page already turned (re-render, back and forth) does not reach Bilibili.
+        self.assertEqual(self.page(self.kid, page=2)["items"], second["items"])
+        self.assertEqual(self.page(self.kid, page=1)["items"], first["items"])
+        self.assertEqual(self.fake.count("/feed/rcmd"), 2)
+        # One page at a time: no jumping ahead; past PAGE_MAX nothing more.
+        self.assertEqual(self.page(self.kid, page=5)["items"], [])
+        self.assertEqual(self.fake.count("/feed/rcmd"), 2)
+        self.assertEqual(self.page(self.kid, page=accountfeeds.PAGE_MAX + 1)["items"], [])
+        # Refresh: from screen 1 again (after FRESH_GAP_S), the later pages are forgotten.
+        self.page(self.kid, page=1, fresh=1)
+        self.assertEqual(self.fake.count("/feed/rcmd"), 2, "too soon after the first")
+        self.mono.t += accountfeeds.FRESH_GAP_S
+        self.page(self.kid, page=1, fresh=1)
+        self.assertEqual(self.fake.count("/feed/rcmd"), 3)
+        self.page(self.kid, page=2)
+        self.assertEqual(self.fake.count("/feed/rcmd"), 4)
+        self.assert_no_leak()
+
+    def test_bilibili_errors_and_bad_input(self):
+        self.sign_in(self.kid)
+        self.fake.fail = {"code": -352, "message": "风控"}
+        answer = self.page(self.kid, page=1)
+        self.assertEqual((answer["state"], answer["items"]), ("error", []))
+        self.assertIn("拒绝", answer["message"])
+        self.fake.fail = None
+        self.assertEqual(self.page(self.kid, page="x")["items"], [])
+        self.assertFalse(self.page(self.kid, site="tiktok")["ok"])
+
+    def test_youtube_page_is_the_whole_pool_for_the_admin(self):
+        self.assertEqual(self.page(self.kid, site="youtube")["state"], "hidden", "YouTube is the admin's account")
+        self.yt.feeds["rec"] = [RecRotationTests.video(i) for i in range(40)]
+        answer = self.page(self.admin, site="youtube")
+        self.assertEqual(answer["state"], "ready", answer)
+        self.assertEqual(len(answer["items"]), min(40, accountfeeds.YT_PAGE_N))
+        self.assertEqual(answer["items"][0]["play"], {"kind": "feed", "site": "youtube", "id": "rec00000000",
+                                                      "title": "推荐 0"})
+        # The home row rotates on its own: the page does not use up its batches.
+        row = self.request("GET", "/tv/api/feeds/row?id=yt_rec", user=self.admin)[1]
+        self.assertEqual(row["items"][0]["play"]["id"], "rec00000000")
+        # 换一批 after FRESH_GAP_S asks the node again; new ones come first.
+        self.yt.feeds["rec"] = [RecRotationTests.video(i) for i in range(5, 45)]
+        self.mono.t += accountfeeds.FRESH_GAP_S
+        again = self.page(self.admin, site="youtube", next=1)
+        self.assertIn(again["items"][0]["play"]["id"], {f"rec{i:08d}" for i in range(40, 45)})
+
 
 class RecRotationTests(FeedHarness):
     """「YouTube 推荐」: the account's feed barely changes, so the row rotates through what the node gave."""

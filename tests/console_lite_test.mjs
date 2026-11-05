@@ -28,6 +28,8 @@ assert.deepEqual(liteNav([["x"]], "lite", "nope"), [["x"]]);
 assert.equal(liteRoute("lib", "lite"), "home", 'a hidden route falls back to home');
 assert.equal(liteRoute("lib", "full"), "lib");
 assert.equal(liteRoute("live", "lite"), "live");
+assert.equal(liteRoute("yt", "lite"), "home", 'the YouTube page is not in lite');
+assert.deepEqual(liteNav([["bili", "B 站"], ["yt", "YouTube"]], "lite", "top").map(([id]) => id), ["bili"]);
 assert.ok(Object.isFrozen(LITE_HIDE));
 assert.ok(Object.isFrozen(LITE_TEXT));
 

@@ -75,6 +75,9 @@ svg { display: block; }
 .ph { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin: 8px 0 22px; }
 .lt { margin: 0; font: 700 40px/1.1 var(--sans); letter-spacing: -.01em; }
 .ph .hint { margin: 0; }
+.ph .sp { flex: 1; }
+/* 顶栏「B 站」「YouTube」两页（console.js 的 fpRender）：底下的「加载更多」、到头了 */
+.fpmore, .fpend { text-align: center; margin: 28px 0 8px; }
 
 /* ---- 顶部标签栏（桌面）/ 导航栏（手机） ---- */
 #top { position: absolute; z-index: 8; left: 0; right: 0; top: 0; height: var(--topH); display: flex; align-items: center; gap: 16px; padding: 0 var(--g);

@@ -477,17 +477,17 @@ $("logout2").onclick = logout;
 
 // ======================================================================= 外框：路由、顶栏、底栏
 
-const TITLES = { home: "首页", live: "直播", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索",
+const TITLES = { home: "首页", live: "直播", bili: "B 站", yt: "YouTube", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索",
                  devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的", admin: "管理" };
 const GUEST_ROUTES = ["home", "live", "search", "settings", "remote", "me"];
 // 搜索不在中间的标签里：是右上角那组按钮的第一个（放大镜），窗口窄的时候中间的标签也不会被挤掉。
-const TOPT = [["home", "首页"], ["live", "直播"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"]];
+const TOPT = [["home", "首页"], ["live", "直播"], ["bili", "B 站"], ["yt", "YouTube"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"]];
 const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search", "搜索", "search"], ["remote", "遥控", "remote"], ["me", "我的", "set"]];
 // ---- 精简版导航的纯函数（tests/console_lite_test.mjs 单独取出来测）
 // 精简版（/api/login/status 的 edition，server/edition.py）不显示的页和分区；管理里的「频道表」换成「频道」（频道包）。
 const LITE_HIDE = Object.freeze({
-  top: ["series", "lib"], tabs: [], settings: ["youtube", "history"], admin: ["users", "audit"],
-  routes: ["series", "lib"],
+  top: ["series", "lib", "yt"], tabs: [], settings: ["youtube", "history"], admin: ["users", "audit"],
+  routes: ["series", "lib", "yt"],
   // 关掉的功能，页面上也不提：pc 在电脑上看（服务端也不列「这台电脑」、/api/state 没有 watch），cast 直播页的
   // 「我的投屏」组，youtube 设置 → YouTube 的接口和搜索的「B 站 / YouTube」切换，invites 设置里的「家人和邀请」，
   // phoneLink「让手机登录」（/api/phone-link），pets 遥控里的宠物（/api/pet），guests 访客码和说访客的话，
@@ -617,6 +617,7 @@ function showRoute() {
   if (name !== "settings") biliCancel();
   if (name === "me") renderMe();
   if (name === "lib") libNav();
+  if (name === "bili" || name === "yt") fpOpen(name);
   if (name === "up") { renderUpLatest(); renderFollows(); loadFollows(); }
   if (name === "home") loadFeeds();
   if (name === "up" || name === "series") loadHome();
@@ -659,7 +660,7 @@ function tabOf(name) { return name; }
 function renderTop() {
   const cur = tabOf(route);
   const cr = (id) => (cur === id ? 'aria-current="page"' : "");
-  const tabs = liteNav(TOPT, EDITION, "top").filter(([id]) => !isGuest() || GUEST_ROUTES.includes(id));
+  const tabs = liteNav(TOPT, EDITION, "top").filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && fpTab(id));
   const initial = me ? [...me.name][0] || "?" : "?";
   const role = me ? (me.role === "admin" ? "管理员" : me.role === "guest" ? "访客 · 只能遥控一台" : "家人") : "";
   $("top").innerHTML = `<div class="tl"><a class="wml" href="#/home" aria-label="${BRAND} ${BRAND_ZH} 首页">${iconSVG(40, true)}${wordmarkSVG(28, false)}</a></div>
@@ -696,9 +697,9 @@ function applyLayout(force) {
 addEventListener("resize", () => applyLayout(false));
 
 function renderMe() {
-  const rows = [["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["live", "直播和分组", "live"],
+  const rows = [["bili", "B 站推荐", "up"], ["yt", "YouTube 推荐", "play"], ["series", "剧集与番剧", "series"], ["up", "UP 主", "up"], ["lib", "片库", "lib"], ["live", "直播和分组", "live"],
                 ["devices", "设备", "tv"], ["settings", "设置", "set"], ["admin", "管理", "sliders"]]
-    .filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && (id !== "admin" || isAdmin())
+    .filter(([id]) => (!isGuest() || GUEST_ROUTES.includes(id)) && (id !== "admin" || isAdmin()) && fpTab(id)
       && liteRoute(id, EDITION) === id);   // 精简版：剧集、片库不显示
   $("meList").innerHTML = rows.map(([id, t, i]) => `<a class="li" href="#/${id === "settings" && ytAlert() ? "settings/youtube" : id}"><span class="ico">${ic(i, 18)}</span><span class="tx">${t}</span>${id === "settings" && ytAlert() ? '<i class="adot" title="YouTube 要求重新登录"></i>' : ""}<em>›</em></a>`).join("")
     + `<div class="li"><span class="me">${esc(me ? [...me.name][0] : "?")}</span><span class="tx">${esc(me ? me.name : "")}<small>${me && me.role === "admin" ? "管理员" : isGuest() ? "访客" : "家人"}</small></span></div>`;
@@ -7223,6 +7224,7 @@ async function loadFeeds(force) {
   const changed = JSON.stringify(feedsInfo) !== JSON.stringify(answer);
   feedsInfo = answer;
   applyFeedSettings();
+  if (changed) { renderTop(); if (isM()) renderMe(); }
   if (changed && route === "home") renderHome();
   loadFeedRows(force);
 }
@@ -7318,6 +7320,84 @@ function noteCard(icon, title, text, href) {
   const tag = href ? `a class="card soon note" href="${href}"` : 'div class="card soon note"';
   return `<${tag}><span class="art"><span>${ic(icon, 30)}${esc(title)}</span></span><span class="t">${esc(title)}</span><span class="s2 wrap">${esc(text)}</span></${href ? "a" : "div"}>`;
 }
+// ---- 顶栏「B 站」「YouTube」：两个网站首页的推荐整页（GET api/feeds/page）----
+// B 站：网页版首页的推荐，一页一页往下翻（滚到离底下 FP.NEAR_PX 以内就要下一页）；「刷新」从第 1 屏重新来。
+// YouTube：推荐的整池子（这台服务器登录的那个账号，看过的不要）；节点在后台取时每 FP.POLL_MS 再问一次；「换一批」
+// 让节点重新取（中转那边隔 30 秒以上才会真去取）。点卡片和首页一样，放到右上角选的地方（默认这台电脑）。
+const FP = { NEAR_PX: 900, POLL_MS: 3000, POLLS: 40, STALE_MS: 10 * 60 * 1000 };
+const fp = { bili: { items: [], page: 0, more: true, busy: false, state: "", message: "", need: "", at: 0 },
+             yt: { items: [], more: false, busy: false, state: "", message: "", need: "", at: 0, polls: 0, timer: 0 } };
+// 顶栏、「我的」里列不列这两页：B 站要有自己账号的几排（家庭服务器、电脑客户端，不是访客）；YouTube 还要是管理员、
+// 配了 YouTube（GET api/feeds 的 youtube.shown）。
+function fpTab(id) {
+  if (id === "bili") return feedsOn();
+  if (id === "yt") return feedsOn() && !!(feedsInfo && feedsInfo.youtube && feedsInfo.youtube.shown) && !liteOff("youtube", EDITION);
+  return true;
+}
+function fpOpen(site) {
+  const f = fp[site];
+  if (!f.items.length || Date.now() - f.at > FP.STALE_MS) fpLoad(site, true);
+  else fpRender(site);
+}
+async function fpLoad(site, first, again) {
+  const f = fp[site];
+  if (f.busy) return;
+  if (site === "bili" && !first && !f.more) return;
+  f.busy = true;
+  fpRender(site);
+  const q = site === "bili" ? `site=bilibili&page=${first ? 1 : f.page + 1}${again ? "&fresh=1" : ""}`
+    : `site=youtube${again ? "&next=1" : ""}`;
+  let answer;
+  try { answer = await call("GET", "api/feeds/page?" + q); }
+  catch (error) { f.busy = false; if (error instanceof SignedOut) signedOut(); else { f.message = "网络不通"; fpRender(site); } return; }
+  f.busy = false;
+  if (!answer || !answer.ok) { f.message = (answer && answer.error) || "取不到"; fpRender(site); return; }
+  f.state = answer.state; f.message = answer.message || ""; f.need = answer.need || "";
+  if (site === "bili") {
+    if (first) { f.items = []; f.page = 0; }
+    if (answer.state === "ready") { f.items = f.items.concat(answer.items); f.page = answer.page; f.more = !!answer.more; f.at = first ? Date.now() : f.at; }
+  } else {
+    if (answer.items.length) { f.items = answer.items; f.at = Date.now(); }
+    f.more = !!answer.more;
+    clearTimeout(f.timer);
+    if (answer.loading && f.polls++ < FP.POLLS) f.timer = setTimeout(() => { if (route === "yt" && !document.hidden) fpLoad("yt"); }, FP.POLL_MS);
+    else if (!answer.loading) f.polls = 0;
+    if (again && !answer.loading && !answer.more) toast("推荐就这些了，过几分钟会有新的");
+  }
+  fpRender(site);
+  if (site === "bili" && first) $("main").scrollTop = 0;
+  if (site === "bili") fpNear();      // 一页没铺满屏幕：接着要下一页
+}
+function fpRender(site) {
+  if (route !== site) return;
+  const f = fp[site], box = $(site === "bili" ? "fpBili" : "fpYt");
+  let o = "";
+  if (f.state === "login") {
+    o = site === "bili" ? `<div class="wgrid">${noteCard("up", "登录 B 站", f.message || "登录 B 站后，这里会显示你的 B 站首页推荐", "#/settings/bili")}</div>`
+      : `<div class="wgrid">${noteCard("play", "YouTube 要登录", f.message || "导入 YouTube cookies 后，这里会显示 YouTube 首页推荐", "#/settings/youtube")}</div>`;
+  } else if (f.state === "hidden") {
+    o = `<p class="hint">YouTube 推荐只给管理员看（用的是这台服务器的 YouTube 账号）。</p>`;
+  } else {
+    if (f.items.length || f.busy || f.state === "loading") o += `<div class="wgrid">${f.items.map((x) => cardFeed(x)).join("")}${f.busy || f.state === "loading" ? skelCards(site === "bili" && f.items.length ? 4 : 12) : ""}</div>`;
+    if (f.message) o += `<p class="hint bad">${esc(f.message)}</p>`;
+    if (!f.busy && f.state !== "loading" && !f.items.length && !f.message) o += `<p class="hint">暂时没有推荐，过一会儿再来看看。</p>`;
+    if (site === "bili" && f.items.length && !f.busy) o += f.more ? `<p class="fpmore"><button class="btn sm" data-fp-more="1" data-k="fp-more">加载更多</button></p>` : `<p class="hint fpend">就到这里了，点上面的「刷新」再来一批</p>`;
+  }
+  box.innerHTML = o;
+  $("fpBiliFresh").disabled = site === "bili" && f.busy;
+  $("fpYtNext").disabled = site === "yt" && f.busy;
+}
+// 往下滚到快到底：要下一页（B 站）。
+function fpNear() {
+  if (route !== "bili" || fp.bili.busy || !fp.bili.more || fp.bili.state !== "ready") return;
+  const m = $("main");
+  if (m.scrollHeight - m.scrollTop - m.clientHeight < FP.NEAR_PX) fpLoad("bili");
+}
+$("main").addEventListener("scroll", () => { if (route === "bili") fpNear(); }, { passive: true });
+$("fpBili").addEventListener("click", (event) => { if (event.target.closest("[data-fp-more]")) fpLoad("bili"); });
+$("fpBiliFresh").onclick = () => fpLoad("bili", true, true);
+$("fpYtNext").onclick = () => { fp.yt.polls = 0; fpLoad("yt", false, true); };
+
 // 首页上自己账号的几排（在「直播 · 正在播」后面）。没登录：每个网站一张小卡片，点了去设置。
 function feedShelves() {
   if (!feedsOn() || !feedsInfo) return "";

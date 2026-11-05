@@ -135,6 +135,15 @@
       </section>
 
       <!-- 片库：「历史」是自己 B 站的观看记录（console.js renderHist，accountfeeds.py）和片库里看过的（library.py 的 history）；「我的片库」是网盘和电脑上的视频（renderLib，library.py）；「豆瓣」是榜单和想看（renderDb，libdouban.py） -->
+      <!-- 顶栏「B 站」「YouTube」：两个网站首页的推荐整页（accountfeeds.py 的 /api/feeds/page）；访客、云端没有 -->
+      <section class="page" data-route="bili" aria-label="B 站">
+        <header class="ph"><h1 class="lt">B 站</h1><p class="hint" id="fpBiliHint">你的 B 站首页推荐，往下滚会接着加载</p><span class="sp"></span><button class="btn sm" id="fpBiliFresh" data-k="fp-bili-fresh">刷新</button></header>
+        <div id="fpBili"></div>
+      </section>
+      <section class="page" data-route="yt" aria-label="YouTube">
+        <header class="ph"><h1 class="lt">YouTube</h1><p class="hint" id="fpYtHint">YouTube 首页推荐（这台服务器登录的 YouTube 账号），看过的不再出现</p><span class="sp"></span><button class="btn sm" id="fpYtNext" data-k="fp-yt-next">换一批</button></header>
+        <div id="fpYt"></div>
+      </section>
       <section class="page" data-route="lib" aria-label="片库">
         <header class="ph"><h1 class="lt">片库</h1></header>
         <nav class="chips ssub" id="libNav" aria-label="片库分类"></nav>

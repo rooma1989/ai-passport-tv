@@ -10,6 +10,12 @@
     GET  /api/feeds/history[?max=&view_at=&business=][&fresh=1]
                                        「片库 → 历史」：B 站观看记录的一页（每项是首页的节目，另带 hist：剧名、第几集），
                                        more 是下一页的游标（history/cursor 的 cursor），没有了为 null
+    GET  /api/feeds/page?site=bilibili&page=<n>[&fresh=1]
+    GET  /api/feeds/page?site=youtube[&next=1]
+                                       顶栏「B 站」「YouTube」两页（2026-11-05）：B 站是网页版首页的推荐，一页一页往下翻
+                                       （第 n 页就是首页往下刷到第 n 屏，PAGE_MAX 页为止；fresh=1 是「刷新」，从第 1 页
+                                       重新来）；YouTube 是推荐的整池子（节点一次至多 YT_REC_N 个，看过的不要），next=1 是
+                                       「换一批」（缓存过了 FRESH_GAP_S 就让节点重新取）。{state, items, loading, more, message}
     POST /api/feeds/settings           {"writeback": bool, "autotv": bool}：「同步到 B 站历史」「新关注自动放到小电视」
 
 几排（ROWS）和它们用的接口（都带这个人的 cookies；推荐和动态再带 wbi 签名，bilibili.wbi_sign）：
@@ -85,6 +91,13 @@ REC_BATCH = 16
 SHOWN_KEEP = 400
 ROTATE_ROWS = ("yt_rec",)
 BILI_REC_N = 20
+# 顶栏「B 站」页：一页几个、至多翻几页、同一个人两次翻页至少隔几秒（往下滚得快也不连着打 B 站）、翻过的页留多久。
+PAGE_N = 24
+PAGE_MAX = 20
+PAGE_GAP_S = 1.0
+PAGE_TTL_S = 600
+# 顶栏「YouTube」页：一次给几个（池子就这么大）。
+YT_PAGE_N = 40
 BILI_HISTORY_N = 30
 # 搜索标注用的观看记录：最多看最近几条（一页 BILI_HISTORY_N 条，至多 4 页）；搜索最多等它几秒。
 SEASON_SCAN = 100
@@ -512,6 +525,11 @@ class Feeds:
         self._history_more: dict[int, dict | None] = {}
         # 轮换的几排（ROTATE_ROWS）现在给的那一批：(用户, 排) → (那份缓存取到的时刻, [id, …])。
         self._batches: dict[tuple, tuple] = {}
+        # 顶栏「B 站」页翻过的：用户 → {"at": 第 1 页取到的时刻, "pages": {n: [项]}, "seen": {BV 号}, "last": 上次取的时刻}；
+        # 同一个人同一时刻只翻一页（_page_locks）。
+        self._pages: dict[int, dict] = {}
+        self._page_locks: dict[int, threading.Lock] = {}
+        self.sleep = time.sleep           # 翻页隔 PAGE_GAP_S（测试里换掉）
         self._queue: queue.Queue | None = None
         # 测试替身可以换掉：YouTube cookies 在不在（本机模式看 ytaccount 的 gate；节点模式先当作在）。
         self.yt_cookies = self._yt_cookies
@@ -610,6 +628,82 @@ class Feeds:
             state = "ready"
         return dict(answer, state=state)
 
+    # ---- 顶栏「B 站」「YouTube」两页 ----
+
+    def page(self, caller, site: str, n: int = 1, fresh: bool = False, next_batch: bool = False) -> dict:
+        if site == "bilibili":
+            return self._bili_page(caller, n, fresh)
+        if site == "youtube":
+            return self._yt_page(caller, next_batch)
+        return {"ok": False, "error": "没有这个网站"}
+
+    def _bili_page(self, caller, n: int, fresh: bool) -> dict:
+        answer = {"ok": True, "site": "bilibili", "page": n, "items": [], "loading": False, "more": False,
+                  "message": ""}
+        avail, message = self._bili(caller.user)
+        if avail != "ok":
+            return dict(answer, state="login", need="bili", message=message)
+        if not 1 <= n <= PAGE_MAX:
+            return dict(answer, state="ready")
+        with self.lock:
+            lock = self._page_locks.setdefault(caller.user, threading.Lock())
+        with lock:
+            now = self.monotonic()
+            with self.lock:
+                book = self._pages.get(caller.user)
+                if book is None or (n == 1 and (now - book["at"] >= PAGE_TTL_S
+                                                 or (fresh and now - book["at"] >= FRESH_GAP_S))):
+                    book = self._pages[caller.user] = {"at": now, "pages": {}, "seen": set(), "last": 0.0}
+                found = book["pages"].get(n)
+            if found is None:
+                if n > 1 and n - 1 not in book["pages"]:
+                    return dict(answer, state="ready", more=False)        # 一页一页往下翻
+                wait = PAGE_GAP_S - (self.monotonic() - book["last"])
+                if wait > 0:
+                    self.sleep(min(wait, PAGE_GAP_S))
+                try:
+                    items = self._fetch_bili_page(caller.user, n)
+                except FeedError as error:
+                    return dict(answer, state=error.state, message=error.message,
+                                **({"need": "bili"} if error.state == "login" else {}))
+                finally:
+                    book["last"] = self.monotonic()
+                with self.lock:
+                    found = [e for e in items if e["id"] not in book["seen"]]
+                    book["seen"].update(e["id"] for e in found)
+                    book["pages"][n] = found
+                    raw = bool(items)
+            else:
+                raw = True
+        return dict(answer, state="ready", items=[media("bili_page", e) for e in found],
+                    more=raw and n < PAGE_MAX)
+
+    def _fetch_bili_page(self, user: int, n: int) -> list[dict]:
+        """B 站网页版首页往下刷到第 n 屏的推荐（fresh_idx、brush 跟着 n 走，和网页一样）。"""
+        data = self._bili_get(user, "/x/web-interface/wbi/index/top/feed/rcmd",
+                              {"web_location": 1430650, "y_num": 4, "fresh_type": 4, "feed_version": "V8",
+                               "fresh_idx_1h": n, "fetch_row": 1 + (n - 1) * 3, "fresh_idx": n, "brush": n,
+                               "homepage_ver": 1, "ps": PAGE_N}, signed=True)
+        return bili_rcmd(data)
+
+    def _yt_page(self, caller, next_batch: bool) -> dict:
+        answer = {"ok": True, "site": "youtube", "items": [], "loading": False, "more": False, "message": ""}
+        part = self._source(caller, "yt_rec", fresh=next_batch)
+        if part["state"] in ("hidden", "login"):
+            return dict(answer, state=part["state"], message=part["message"],
+                        **({"need": "youtube"} if part["state"] == "login" else {}))
+        items = part["items"]
+        if items:
+            items, more = self._rotate(caller, "yt_page", items, part.get("at") or 0.0, next_batch, size=YT_PAGE_N)
+            answer["more"] = more
+        answer["items"] = [media("yt_page", e) for e in items]
+        answer["loading"] = part["state"] == "loading"
+        if part["state"] in ("blocked", "error"):
+            answer["message"] = part["message"]
+        state = "ready" if answer["items"] else "loading" if answer["loading"] \
+            else part["state"] if part["state"] in ("blocked", "error") else "ready"
+        return dict(answer, state=state)
+
     # ---- 轮换（「YouTube 推荐」） ----
 
     def _watched_ids(self, caller) -> set[str]:
@@ -626,7 +720,8 @@ class Feeds:
                     found.add(record["bvid"])
         return found
 
-    def _rotate(self, caller, rid: str, items: list[dict], at: float, next_batch: bool) -> tuple[list[dict], bool]:
+    def _rotate(self, caller, rid: str, items: list[dict], at: float, next_batch: bool,
+                size: int = REC_BATCH) -> tuple[list[dict], bool]:
         """这一排这次给哪一批（模块说明「YouTube 推荐」那一段）→ (这一批, 还有没有没放上来的)。"""
         watched = self._watched_ids(caller)
         pool = [e for e in items if e["id"] not in watched] or items
@@ -643,7 +738,7 @@ class Feeds:
         shown = shown.get(rid) if isinstance(shown, dict) and isinstance(shown.get(rid), dict) else {}
         # 没放上来过的（0）在前，放上来过的按上次放的时刻；「换一批」时刚才那批放到最后；同样的照 YouTube 的顺序。
         order = sorted(range(len(pool)), key=lambda i: (pool[i]["id"] in current, _when(shown.get(pool[i]["id"])), i))
-        chosen = [pool[i] for i in order[:REC_BATCH]]
+        chosen = [pool[i] for i in order[:size]]
         now = self.clock()
 
         def change(data):
@@ -1100,7 +1195,7 @@ def caller_of(handler, relay):
 
 
 def get(handler, relay, path: str) -> bool:
-    if path not in (PREFIX, PREFIX + "/row", PREFIX + "/history"):
+    if path not in (PREFIX, PREFIX + "/row", PREFIX + "/history", PREFIX + "/page"):
         return False
     caller = caller_of(handler, relay)
     if caller is None:
@@ -1111,6 +1206,11 @@ def get(handler, relay, path: str) -> bool:
         handler._json(feeds.overview(caller))
     elif path == PREFIX + "/history":
         handler._json(feeds.history_page(caller, handler._query()))
+    elif path == PREFIX + "/page":
+        query = handler._query()
+        n = query.get("page") or "1"
+        handler._json(feeds.page(caller, query.get("site") or "", int(n) if n.isdigit() and len(n) < 4 else 0,
+                                 fresh=query.get("fresh") == "1", next_batch=query.get("next") == "1"))
     else:
         query = handler._query()
         handler._json(feeds.row(caller, query.get("id") or "", fresh=query.get("fresh") == "1",
