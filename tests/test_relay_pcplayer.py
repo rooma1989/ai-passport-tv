@@ -150,6 +150,19 @@ class PlayerTests(unittest.TestCase):
         creator = self.relay.user_state(self.carol).get("sr01")
         self.assertEqual((creator.watched, creator.positions), ([], {}))
 
+    def test_page_restarts_say_why_in_the_log(self):
+        """2026-11-05: a Bilibili video restarted every 14 s and the log could not say why."""
+        logs = []
+        self.relay.log = logs.append
+        self.watch(channel="sr01", episode=2)
+        self.watch(channel="sr01", episode=2, start=3725.0, why="gap")
+        self.watch(channel="sr01", episode=2, start=125.0, why="seek")
+        self.watch(channel="sr01", episode=2, start=130.0, why="<script>")
+        said = [m for m in logs if "重起了" in m]
+        self.assertEqual(len(said), 2, said)
+        self.assertRegex(said[0], r"重起了（中转那边没有要的那一段了，重起，从 \d+:\d\d(:\d\d)? 起）$")
+        self.assertTrue(said[1].endswith("重起了（跳转，从 2:05 起）"), said[1])
+
     def test_seeking_while_following_the_tv_only_moves_the_pc(self):
         self.online(ALICE_DEVICE, "up01")
         dev = self.relay.find_device(ALICE_DEVICE, self.as_alice)

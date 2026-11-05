@@ -3370,10 +3370,12 @@ function setRate(r) {
   lsSet("rootv.rate", String(r));
   renderPc();
 }
-// 能调速度的：浏览器直接放的点播（VodPlayer、DashPlayer），和这个页面自己看、中转跑在前面读的视频（片库等有头有尾、
-// 能拖的，WatchPlayer 不是直播；中转不按实时速度读，2× 也供得上，只要网盘够快）。直播、跟着小电视放的永远 1×。
+// 能调速度的：浏览器直接放的点播（VodPlayer、DashPlayer），和这个页面自己看的片库视频（中转不按实时速度读，跑在
+// 播放器前面，2× 也供得上，只要网盘够快）。中转按实时速度转的（B 站经中转的、直播、跟着小电视的）永远 1×：快放
+// 只会一直追到头、一直缓冲（2026-11-05 B 站投到电脑的视频十几秒重起一次）。
 function pcRateOk(p) {
-  return !!p && (!!p.vod || (!p.live && !!watching && watching.player === p && watching.mode === "direct" && !!watching.seekable));
+  return !!p && (!!p.vod || (!p.live && !!watching && watching.player === p && watching.mode === "direct"
+    && !!(watching.again && watching.again.library)));
 }
 function stepRate(delta) {
   if (!watching || !pcRateOk(watching.player)) return;

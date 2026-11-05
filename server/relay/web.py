@@ -2090,6 +2090,13 @@ class Relay:
         except watch_pc.Busy as busy:
             return {"ok": False, "error": self._watch_busy(busy)}
         begin = source.start if native else stream.source.start
+        why = body.get("why")
+        reason = RESTART_WHY.get(why) if isinstance(why, str) and video else None
+        if reason:
+            # 页面重起了这一路（跳转、中转那边没有了、暂停太久、重连……）：和片库一样说为什么、从哪起。
+            at = int(begin or 0)
+            clock = f"{at // 3600}:{at // 60 % 60:02d}:{at % 60:02d}" if at >= 3600 else f"{at // 60}:{at % 60:02d}"
+            self.log(f"在电脑上看「{source.label or name}」重起了（{reason}，从 {clock} 起）")
         if key and video:
             cursor = self._pc_cursor.get((caller.user, key))
             if cursor is None or cursor.get("stream") is not stream:
