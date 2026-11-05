@@ -193,16 +193,31 @@ def _name_bytes(text: str) -> int:
     return len(json.dumps(text, ensure_ascii=True)) - 2
 
 
+# 一个字在 CONFIG 里占几字节（json.dumps(ensure_ascii=True) 的转义）：可打印 ASCII 1，引号和反斜杠 2，
+# \b\f\n\r\t 2，其余控制字符和非 ASCII 6（\uXXXX），BMP 以外的 12（两个 \uXXXX）。和 _name_bytes 一样，只是快。
+_TWO = frozenset('"\\\b\f\n\r\t')
+
+
+def _char_bytes(char: str) -> int:
+    code = ord(char)
+    if char in _TWO:
+        return 2
+    if 0x20 <= code <= 0x7E:
+        return 1
+    return 12 if code > 0xFFFF else 6
+
+
 def _cut(name: str, most: int) -> str:
     """name 在 CONFIG 里不超过 most 字节的最长前缀；截在没配对的括号里时连括号一起去掉（「RT Documentary（英」
     → 「RT Documentary」），去掉后什么都不剩就留着括号前的半截。"""
-    if _name_bytes(name) <= most:
-        return name
-    used, end = 0, 0
-    for end, char in enumerate(name):
-        used += _name_bytes(char)
+    used, end = 0, len(name)
+    for at, char in enumerate(name):
+        used += _char_bytes(char)
         if used > most:
+            end = at
             break
+    if end == len(name):
+        return name
     cut = name[:end].rstrip()
     opened = max(cut.rfind(c) for c in _OPEN)
     if opened > 0 and not any(c in cut[opened:] for c in ")）]】》"):
@@ -210,12 +225,14 @@ def _cut(name: str, most: int) -> str:
     return cut
 
 
+def _relay(channel_id: str) -> bool:
+    return channel_id == "cast" or (channel_id[:2] in RELAY_PREFIXES and channel_id[2:].isdigit())
+
+
 def _shortened(names: list[tuple[str, str]], most: int) -> list[tuple[str, str]]:
     """直播台的名字缩到 CONFIG 里不超过 most 字节（中转的台、投屏台不动：它们的名字已经限过长，还带网站标记）。
     缩完和别的台重名的（「湖南卫视4K」→「湖南卫视」）不缩，宁可多占几个字节也不让两个台同名。"""
-    def relay(k):
-        return k == "cast" or (k[:2] in RELAY_PREFIXES and k[2:].isdigit())
-    cuts = [v if relay(k) else _cut(v, most) for k, v in names]
+    cuts = [v if _relay(k) else _cut(v, most) for k, v in names]
     seen: dict[str, int] = {}
     for v in cuts:
         seen[v] = seen.get(v, 0) + 1
@@ -225,17 +242,44 @@ def _shortened(names: list[tuple[str, str]], most: int) -> list[tuple[str, str]]
     return out
 
 
-def _fit_names(names: list[tuple[str, str]], budget: int, limit: int) -> list[tuple[str, str]]:
-    """全部放得下就原样；否则逐步缩短直播台的名字，直到全部放得下或缩到 NAME_LEAST_BYTES。"""
-    def fits(rows):
-        return _prefix([_entry_bytes(k, v) for k, v in rows], budget, limit) == len(rows)
-    if fits(names):
+def _fit_count(rows: list[tuple[str, str]], budget: int, limit: int) -> int:
+    """rows 从头取几个台放得下（_prefix；字节按需才算，取满就停）。"""
+    return _prefix((_entry_bytes(k, v) for k, v in rows), budget, limit)
+
+
+def _fit_names(names: list[tuple[str, str]], budget: int, limit: int, keep: str = "") -> list[tuple[str, str]]:
+    """放得下的台数能因缩短直播台的名字变多时才缩，缩得尽量少；否则原样。
+
+    只看可能发出去的台：前 limit 个，加上排在后面的 keep（device_list 把它接在最后）。n_full 是名字不缩时放得下
+    几个台，n_floor 是全缩到 NAME_LEAST_BYTES 时几个；一样多（比如卡在台数上限 limit 上）就不缩。不然二分找
+    放得下 n_floor 个台的最大字节上限：上限越大名字越长，放得下的台数不增——除了缩完会重名而不缩的台（上限越小
+    重名的越多，它们反而变回全名），所以不保证严格单调；二分的结果最后再验一遍，不对就退回 NAME_LEAST_BYTES，
+    那样至少和原来一样多。"""
+    head = len(names) if len(names) <= limit else limit
+    at = next((i for i, (k, _) in enumerate(names) if k == keep), -1) if keep else -1
+    tail = [at] if at >= head else []
+    rows = names[:head] + [names[i] for i in tail]
+    n_full = _fit_count(rows[:head], budget, limit)
+    if n_full == len(names) or n_full == limit:
         return names
-    for most in range(NAME_MOST_BYTES, NAME_LEAST_BYTES - 1, -1):
-        rows = _shortened(names, most)
-        if fits(rows):
-            return rows
-    return _shortened(names, NAME_LEAST_BYTES)
+    floor = _shortened(rows, NAME_LEAST_BYTES)
+    n_floor = _fit_count(floor[:head], budget, limit)
+    if n_floor <= n_full:
+        return names
+    low, high, best = NAME_LEAST_BYTES, NAME_MOST_BYTES, floor
+    while low < high:                     # 找最大的 most：_fit_count(_shortened(rows, most)) >= n_floor
+        mid = (low + high + 1) // 2
+        tried = _shortened(rows, mid)
+        if _fit_count(tried[:head], budget, limit) >= n_floor:
+            low, best = mid, tried
+        else:
+            high = mid - 1
+    if _fit_count(best[:head], budget, limit) < n_floor:
+        best = floor
+    out = best[:head] + names[head:]
+    for i, row in zip(tail, best[head:]):
+        out[i] = row
+    return out
 
 
 def device_list(names, keep: str = "", budget: int = DEVICE_BUDGET,
@@ -245,7 +289,7 @@ def device_list(names, keep: str = "", budget: int = DEVICE_BUDGET,
     names 已经是优先的顺序（投屏台、自己的 UP 主和剧集在前，再是全局表）。keep：正在播的台，排在截断处
     之后时也留着，接在最后（占掉前面最后一两个台的位子），设备上的「正在播」和换台序号才对得上；
     它一个都放不下时不管它。同样的输入总是同样的结果。"""
-    names = _fit_names(list(names), budget, limit)
+    names = _fit_names(list(names), budget, limit, keep)
     sizes = [_entry_bytes(k, v) for k, v in names]
     count = _prefix(sizes, budget, limit)
     at = next((i for i, (k, _) in enumerate(names) if k == keep), -1) if keep else -1

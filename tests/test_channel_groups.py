@@ -8,6 +8,7 @@ the device.
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -378,6 +379,89 @@ class FitNamesTests(unittest.TestCase):
             self.assertNotIn("（", v)
             self.assertNotIn("(", v)
         self.assertEqual(rows[0][1], "RT Documentary")
+
+
+def _hanzi(i: int, n: int) -> str:
+    """n 个汉字的名字，头两个字随 i 变（不同的 i 缩到 4 个字也不重名）。"""
+    return "".join(chr(0x4E00 + (i * 37 + j * 101) % 20000) for j in range(n))
+
+
+class FitNamesSearchTests(unittest.TestCase):
+    """I3: shorten only when it lets more channels fit, and only as much as needed; fast on a 1000-row table."""
+
+    def fit_counts(self, names, budget=cg.DEVICE_BUDGET, limit=cg.CHANNEL_MAX):
+        rows = names[:limit]
+        return {m: cg._fit_count(cg._shortened(rows, m), budget, limit)
+                for m in range(cg.NAME_LEAST_BYTES, cg.NAME_MOST_BYTES + 1)}
+
+    def test_the_channel_limit_not_the_bytes_keeps_every_name(self):
+        names = [(f"ch{i:03d}", f"CCTV{i}") for i in range(100)] + \
+                [(f"ch{100 + i:03d}", _hanzi(i, 8)) for i in range(100)]
+        fitted = cg.device_list(names)
+        self.assertEqual(len(fitted), cg.CHANNEL_MAX)
+        self.assertEqual(fitted, names[:cg.CHANNEL_MAX], "shortening would not add a channel: names unchanged")
+
+    def test_cuts_at_the_largest_cap_that_fits_as_many_as_the_floor(self):
+        names = [(f"ch{i:03d}", _hanzi(i, 12) + "电视台") for i in range(300)]
+        counts = self.fit_counts(names)
+        floor = counts[cg.NAME_LEAST_BYTES]
+        self.assertGreater(floor, counts[cg.NAME_MOST_BYTES], "sanity: shortening helps here")
+        best = max(m for m, n in counts.items() if n == floor)
+        self.assertGreater(best, cg.NAME_LEAST_BYTES, "sanity: some room is left above the floor")
+        fitted = cg.device_list(names)
+        self.assertEqual(len(fitted), floor)
+        self.assertEqual(fitted, cg._shortened(names[:cg.CHANNEL_MAX], best)[:floor])
+
+    def test_fit_count_does_not_grow_with_the_cap_on_real_tables(self):
+        raw = channelpack.BUNDLED.read_bytes()
+        live = [(ch["id"], ch["name"]) for ch in channelpack.unwrap(raw, channelpack.PUBLIC_KEY_HEX)["channels"]]
+        relay = [("cast", "我的投屏")] + [(f"up{i:02d}", "很长很长的名字一(B站)") for i in range(1, 21)]
+        for names, budget in ((relay + live, cg.DEVICE_BUDGET), (relay + live, 3000),
+                              ([(f"ch{i:03d}", _hanzi(i, 12)) for i in range(300)], cg.DEVICE_BUDGET)):
+            counts = [n for _, n in sorted(self.fit_counts(names, budget).items())]
+            self.assertEqual(counts, sorted(counts, reverse=True), budget)
+
+    def test_names_that_would_collide_break_monotony_but_never_cost_a_channel(self):
+        # A long shared Chinese prefix and a Latin letter apart: below the letter the cuts collide and both stay
+        # whole, one byte above they are cut. The count then rises with the cap (documented in _fit_names); the
+        # result still fits at least as many channels as the floor and never two of the same name.
+        names = []
+        for i in range(60):
+            base = "".join(chr(0x4E00 + (i * 53 + j * 7) % 20000) for j in range(7))
+            names += [(f"a{i:03d}", base + "X1234567"), (f"b{i:03d}", base + "Y1234567")]
+        counts = self.fit_counts(names)
+        self.assertGreater(counts[7 * 6 + 1], counts[7 * 6], "sanity: not monotonic")
+        fitted = cg.device_list(names)
+        self.assertGreaterEqual(len(fitted), counts[cg.NAME_LEAST_BYTES])
+        self.assertEqual(len({v for _, v in fitted}), len(fitted))
+
+    def test_a_kept_channel_past_the_limit_is_cut_like_the_rest_and_unique(self):
+        names = [(f"ch{i:03d}", _hanzi(i, 12) + "电视台") for i in range(300)]
+        names.append(("ch999", _hanzi(5, 12) + "电视台二"))      # shares its first 12 characters with ch005
+        fitted = cg.device_list(names, keep="ch999")
+        self.assertEqual(fitted[-1][0], "ch999")
+        self.assertLessEqual(cg.config_bytes(fitted), cg.DEVICE_BUDGET)
+        self.assertEqual(len({v for _, v in fitted}), len(fitted), "no two sent names are the same")
+        self.assertTrue(dict(names)["ch999"].startswith(fitted[-1][1]))
+
+    def test_char_bytes_agree_with_json(self):
+        for char in ['a', ' ', '~', '"', '\\', '\n', '\t', '\b', '\f', '\r', '\x00', '\x1f', '\x7f', '\x80', 'é',
+                     '中', '（', '\uffff', '\U0001F600']:
+            self.assertEqual(cg._char_bytes(char), cg._name_bytes(char), repr(char))
+
+    def test_a_thousand_row_table_is_quick(self):
+        tables = [[(f"ch{i:03d}", _hanzi(i, 12) + "电视台") for i in range(cg.TABLE_MAX)],
+                  [(f"ch{i:03d}", f"CCTV{i}") for i in range(100)] +
+                  [(f"ch{100 + i:03d}", _hanzi(i, 8)) for i in range(cg.TABLE_MAX - 100)]]
+        for names in tables:
+            best = min(self._time(names) for _ in range(3))
+            self.assertLess(best, 0.05, f"device_list took {best * 1000:.1f} ms")
+
+    @staticmethod
+    def _time(names):
+        start = time.perf_counter()
+        cg.device_list(names, keep=names[-1][0])
+        return time.perf_counter() - start
 
 
 if __name__ == "__main__":
