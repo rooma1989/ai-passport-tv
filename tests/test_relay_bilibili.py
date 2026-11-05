@@ -435,6 +435,49 @@ class FavoriteTests(unittest.TestCase):
         with self.assertRaises(BilibiliError):
             self.client().series("fav111")
 
+    def test_an_empty_page_stops_paging_even_if_has_more(self):
+        client = self.client()
+        real = client.__dict__["_fetch"]
+        pages = []
+
+        def fetch(url, cookie, timeout=None):
+            if "fav/resource/list" in url:
+                pn = int(url.split("pn=")[1].split("&")[0])
+                pages.append(pn)
+                if pn == 2:
+                    return {"code": 0, "data": {"info": {"title": "x"}, "medias": [], "has_more": True}}
+            return real(url, cookie, timeout)
+        client._fetch = fetch
+        _, videos = client.series("fav111", login=self.login())
+        self.assertEqual(pages, [1, 2])
+        self.assertEqual([v.bvid for v in videos], ["BV1new"])
+
+    def test_a_repeated_video_is_kept_once(self):
+        client = self.client()
+        real = client._fetch
+
+        def fetch(url, cookie, timeout=None):
+            answer = real(url, cookie, timeout)
+            if "pn=2" in url:
+                answer = {"code": 0, "data": {"info": {"title": "x"}, "has_more": False, "medias": [
+                    {"type": 2, "bvid": "BV1new", "title": "重复", "duration": 1, "pubtime": 1, "attr": 0},
+                    {"type": 2, "bvid": "BV1old", "title": "最早收藏", "duration": 90, "pubtime": 100, "attr": 0}]}}
+            return answer
+        client._fetch = fetch
+        _, videos = client.series("fav111", login=self.login())
+        self.assertEqual([v.bvid for v in videos], ["BV1old", "BV1new"])
+        self.assertEqual(videos[1].title, "最新收藏")
+
+    def test_a_login_rejection_raises_and_is_reported(self):
+        from server.relay.bililogin import Login
+        rejected = []
+        login = Login(7, {"SESSDATA": "s", "bili_jct": "j", "DedeUserID": "42"},
+                      on_rejected=lambda: rejected.append(1))
+        client = Bilibili(fetch_json=lambda url, cookie, timeout=None: {"code": -101, "message": "账号未登录"})
+        with self.assertRaises(BilibiliError):
+            client.series("fav111", login=login)
+        self.assertEqual(rejected, [1])
+
 
 if __name__ == "__main__":
     unittest.main()

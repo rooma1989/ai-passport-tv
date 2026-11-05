@@ -1051,21 +1051,24 @@ class Bilibili:
             raise BilibiliError(f"fav{media_id}: 收藏夹要登录 B 站才能看", permanent=True)
         if not media_id.isdigit():
             raise BilibiliError(f"fav{media_id}: 收藏夹编号不对", permanent=True)
-        name, newest_first = "", []
+        name, newest_first, seen = "", [], set()
         for page in range(1, FAV_PAGES + 1):
             data = self._call("/x/v3/fav/resource/list", _login=login, media_id=media_id, pn=page,
                               ps=FAV_PAGE_SIZE, platform="web")
             name = name or " ".join(str((data.get("info") or {}).get("title") or "").split())
-            for m in data.get("medias") or []:
+            medias = data.get("medias") or []
+            for m in medias:
                 if not isinstance(m, dict) or m.get("type") != 2 or m.get("attr") not in (0, None):
                     continue
                 bvid = str(m.get("bvid") or m.get("bv_id") or "")
-                if not bvid.startswith("BV") or str(m.get("title") or "") == "已失效视频":
+                if not bvid.startswith("BV") or str(m.get("title") or "") == "已失效视频" or bvid in seen:
                     continue
+                seen.add(bvid)
                 newest_first.append(Video(bvid=bvid, title=str(m.get("title") or ""),
                                           duration=_number(m.get("duration")), pubdate=_number(m.get("pubtime"))))
                 self._keep(self._covers, bvid, m.get("cover"))
-            if not data.get("has_more"):
+            # 这一页没有内容就停（has_more 说还有也不信），免得空翻 50 页。
+            if not medias or not data.get("has_more"):
                 break
         if not newest_first:
             raise BilibiliError(f"fav{media_id}: 收藏夹里没有能放的视频", permanent=True)
