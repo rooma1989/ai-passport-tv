@@ -11,11 +11,13 @@
                                        「片库 → 历史」：B 站观看记录的一页（每项是首页的节目，另带 hist：剧名、第几集），
                                        more 是下一页的游标（history/cursor 的 cursor），没有了为 null
     GET  /api/feeds/page?site=bilibili&page=<n>[&fresh=1]
-    GET  /api/feeds/page?site=youtube[&next=1]
+    GET  /api/feeds/page?site=youtube[&page=<n>][&next=1]
                                        顶栏「B 站」「YouTube」两页（2026-11-05）：B 站是网页版首页的推荐，一页一页往下翻
                                        （第 n 页就是首页往下刷到第 n 屏，PAGE_MAX 页为止；fresh=1 是「刷新」，从第 1 页
-                                       重新来）；YouTube 是推荐的整池子（节点一次至多 YT_REC_N 个，看过的不要），next=1 是
-                                       「换一批」（缓存过了 FRESH_GAP_S 就让节点重新取）。{state, items, loading, more, message}
+                                       重新来）；YouTube 第 1 页是推荐的池子（节点一次至多 YT_REC_N 个，看过的不要），往下
+                                       第 n 页让节点接着往下取 YT_MORE_N 个（start，和 YouTube 首页往下滚一样，至多
+                                       YT_PAGE_MAX 页）；next=1 是「换一批」（缓存过了 FRESH_GAP_S 就让节点重新取，后面的页
+                                       作废）。{state, items, loading, more, message}
     POST /api/feeds/settings           {"writeback": bool, "autotv": bool}：「同步到 B 站历史」「新关注自动放到小电视」
 
 几排（ROWS）和它们用的接口（都带这个人的 cookies；推荐和动态再带 wbi 签名，bilibili.wbi_sign）：
@@ -96,8 +98,10 @@ PAGE_N = 24
 PAGE_MAX = 20
 PAGE_GAP_S = 1.0
 PAGE_TTL_S = 600
-# 顶栏「YouTube」页：一次给几个（池子就这么大）。
+# 顶栏「YouTube」页：第 1 页给几个（池子就这么大）；往下每页让节点接着取几个、至多几页（节点的 start 至多 400）。
 YT_PAGE_N = 40
+YT_MORE_N = 40
+YT_PAGE_MAX = 9
 BILI_HISTORY_N = 30
 # 搜索标注用的观看记录：最多看最近几条（一页 BILI_HISTORY_N 条，至多 4 页）；搜索最多等它几秒。
 SEASON_SCAN = 100
@@ -528,6 +532,8 @@ class Feeds:
         # 顶栏「B 站」页翻过的：用户 → {"at": 第 1 页取到的时刻, "pages": {n: [项]}, "seen": {BV 号}, "last": 上次取的时刻}；
         # 同一个人同一时刻只翻一页（_page_locks）。
         self._pages: dict[int, dict] = {}
+        # 顶栏「YouTube」页往下接着取的：用户 → {"at": 那份池子取到的时刻, "pages": {n: [项]}, "seen": {id}}。
+        self._yt_pages: dict[int, dict] = {}
         self._page_locks: dict[int, threading.Lock] = {}
         self.sleep = time.sleep           # 翻页隔 PAGE_GAP_S（测试里换掉）
         self._queue: queue.Queue | None = None
@@ -634,7 +640,7 @@ class Feeds:
         if site == "bilibili":
             return self._bili_page(caller, n, fresh)
         if site == "youtube":
-            return self._yt_page(caller, next_batch)
+            return self._yt_page(caller, next_batch) if n <= 1 or next_batch else self._yt_more(caller, n)
         return {"ok": False, "error": "没有这个网站"}
 
     def _bili_page(self, caller, n: int, fresh: bool) -> dict:
@@ -698,11 +704,49 @@ class Feeds:
             answer["more"] = more
         answer["items"] = [media("yt_page", e) for e in items]
         answer["loading"] = part["state"] == "loading"
+        answer["page"] = 1
+        answer["more"] = bool(items) and YT_PAGE_MAX > 1          # 往下滚接着要第 2 页（_yt_more）
+        with self.lock:
+            book = self._yt_pages.get(caller.user)
+            if book is None or book["at"] != (part.get("at") or 0.0):
+                self._yt_pages[caller.user] = {"at": part.get("at") or 0.0, "pages": {},
+                                               "seen": {e["id"] for e in part["items"]}}
         if part["state"] in ("blocked", "error"):
             answer["message"] = part["message"]
         state = "ready" if answer["items"] else "loading" if answer["loading"] \
             else part["state"] if part["state"] in ("blocked", "error") else "ready"
         return dict(answer, state=state)
+
+    def _yt_more(self, caller, n: int) -> dict:
+        """YouTube 页往下的第 n 页：让节点从第 YT_REC_N + (n - 2) × YT_MORE_N + 1 个起接着取 YT_MORE_N 个，去掉第 1 页
+        和前面几页已经有的、看过的。在这个请求里等节点取完（十来秒，页面上是骨架）。"""
+        answer = {"ok": True, "site": "youtube", "page": n, "items": [], "loading": False, "more": False,
+                  "message": ""}
+        avail, message = self._youtube(caller)
+        if avail != "ok":
+            return dict(answer, state=avail, message=message, **({"need": "youtube"} if avail == "login" else {}))
+        with self.lock:
+            book = self._yt_pages.get(caller.user)
+            found = book["pages"].get(n) if book is not None else None
+        if book is None or n > YT_PAGE_MAX or (found is None and n > 2 and n - 1 not in book["pages"]):
+            return dict(answer, state="ready")                  # 先要第 1 页；一页一页往下
+        if found is None:
+            try:
+                items = self._youtube_feed("rec", start=YT_REC_N + (n - 2) * YT_MORE_N + 1, count=YT_MORE_N)
+            except FeedError as error:
+                return dict(answer, state=error.state, message=error.message,
+                            **({"need": "youtube"} if error.state == "login" else {}))
+            watched = self._watched_ids(caller)
+            with self.lock:
+                found = [e for e in items if e["id"] not in book["seen"] and e["id"] not in watched]
+                book["seen"].update(e["id"] for e in items)
+                book["pages"][n] = found
+                # 一个新的都没有（到头了，或者节点太旧、不认得 start，又给了前面那些）：不再往下要。
+                book.setdefault("raw", {})[n] = bool(found)
+        with self.lock:
+            raw = book.get("raw", {}).get(n, True)
+        return dict(answer, state="ready", items=[media("yt_page", e) for e in found],
+                    more=raw and n < YT_PAGE_MAX)
 
     # ---- 轮换（「YouTube 推荐」） ----
 
@@ -945,14 +989,15 @@ class Feeds:
 
     # ---- YouTube ----
 
-    def _youtube_feed(self, kind: str) -> list[dict]:
+    def _youtube_feed(self, kind: str, start: int = 1, count: int = 0) -> list[dict]:
         from .bilibili import SourceError
         client = self.relay.clients.get("youtube")
         if client is None or not hasattr(client, "feed"):
             raise FeedError("error", "YouTube 还没开启")
         with self._yt_lock:
             try:
-                videos = client.feed(kind, YT_REC_N if kind == "rec" else YT_FEED_N)
+                limit = count or (YT_REC_N if kind == "rec" else YT_FEED_N)
+                videos = client.feed(kind, limit, start=start) if start > 1 else client.feed(kind, limit)
             except SourceError as error:
                 reason = getattr(error, "reason", "")
                 self.relay.log(f"取 YouTube {kind} 失败：{reason or type(error).__name__}")

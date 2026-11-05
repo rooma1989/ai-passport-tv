@@ -293,14 +293,16 @@ class YouTube:
                           "fans": _count(c.get("fans"))})
         return found
 
-    def feed(self, kind: str, limit: int = 30, timeout: float = FEED_TIMEOUT_S) -> list[dict]:
-        """cookies 那个账号的推荐（rec）、观看记录（history）、订阅的新视频（subs），经节点的 /yt/feed：
+    def feed(self, kind: str, limit: int = 30, timeout: float = FEED_TIMEOUT_S, start: int = 1) -> list[dict]:
+        """cookies 那个账号的推荐（rec）、观看记录（history）、订阅的新视频（subs），经节点的 /yt/feed（start 大于 1 时
+        是往下接着的第 start 个起；不认得 start 的旧节点照样给前 limit 个，中转去重后就是没有更多了）：
         [{"id", "title", "duration", "channel", "channel_id", "thumb", "date", "views"}]。
         没登录时 SourceError(reason="login")；节点太旧、没有这个路径时 SourceError(reason="unsupported")。"""
         if kind not in FEED_KINDS:
             raise ValueError(kind)
         try:
-            answer = self._call("/yt/feed", _timeout=timeout, kind=kind, n=limit)
+            answer = self._call("/yt/feed", _timeout=timeout, kind=kind, n=limit,
+                                **({"start": start} if start > 1 else {}))
         except SourceError as error:
             status = getattr(error, "status", 0)
             if status == 401:

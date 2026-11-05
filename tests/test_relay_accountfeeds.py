@@ -123,6 +123,7 @@ class FakeYT:
     def __init__(self):
         self.calls = []
         self.error = None
+        self.more = {}            # kind → (start, limit) → videos further down (the feed scrolled on)
         self.subs = [{"id": UC1, "name": "频道一", "handle": "@one", "fans": 10},
                      {"id": UC2, "name": "频道二", "handle": "", "fans": 0}]
         self.feeds = {
@@ -133,10 +134,12 @@ class FakeYT:
             "subs": [{"id": "subsubsub01", "title": "YT 新视频", "duration": 300, "channel": "频道一",
                       "channel_id": UC1, "date": 1760000300, "views": 0}]}
 
-    def feed(self, kind, limit=30, timeout=None):
-        self.calls.append(("feed", kind))
+    def feed(self, kind, limit=30, timeout=None, start=1):
+        self.calls.append(("feed", kind) if start == 1 else ("feed", kind, start, limit))
         if self.error is not None:
             raise self.error
+        if start > 1 and kind in self.more:
+            return list(self.more[kind](start, limit))
         return list(self.feeds[kind])
 
     def subscriptions(self, timeout=None):
@@ -262,6 +265,10 @@ class NodeFeedTests(unittest.TestCase):
         self.assertEqual(self.runs[-1][-1], ":ytsubs")
         self.assertIn("youtubetab:approximate_date", self.runs[-1])
         self.assertEqual(self.runs[-1][self.runs[-1].index("--playlist-end") + 1], "10")
+        # further down the feed (the top-bar YouTube page scrolled on): items start..start+n-1
+        self.node.feed("rec", 40, start=41)
+        self.assertEqual(self.runs[-1][self.runs[-1].index("--playlist-items") + 1], "41:80")
+        self.assertNotIn("--playlist-end", self.runs[-1])
 
     def test_login_needed(self):
         import dataclasses
@@ -294,6 +301,13 @@ class NodeFeedTests(unittest.TestCase):
             config={"url": "http://127.0.0.1:9", "key": "k"})
         self.assertEqual(good.feed("rec"), [{"id": "recrecrec01", "title": "A b", "duration": 5, "channel": "",
                                              "channel_id": "", "date": 0, "views": 0}])
+        asked = []
+        later = YouTube(fetch_json=lambda p, q, timeout=None: asked.append(dict(q)) or {"videos": []},
+                        config={"url": "http://127.0.0.1:9", "key": "k"})
+        later.feed("rec", 40, start=81)
+        later.feed("rec", 40)
+        self.assertEqual((asked[0].get("start"), asked[0].get("n")), (81, 40))
+        self.assertNotIn("start", asked[1], "the first screen asks as before (old nodes too)")
 
 
 # ---------------------------------------------------------------- the relay
@@ -593,6 +607,23 @@ class PageTests(FeedHarness):
         # The home row rotates on its own: the page does not use up its batches.
         row = self.request("GET", "/tv/api/feeds/row?id=yt_rec", user=self.admin)[1]
         self.assertEqual(row["items"][0]["play"]["id"], "rec00000000")
+        # Scrolling down: the node goes on from item YT_REC_N + 1, 40 at a time; repeats and watched ones dropped.
+        self.yt.more["rec"] = lambda start, limit: [RecRotationTests.video(i) for i in range(start - 3, start - 1 + limit)]
+        second = self.page(self.admin, site="youtube", page=2)
+        self.assertEqual(self.yt.calls[-1], ("feed", "rec", accountfeeds.YT_REC_N + 1, accountfeeds.YT_MORE_N))
+        self.assertEqual(second["items"][0]["play"]["id"], f"rec{accountfeeds.YT_REC_N:08d}", "repeats of page 1 dropped")
+        self.assertTrue(second["more"])
+        calls = len(self.yt.calls)
+        self.assertEqual(self.page(self.admin, site="youtube", page=2)["items"], second["items"], "kept")
+        self.assertEqual(self.page(self.admin, site="youtube", page=4)["items"], [], "one page at a time")
+        self.assertEqual(len(self.yt.calls), calls)
+        third = self.page(self.admin, site="youtube", page=3)
+        self.assertEqual(self.yt.calls[-1][2], accountfeeds.YT_REC_N + accountfeeds.YT_MORE_N + 1)
+        self.assertTrue(third["items"])
+        # An old node that ignores start gives page 1 again: nothing new, so no more pages.
+        self.yt.more["rec"] = lambda start, limit: [RecRotationTests.video(i) for i in range(40)]
+        self.assertFalse(self.page(self.admin, site="youtube", page=4)["more"])
+        self.assertEqual(self.page(self.kid, site="youtube", page=2)["state"], "hidden")
         # 换一批 after FRESH_GAP_S asks the node again; new ones come first.
         self.yt.feeds["rec"] = [RecRotationTests.video(i) for i in range(5, 45)]
         self.mono.t += accountfeeds.FRESH_GAP_S

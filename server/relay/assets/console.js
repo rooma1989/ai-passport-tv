@@ -7322,11 +7322,12 @@ function noteCard(icon, title, text, href) {
 }
 // ---- 顶栏「B 站」「YouTube」：两个网站首页的推荐整页（GET api/feeds/page）----
 // B 站：网页版首页的推荐，一页一页往下翻（滚到离底下 FP.NEAR_PX 以内就要下一页）；「刷新」从第 1 屏重新来。
-// YouTube：推荐的整池子（这台服务器登录的那个账号，看过的不要）；节点在后台取时每 FP.POLL_MS 再问一次；「换一批」
-// 让节点重新取（中转那边隔 30 秒以上才会真去取）。点卡片和首页一样，放到右上角选的地方（默认这台电脑）。
+// YouTube：第 1 页是推荐的池子（这台服务器登录的那个账号，看过的不要；节点在后台取时每 FP.POLL_MS 再问一次），往下滚
+// 和 B 站一样一页一页要（中转让节点接着往下取，一页要等十来秒）；「换一批」让节点重新取（中转那边隔 30 秒以上才会真去
+// 取），从第 1 页重新来。点卡片和首页一样，放到右上角选的地方（默认这台电脑）。
 const FP = { NEAR_PX: 900, POLL_MS: 3000, POLLS: 40, STALE_MS: 10 * 60 * 1000 };
 const fp = { bili: { items: [], page: 0, more: true, busy: false, state: "", message: "", need: "", at: 0 },
-             yt: { items: [], more: false, busy: false, state: "", message: "", need: "", at: 0, polls: 0, timer: 0 } };
+             yt: { items: [], page: 0, more: false, busy: false, state: "", message: "", need: "", at: 0, polls: 0, timer: 0 } };
 // 顶栏、「我的」里列不列这两页：B 站要有自己账号的几排（家庭服务器、电脑客户端，不是访客）；YouTube 还要是管理员、
 // 配了 YouTube（GET api/feeds 的 youtube.shown）。
 function fpTab(id) {
@@ -7342,11 +7343,11 @@ function fpOpen(site) {
 async function fpLoad(site, first, again) {
   const f = fp[site];
   if (f.busy) return;
-  if (site === "bili" && !first && !f.more) return;
+  if (!first && !f.more) return;
   f.busy = true;
   fpRender(site);
-  const q = site === "bili" ? `site=bilibili&page=${first ? 1 : f.page + 1}${again ? "&fresh=1" : ""}`
-    : `site=youtube${again ? "&next=1" : ""}`;
+  const q = `site=${site === "bili" ? "bilibili" : "youtube"}&page=${first ? 1 : f.page + 1}`
+    + (again ? (site === "bili" ? "&fresh=1" : "&next=1") : "");
   let answer;
   try { answer = await call("GET", "api/feeds/page?" + q); }
   catch (error) { f.busy = false; if (error instanceof SignedOut) signedOut(); else { f.message = "网络不通"; fpRender(site); } return; }
@@ -7356,17 +7357,19 @@ async function fpLoad(site, first, again) {
   if (site === "bili") {
     if (first) { f.items = []; f.page = 0; }
     if (answer.state === "ready") { f.items = f.items.concat(answer.items); f.page = answer.page; f.more = !!answer.more; f.at = first ? Date.now() : f.at; }
+  } else if (!first) {
+    // YouTube 往下的一页
+    if (answer.state === "ready") { f.items = f.items.concat(answer.items); f.page = answer.page; f.more = !!answer.more; }
   } else {
-    if (answer.items.length) { f.items = answer.items; f.at = Date.now(); }
+    if (answer.items.length) { f.items = answer.items; f.at = Date.now(); f.page = 1; }
     f.more = !!answer.more;
     clearTimeout(f.timer);
-    if (answer.loading && f.polls++ < FP.POLLS) f.timer = setTimeout(() => { if (route === "yt" && !document.hidden) fpLoad("yt"); }, FP.POLL_MS);
+    if (answer.loading && f.polls++ < FP.POLLS) fpPoll();
     else if (!answer.loading) f.polls = 0;
-    if (again && !answer.loading && !answer.more) toast("推荐就这些了，过几分钟会有新的");
   }
   fpRender(site);
-  if (site === "bili" && first) $("main").scrollTop = 0;
-  if (site === "bili") fpNear();      // 一页没铺满屏幕：接着要下一页
+  if (first && again) $("main").scrollTop = 0;
+  fpNear();      // 一页没铺满屏幕：接着要下一页
 }
 function fpRender(site) {
   if (route !== site) return;
@@ -7381,22 +7384,35 @@ function fpRender(site) {
     if (f.items.length || f.busy || f.state === "loading") o += `<div class="wgrid">${f.items.map((x) => cardFeed(x)).join("")}${f.busy || f.state === "loading" ? skelCards(site === "bili" && f.items.length ? 4 : 12) : ""}</div>`;
     if (f.message) o += `<p class="hint bad">${esc(f.message)}</p>`;
     if (!f.busy && f.state !== "loading" && !f.items.length && !f.message) o += `<p class="hint">暂时没有推荐，过一会儿再来看看。</p>`;
-    if (site === "bili" && f.items.length && !f.busy) o += f.more ? `<p class="fpmore"><button class="btn sm" data-fp-more="1" data-k="fp-more">加载更多</button></p>` : `<p class="hint fpend">就到这里了，点上面的「刷新」再来一批</p>`;
+    if (f.items.length && !f.busy && f.state !== "loading") o += f.more ? `<p class="fpmore"><button class="btn sm" data-fp-more="1" data-k="fp-more">加载更多</button></p>` : `<p class="hint fpend">就到这里了，点上面的「${site === "bili" ? "刷新" : "换一批"}」再来一批</p>`;
   }
   box.innerHTML = o;
   $("fpBiliFresh").disabled = site === "bili" && f.busy;
   $("fpYtNext").disabled = site === "yt" && f.busy;
 }
-// 往下滚到快到底：要下一页（B 站）。
-function fpNear() {
-  if (route !== "bili" || fp.bili.busy || !fp.bili.more || fp.bili.state !== "ready") return;
-  const m = $("main");
-  if (m.scrollHeight - m.scrollTop - m.clientHeight < FP.NEAR_PX) fpLoad("bili");
+// 节点还在取 YouTube 推荐：过 FP.POLL_MS 再问。页面在后台（看不见）时不问也不停，回到前台接着问；离开这一页就停。
+function fpPoll() {
+  const f = fp.yt;
+  clearTimeout(f.timer);
+  f.timer = setTimeout(() => {
+    if (route !== "yt") return;
+    if (document.hidden) { fpPoll(); return; }
+    fpLoad("yt", true);
+  }, FP.POLL_MS);
 }
-$("main").addEventListener("scroll", () => { if (route === "bili") fpNear(); }, { passive: true });
+// 往下滚到快到底：要下一页。
+function fpNear() {
+  if (route !== "bili" && route !== "yt") return;
+  const f = fp[route];
+  if (f.busy || !f.more || f.state !== "ready") return;
+  const m = $("main");
+  if (m.scrollHeight - m.scrollTop - m.clientHeight < FP.NEAR_PX) fpLoad(route);
+}
+$("main").addEventListener("scroll", () => { if (route === "bili" || route === "yt") fpNear(); }, { passive: true });
 $("fpBili").addEventListener("click", (event) => { if (event.target.closest("[data-fp-more]")) fpLoad("bili"); });
+$("fpYt").addEventListener("click", (event) => { if (event.target.closest("[data-fp-more]")) fpLoad("yt"); });
 $("fpBiliFresh").onclick = () => fpLoad("bili", true, true);
-$("fpYtNext").onclick = () => { fp.yt.polls = 0; fpLoad("yt", false, true); };
+$("fpYtNext").onclick = () => { fp.yt.polls = 0; fpLoad("yt", true, true); };
 
 // 首页上自己账号的几排（在「直播 · 正在播」后面）。没登录：每个网站一张小卡片，点了去设置。
 function feedShelves() {

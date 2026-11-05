@@ -40,7 +40,7 @@ YouTube 会拦机房 IP（要求登录证明不是机器人），所以 yt-dlp �
     GET /yt/check 不走缓存解析一次测试视频，回答用了几秒和出错的最后一行（设置页的「测试」）
     GET /yt/subscriptions  cookies 那个账号订阅的频道（「订阅」页的「从 YouTube 导入」）：先读
                   feed/channels（订阅的频道列表），读不出频道时再从 feed/subscriptions（订阅的新视频）里收集频道
-    GET /yt/feed?kind=rec|history|subs&n=<个数>
+    GET /yt/feed?kind=rec|history|subs&n=<个数>[&start=<从第几个起>]
                   cookies 那个账号的推荐（yt-dlp 的 :ytrec）、观看记录（:ythis）、订阅的新视频（:ytsubs），
                   电脑版首页的几排（server/relay/accountfeeds.py）。观看记录、订阅要 cookies，没有时 401 login。
                   不缓存（中转按用户缓存）。旧节点没有这个路径（404），中转据此说「节点要更新」
@@ -109,6 +109,8 @@ SUBSCRIPTION_FEEDS = ("https://www.youtube.com/feed/channels", "https://www.yout
 # youtube:history、youtube:subscriptions）；最多要这么多个。
 FEEDS = {"rec": ":ytrec", "history": ":ythis", "subs": ":ytsubs"}
 FEED_MAX = 40
+# /yt/feed 的 start：往下接着取（推荐页往下滚），至多从第几个起。
+FEED_START_MAX = 400
 # 没登录（cookies 过期、没有 cookies）时 YouTube 把这两页跳到首页，yt-dlp 说 redirected to youtube.com home page。
 LOGIN_HINTS = ("not a bot", "Sign in to confirm", "redirected to youtube.com home page", "requires authentication",
                "This page requires", "login required", "Login required", "use --cookies")
@@ -449,10 +451,12 @@ def subscriptions_args(tools: Tools, feed: str) -> list[str]:
     return _base(tools) + ["--flat-playlist", "-J", "--playlist-end", str(end), "--", feed]
 
 
-def feed_args(tools: Tools, kind: str, n: int) -> list[str]:
-    """推荐、观看记录、订阅的新视频（平铺，只要前 n 个）。订阅的新视频多要「大约的上传时刻」（只解析「3 天前」
-    这种文字，不多访问 YouTube），中转按它和 B 站的动态排在一起。"""
-    args = _base(tools) + ["--flat-playlist", "-J", "--playlist-end", str(n)]
+def feed_args(tools: Tools, kind: str, n: int, start: int = 1) -> list[str]:
+    """推荐、观看记录、订阅的新视频（平铺，只要前 n 个；start 大于 1 时是第 start 个起的 n 个，YouTube 首页往下滚
+    那样一段一段接着取）。订阅的新视频多要「大约的上传时刻」（只解析「3 天前」这种文字，不多访问 YouTube），中转按它
+    和 B 站的动态排在一起。"""
+    span = ["--playlist-items", f"{start}:{start + n - 1}"] if start > 1 else ["--playlist-end", str(n)]
+    args = _base(tools) + ["--flat-playlist", "-J", *span]
     if kind == "subs":
         args += ["--extractor-args", "youtubetab:approximate_date"]
     return args + ["--", FEEDS[kind]]
@@ -1033,7 +1037,7 @@ class Node:
                 return 200, dict(summary, source=feed.rsplit("/", 1)[-1])
         return 200, {"channels": [], "source": ""}
 
-    def feed(self, kind: str, n: int) -> tuple[int, dict | str]:
+    def feed(self, kind: str, n: int, start: int = 1) -> tuple[int, dict | str]:
         """推荐、观看记录、订阅的新视频（feed_args）。观看记录和订阅没有 cookies 时 401 login；YouTube 说没登录时
         也是 401 login。不缓存（中转按用户缓存）。"""
         tools = self.current_tools()
@@ -1041,7 +1045,7 @@ class Node:
             return 503, "tools missing"
         if kind != "rec" and not tools.cookies:
             return 401, "login: no cookies"
-        code, data = self.ytdlp_json(feed_args(tools, kind, n))
+        code, data = self.ytdlp_json(feed_args(tools, kind, n, start))
         if code != 200:
             if any(hint in str(data) for hint in LOGIN_HINTS):
                 self._record("login")
@@ -1129,11 +1133,12 @@ def _handler(node: Node):
                 self._json(code, data)
                 return
             if parts.path == "/yt/feed":
-                kind, n = query.get("kind", ""), query.get("n", "20")
-                if kind not in FEEDS or not n.isdigit() or not 1 <= int(n) <= FEED_MAX:
+                kind, n, start = query.get("kind", ""), query.get("n", "20"), query.get("start", "1")
+                if kind not in FEEDS or not n.isdigit() or not 1 <= int(n) <= FEED_MAX \
+                        or not start.isdigit() or not 1 <= int(start) <= FEED_START_MAX:
                     self._json(400, "bad feed")
                     return
-                code, data = node.feed(kind, int(n))
+                code, data = node.feed(kind, int(n), int(start))
                 self._json(code, data)
                 return
             tools = node.current_tools()
