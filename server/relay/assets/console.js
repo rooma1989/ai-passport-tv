@@ -6366,6 +6366,7 @@ function renderBiliGate() {
   $("biliBlock").hidden = !biliOn();
   // 有「我的关注」（自动同步）时不用一个个导入了。
   $("biliImportRow").hidden = !biliOn() || feedsOn();
+  $("biliFavRow").hidden = !biliOn();   // 收藏夹不受「我的关注」影响：登录了 B 站就能加
   if (biliOn() && route === "settings" && !bili && !biliQr) loadBili();
 }
 async function loadBili(fresh) {
@@ -6601,6 +6602,77 @@ async function followImport() {
     renderFollow();
     refresh();
     loadHome(true);
+  });
+}
+
+// ---------- 从 B 站收藏夹加台（P1c；GET api/bili/favorites，POST api/bili/favorites/import，server/relay/bilifav.py） ----------
+// 一个收藏夹一个台，按收藏先后从头放。标题是 B 站给的不可信文字：只用 textContent（el）放进页面。
+
+let fav = null;    // { items, picked: Set, max, count }
+$("biliFav").onclick = openFav;
+async function openFav() {
+  const b = data && data.bili;
+  if (!b || !b.login || b.invalid) {
+    toast(b && b.invalid ? "B 站登录已失效：先在「设置 → B 站账号」重新扫码" : "先在「设置 → B 站账号」扫码登录 B 站", true);
+    location.hash = "#/settings/bili";
+    return;
+  }
+  fav = { items: null, picked: new Set(), max: 8, count: 0 };
+  const sum = el("p", "followsum", "正在取你的收藏夹…");
+  sum.id = "favSum";
+  const list = el("div", "follows");
+  list.id = "favList";
+  const go2 = button("加到小电视", "go", favImport);
+  go2.id = "favGo"; go2.disabled = true;
+  const row = el("div", "row");
+  row.append(button("关闭", "ghost", closeOverlays), go2);
+  modal("从 B 站收藏夹加台", sum, list,
+        el("p", "", "每个收藏夹是小电视上的一个台，按你收藏的先后从头放，放完再从头；最多 8 个。"), row);
+  $("modal").classList.add("bfollow");
+  let answer;
+  try { answer = await call("GET", "api/bili/favorites"); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else sum.textContent = "网络不通"; return; }
+  if (!fav) return;
+  if (!answer.ok) {
+    sum.textContent = answer.error || "取不到收藏夹";
+    if (answer.login === false) refresh();
+    return;
+  }
+  Object.assign(fav, { items: answer.items, max: answer.max, count: answer.count });
+  renderFav();
+}
+function renderFav() {
+  const list = $("favList"), sum = $("favSum"), go2 = $("favGo");
+  if (!fav || !fav.items || !list) return;
+  const left = Math.max(0, fav.max - fav.count);
+  sum.textContent = fav.items.length
+    ? `你有 ${fav.items.length} 个收藏夹；小电视上已有 ${fav.count} / ${fav.max} 个收藏夹台。`
+    : "你还没有建收藏夹（或都是空的）。";
+  list.replaceChildren(...fav.items.map((f) => {
+    const row = el("label", "frow" + (f.subscribed ? " had" : ""));
+    row.style.gridTemplateColumns = "22px minmax(0, 1fr) auto";
+    const tick = el("input");
+    tick.type = "checkbox";
+    tick.checked = f.subscribed || fav.picked.has(f.id);
+    tick.disabled = f.subscribed || f.count === 0 || (!fav.picked.has(f.id) && fav.picked.size >= left);
+    tick.onchange = () => { if (tick.checked) fav.picked.add(f.id); else fav.picked.delete(f.id); renderFav(); };
+    const name = el("div", "n", f.title);
+    row.append(tick, name, el("span", "tag2", f.subscribed ? "已在小电视上" : f.count === 0 ? "空的" : `${f.count} 个视频`));
+    return row;
+  }));
+  go2.disabled = fav.picked.size === 0;
+}
+async function favImport() {
+  const go2 = $("favGo");
+  const ids = [...fav.picked];
+  await busy(go2, async () => {
+    const answer = await call("POST", "api/bili/favorites/import", { ids });
+    if (!answer.ok) throw new Error(answer.error || "没加上");
+    const skipped = answer.skipped.map((s) => `${s.title}：${s.reason}`).join("；");
+    toast(answer.added.length ? `加了 ${answer.added.length} 个台${skipped ? "（" + skipped + "）" : ""}` : skipped || "没有可加的",
+          !answer.added.length);
+    closeOverlays();
+    refresh();
   });
 }
 
