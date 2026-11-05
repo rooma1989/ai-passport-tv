@@ -483,7 +483,15 @@ class Relay:
             creator = state.get(cid)
             if not self._stale(creator):
                 return
-            login = self._vip_login(owner) if creator.kind == "series" and creator.site == "bilibili" else None
+            favorite = creator.kind == "series" and creator.site == "bilibili" and creator.source.startswith("fav")
+            if favorite:
+                # 收藏夹（P1c）：用主人自己的登录（私密收藏夹要 cookies）；没登录或失效了就先用旧列表。
+                login = self.bili_login(owner)
+                if login is None:
+                    self.log(f"{cid} 是收藏夹，主人没有登录 B 站，先用旧列表")
+                    return
+            else:
+                login = self._vip_login(owner) if creator.kind == "series" and creator.site == "bilibili" else None
             # 多用户：同一个 UP 主（剧）被好几个人订阅时，列表只向网站要一次（共享缓存）。
             # 大会员的剧集列表里有会员集，别人放不了：不用也不写共享缓存。
             if self.tenant and login is None:
