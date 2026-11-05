@@ -15,8 +15,9 @@ CREATORS = "UP 主"
 # 收藏夹台（中转的 fv01…，P1c）：B 站收藏夹，一个收藏夹一个台。
 FAVS = "B站收藏"
 GROUPS = (CAST, CREATORS, FAVS, "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "节目回看", "其他")
-# 手机/总后台上能手动给台挑的组：投屏、UP 主、收藏夹三组只按台 id 自动归，不让手动选。
-ASSIGNABLE = tuple(g for g in GROUPS if g not in (CAST, CREATORS, FAVS))
+# 只按台 id 自动归的组：投屏、UP 主、收藏夹。这几组的台不能挪走，手机/总后台上也不能把别的台挑进来。
+FIXED = (CAST, CREATORS, FAVS)
+ASSIGNABLE = tuple(g for g in GROUPS if g not in FIXED)
 OTHER = "其他"
 # 剧集台（中转的 sr01…）默认放的组；和直播台一样可以在手机上改。
 SERIES = "动画影视"
@@ -126,8 +127,8 @@ def from_title(title) -> str:
 
 def group_of(channel_id: str, name: str, overrides: dict[str, str]) -> str:
     automatic = classify(channel_id, name)
-    # 投屏和 UP 主的台固定在自己的组里，手动调整只对直播台生效。
-    if automatic in (CAST, CREATORS):
+    # 投屏、UP 主和收藏夹的台固定在自己的组里（留着的旧调整也不管），手动调整只对直播台和剧集台生效。
+    if automatic in FIXED:
         return automatic
     return overrides.get(channel_id, automatic)
 

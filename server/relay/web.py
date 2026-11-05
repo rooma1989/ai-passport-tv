@@ -2518,8 +2518,7 @@ class Relay:
     def set_group(self, channel: str, group, caller: Caller = LEGACY) -> dict:
         state = self._account(caller)
         names = dict(self._rows_of(state))
-        if channel not in names or channel_groups.classify(channel, names[channel]) in (
-                channel_groups.CAST, channel_groups.CREATORS):
+        if channel not in names or channel_groups.classify(channel, names[channel]) in channel_groups.FIXED:
             return {"ok": False, "error": "这个台不能调整分组"}
         if group is not None and group not in channel_groups.ASSIGNABLE:
             return {"ok": False, "error": "没有这个分组"}

@@ -109,6 +109,14 @@ class OverrideTests(unittest.TestCase):
         """Casting and creator channels always sit in their own groups."""
         self.assertEqual(cg.group_of("cast", "我的投屏", {"cast": "音乐"}), "我的投屏")
         self.assertEqual(cg.group_of("up01", "x", {"up01": "音乐"}), "UP 主")
+        self.assertEqual(cg.group_of("fv01", "x(B站)", {"fv01": "动画影视"}), "B站收藏",
+                         "a favourite channel stays in its group even with a stale override")
+        self.assertEqual(cg.FIXED, (cg.CAST, cg.CREATORS, cg.FAVS))
+        import re
+        for page in ("console.js", "remote.html"):
+            text = (Path(__file__).resolve().parents[1] / "server" / "relay" / "assets" / page).read_text("utf-8")
+            found = re.search(r"const FIXED_GROUPS = Object\.freeze\((\[[^\]]*\])\)", text)
+            self.assertEqual(tuple(json.loads(found.group(1))), cg.FIXED, f"{page} offers no move out of these groups")
 
 
 class TableTests(unittest.TestCase):

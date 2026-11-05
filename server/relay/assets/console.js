@@ -4672,7 +4672,7 @@ function renderChannels() {
     return;
   }
   const sites = relaySites();
-  const movable = !["我的投屏", "UP 主", FREQUENT].includes(group) && !current.found;
+  const movable = movableGroup(group) && !current.found;
   const nowS = Date.now() / 1000;
   current.channels.forEach((c, i) => {
     const air = !pending && c.id === data.now.channel && data.now.online;

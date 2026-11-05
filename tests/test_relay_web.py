@@ -372,6 +372,12 @@ class WebTests(unittest.TestCase):
         self.assertEqual(json.loads(self.groups_file.read_text()), {})
         self.assertFalse(self.call("POST", "/api/groups", {"channel": "cast", "group": "音乐"})["ok"])
         self.assertFalse(self.call("POST", "/api/groups", {"channel": "ch002", "group": "UP 主"})["ok"])
+        self.state.add("bilibili", "fav111", "我的收藏", [Video("BVf", "f", 60, 1)], self.now, kind="series",
+                       prefix="fv", most=8)
+        self.assertFalse(self.call("POST", "/api/groups", {"channel": "fv01", "group": "动画影视"})["ok"],
+                         "a favourite channel is fixed in B站收藏")
+        self.assertFalse(self.call("POST", "/api/groups", {"channel": "fv01", "group": None})["ok"])
+        self.assertNotIn("fv01", json.loads(self.groups_file.read_text()))
 
     def test_history_replay_and_delete(self):
         self.call("POST", "/api/cast", {"url": "https://www.bilibili.com/video/BV1aZpw6DEKJ"})
