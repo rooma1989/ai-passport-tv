@@ -53,6 +53,8 @@ FREE_MIN = 10 * GB
 # 下载线程一个 Range 请求下这么多；一次至多读 PIECE 字节就看看要不要让给放片子。
 CHUNK = 8 * MB
 PIECE = 256 * 1024
+# 预读开头（pre_tee）要地方时只能删这么小的（别的预读的开头）；看过一段的大片子留着。
+PRE_EVICT_MAX = 256 * MB
 # 放片子自己从网盘读时一阵至多读这么多（起播、跳转要 3–12 MB），之后交给下载线程。
 BURST = 16 * MB
 # 放片子等下载线程写进来，这么久一点都没等到就自己去网盘读。
@@ -317,9 +319,12 @@ class FullCache:
                 self._disk = (now, 0)
         return self._disk[1]
 
-    def _room(self, f: _File, need: int) -> str:
+    def _room(self, f: _File, need: int, pre: bool = False) -> str:
         """要再存 need 字节：超了上限先按最后用过的时间删别的（正在下、正在读的不删）；还不够时 "full"，
-        磁盘剩的会少于 FREE_MIN 时 "disk"，够时空串。在 self._lock 里调。"""
+        磁盘剩的会少于 FREE_MIN 时 "disk"，够时空串。在 self._lock 里调。
+        pre：预读开头（pre_tee）要的地方，只能删别的预读那么小的（至多 PRE_EVICT_MAX）：为了几十 MB 的开头把看了一半
+        的大片子整个删掉，再看时又从网盘慢慢读（《肖申克的救赎》下了 10 GB，晚上被后台预读删了，网盘 13 Mbit/s
+        供不上 23 Mbit/s 的片子，一直在缓冲）。"""
         if not self.enabled():
             return "full"
         total = sum(x.have() for x in self._files.values())
@@ -327,7 +332,7 @@ class FullCache:
         for old in sorted(self._files.values(), key=lambda x: x.used):
             if total + need <= self.limit:
                 break
-            if old.key in keep or self._readers.get(old.key):
+            if old.key in keep or self._readers.get(old.key) or (pre and old.have() > PRE_EVICT_MAX):
                 continue
             total -= old.have()
             self._forget(old)
@@ -720,7 +725,7 @@ class _FullTee:
                 self.stopped = True
                 return
             if self.granted < len(chunk):
-                why = cache._room(f, max(cache.chunk, len(chunk)))
+                why = cache._room(f, max(cache.chunk, len(chunk)), pre=job is None)
                 if why:
                     if job is not None:
                         cache._block(job, why)

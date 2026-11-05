@@ -293,6 +293,42 @@ class DownloaderTests(unittest.TestCase):
         self.drain()
         self.assertEqual(self.logs.count("片库：「大片」没缓存完，整集缓存满了"), said + 1)
 
+    def test_read_ahead_never_pushes_out_a_big_film(self):
+        """2026-11-04: a background read-ahead of a few MB deleted 10 GB of a half-watched film."""
+        film = item("5" * 16, b"\5" * 3000)
+        self.drive.files[film["id"]] = b"\5" * 3000
+        snips = [item(f"{n}" * 16, bytes([n]) * 1000) for n in (6, 7, 8)]
+        self.cache = self.make(limit=4000)
+        with mock.patch.object(libraryfull, "PRE_EVICT_MAX", 1000):
+            self.cache.touch(film, 0, "大片")
+            self.drain()
+            self.assertEqual(self.runs(of=film), [[0, 3000]])
+            self.cache.stop()
+            self.cache = self.make(limit=4000)       # the relay restarted: nobody downloads the film now
+            self.assertEqual(self.runs(of=film), [[0, 3000]])
+            self.now[0] += 1
+            for n, snip in enumerate(snips):
+                self.now[0] += 1
+                tee = self.cache.pre_tee(snip, 0, f"开头{n}")
+                tee.write(bytes([6 + n]) * 1000)
+                tee.close()
+            self.assertEqual(self.runs(of=film), [[0, 3000]], "the film stays")
+            self.assertEqual([self.runs(of=x) for x in snips], [[], [], [[0, 1000]]],
+                             "each read-ahead pushed out the older one, never the film")
+            self.assertNotIn("片库：整集缓存满了，删掉了「大片」的", self.logs)
+            # only the film left to push out: the read-ahead is not stored
+            self.now[0] += 1
+            tee = self.cache.pre_tee(snips[2], 1000, "开头2")
+            tee.write(b"\8" * 1000)
+            tee.close()
+            self.assertEqual(self.runs(of=film), [[0, 3000]])
+            self.assertEqual(self.runs(of=snips[2]), [[0, 1000]], "not stored")
+            # playback itself still evicts the film when it needs the room
+            self.now[0] += 1
+            self.cache.touch(snips[1], 0, "开头1")
+            self.drain()
+            self.assertIn("片库：整集缓存满了，删掉了「大片」的", self.logs)
+
     def test_free_space_floor(self):
         self.free[0] = libraryfull.FREE_MIN + 500
         self.cache.touch(ITEM, 0, "剧")
