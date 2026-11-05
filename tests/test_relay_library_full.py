@@ -1,25 +1,30 @@
-"""My library: the whole-file cache of cloud files (server/relay/libraryfull.py, library.py `_serve_full`).
+"""My library: the watch-along cache of cloud files (server/relay/libraryfull.py, library.py `_serve_full`).
 
 Every play and every seek of a cloud file restarts ffmpeg, which has to read several MB from the
-drive before the first picture; the drive's speed varies a lot, so a seek takes 2-16 s. While an
-item plays, one background downloader fetches the whole file to local disk so that later seeks
-into the downloaded part are served locally.
+drive before the first picture; the drive's speed varies a lot, so a seek takes 2-16 s, and some
+evenings it is slower than the film. While an item plays, one background downloader fetches a
+window ahead of playback to local disk, stored in slices, so that later reads are served locally.
 
 What is checked. Against a fake drive (an opener over bytes in memory, no sleeps): the downloader
-fetches in CHUNK range requests from playback's position to the end, then wraps from the start up
-to where it began, and logs one line when the file is whole; it yields at once while playback
-reads from the drive itself (mid-chunk too, keeping what it wrote) and continues from playback's
-latest position afterwards; it pauses after IDLE_S without readers and resumes when played again;
-playing another item switches it (the old partial data stays); a changed size or mtime, or a drive
-answer whose total disagrees, drops the old data; the budget evicts the least recently used other
-files and never the current one; the free-space floor stops it; limit 0 deletes everything; files
-are mode 600 in a 700 folder and a fresh cache finds them again. Through the raw endpoint over the
+fetches in CHUNK range requests from playback's position forward and never wraps to the start; it
+yields at once while playback reads from the drive itself (mid-chunk too, keeping what it wrote) and
+continues from playback's latest position afterwards; it pauses after IDLE_S without readers and
+resumes when played again; playing another item switches it (the old partial data stays); a changed
+size or mtime, or a drive answer whose total disagrees, drops the old data; the budget evicts the
+least recently used other files and never the current one; a read-ahead of an opening never pushes
+out a film; the free-space floor stops it; limit 0 deletes everything; files are mode 600 in a 700
+folder and a fresh cache finds them again. The window (small slices): only AHEAD is fetched and the
+window follows playback; a chunk never crosses a slice; local answers stop at a slice's end; a full
+cache drops the current file's slices outside the window first, then other files' (farthest from
+where they stopped first), then slices behind playback; seeking back refetches and drops the far
+end; old whole-file caches and lost slices are discarded on load. Through the raw endpoint over the
 tiny WebDAV server of test_relay_library.py: a request starting in downloaded data is answered from
-the local file and continues from the drive in the same answer (that part written in too); with the
-downloader running, playing from the start leaves the whole file local and a second play does not
-touch the drive; a file changed on the drive drops the data; the warm-up's probe and direct browser
-plays never start the downloader; the view gives each item's cached fraction and the setting; the
-admin endpoint changes the setting (admin only) and off deletes the data. No URL or password is logged.
+the local slice and continues from the drive in the same answer (that part written in too); with the
+downloader running, playing from the start leaves the whole (small) file local and a second play does
+not touch the drive; a file changed on the drive drops the data; the warm-up's probe and direct
+browser plays never start the downloader; the view gives each item's cached fraction and the setting;
+the admin endpoint changes the setting (admin only; 5 / 10 / 30 GB) and off deletes the data. No URL
+or password is logged.
 """
 
 from __future__ import annotations
@@ -130,17 +135,26 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(libraryfull.run_end(runs, 12), 40)
         self.assertEqual(libraryfull.run_end(runs, 7), 7)
         self.assertEqual(libraryfull.gap_after(runs, 12, 100), (40, 45))
-        self.assertEqual(libraryfull.next_gap([[0, 5], [10, 100]], 50, 100), (5, 10), "wraps to the start")
-        self.assertIsNone(libraryfull.next_gap([[0, 100]], 50, 100))
+        self.assertEqual(libraryfull.window_gap([[0, 5], [10, 60]], 50, 100, 30), (60, 80), "up to anchor + ahead")
+        self.assertIsNone(libraryfull.window_gap([[0, 5], [10, 90]], 50, 100, 30), "window full: no wrap to the start")
+        self.assertIsNone(libraryfull.window_gap([[0, 100]], 50, 100, 30))
+        self.assertEqual(libraryfull.window_gap([], 90, 100, 30), (90, 100), "never past the end")
+        libraryfull.cut_run(runs, 3, 12)
+        self.assertEqual(runs, [[0, 3], [12, 40], [45, 60]])
+        self.assertEqual(libraryfull.overlap(runs, 2, 50), 1 + 28 + 5)
 
-    def test_from_playback_to_the_end_then_wraps(self):
+    def test_from_playback_forward_without_wrapping(self):
         self.cache.touch(ITEM, 2500, "剧 第 1 集")
         self.drain()
-        self.assertEqual(self.asked(), [(2500, 3499), (3500, 4499), (4500, 4999), (0, 999), (1000, 1999),
-                                        (2000, 2499)])
+        self.assertEqual(self.asked(), [(2500, 3499), (3500, 4499), (4500, 4999)], "no wrap to the start")
+        self.assertEqual(self.runs(), [[2500, len(DATA)]])
+        self.assertFalse(self.cache.busy())
+        self.cache.touch(ITEM, 0, "剧 第 1 集")
+        self.drain()
+        self.assertEqual(self.asked(), [(0, 999), (1000, 1999), (2000, 2499)])
         self.assertEqual(self.runs(), [[0, len(DATA)]])
         key = self.cache.key_of_item(ITEM)
-        self.assertEqual((self.root / f"{key}.bin").read_bytes(), DATA)
+        self.assertEqual((self.root / f"{key}.0.bin").read_bytes(), DATA)
         self.assertEqual(self.cache.fractions(), {key: 1.0})
         self.assertEqual([line for line in self.logs if "整集缓存好了" in line], ["片库：「剧 第 1 集」整集缓存好了"])
         self.assertFalse(self.cache.step(), "complete: stops")
@@ -179,11 +193,11 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(self.runs(), [[0, 1000], [3000, 5000]], "the piece read before it noticed is kept")
         self.drive.hook = None
         held[0].__exit__(None, None, None)
-        # Playback jumps to 1500 (not downloaded): the downloader starts there, then fills what is left before it.
+        # Playback jumps to 1500 (not downloaded): the downloader starts there and does not go back before it.
         self.cache.seen(ITEM, 1500)
         self.drain()
-        self.assertEqual(self.asked(), [(1500, 2499), (2500, 2999), (1000, 1499)])
-        self.assertEqual(self.runs(), [[0, len(DATA)]])
+        self.assertEqual(self.asked(), [(1500, 2499), (2500, 2999)])
+        self.assertEqual(self.runs(), [[0, 1000], [1500, len(DATA)]])
 
     def test_pauses_when_nobody_reads_and_resumes_when_played(self):
         self.cache.touch(ITEM, 0)
@@ -216,7 +230,7 @@ class DownloaderTests(unittest.TestCase):
         self.cache.touch(ITEM, 0)
         self.cache.step()
         old = self.cache.key_of_item(ITEM)
-        self.assertTrue((self.root / f"{old}.bin").exists())
+        self.assertTrue((self.root / f"{old}.0.bin").exists())
         changed = dict(ITEM, mtime=8)
         self.cache.touch(changed, 0)
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), [], "the old size / mtime is gone")
@@ -263,8 +277,8 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(self.runs(of=a), [], "the least recently used went first")
         self.assertEqual(self.runs(of=b), [[0, 1000]])
         self.assertEqual(self.runs(of=c), [[0, 1000]])
-        self.assertIn("片库：整集缓存满了，删掉了「片1」的", self.logs)
-        self.assertFalse((self.root / f"{self.cache.key_of_item(a)}.bin").exists())
+        self.assertIn("片库：缓存满了，删掉了「片1」的", self.logs)
+        self.assertFalse((self.root / f"{self.cache.key_of_item(a)}.0.bin").exists())
         # A file bigger than what is left: the others go, the current one never does.
         big = item("4" * 16, b"\4" * 2000)
         self.drive.files[big["id"]] = b"\4" * 2000
@@ -280,26 +294,67 @@ class DownloaderTests(unittest.TestCase):
         self.drain()
         self.assertEqual(self.runs(of=big), [[0, 1000]])
         self.assertEqual(self.runs(of=c), [])
-        self.assertIn("片库：「大片」没缓存完，整集缓存满了", self.logs)
+        self.assertIn("片库：「大片」往后缓存不下了，缓存满了", self.logs)
         self.assertLessEqual(self.cache.total(), 1500)
         # A file bigger than the cap hits it again on every seek: said once an hour, not on every touch.
-        said = self.logs.count("片库：「大片」没缓存完，整集缓存满了")
+        said = self.logs.count("片库：「大片」往后缓存不下了，缓存满了")
         for _ in range(3):
             self.cache.touch(big, 1000, "大片")
             self.drain()
-        self.assertEqual(self.logs.count("片库：「大片」没缓存完，整集缓存满了"), said)
+        self.assertEqual(self.logs.count("片库：「大片」往后缓存不下了，缓存满了"), said)
         self.now[0] += libraryfull.BLOCK_LOG_S
         self.cache.touch(big, 1000, "大片")
         self.drain()
-        self.assertEqual(self.logs.count("片库：「大片」没缓存完，整集缓存满了"), said + 1)
+        self.assertEqual(self.logs.count("片库：「大片」往后缓存不下了，缓存满了"), said + 1)
+
+    def test_read_ahead_never_pushes_out_a_big_film(self):
+        """2026-11-04: a background read-ahead of a few MB deleted 10 GB of a half-watched film."""
+        film = item("5" * 16, b"\5" * 3000)
+        self.drive.files[film["id"]] = b"\5" * 3000
+        snips = [item(f"{n}" * 16, bytes([n]) * 1000) for n in (6, 7, 8)]
+        for snip in snips:
+            self.drive.files[snip["id"]] = bytes([int(snip["id"][0])]) * 1000
+        self.cache = self.make(limit=4000)
+        with mock.patch.object(libraryfull, "PRE_EVICT_MAX", 1000):
+            self.cache.touch(film, 0, "大片")
+            self.drain()
+            self.assertEqual(self.runs(of=film), [[0, 3000]])
+            self.cache.stop()
+            self.cache = self.make(limit=4000)       # the relay restarted: nobody downloads the film now
+            self.assertEqual(self.runs(of=film), [[0, 3000]])
+            self.now[0] += 1
+            for n, snip in enumerate(snips):
+                self.now[0] += 1
+                tee = self.cache.pre_tee(snip, 0, f"开头{n}")
+                tee.write(bytes([6 + n]) * 1000)
+                tee.close()
+            self.assertEqual(self.runs(of=film), [[0, 3000]], "the film stays")
+            self.assertEqual([self.runs(of=x) for x in snips], [[], [], [[0, 1000]]],
+                             "each read-ahead pushed out the older one, never the film")
+            self.assertNotIn("片库：缓存满了，删掉了「大片」的", self.logs)
+            # only the film left to push out: the read-ahead is not stored
+            self.now[0] += 1
+            tee = self.cache.pre_tee(snips[2], 1000, "开头2")
+            tee.write(b"\8" * 1000)
+            tee.close()
+            self.assertEqual(self.runs(of=film), [[0, 3000]])
+            self.assertEqual(self.runs(of=snips[2]), [[0, 1000]], "not stored")
+            # playback itself still evicts the film when it needs the room
+            self.now[0] += 1
+            self.cache.touch(snips[1], 0, "开头1")
+            self.drain()
+            self.assertIn("片库：缓存满了，删掉了「大片」的", self.logs)
 
     def test_free_space_floor(self):
         self.free[0] = libraryfull.FREE_MIN + 500
         self.cache.touch(ITEM, 0, "剧")
         self.assertFalse(self.cache.step())
         self.assertEqual(self.asked(), [])
-        self.assertIn("片库：「剧」没缓存完，磁盘快满了", self.logs)
-        self.assertIsNone(self.cache.tee(ITEM, 0), "playback does not write in either")
+        self.assertIn("片库：「剧」往后缓存不下了，磁盘快满了", self.logs)
+        tee = self.cache.tee(ITEM, 0)
+        tee.write(DATA[:300])
+        tee.close()
+        self.assertEqual(self.runs(), [], "playback does not write in either")
         self.free[0] = 100 * GB
         self.cache._disk = (float("-inf"), 0)
         self.cache.touch(ITEM, 0, "剧")
@@ -330,6 +385,104 @@ class DownloaderTests(unittest.TestCase):
         finally:
             self.cache.stop()
         self.assertFalse(self.cache._thread.is_alive())
+
+
+
+class WindowTests(DownloaderTests.__base__):
+    """The window (2026-11-04): only around playback's position is kept, stored and deleted by slices."""
+
+    setUp = DownloaderTests.setUp
+    tearDown = DownloaderTests.tearDown
+    asked = DownloaderTests.asked
+    runs = DownloaderTests.runs
+    drain = DownloaderTests.drain
+
+    def make(self, limit=30 * GB, alive=None):
+        cache = libraryfull.FullCache(self.root, opener=self.drive, alive=alive, log=self.logs.append,
+                                      clock=lambda: self.now[0], limit=limit, disk_free=lambda: self.free[0],
+                                      background=False, slice=1000, ahead=2000, behind=1000)
+        cache.chunk, cache.piece = 1000, 250
+        return cache
+
+    def pieces(self, of=ITEM):
+        key = self.cache.key_of_item(of)
+        return sorted(int(p.name.split(".")[-2]) for p in self.root.glob(f"{key}.*.bin"))
+
+    def test_downloads_only_the_window_ahead_and_follows_playback(self):
+        self.cache.touch(ITEM, 0, "剧")
+        self.drain()
+        self.assertEqual(self.asked(), [(0, 999), (1000, 1999)], "ahead = 2000")
+        self.assertFalse(self.cache.busy(), "window full: resting")
+        self.assertEqual(self.pieces(), [0, 1])
+        self.cache.seen(ITEM, 1500)                 # playback read on (from local data too)
+        self.drain()
+        self.assertEqual(self.asked(), [(2000, 2999), (3000, 3499)], "a chunk never crosses a slice")
+        self.assertEqual(self.runs(), [[0, 3500]])
+        self.assertEqual((self.root / f"{self.cache.key_of_item(ITEM)}.3.bin").read_bytes(), DATA[3000:3500])
+
+    def test_local_answers_up_to_the_end_of_a_slice(self):
+        self.cache.touch(ITEM, 0)
+        self.drain()
+        path, offset, count = self.cache.local(ITEM, 700)
+        self.assertEqual((path.name.split(".")[-2], offset, count), ("0", 700, 300))
+        path, offset, count = self.cache.local(ITEM, 1200)
+        self.assertEqual((path.name.split(".")[-2], offset, count), ("1", 200, 800))
+        with open(path, "rb") as handle:
+            handle.seek(offset)
+            self.assertEqual(handle.read(count), DATA[1200:2000])
+        self.assertIsNone(self.cache.local(ITEM, 2000))
+
+    def test_full_cache_drops_slices_far_behind_first(self):
+        self.cache = self.make(limit=3000)
+        self.cache.touch(ITEM, 0, "剧")
+        self.drain()
+        self.cache.seen(ITEM, 1000)
+        self.drain()
+        self.assertEqual(self.runs(), [[0, 3000]], "exactly the limit")
+        self.cache.seen(ITEM, 2500)                 # window [2500, 4500), behind back to 1500
+        self.drain()
+        self.assertEqual(self.asked(), [(0, 999), (1000, 1999), (2000, 2999), (3000, 3999), (4000, 4499)])
+        self.assertEqual(self.pieces(), [2, 3, 4], "the slice outside the window went first, then one behind")
+        self.assertEqual(self.runs(), [[2000, 4500]])
+        self.assertNotIn("删掉了", " ".join(self.logs), "trimming the film being watched is not news")
+        self.cache.seen(ITEM, 4500)
+        self.drain()
+        self.assertEqual(self.runs(), [[2000, 5000]])
+        # Seeking back before what is kept: downloaded again from there, the far end goes first.
+        self.cache.seen(ITEM, 0)
+        self.drain()
+        self.assertEqual(self.asked(), [(4500, 4999), (0, 999), (1000, 1999)])
+        self.assertEqual(self.runs(), [[0, 3000]])
+        self.assertLessEqual(self.cache.total(), 3000)
+
+    def test_other_files_lose_the_slices_far_from_where_they_stopped(self):
+        other = item("fedcba9876543210", DATA[::-1])
+        self.drive.files[other["id"]] = DATA[::-1]
+        self.cache = self.make(limit=4000)
+        self.cache.touch(other, 2000, "乙")
+        self.drain()
+        self.cache.seen(other, 3000)
+        self.drain()
+        self.assertEqual(self.runs(of=other), [[2000, 5000]])
+        self.cache.seen(other, 2500)               # stopped at 2500
+        self.now[0] += 1
+        self.cache.touch(ITEM, 0, "甲")
+        self.drain()
+        self.assertEqual(self.runs(), [[0, 2000]])
+        self.assertEqual(self.runs(of=other), [[2000, 4000]], "4000-5000 was farthest from 2500")
+        self.assertEqual(self.pieces(of=other), [2, 3])
+
+    def test_old_whole_file_caches_and_missing_slices_on_load(self):
+        self.cache.touch(ITEM, 0, "剧")
+        self.drain()
+        key = self.cache.key_of_item(ITEM)
+        (self.root / f"{key}.1.bin").unlink()      # a slice lost (disk trouble): its runs do not count
+        (self.root / "0011223344556677-5000-7.bin").write_bytes(b"old")      # the old format
+        again = self.make()
+        with again._lock:
+            self.assertEqual(again._files[key].runs, [[0, 1000]])
+        self.assertFalse((self.root / "0011223344556677-5000-7.bin").exists())
+        self.assertIn("片库：缓存改成只存正在看的那一段（按片存），旧的整集缓存删掉了", self.logs)
 
 
 # ---------------------------------------------------------------- through the raw endpoint
@@ -441,7 +594,7 @@ class ServeTests(ServeBase):
         self.assertEqual(data, MKV[len(MKV) // 2:])
         self.assertEqual(self.drive(), [], "a seek after that never touches the drive")
         key = self.lib.full.key_of_item(self.item)
-        self.assertEqual((self.root / "library-full" / f"{key}.bin").read_bytes(), MKV)
+        self.assertEqual((self.root / "library-full" / f"{key}.0.bin").read_bytes(), MKV)
 
     def test_a_file_changed_on_the_drive_drops_the_data(self):
         self.prefill(0, 512 * KB)
@@ -463,7 +616,7 @@ class ServeTests(ServeBase):
         self.assertEqual(self.lib.full_gb(), libraryfull.DEFAULT_GB)
         self.prefill(0, 768 * KB)
         view = self.lib.view()
-        self.assertEqual((view["full_gb"], view["full_used"]), (30, 768 * KB))
+        self.assertEqual((view["full_gb"], view["full_used"]), (libraryfull.DEFAULT_GB, 768 * KB))
         card = view["shows"][0]["episodes"][0]
         self.assertEqual(card["cached"], 0.25)
         self.assertEqual(self.lib.set_full_gb(31)["ok"], False)
@@ -519,7 +672,7 @@ class RealFfmpegTests(ServeBase):
         self.assertEqual(seek.returncode, 0, seek.stderr)
         self.assertEqual(self.drive(), [], "a seek is served from the local file")
         key = self.lib.full.key_of_item(self.item)
-        self.assertEqual((self.root / "library-full" / f"{key}.bin").read_bytes(), data)
+        self.assertEqual((self.root / "library-full" / f"{key}.0.bin").read_bytes(), data)
 
 
 class EndpointTests(unittest.TestCase):
@@ -543,10 +696,11 @@ class EndpointTests(unittest.TestCase):
         for who in ("alice", "guest", None):
             self.assertEqual(self.call(who, "POST", path, {"full_gb": 10})[0], 404)
         self.assertEqual(self.call("admin", "POST", path, {"full_gb": 7})[0], 400)
-        status, answer = self.call("admin", "POST", path, {"full_gb": 100})
-        self.assertEqual((status, answer["ok"], answer["full_gb"]), (200, True, 100))
-        self.assertEqual(self.call("alice", "GET", "/tv/api/library")[1]["full_gb"], 100)
-        self.assertEqual(self.call("admin", "GET", "/tv/api/admin/library")[1]["full_gb"], 100)
+        self.assertEqual(self.call("admin", "POST", path, {"full_gb": 100})[0], 400, "100 GB is no longer offered")
+        status, answer = self.call("admin", "POST", path, {"full_gb": 30})
+        self.assertEqual((status, answer["ok"], answer["full_gb"]), (200, True, 30))
+        self.assertEqual(self.call("alice", "GET", "/tv/api/library")[1]["full_gb"], 30)
+        self.assertEqual(self.call("admin", "GET", "/tv/api/admin/library")[1]["full_gb"], 30)
         self.assertTrue(self.call("admin", "POST", path, {"full_gb": 0})[1]["ok"])
         self.assertEqual(self.relay.library.full.limit, 0)
         actions = [r["action"] for r in self.accounts.audit_rows(100) if r["action"] == "library.settings"]

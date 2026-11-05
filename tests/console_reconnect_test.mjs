@@ -99,7 +99,7 @@ assert.match(body('function lostSwitch(w, answer) {'), /openDirect\(answer, \{[^
 // Retry / 重连 restart from the current position.
 const retry = body('function retryWatch() {');
 assert.match(retry, /lost\.gone\) \{ lostManual\(\); return; \}/);
-assert.match(retry, /watching\.seekable && watching\.player\) \{ seekRestart\(pcPos\(\)\); return; \}/);
+assert.match(retry, /watching\.seekable && watching\.player\) \{ seekRestart\(pcPos\(\), "retry"\); return; \}/);
 // Stale messages go away when the picture moves on.
 assert.match(body('function lostTick(event) {'), /badAt != null/);
 assert.ok(html.includes('id="pcLost"') && html.includes('id="pcLostText"') && html.includes('id="pcLostGo"'), 'the notice is in the page');

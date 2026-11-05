@@ -22,6 +22,17 @@ assert.ok(cap, 'VOD_BUFFER is where it was');
 assert.ok(Number(cap[1]) - 1 >= VOD_GATE.START_S && Number(cap[1]) - 1 >= VOD_GATE.RESUME_S, 'the time cap is above both targets');
 assert.ok(VOD_GATE.START_S >= VOD_GATE.RESUME_S && VOD_GATE.RESUME_S > VOD_GATE.LOW_S * 4, 'hysteresis, not flapping');
 
+// ---- how much is kept behind the playhead: never less than a GOP (browsers remove up to the next keyframe) ----
+const behindSrc = source.match(/const VOD_BUFFER = \{[^\n]*\};\n(?:\/\/[^\n]*\n)*function vodBehind\(rate\) \{[^\n]*\}/);
+assert.ok(behindSrc, 'VOD_BUFFER and vodBehind sit together');
+const { VOD_BUFFER: VB, vodBehind } = new Function(behindSrc[0] + '\nreturn { VOD_BUFFER, vodBehind };')();
+assert.ok(VB.GOP_S >= 11, 'longer than the 10.4 s keyframe gap measured on a Blu-ray rip');
+assert.equal(vodBehind(0), VB.BEHIND_S, 'bitrate unknown: the full 30 s');
+assert.equal(vodBehind(500 * 1024), VB.BEHIND_S, 'a 4 Mbit/s file keeps 30 s');
+assert.equal(vodBehind(6 * 1024 * 1024), VB.GOP_S, 'a 50 Mbit/s 4K file: bytes say 4 s, a GOP says 12 s');
+assert.ok(vodBehind(1.2 * 1024 * 1024) > VB.GOP_S && vodBehind(1.2 * 1024 * 1024) < VB.BEHIND_S, 'in between: by bytes');
+assert.ok(VB.GOP_S * 6 * 1024 * 1024 + VB.BYTES_AHEAD < 150 * 1024 * 1024, 'GOP behind + bytes ahead fit Chrome\'s ~150 MB at 50 Mbit/s');
+
 // ---- how long the wait still is, when the drive is slower than the file ----
 // 22 Mbit/s file (2.75 MB/s), the drive gives 0.4 s of video per second (about 9 Mbit/s), 2 of 12 s buffered.
 assert.equal(vodWaitText(2, 12, 0.4, 2_750_000), '网盘现在约 8.8 Mbit/s，这部片子要 22 Mbit/s，大约还要 25 秒');

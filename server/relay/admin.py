@@ -814,12 +814,12 @@ def post(handler, relay, path: str) -> bool:
             answer, action, detail = library.set_tmdb_key(body["tmdb_key"]), "library.settings", \
                 "TMDB 密钥设好" if body["tmdb_key"].strip() else "TMDB 密钥清掉"
         elif path == "/api/admin/library/settings" and "full_gb" in body:
-            # 整集缓存的上限（libraryfull.py）：关 / 10 / 30 / 100 GB；关了已经缓存的全删。
+            # 边看边缓存的上限（libraryfull.py）：关 / 5 / 10 / 30 GB；关了已经缓存的全删。
             answer = library.set_full_gb(body["full_gb"])
             if not answer.get("ok"):
                 handler._json(answer, 400)
                 return True
-            action, detail = "library.settings", f"整集缓存 {body['full_gb']} GB" if body["full_gb"] else "整集缓存关"
+            action, detail = "library.settings", f"边看边缓存 {body['full_gb']} GB" if body["full_gb"] else "边看边缓存关"
         elif path == "/api/admin/library/settings":
             if not isinstance(body.get("online"), bool):
                 handler._json({"ok": False, "error": "请求格式不对"}, 400)

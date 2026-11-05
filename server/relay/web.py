@@ -46,9 +46,14 @@ MAX_SKIPS = 3
 MAX_QUICK_FAILURES = 3
 QUICK_FAILURE_S = 5.0
 MAX_BODY_BYTES = 4096
+# 电脑上放片库的片子重起一路时页面说的原因（console.js 的 seekRestart、lostAttempt 的 why）→ 日志里的话。
+RESTART_WHY = {"seek": "跳转", "gap": "中转那边没有要的那一段了，重起", "stale": "暂停太久，重起", "retry": "点了重试",
+               "start": "从头放", "reconnect": "这一路断了，重连"}
 # 片库的播放诊断（library_playdiag）：一次至多看这么多条、记这么多行日志。
 PLAYDIAG_MAX = 20
 PLAYDIAG_LOG = 5
+# 看门狗出手的几种（console.js 的 STUCK.LADDER）：日志里怎么说。
+STUCK_HOW = {"nudge": "往前推了 {step:g} 秒", "relayout": "重排了一下画面（跟缩小一样）", "jump": "往前跳了 {step:g} 秒"}
 _CHANNEL = re.compile(r"^/ch/(up\d\d|sr\d\d|cast)$")
 # 多用户：/ch/<设备 id>/<台>
 _DEVICE_CHANNEL = re.compile(r"^/ch/([0-9a-f]{12}|legacy-[a-z0-9]{1,20})/(up\d\d|sr\d\d|cast)$")
@@ -1861,7 +1866,8 @@ class Relay:
     def library_playdiag(self, caller: Caller, body: dict) -> dict:
         """POST /api/library/playdiag {id, events: [...]}：电脑上放片库的片子时页面攒的播放诊断（console.js 的 playDiag）：
         gap（播放器跳过了缓冲里的空档：gap 秒、ranges 缓冲的几截）、jump（位置突然多走了 extra 秒）、dropped（10 秒里
-        丢了 n 帧，共 of 帧）、stall（卡住等了 secs 秒）。每条记一行日志（至多 PLAYDIAG_LOG 行，多的合成一句），
+        丢了 n 帧，共 of 帧）、stall（卡住等了 secs 秒）、subs（取字幕出错了：why，接连第 fails 次，过一会儿再试）、nudge（画面卡住不动、缓冲里却有数据：第 n 次出手，how 是往前推 step 秒 / 重排画面 / 往前跳，rs、seeking、big 是当时的
+        readyState、在不在跳转、放没放大）、unstuck（那一阵过去了：卡了 secs 秒、试到第 n 次、moved 走起来了没、resized 中间放大缩小过没）。每条记一行日志（至多 PLAYDIAG_LOG 行，多的合成一句），
         「偶尔跳一下」时看得出是哪一种、在片子的哪儿。"""
         library = library_api.wired(self)
         iid, events = body.get("id"), body.get("events")
@@ -1897,6 +1903,19 @@ class Relay:
                 lines.append(f"{at} 前 10 秒丢了 {int(num(row, 'n'))} 帧（共 {int(num(row, 'of'))} 帧）")
             elif kind == "stall":
                 lines.append(f"{at} 卡住等数据 {num(row, 'secs', 3600):.1f} 秒")
+            elif kind == "nudge":
+                how = row.get("how") if row.get("how") in STUCK_HOW else "nudge"
+                state = [f"readyState {int(num(row, 'rs', 4))}"] if "rs" in row else []
+                state += ["在跳转中"] * bool(num(row, "seeking", 1)) + ["放大着"] * bool(num(row, "big", 1))
+                did = STUCK_HOW[how].format(step=num(row, "step", 60))
+                lines.append(f"{at} 画面卡住不动（缓冲里有数据{'，' + '，'.join(state) if state else ''}），{did}（第 {int(num(row, 'n', 99))} 次）")
+            elif kind == "unstuck":
+                tail = "，中间放大或缩小过" if num(row, "resized", 1) else ""
+                lines.append(f"{at} 卡了 {num(row, 'secs', 3600):.1f} 秒，试到第 {int(num(row, 'n', 99))} 次"
+                             + ("又走起来了" if num(row, "moved", 1) else "停下了（暂停或关了）") + tail)
+            elif kind == "subs":
+                why = str(row.get("why") or "")[:20]
+                lines.append(f"{at} 取字幕出错（{why}），第 {int(num(row, 'fails', 99))} 次，过一会儿再试")
         name = library._full_name(item)
         for line in lines[:PLAYDIAG_LOG]:
             self.log(f"片库播放诊断：「{name}」{line}")
@@ -2010,7 +2029,7 @@ class Relay:
         if body.get("library") is not None:
             # caps：页面能不能放 HEVC（MediaSource、<video>）；remux：直接放出了错，要求换一种放法。
             return self._pc_library(caller, viewer, body.get("library"), start, body.get("caps"),
-                                    body.get("remux") is True)
+                                    body.get("remux") is True, body.get("why"))
         cid, name, extra, meta, key, duration = "cast", table.CAST_LABEL, {}, {}, "", 0
         if body.get("url") is not None or body.get("video") is not None:
             planned = self._pc_cast_item(caller, account, dev, body.get("url"), body.get("video"), part, start,
@@ -2080,7 +2099,7 @@ class Relay:
                 **self._watch_answer(stream, duration, start=source.start if native else None), **extra}
 
     def _pc_library(self, caller: Caller, viewer: str, iid, start: float | None, caps=None,
-                    remux: bool = False) -> dict:
+                    remux: bool = False, why=None) -> dict:
         """片库里的一个视频在电脑上放（library.py）。先看探测的结果（第一次放时探测，缓存在索引里）和页面报的能力
         （caps）定怎么放（library.plan）：
         - 直接放：浏览器按 Range 取 api/library/file/<id>（同源，带登录的 cookie），不经 vod.py 的那一路；
@@ -2130,7 +2149,10 @@ class Relay:
             except watch_pc.Busy as busy:
                 return {"ok": False, "error": self._watch_busy(busy)}
             answer = self._watch_answer(play, duration)
-        self.log(f"在电脑上放片库的「{found['title']}」：{decision['note']}")
+        reason = RESTART_WHY.get(why) if isinstance(why, str) else None
+        at = f"{int(offset) // 3600}:{int(offset) // 60 % 60:02d}:{int(offset) % 60:02d}" if offset >= 3600 \
+            else f"{int(offset) // 60}:{int(offset) % 60:02d}"
+        self.log(f"在电脑上放片库的「{found['title']}」：{decision['note']}" + (f"（{reason}，从 {at} 起）" if reason else ""))
         self._pc_cursor[(caller.user, key)] = {"bvid": found["id"], "offset": offset, "stream": play,
                                                "title": label, "name": name, "duration": duration,
                                                "site": "library"}

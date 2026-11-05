@@ -1616,7 +1616,7 @@ function retryWatch() {
   // 这一路没了（sourceGone）：和「重连」一样，从现在的位置、同一集重连。
   if (lost.gone) { lostManual(); return; }
   // 视频：从现在的位置重起（还没放起来时 pcPos 就是这次要的起点，不从 0、不换一集）；别的（直播）重新要一次。
-  if (watching.seekable && watching.player) { seekRestart(pcPos()); return; }
+  if (watching.seekable && watching.player) { seekRestart(pcPos(), "retry"); return; }
   if (watching.mode === "direct") startDirect(watching.again, { group: watching.group, again: true, hls: watching.hls });
   else startWatch(false, true, undefined, watching.hls);
 }
@@ -1689,7 +1689,7 @@ async function lostAttempt(gen) {
     if (gen !== lost.gen) return;
     if (watching !== w || watchKey(data.now) !== w.key || w.device !== deviceId()) { lostReset(); if (data) renderWatch(); return; }
   }
-  const at = w.seekable ? { start: Math.round(pcPos() * 10) / 10 } : {};
+  const at = w.seekable ? { start: Math.round(pcPos() * 10) / 10, why: "reconnect" } : {};
   const request = w.mode === "direct" ? vodAsk(Object.assign({ viewer }, w.again, at), w.hls) : vodAsk(withDevice(Object.assign({ viewer }, at)), w.hls);
   if (w.mode === "direct" && request.channel === "cast" && deviceId()) request.device = deviceId();
   let answer = null, why = "";
@@ -1820,7 +1820,17 @@ function liveNeighbours(ids, id) {
 
 // 视频（不是直播）的缓冲：往前至多 AHEAD_S 秒、往回 BEHIND_S 秒，码率高（片库的 4K 文件只换封装，一秒两三 MB）时
 // 按字节封顶，免得超出 Chrome 给一个 SourceBuffer 的一百多 MB（超了 appendBuffer 抛 QuotaExceededError）。
-const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024 };
+// 看门狗（WatchPlayer.unstick）：画面卡住不动多久算卡住、缓冲里至少还有几秒才归它管、往前推几秒、一级一级试哪几招。
+const STUCK = { TICK_MS: 500, AFTER_MS: 1500, AHEAD_S: 1, NUDGE_S: 0.1, JUMP_S: 1, RELAYOUT_MS: 200,
+                LADDER: ["nudge", "relayout", "jump"] };
+// 缓冲满了时等着腾地方，至多试这么多次（一秒一次）。
+const QUOTA_TRIES = 30;
+// GOP_S：身后至少留这么多秒。浏览器删画面时会连着删到下一个关键帧为止（后面的帧要靠前面的才解得出），蓝光压制的
+// 关键帧至多隔十来秒（《肖申克的救赎》量过 10.4 秒）：留得比这少，删的时候会把正在放的那一截也带走，播放器只好往前跳
+// 几秒（播放诊断：「跳过了 4.31 秒的空档」）。
+const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024, GOP_S: 12 };
+// 往回留几秒：至多 BEHIND_S，码率高（字节 / 秒）时按 BYTES_BEHIND 少留，但从不少于 GOP_S。
+function vodBehind(rate) { return rate ? Math.max(VOD_BUFFER.GOP_S, Math.min(VOD_BUFFER.BEHIND_S, VOD_BUFFER.BYTES_BEHIND / rate)) : VOD_BUFFER.BEHIND_S; }
 
 // ---- 视频缓冲的几个纯函数（tests/console_buffer_test.mjs 截出这一段单独测）----
 // 视频（HLS，不是直播）起播、断粮时先攒一截再放，不放几秒停几秒（网盘一会儿 4 一会儿 80 Mbit/s，4K 只换封装的
@@ -1965,6 +1975,59 @@ class WatchPlayer {
     this.onEnded = () => { if (this.alive) opts.ended(); };
     video.addEventListener("waiting", this.onWaiting);
     video.addEventListener("ended", this.onEnded);
+    // 看门狗（视频）：画面卡住不动、缓冲里却还有数据时往前推一下（unstick）。
+    this.stuck = null;
+    this.watchdog = this.live ? 0 : setInterval(() => this.unstick(), STUCK.TICK_MS);
+  }
+  // 蓝光片子只换封装时时间戳偶尔是乱的（ffmpeg 说 non monotonically increasing dts），浏览器的解码器在那一帧停住：在放、
+  // 缓冲里往后还有 STUCK.AHEAD_S 秒以上、位置却 STUCK.AFTER_MS 没动，自己永远不会走（《肖申克的救赎》1:00:15 量过）。
+  // 一级一级试（STUCK.LADDER）：往前推 NUDGE_S 秒 → 重排一下画面（跟手动缩小一样：放大时暂停久了再放，推了也不走，
+  // 一缩小就接着放了，1:01:26 那次）→ 往前跳 JUMP_S 秒（之后每次都跳；不用暂停再放，那会当成用户暂停、同步给别的页面）。卡在「跳转中」出不来、
+  // readyState 说有数据却不走的也算。缓冲不够的卡不归这里管：那是 gate 攒缓冲的事。
+  // 每次出手记一条诊断（nudge：第几次、怎么推的、readyState、在不在跳转、放没放大），走起来了再记一条（unstuck：
+  // 卡了多久、试到第几次、中间放大缩小过没有），下回看日志就知道哪一招管用。
+  unstick() {
+    const v = this.video;
+    if (!this.alive || !this.started || this.hold || !this.sb || v.paused) { this.unstuck(); return; }
+    const t = v.currentTime, b = v.buffered;
+    let end = -1;
+    for (let i = 0; i < b.length; i++) if (t >= b.start(i) - 0.05 && t < b.end(i)) end = b.end(i);
+    const now = performance.now();
+    if (end - t < STUCK.AHEAD_S) { this.unstuck(); return; }
+    const s = this.stuck;
+    if (!s) { this.stuck = { t, since: now, from: now, n: 0, big: pcBig() }; return; }
+    if (Math.abs(s.t - t) > 0.01) {
+      // 走了：推出去的那一下（往前推、跳）不算走，再看 AFTER_MS。
+      if (s.n && s.pushed != null && Math.abs(t - s.pushed) < 0.05) { s.t = t; s.since = now; return; }
+      if (s.n) { this.unstuck(); this.stuck = { t, since: now, from: now, n: 0, big: pcBig() }; return; }
+      s.t = t; s.since = now; s.from = now; s.big = pcBig();
+      return;
+    }
+    if (now - s.since < STUCK.AFTER_MS) return;
+    s.n++;
+    s.since = now;
+    s.pushed = null;
+    const how = STUCK.LADDER[Math.min(s.n, STUCK.LADDER.length) - 1];
+    diagNote("nudge", { n: s.n, how, step: how === "nudge" ? STUCK.NUDGE_S : how === "jump" ? STUCK.JUMP_S : 0,
+                        rs: v.readyState, seeking: v.seeking ? 1 : 0, big: pcBig() ? 1 : 0 });
+    if (how === "nudge" || how === "jump") {
+      s.pushed = Math.min(end - 0.05, t + (how === "jump" ? STUCK.JUMP_S : STUCK.NUDGE_S));
+      v.currentTime = s.pushed;
+    } else if (how === "relayout") {
+      // 跟缩小一样让画面换个大小重新排（少 1 像素、STUCK.RELAYOUT_MS 后还原，看不出来）。
+      v.style.width = "calc(100% - 1px)";
+      setTimeout(() => { v.style.width = ""; }, STUCK.RELAYOUT_MS);
+    }
+  }
+  // 卡住的那一阵过去了（走起来了，或者停了、换片了）：出过手的话记一条 unstuck。
+  unstuck() {
+    const s = this.stuck;
+    this.stuck = null;
+    const v = this.video;
+    if (!s || !s.n || !this.alive) return;
+    const moved = Math.abs(v.currentTime - s.t) > 0.01 && !v.paused;
+    diagNote("unstuck", { n: s.n, secs: Math.round((performance.now() - s.from) / 100) / 10, moved: moved ? 1 : 0,
+                          resized: s.big !== pcBig() ? 1 : 0 });
   }
   async start() {
     const v = this.video;
@@ -2097,11 +2160,16 @@ class WatchPlayer {
         await this.trim();
         try { await this.append(chunk); }
         catch (error) {
-          // 缓冲满了（Chrome 一个 SourceBuffer 至多一百多 MB）：清掉现在位置以前的，等一下再接。
+          // 缓冲满了（Chrome 一个 SourceBuffer 至多一百多 MB）：清掉现在位置 GOP_S 秒以前的，等一下再接；腾出来的还
+          // 不够就等画面往前放一点再清、再接（至多 QUOTA_TRIES 次，一秒一次）。
           if (!this.alive || this.live || !error || error.name !== "QuotaExceededError") throw error;
-          await this.squeeze();
-          await sleep(1000);
-          await this.append(chunk);
+          for (let tries = 1; ; tries++) {
+            await this.squeeze();
+            await sleep(1000);
+            if (!this.alive) break;
+            try { await this.append(chunk); break; }
+            catch (again) { if (!again || again.name !== "QuotaExceededError" || tries >= QUOTA_TRIES) throw again; }
+          }
         }
         this.gotBytes += chunk.byteLength; this.gotSecs += durs[this.next] || 0;
         if (!this.live) { this.feed.push({ t: performance.now(), secs: durs[this.next] || 0 }); if (this.feed.length > 32) this.feed.splice(0, this.feed.length - 32); }
@@ -2142,6 +2210,8 @@ class WatchPlayer {
     const end = b.end(b.length - 1);
     let inside = -1;
     for (let i = 0; i < b.length; i++) if (v.currentTime >= b.start(i) - 0.05 && v.currentTime <= b.end(i)) inside = i;
+    // 停在一截的末尾（不到 0.1 秒）、后面还有一截：那也是空档（缝多半是声音转码和画面分段没对齐的那一点点）。
+    if (inside >= 0 && inside + 1 < b.length && b.end(inside) - v.currentTime < 0.1) inside = -1;
     // 视频起播：要的那一秒（媒体时间就是 origin；片库的文件时间轴照原样，第一段从它之前的关键帧起）在缓冲里时
     // 从它起，不从关键帧起。
     const at = !this.started && !this.live && this.origin != null
@@ -2226,16 +2296,18 @@ class WatchPlayer {
     const v = this.video, b = this.sb.buffered;
     if (!b.length) return;
     if (this.live) { if (v.currentTime - b.start(0) > 90) await this.remove(b.start(0), v.currentTime - 30); return; }
-    // 视频：往回留 BEHIND_S 秒，码率高时按 BYTES_BEHIND 少留一点。
-    const r = this.rate(), keep = r ? Math.max(2, Math.min(VOD_BUFFER.BEHIND_S, VOD_BUFFER.BYTES_BEHIND / r)) : VOD_BUFFER.BEHIND_S;
+    // 视频：往回留 BEHIND_S 秒，码率高时按 BYTES_BEHIND 少留一点，但至少 GOP_S（vodBehind）。
+    const keep = vodBehind(this.rate());
     if (v.currentTime - b.start(0) > keep + 10) await this.remove(b.start(0), v.currentTime - keep);
   }
+  // 缓冲满了：清掉现在位置 GOP_S 秒以前的（不能更近：浏览器会连着删到下一个关键帧，把正在放的也带走）。
   async squeeze() {
     const v = this.video, b = this.sb.buffered;
-    if (b.length && v.currentTime - 2 > b.start(0)) await this.remove(b.start(0), v.currentTime - 2);
+    if (b.length && v.currentTime - VOD_BUFFER.GOP_S > b.start(0)) await this.remove(b.start(0), v.currentTime - VOD_BUFFER.GOP_S);
   }
   stop() {
     this.alive = false;
+    clearInterval(this.watchdog);
     const v = this.video;
     v.removeEventListener("waiting", this.onWaiting);
     v.removeEventListener("ended", this.onEnded);
@@ -2692,7 +2764,7 @@ function playerFor(answer) {
     // 暂停太久、中转那边已经往前转过了：暂停着就等按「播放」时再从这里重起（那之前不占 ffmpeg），在放就马上重起。
     gap: () => {
       if (!watching || watching.player !== player) return;
-      if ($("watchVideo").paused && !player.hold) watching.stale = true; else seekRestart(pcPos());
+      if ($("watchVideo").paused && !player.hold) watching.stale = true; else seekRestart(pcPos(), "gap");
     },
   });
   return player;
@@ -2938,7 +3010,9 @@ function pcSeek(target, now) {
   clearTimeout(seekTimer);
   seekTimer = setTimeout(() => seekRestart(target), now ? 0 : 450);
 }
-async function seekRestart(target) {
+// why：为什么重起（中转记进日志，「偶尔卡一下、跳一下」查得出是谁起的）：seek 拖动、快进快退、点了某一秒；gap 中转的
+// 窗口里已经没有要的那一段了；stale 暂停太久中转往前转过了；retry 点了重试；start 从头放。
+async function seekRestart(target, why) {
   if (!watching) return;
   if (watching.player.vod && !watching.player.failed) { pcSeek(target); return; }
   clearTimeout(seekTimer);
@@ -2949,7 +3023,7 @@ async function seekRestart(target) {
   // 点播的播放器坏了（地址过期、这一路被收了）才会走到这里：同一路也要换一个新的播放器（again）。
   const again = !!watching.player.vod;
   const ok = watching.mode === "direct"
-    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10 }), { group: watching.group, seek: true, again, hls: watching.hls })
+    ? await startDirect(Object.assign({}, watching.again, { start: Math.round(target * 10) / 10, why: why || "seek" }), { group: watching.group, seek: true, again, hls: watching.hls })
     : await startWatch(false, true, Math.round(target * 10) / 10, watching.hls);
   if (!ok && watching) { watching.seeking = null; watchSay(""); renderPc(); }
 }
@@ -3225,12 +3299,12 @@ function pcTogglePlay() {
   const p = watching.player;
   if (p.hold) { p.userPause(); renderPc(); renderMini(); return; }
   if (v.paused) {
-    if (watching.stale) { watching.stale = false; seekRestart(pcPos()); return; }
+    if (watching.stale) { watching.stale = false; seekRestart(pcPos(), "stale"); return; }
     // 真放完了才从头放（mediaDone）：HLS 数据接完时往往还有一分钟没放，那时暂停再按是接着放。
     if (watching.kind === "video" && mediaDone(p.ended, v.ended, v.currentTime, v.duration)) {
       hideUpNext();
       if (p.vod && !p.failed) { p.seek(0); v.play().catch(() => {}); return; }
-      seekRestart(watching.seekable ? 0 : pcPos());
+      seekRestart(watching.seekable ? 0 : pcPos(), "start");
       return;
     }
     v.play().catch(() => {});
@@ -3640,7 +3714,10 @@ function vodFallback() {
 // 网盘上的内嵌字幕是边放边抽的（live）：隔 SUBS_POLL_MS 再取一次，只要新的。选了什么记在这个浏览器里（按语言），
 // 没选过时：有默认的就用默认的，没有就用中文的那条，都没有就关着。
 const SUBS_POLL_MS = 8000;
-const subs = { n: -1, seen: new Set(), timer: 0, after: 0, gen: 0, last: -1, lastSid: "" };   // last：C 键关掉前开的那条
+// 取字幕出错了（中转重启、前端一时回 502、断网）：隔这么久再试，接连出错翻倍，至多 SUBS_RETRY_MAX_MS。以前出一次错
+// 就再也不取，放到抽好的那些用完，字幕就「没了」（关掉再开才又有）。
+const SUBS_RETRY_MAX_MS = 60000;
+const subs = { n: -1, seen: new Set(), timer: 0, after: 0, gen: 0, last: -1, lastSid: "", fails: 0 };   // last：C 键关掉前开的那条
 let subsTrack = null;
 function subsTextTrack() {
   // 只建一次（addTextTrack 建的轨删不掉）：换片、换字幕时清空它的字幕。
@@ -3649,7 +3726,7 @@ function subsTextTrack() {
 }
 function subsClear() {
   clearTimeout(subs.timer);
-  subs.gen++; subs.n = -1; subs.seen = new Set(); subs.after = 0;
+  subs.gen++; subs.n = -1; subs.seen = new Set(); subs.after = 0; subs.fails = 0;
   if (!subsTrack) return;
   subsTrack.mode = "hidden";
   for (const cue of Array.from(subsTrack.cues || [])) subsTrack.removeCue(cue);
@@ -3714,11 +3791,19 @@ async function subsLoad(n) {
   // 封装着放的：要等列表给了 origin 才知道怎么挪。
   if (!p.vod && p.origin == null) { subs.timer = setTimeout(() => { if (subs.gen === gen) subsLoad(n); }, 500); return; }
   const shift = p.vod ? 0 : p.origin - (w.start || 0);
+  // 还是这一条字幕：同一个片子的字幕地址没变（watching 换了个对象也算，比如又点了一下同一个），没换片、没关字幕。
+  const still = () => subs.gen === gen && !!watching && watching.subsUrl === w.subsUrl;
   let partial = false;
   try {
     const response = await fetch(w.subsUrl + n + ".vtt" + (subs.after ? "?after=" + subs.after.toFixed(3) : ""), { credentials: "same-origin", cache: "no-store" });
-    if (subs.gen !== gen || watching !== w) return;
-    if (!response.ok) { if (!subs.after) toast("这条字幕取不到", true); return; }
+    if (!still()) return;
+    if (!response.ok) {
+      // 一条都还没取到就说放不了（这条字幕本来就放不了）；取到过的是一时出错：过一会儿再试，别就此不取了。
+      if (!subs.after && !subs.seen.size && response.status === 404) { toast("这条字幕取不到", true); return; }
+      subsRetry(n, gen, still, "HTTP " + response.status);
+      return;
+    }
+    subs.fails = 0;
     partial = response.headers.get("X-RTV-Partial") === "1";
     for (const [a, b, body] of vttCues(await response.text())) {
       const key = a + "|" + b + "|" + body;
@@ -3727,9 +3812,19 @@ async function subsLoad(n) {
       subs.after = Math.max(subs.after, b);
       try { track.addCue(new VTTCue(a + shift, b + shift, body)); } catch (error) { /* 时间不对的那一条不要 */ }
     }
-  } catch (error) { if (subs.gen !== gen) return; }
+  } catch (error) {
+    if (!still()) return;
+    subsRetry(n, gen, still, "连不上");
+    return;
+  }
   // 网盘上的内嵌字幕还在边放边抽：过一会儿再取新的。
-  if (partial || (s && s.live)) subs.timer = setTimeout(() => { if (subs.gen === gen && watching === w) subsLoad(n); }, SUBS_POLL_MS);
+  if (partial || (s && s.live)) subs.timer = setTimeout(() => { if (still()) subsLoad(n); }, SUBS_POLL_MS);
+}
+function subsRetry(n, gen, still, why) {
+  subs.fails++;
+  diagNote("subs", { why, fails: subs.fails });
+  clearTimeout(subs.timer);
+  subs.timer = setTimeout(() => { if (still()) subsLoad(n); }, Math.min(SUBS_RETRY_MAX_MS, SUBS_POLL_MS * 2 ** (subs.fails - 1)));
 }
 
 // 不动鼠标 3 秒后收起控制条和上面的标题（暂停、选集、菜单或快捷键表开着、焦点在控制条或标题栏的按钮上时不收）。
@@ -3842,7 +3937,7 @@ $("pcMenu").addEventListener("keydown", (event) => {
     items[(at + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
   }
 });
-$("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0); };
+$("pcFromStart").onclick = () => { $("pcResume").hidden = true; seekRestart(0, "start"); };
 $("pcResumeX").onclick = () => { $("pcResume").hidden = true; };
 // 触屏：标题和控制条收着时，点一下画面只是把它们叫出来（不暂停），关闭、全屏这些按钮才点得到。
 let pcTapShow = false;
@@ -3861,7 +3956,7 @@ document.addEventListener("fullscreenchange", () => { renderPc(); pcActive(); })
   v.muted = lsGet("rootv.muted", "0") === "1";
 }
 for (const ev of ["play", "pause", "volumechange", "progress", "seeked", "ratechange", "durationchange"]) $("watchVideo").addEventListener(ev, () => { renderPc(); if (ev === "play" || ev === "pause") { renderMini(); pcActive(); pipSync(); } });
-$("watchVideo").addEventListener("play", () => { if (watching && watching.stale) { watching.stale = false; seekRestart(pcPos()); } });
+$("watchVideo").addEventListener("play", () => { if (watching && watching.stale) { watching.stale = false; seekRestart(pcPos(), "stale"); } });
 $("watchVideo").addEventListener("timeupdate", () => { renderPc(); renderMiniProgress(); });
 
 // ---- 播放器快捷键的纯函数（tests/console_keys_test.mjs 把这一段切出来单独跑） ----
@@ -4277,6 +4372,7 @@ new MutationObserver(() => {
 const PCW = { LAND: 520, PORT: 360, MIN: 240, PARTS: 300, PARTS_BELOW: 240, MARGIN: 18, BOTTOM: 104, STEP: 40 };
 let pcAr = 16 / 9;
 const pcWidths = {};
+function pcBig() { return $("pcwin").classList.contains("big"); }
 function pcPortrait() { return pcAr < 0.9; }
 function pcSizeKey() { return pcPortrait() ? "portrait" : "landscape"; }
 function pcWantWidth() {
@@ -7489,8 +7585,8 @@ async function loadLib(force, poll) {
   else if (answer.ok && answer.pending) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 20000);
 }
 const libKind = (k) => k === "webdav" ? "网盘" : "本机文件夹";
-// 整集缓存：能选的上限（GB，0 是关）、用了多少、一集下好了多少（c.cached，0..1；没下过的没有）。
-const LIB_FULL = [0, 10, 30, 100];
+// 边看边缓存：能选的上限（GB，0 是关）、用了多少、一集下好了多少（c.cached，0..1；没下过的没有）。
+const LIB_FULL = [0, 5, 10, 30];
 const libGB = (n) => n < 1073741824 ? Math.round(n / 1048576) + " MB" : (n / 1073741824).toFixed(1) + " GB";
 const libCached = (c) => !c.cached ? "" : c.cached >= 1 ? "已缓存" : "已缓存 " + Math.floor(c.cached * 100) + "%";
 // ---- 片库筛选的几个纯函数（tests/console_libfilter_test.mjs 截出这一段单独测）----
@@ -7955,11 +8051,12 @@ function renderLib() {
     // 备用的 TMDB：按钮上只说「已设置 / 没设置」（出错时标红）；点开是填密钥的小框（libTmdbHTML）。
     const tm = d.tmdb || {};
     const tmdbBtn = admin && d.online ? `<button class="ghost sm${tm.error ? " red" : ""}" data-libtmdb="${lib.tmdbForm ? "0" : "1"}" aria-expanded="${!!lib.tmdbForm}" title="豆瓣没对上时再查 TMDB">备用资料 TMDB：${tm.set ? (tm.error ? "出错了" : "已设置") : "没设置"}</button>` : "";
-    // 整集缓存（library.py 的 full_gb，libraryfull.py）：边看边把网盘上的整集下到这台电脑，跳转快。按一下换上限
-    // （关 → 10 → 30 → 100 GB → 关）；换成「关」会删掉已经缓存的，要再按一下确认。只有网盘的来源时才有。
+    // 边看边缓存（library.py 的 full_gb，libraryfull.py）：把网盘上正在看的地方前后一段（往前约 4 GB、身后 1 GB）
+    // 下到这台电脑，跳转快、网盘慢时暂停一会儿能攒出一段。按一下换上限（关 → 5 → 10 → 30 GB → 关）；换成「关」会删掉
+    // 已经缓存的，要再按一下确认。只有网盘的来源时才有。
     const fullGb = d.full_gb || 0;
     const fullBtn = admin && d.sources.some((s) => s.kind === "webdav")
-      ? `<button class="ghost sm" data-libfull="${LIB_FULL[(LIB_FULL.indexOf(fullGb) + 1) % LIB_FULL.length]}" title="边看边把网盘上的这一集整个下到这台电脑，跳转更快（至多用这么多磁盘，最久没看的先删）；现在用了 ${esc(libGB(d.full_used || 0))}">整集缓存：${fullGb ? fullGb + " GB" : "关"}</button>` : "";
+      ? `<button class="ghost sm" data-libfull="${LIB_FULL[(LIB_FULL.indexOf(fullGb) + 1) % LIB_FULL.length]}" title="边看边把网盘上正在看的地方前后一段（往前约 4 GB、身后 1 GB）下到这台电脑：跳转更快，网盘慢时暂停一会儿就能攒出一段（至多用这么多磁盘，看过的、最久没看的先删）；现在用了 ${esc(libGB(d.full_used || 0))}">边看边缓存：${fullGb ? fullGb + " GB" : "关"}</button>` : "";
     o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}${onlineBtn}${tmdbBtn}${fullBtn}</div>`;
     if (admin && d.online && lib.tmdbForm) o += `<div class="lformbox">${libTmdbHTML()}</div>`;
     o += drivePanel;
@@ -8106,7 +8203,7 @@ $("libBox").addEventListener("click", async (event) => {
       return;
     }
     const answer = await libAdmin("api/admin/library/settings", { full_gb: gb }, t);
-    if (answer && answer.ok) { toast(gb ? "整集缓存：至多用 " + gb + " GB，边看边下到这台电脑" : "整集缓存关了，已经缓存的删掉了"); loadLib(true); }
+    if (answer && answer.ok) { toast(gb ? "边看边缓存：至多用 " + gb + " GB，正在看的前后一段下到这台电脑" : "边看边缓存关了，已经缓存的删掉了"); loadLib(true); }
     return;
   }
   if (ds.libkind) { lib.kind = ds.libkind; renderLib(); return; }

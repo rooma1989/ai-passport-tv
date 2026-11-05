@@ -296,7 +296,8 @@ class EndpointTests(unittest.TestCase):
                 "source": "s"}
         events = [{"kind": "gap", "at": 3725.4, "gap": 0.42, "ranges": [[3600, 3725.3], [3725.8, 3790]]},
                   {"kind": "jump", "at": 61, "extra": 1.3}, {"kind": "dropped", "at": 70, "n": 12, "of": 240},
-                  {"kind": "stall", "at": 80, "secs": 1.24}, {"kind": "bogus"}, "x"]
+                  {"kind": "stall", "at": 80, "secs": 1.24}, {"kind": "subs", "at": 90, "why": "HTTP 502", "fails": 2},
+                  {"kind": "bogus"}, "x"]
         with mock.patch.object(lib, "item", return_value=item):
             status, answer = self.call("alice", "POST", "/tv/api/library/playdiag", {"id": "0123456789abcdef",
                                                                                     "events": events})
@@ -305,7 +306,25 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(lines, ["片库播放诊断：「肖申克的救赎」1:02:05 跳过了 0.42 秒的空档（缓冲 1:00:00–1:02:05 1:02:05–1:03:10）",
                                      "片库播放诊断：「肖申克的救赎」1:01 位置突然往前多走了 1.30 秒",
                                      "片库播放诊断：「肖申克的救赎」1:10 前 10 秒丢了 12 帧（共 240 帧）",
-                                     "片库播放诊断：「肖申克的救赎」1:20 卡住等数据 1.2 秒"])
+                                     "片库播放诊断：「肖申克的救赎」1:20 卡住等数据 1.2 秒",
+                                     "片库播放诊断：「肖申克的救赎」1:30 取字幕出错（HTTP 502），第 2 次，过一会儿再试"])
+            logs.clear()
+            self.call("alice", "POST", "/tv/api/library/playdiag",
+                      {"id": "0123456789abcdef", "events": [{"kind": "nudge", "at": 3600, "step": 0.1, "n": 1}]})
+            self.assertEqual(logs, ["片库播放诊断：「肖申克的救赎」1:00:00 画面卡住不动（缓冲里有数据），往前推了 0.1 秒（第 1 次）"])
+            logs.clear()
+            self.call("alice", "POST", "/tv/api/library/playdiag", {"id": "0123456789abcdef", "events": [
+                {"kind": "nudge", "at": 3686, "n": 2, "how": "relayout", "step": 0, "rs": 2, "seeking": 1, "big": 1},
+                {"kind": "nudge", "at": 3686, "n": 3, "how": "jump", "step": 1, "rs": 4, "seeking": 0, "big": 0},
+                {"kind": "nudge", "at": 3686, "n": 4, "how": "<script>", "step": 0.1},
+                {"kind": "unstuck", "at": 3688, "n": 2, "secs": 4.6, "moved": 1, "resized": 1},
+                {"kind": "unstuck", "at": 3688, "n": 1, "secs": 2, "moved": 0, "resized": 0}]})
+            self.assertEqual(logs, [
+                "片库播放诊断：「肖申克的救赎」1:01:26 画面卡住不动（缓冲里有数据，readyState 2，在跳转中，放大着），重排了一下画面（跟缩小一样）（第 2 次）",
+                "片库播放诊断：「肖申克的救赎」1:01:26 画面卡住不动（缓冲里有数据，readyState 4），往前跳了 1 秒（第 3 次）",
+                "片库播放诊断：「肖申克的救赎」1:01:26 画面卡住不动（缓冲里有数据），往前推了 0.1 秒（第 4 次）",
+                "片库播放诊断：「肖申克的救赎」1:01:28 卡了 4.6 秒，试到第 2 次又走起来了，中间放大或缩小过",
+                "片库播放诊断：「肖申克的救赎」1:01:28 卡了 2.0 秒，试到第 1 次停下了（暂停或关了）"])
             logs.clear()
             self.call("alice", "POST", "/tv/api/library/playdiag",
                       {"id": "0123456789abcdef", "events": [{"kind": "jump", "at": i, "extra": 1} for i in range(9)]})

@@ -674,6 +674,16 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(home_answer["library"]["enabled"])
         self.assertTrue(home_answer["library_recent"])
         self.assertEqual(self.watch(library=movie, start=0)["start"], 0.0)
+        # A restart says why (seek, the relay's window lost the segment, reconnect…): the log tells who restarted.
+        logged = []
+        self.relay.log = logged.append
+        self.watch(library=movie, start=3725.0, why="gap")
+        self.watch(library=movie, start=61.0, why="seek")
+        self.watch(library=movie, start=61.0, why="bogus")
+        plays = [m for m in logged if m.startswith("在电脑上放片库的")]
+        self.assertTrue(plays[0].endswith("（中转那边没有要的那一段了，重起，从 1:02:05 起）"), plays[0])
+        self.assertTrue(plays[1].endswith("（跳转，从 1:01 起）"), plays[1])
+        self.assertNotIn("起）", plays[2], "an unknown reason is left out")
         # A show: the episode list, each with its id.
         first = ids["家庭剧/S01E01.mp4"]
         show = self.watch(library=first)
