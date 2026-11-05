@@ -31,6 +31,7 @@ import math
 import threading
 import time
 
+from .. import channel_groups
 from . import table, voice, voicelib
 from .bilibili import SourceError
 from .state import Video
@@ -176,7 +177,7 @@ def catalog(relay, key, caller: Caller = LEGACY, keyed: bool = False) -> dict:
 def _now_playing(relay, dev: dict, playing: dict, state) -> dict:
     """正在放的中转视频：{"title", "position", "duration", "total"}；直播台、不在线为空。"""
     cid = playing["channel"]
-    if not playing["online"] or not (cid == table.CAST_ID or cid[:2] in ("up", "sr")):
+    if not playing["online"] or not (cid == table.CAST_ID or cid[:2] in channel_groups.RELAY_PREFIXES):
         return {}
     if cid == table.CAST_ID:
         slot = relay._cast_of(dev)
@@ -191,7 +192,7 @@ def _now_playing(relay, dev: dict, playing: dict, state) -> dict:
     if progress is not None:
         out["position"] = int(progress["position"])
         out["duration"] = int(progress["duration"] or out["duration"])
-    creator = state.get(cid) if cid[:2] == "sr" else None
+    creator = state.get(cid) if cid[:2] in ("sr", "fv") else None
     if creator is not None:
         with state.lock:
             out["total"] = len(creator.videos)
@@ -241,13 +242,13 @@ def set_timer(relay, key, caller: Caller = LEGACY, body: dict | None = None) -> 
         cid = playing["channel"]
         if not playing["online"]:
             return {"ok": False, "error": f"{dev['name']}没在线"}
-        if not (cid == table.CAST_ID or cid[:2] in ("up", "sr")):
+        if not (cid == table.CAST_ID or cid[:2] in channel_groups.RELAY_PREFIXES):
             return {"ok": False, "error": "直播台没有「这集」，说「30分钟后暂停」吧"}
         video = relay._cast_of(dev).cast if cid == table.CAST_ID else relay._on_air(dev, cid)
         if video is None or not video.duration:
             return {"ok": False, "error": "不知道这个视频有多长，说「30分钟后暂停」吧"}
         timer = {"kind": "end", "channel": cid, "video": video.bvid, "duration": int(video.duration),
-                 "what": "episode" if cid[:2] == "sr" else "video", "set": _now(relay)}
+                 "what": "episode" if cid[:2] in ("sr", "fv") else "video", "set": _now(relay)}
     else:
         return {"ok": False, "error": "请求格式不对"}
     with memo as rec:
@@ -297,7 +298,7 @@ def sleep(relay, dev: dict, playing: dict | None = None) -> None:
             # 先调暗再暂停：电视服务暂停后要到继续时才发亮度。
             relay._event(dev, "brightness", value=dim)
     done = False
-    if cid == table.CAST_ID or cid[:2] in ("up", "sr"):
+    if cid == table.CAST_ID or cid[:2] in channel_groups.RELAY_PREFIXES:
         paused = relay._paused_on(dev, cid)
         if paused is not None:
             # 手机已经暂停了：改成定时暂停（不自动继续），电视服务那边也再说一次。
@@ -491,7 +492,7 @@ def subscribe(relay, key, caller: Caller = LEGACY, body: dict | None = None) -> 
     if not playing["online"]:
         return {"ok": False, "error": f"{dev['name']}没在线"}
     state = relay._state_of(dev)
-    if cid[:2] in ("up", "sr"):
+    if cid[:2] in channel_groups.RELAY_PREFIXES:
         creator = state.get(cid)
         name = creator.name if creator is not None else cid
         return {"ok": False, "error": f"「{table.label_text(name, 16)}」已经在频道列表里了"}
@@ -542,7 +543,7 @@ def unsubscribe(relay, key, caller: Caller = LEGACY, body: dict | None = None, k
     if relay.tenant and not keyed and (caller.guest or caller.user != dev.get("owner")):
         return {"ok": False, "error": "只有设备主人能删台"}
     cid = body.get("id")
-    if not isinstance(cid, str) or cid[:2] not in ("up", "sr"):
+    if not isinstance(cid, str) or cid[:2] not in channel_groups.RELAY_PREFIXES:
         return {"ok": False, "error": "这个台不能删"}
     state = relay._state_of(dev)
     creator = state.get(cid)

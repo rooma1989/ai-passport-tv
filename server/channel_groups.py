@@ -12,7 +12,9 @@ from pathlib import Path
 
 CAST = "我的投屏"
 CREATORS = "UP 主"
-GROUPS = (CAST, CREATORS, "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "节目回看", "其他")
+# 收藏夹台（中转的 fv01…，P1c）：B 站收藏夹，一个收藏夹一个台。
+FAVS = "B站收藏"
+GROUPS = (CAST, CREATORS, FAVS, "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "节目回看", "其他")
 OTHER = "其他"
 # 剧集台（中转的 sr01…）默认放的组；和直播台一样可以在手机上改。
 SERIES = "动画影视"
@@ -31,7 +33,10 @@ TABLE_MAX = 1000
 # 设备只拿到名字，只能这样标；括号是半角的（JSON 里各占 1 字节），整个标记 9 / 14 字节。
 # 括号里的说明匹配台名时本来就不算（server/voice/match.strip_parens），unmark() 再把它拆回网站。
 SITE_MARKS = {"bilibili": "B站", "youtube": "油管"}
-_RELAY_KINDS = ("up", "sr")
+# 中转的台的 id 前缀：UP 主 up…、剧集 sr…、收藏夹 fv…（后面跟数字）。
+RELAY_PREFIXES = ("up", "sr", "fv")
+# 设备菜单里能「下一个视频」的台：中转的台和投屏台（CONFIG 的 "next"，固件按前缀认）。
+NEXT_PREFIXES = RELAY_PREFIXES + ("cast",)
 
 
 def mark(site: str) -> str:
@@ -42,7 +47,7 @@ def mark(site: str) -> str:
 
 def unmark(channel_id: str, name: str) -> tuple[str, str]:
     """设备列表里的名字 → (不带标记的名字, 网站)；没有标记（直播台、旧版中转）时网站为空。"""
-    if channel_id[:2] in _RELAY_KINDS and channel_id[2:].isdigit():
+    if channel_id[:2] in RELAY_PREFIXES and channel_id[2:].isdigit():
         for site in SITE_MARKS:
             suffix = mark(site)
             if name.endswith(suffix) and len(name) > len(suffix):
@@ -64,6 +69,8 @@ def classify(channel_id: str, name: str) -> str:
         return CAST
     if channel_id.startswith("up") and channel_id[2:].isdigit():
         return CREATORS
+    if channel_id.startswith("fv") and channel_id[2:].isdigit():
+        return FAVS
     if channel_id.startswith("sr") and channel_id[2:].isdigit():
         return SERIES
     if any(part in name for part in _REPLAYS):

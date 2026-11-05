@@ -71,7 +71,7 @@ class ClassifyTests(unittest.TestCase):
     def test_group_order(self):
         self.assertEqual(cg.GROUPS[:2], ("我的投屏", "UP 主"))
         self.assertEqual(cg.GROUPS[-1], "其他")
-        self.assertEqual(set(EXPECTED) | {"我的投屏", "UP 主"}, set(cg.GROUPS))
+        self.assertEqual(set(EXPECTED) | {"我的投屏", "UP 主", "B站收藏"}, set(cg.GROUPS))
 
 
 class OverrideTests(unittest.TestCase):
@@ -183,7 +183,8 @@ class ConfigTests(unittest.TestCase):
 
     def test_groups_and_indexes(self):
         config = self.live.channel_config()
-        self.assertEqual(config["groups"], list(cg.GROUPS))
+        # Empty groups (no favourite channel in this fixture) are not sent.
+        self.assertEqual(config["groups"], [g for g in cg.GROUPS if g != cg.FAVS])
         by_id = {c["id"]: c for c in config["channel_list"]}
         self.assertEqual(config["groups"][by_id["cast"]["g"]], "我的投屏")
         self.assertEqual(config["groups"][by_id["up05"]["g"]], "UP 主")
@@ -295,6 +296,16 @@ class DeviceListTests(unittest.TestCase):
         self.assertLessEqual(cg.config_bytes(got), cg.DEVICE_BUDGET)
         # Deterministic: the same input, the same list.
         self.assertEqual(cg.device_list(self.NAMES, keep="ch250"), got)
+
+
+class FavoriteGroupTests(unittest.TestCase):
+    def test_favourite_channels_have_their_own_group_and_count_as_relay(self):
+        self.assertIn(cg.FAVS, cg.GROUPS)
+        self.assertEqual(cg.classify("fv01", "默认收藏夹(B站)"), cg.FAVS)
+        self.assertEqual(cg.unmark("fv03", "动画(B站)"), ("动画", "bilibili"))
+        self.assertEqual(cg.RELAY_PREFIXES, ("up", "sr", "fv"))
+        self.assertEqual(cg.NEXT_PREFIXES, ("up", "sr", "fv", "cast"))
+        self.assertLessEqual(len(cg.GROUPS), 16, "the firmware holds at most 16 groups")
 
 
 class RemoteUrlTests(unittest.TestCase):
