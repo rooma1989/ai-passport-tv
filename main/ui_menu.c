@@ -114,8 +114,61 @@ static bool two_levels(const ui_menu_t *menu)
     return menu->group_count > 1 && used_groups(menu) > 1;
 }
 
+// ---- "下一个视频" ----
+//
+// One row on top of the first page (the groups, or a one-level list) while the
+// playing channel's id starts with a prefix CONFIG named. It is row 0; the
+// row <-> group/entry helpers below shift by it, so everything built on them
+// (counts, labels, the highlight, scrolling) sees it as an ordinary row.
+
+#define UI_MENU_NEXT_LABEL "下一个视频"
+
+static bool next_shown(const ui_menu_t *menu)
+{
+    if (!menu || !menu->next_count || !menu->current[0]) {
+        return false;
+    }
+    if (!menu->at_groups && two_levels(menu)) {
+        return false;   // a group's channels: only the first page has it
+    }
+    for (unsigned i = 0; i < menu->next_count && i < UI_MENU_NEXT_PREFIXES; i++) {
+        size_t n = strnlen(menu->next_prefixes[i], UI_MENU_NEXT_PREFIX_MAX);
+        if (n && strncmp(menu->current, menu->next_prefixes[i], n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static unsigned next_rows(const ui_menu_t *menu)
+{
+    return next_shown(menu) ? 1u : 0u;
+}
+
+bool ui_menu_set_next_prefixes(ui_menu_t *menu, const char (*prefixes)[UI_MENU_NEXT_PREFIX_MAX],
+                               unsigned count)
+{
+    if (!menu || count > UI_MENU_NEXT_PREFIXES || (count && !prefixes)) {
+        return false;
+    }
+    memset(menu->next_prefixes, 0, sizeof(menu->next_prefixes));
+    for (unsigned i = 0; i < count; i++) {
+        // strnlen, not strncpy's reading: a full slot has no terminator.
+        size_t n = strnlen(prefixes[i], UI_MENU_NEXT_PREFIX_MAX - 1);
+        memcpy(menu->next_prefixes[i], prefixes[i], n);
+    }
+    menu->next_count = count;
+    return true;
+}
+
 static int group_at_row(const ui_menu_t *menu, unsigned row)
 {
+    if (next_shown(menu)) {
+        if (row == 0) {
+            return -1;
+        }
+        row--;
+    }
     for (unsigned g = 0; g < menu->group_count; g++) {
         if (group_used(menu, g) && row-- == 0) {
             return (int)g;
@@ -126,7 +179,7 @@ static int group_at_row(const ui_menu_t *menu, unsigned row)
 
 static unsigned row_of_group(const ui_menu_t *menu, unsigned group)
 {
-    unsigned row = 0;
+    unsigned row = next_rows(menu);
     for (unsigned g = 0; g < group && g < menu->group_count; g++) {
         row += group_used(menu, g) ? 1u : 0u;
     }
@@ -135,6 +188,12 @@ static unsigned row_of_group(const ui_menu_t *menu, unsigned group)
 
 static int entry_at_row(const ui_menu_t *menu, unsigned row)
 {
+    if (next_shown(menu)) {
+        if (row == 0) {
+            return -1;
+        }
+        row--;
+    }
     if (!two_levels(menu)) {
         return row < menu->count ? (int)row : -1;
     }
@@ -149,9 +208,9 @@ static int entry_at_row(const ui_menu_t *menu, unsigned row)
 static unsigned row_of_entry(const ui_menu_t *menu, unsigned index)
 {
     if (!two_levels(menu)) {
-        return index;
+        return index + next_rows(menu);
     }
-    unsigned row = 0;
+    unsigned row = next_rows(menu);
     for (unsigned i = 0; i < index; i++) {
         row += entry_group(menu, i) == entry_group(menu, index) ? 1u : 0u;
     }
@@ -234,23 +293,26 @@ unsigned ui_menu_row_count(const ui_menu_t *menu)
     if (!menu) {
         return 0;
     }
-    if (menu->at_groups) {
-        return used_groups(menu);
-    }
-    if (!two_levels(menu)) {
-        return menu->count;
-    }
     unsigned rows = 0;
-    for (unsigned i = 0; i < menu->count; i++) {
-        rows += entry_group(menu, i) == menu->group ? 1u : 0u;
+    if (menu->at_groups) {
+        rows = used_groups(menu);
+    } else if (!two_levels(menu)) {
+        rows = menu->count;
+    } else {
+        for (unsigned i = 0; i < menu->count; i++) {
+            rows += entry_group(menu, i) == menu->group ? 1u : 0u;
+        }
     }
-    return rows;
+    return rows + next_rows(menu);
 }
 
 const char *ui_menu_row_label(const ui_menu_t *menu, unsigned row)
 {
     if (!menu) {
         return NULL;
+    }
+    if (row == 0 && next_shown(menu)) {
+        return UI_MENU_NEXT_LABEL;
     }
     if (menu->at_groups) {
         int g = group_at_row(menu, row);
@@ -616,6 +678,10 @@ void ui_menu_confirm(ui_menu_t *menu)
     if (!menu || menu->view != UI_VIEW_MENU || menu->count == 0 || ui_menu_voice_up(menu)) {
         return;
     }
+    if (menu->selected == 0 && next_shown(menu)) {
+        menu->action = UI_ACTION_NEXT;
+        return;
+    }
     if (menu->at_groups) {
         // Into the group: on the playing channel if it is in there, else the top.
         int g = group_at_row(menu, menu->selected);
@@ -709,6 +775,9 @@ ui_action_t ui_menu_take_action(ui_menu_t *menu, char *out, size_t out_size)
         }
         memcpy(out, id, strlen(id) + 1);
         ui_menu_close(menu);  // the list has done its job
+    }
+    if (action == UI_ACTION_NEXT) {
+        ui_menu_close(menu);  // the picture is what changes next
     }
     return action;
 }

@@ -475,6 +475,11 @@ typedef struct {
     uint8_t list_group[AV_CHANNEL_MAX];
     char group_names[UI_MENU_GROUP_MAX][UI_MENU_GROUP_NAME_MAX];
     unsigned group_count;
+    // CONFIG "next": channel-id prefixes whose channels can skip to their next
+    // video (the menu's "下一个视频" row). Absent: count 0, no row. Written by
+    // the receive task under list_lock; the menu rebuild copies them under it.
+    char next_prefixes[UI_MENU_NEXT_PREFIXES][UI_MENU_NEXT_PREFIX_MAX];
+    unsigned next_count;
     // The phone remote's sign-in address from CONFIG ("remote_url"), shown as a
     // QR code on the status page. Written by the receive task under list_lock;
     // remote_gen moves on each change so the drawing side re-encodes only then.
@@ -628,6 +633,10 @@ typedef struct {
     // list_lock into recover_url / recover_ttl / recover_err, then
     // recover_answer_gen moves; pump_keys applies it to the screen.
     atomic_bool recover_offered, unbound, recover_session, recover_ask;
+    // The menu's "下一个视频" was chosen: the key path raises it, the receive
+    // task sends AV_STATUS {"next": 1} on this session and clears it. Dropped
+    // when the session ends unsent: the next one may be on another video.
+    atomic_bool next_ask;
     atomic_uint recover_sent, recover_answer_gen;
     char recover_url[AV_RECOVER_URL_MAX+1];
     unsigned recover_ttl;
@@ -1581,6 +1590,30 @@ static bool config_valid(char *buf, size_t n, uint32_t session) {
                     s.group_count++;
                 }
             }
+            // "next": the prefixes of channels the menu can skip to their next
+            // video (P1c). Absent (an older server): none, and no menu row. A
+            // prefix that is not a string, is empty or does not fit is skipped;
+            // past UI_MENU_NEXT_PREFIXES the rest are dropped.
+            {
+                char prefixes[UI_MENU_NEXT_PREFIXES][UI_MENU_NEXT_PREFIX_MAX];
+                unsigned nc=0;
+                memset(prefixes,0,sizeof(prefixes));
+                const cJSON *next=cJSON_GetObjectItemCaseSensitive(j,"next");
+                if (cJSON_IsArray(next)) {
+                    const cJSON *p=NULL;
+                    cJSON_ArrayForEach(p,next) {
+                        if (nc>=UI_MENU_NEXT_PREFIXES) break;
+                        if (!cJSON_IsString(p) || !p->valuestring) continue;
+                        const size_t len=strnlen(p->valuestring,UI_MENU_NEXT_PREFIX_MAX);
+                        if (len==0 || len>=UI_MENU_NEXT_PREFIX_MAX) continue;
+                        memcpy(prefixes[nc++],p->valuestring,len);
+                    }
+                }
+                taskENTER_CRITICAL(&list_lock);
+                memcpy(s.next_prefixes,prefixes,sizeof(prefixes));
+                s.next_count=nc;
+                taskEXIT_CRITICAL(&list_lock);
+            }
             // Upper case, digits and URL punctuation only: that keeps the code in
             // QR alphanumeric mode, small enough for the status page, and keeps
             // anything else out of the drawing path.
@@ -1780,6 +1813,17 @@ static bool send_recover(int fd, uint32_t session) {
     return io_all(fd,wire,sizeof(wire),true,1000) && io_all(fd,body,sizeof(body)-1,true,1000);
 }
 
+// The menu's "下一个视频" (P1c), as an AV_STATUS like the recovery request. The
+// server answers nothing: the relay moves the channel on, and the session
+// reconnects to it as after any change of source.
+static bool send_next(int fd, uint32_t session) {
+    char body[]="{\"next\":1}";
+    uint8_t wire[AV_HEADER_BYTES];
+    av_header_t h={.type=AV_STATUS,.session=session,.length=(uint32_t)(sizeof(body)-1)};
+    av_header_encode(wire,&h);
+    return io_all(fd,wire,sizeof(wire),true,1000) && io_all(fd,body,sizeof(body)-1,true,1000);
+}
+
 // Who this device is, for the multi-tenant server (av_identity.h). Filled
 // before the first session starts (and retried from HELLO if that failed),
 // which is after Wi-Fi has started -- the RF subsystem then feeds the hardware
@@ -1871,6 +1915,9 @@ static bool hello(int fd) {
     // This firmware can ask for an owner login code (STATUS "recover") and
     // show it (SWITCH "recover"); see av_recover.h.
     if (ok) ok=cJSON_AddNumberToObject(j,"recover",1)!=NULL;
+    // This firmware can ask for the next video from its menu (STATUS "next");
+    // a server that can take it lists the channels in CONFIG "next".
+    if (ok) ok=cJSON_AddNumberToObject(j,"next",1)!=NULL;
     // The link as it is now, for the server's log: which network, how strong,
     // which channel, and the transmit power actually in effect (the setup
     // page's Advanced tab can change it).
@@ -2012,6 +2059,12 @@ static void receive_task(void *arg) {
                 atomic_store(&s.recover_ask,true);
                 ESP_LOGW(TAG,"Recovery request not sent");
             }
+        }
+        // "Next video" from the menu: once, on this session; a later session
+        // would be on another video, so a failed send is dropped, not kept.
+        if (stream.configured && atomic_exchange(&s.next_ask,false)) {
+            s_rx_stage="next-send";
+            if (!send_next(fd,stream.session)) ESP_LOGW(TAG,"Next-video request not sent");
         }
 #if CONFIG_AV_VOICE
         if (stream.configured) {
@@ -2235,6 +2288,8 @@ done:
     atomic_store(&s.voice_session,false);
 #endif
     atomic_store(&s.recover_session,false);
+    // A "next" this session did not send is not carried into another.
+    atomic_store(&s.next_ask,false);
     free(control);
     // Only a real socket is shut down and closed. AV_TRANSPORT_USB is a
     // negative sentinel, not a descriptor, and passing it to close() would
@@ -5878,6 +5933,14 @@ static bool pump_keys(uint32_t wait_ms) {
         ESP_LOGW(TAG,"Server asked for %s; not switching",chosen);
     }
     ui_action_t action=ui_menu_take_action(&s.menu,chosen,sizeof(chosen));
+    if (action==UI_ACTION_NEXT) {
+        // The receive task sends it on this session; the list is already
+        // closed, and the box says what was asked until the picture changes.
+        atomic_store(&s.next_ask,true);
+        ui_menu_show_hint(&s.menu,UI_HINT_NEXT,0);
+        ESP_LOGI(TAG,"Next video asked from the menu on %s",s.channel);
+        return false;
+    }
     if (action==UI_ACTION_PET) {
         // Chosen on the picker: used everywhere at once, and stored now -- it is
         // rare, and the picker can be open with no session to write it later.
@@ -6159,8 +6222,9 @@ void av_player_main(void) {
         atomic_store(&s.covered_frames,0u);
         av_voice_session_reset();
 #endif
-        // A pause belongs to the session it was asked in.
+        // A pause belongs to the session it was asked in, and so does "next".
         atomic_store(&s.paused,false);
+        atomic_store(&s.next_ask,false);
         // Back to "dialling", but only when that is worth saying.
         //
         // Unconditionally would be wrong twice over. It would make the screen
@@ -6338,6 +6402,11 @@ void av_player_main(void) {
                     }
                     if (n) ui_menu_set_groups(&s.menu,(const char (*)[UI_MENU_GROUP_NAME_MAX])s.group_names,
                                               s.group_count);
+                    // Before ui_menu_load: the "下一个视频" row shifts the
+                    // highlight's row, which the load works out.
+                    if (n) ui_menu_set_next_prefixes(&s.menu,
+                                                     (const char (*)[UI_MENU_NEXT_PREFIX_MAX])s.next_prefixes,
+                                                     s.next_count);
                     taskEXIT_CRITICAL(&list_lock);
                     if (n) ui_menu_set_rows(&s.menu,menu_rows());
                 if (n && !ui_menu_load(&s.menu,entries,n,s.channel)) {

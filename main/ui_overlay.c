@@ -303,7 +303,15 @@ void ui_overlay_list(ui_surface_t surface, const ui_menu_t *menu)
             continue;
         }
         const int e = ui_menu_row_entry(menu, row);
-        if (e < 0) continue;
+        if (e < 0) {
+            // Neither a group nor a channel: the "下一个视频" row on top.
+            const char *label = ui_menu_row_label(menu, row);
+            if (!label) continue;
+            const uint16_t color = chosen ? UI_DEEP : UI_PAPER;
+            ui_draw_icon(surface, UI_ICON_NEXT, 14, text_y, 1, color);
+            ui_text_draw_scaled(surface, 38, text_y, label, 1, color, back);
+            continue;
+        }
         // A channel: its number in the whole list, its name, a mark if playing.
         const bool here = e == playing_entry;
         char number[8];

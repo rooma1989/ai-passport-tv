@@ -685,6 +685,125 @@ static void test_episode_loading(void)
 }
 
 
+// ---- "下一个视频": a row on top of the first page on relay channels ----
+
+static const char NEXT_PREFIXES[][UI_MENU_NEXT_PREFIX_MAX] = { "up", "sr", "fv", "cast" };
+
+static ui_menu_entry_t RELAY_ENTRIES[] = {
+    { "cctv1", "CCTV1", 0 },
+    { "up01", "某UP(B站)", 0 },
+    { "fv01", "默认收藏夹(B站)", 0 },
+};
+
+static void test_next_row_on_a_relay_channel(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    // Prefixes first, then the list, as the player does: the highlight is
+    // worked out when the list loads.
+    check(ui_menu_set_next_prefixes(&menu, NEXT_PREFIXES, 4), "prefixes load");
+    check(ui_menu_load(&menu, RELAY_ENTRIES, 3, "up01"), "relay list loads");
+    ui_menu_open(&menu);
+    check(ui_menu_row_count(&menu) == 4, "one extra row on top");
+    check(strcmp(ui_menu_row_label(&menu, 0), "下一个视频") == 0, "the first row says next video");
+    check(ui_menu_row_entry(&menu, 0) < 0, "the first row is not a channel");
+    check(ui_menu_row_entry(&menu, 1) == 0, "channels follow it");
+    check(strcmp(ui_menu_row_label(&menu, 3), "默认收藏夹(B站)") == 0, "the last channel is the last row");
+    check(ui_menu_row_label(&menu, 4) == NULL, "nothing past the end");
+    check(strcmp(ui_menu_selected(&menu), "up01") == 0, "the highlight still starts on the playing channel");
+    // Wrapping counts the extra row.
+    ui_menu_step(&menu, 1);
+    ui_menu_step(&menu, 1);
+    check(menu.selected == 0, "stepping past the end wraps onto the next row");
+    check(ui_menu_selected(&menu) == NULL, "the next row names no channel");
+    ui_menu_confirm(&menu);
+    char out[UI_MENU_ID_MAX];
+    check(ui_menu_take_action(&menu, out, sizeof(out)) == UI_ACTION_NEXT, "confirming it asks for the next video");
+    check(out[0] == '\0', "and names no channel");
+    check(menu.view == UI_VIEW_VIDEO, "and closes the list");
+    check(ui_menu_take_action(&menu, out, sizeof(out)) == UI_ACTION_NONE, "the action is read once");
+    // A channel below it still switches.
+    ui_menu_open(&menu);
+    menu.selected = 3;
+    ui_menu_confirm(&menu);
+    check(ui_menu_take_action(&menu, out, sizeof(out)) == UI_ACTION_SWITCH && strcmp(out, "fv01") == 0,
+          "a channel row below it still switches to that channel");
+}
+
+static void test_no_next_row_on_a_live_channel_or_without_prefixes(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    check(ui_menu_set_next_prefixes(&menu, NEXT_PREFIXES, 4), "prefixes load");
+    check(ui_menu_load(&menu, RELAY_ENTRIES, 3, "cctv1"), "relay list loads");
+    ui_menu_open(&menu);
+    check(ui_menu_row_count(&menu) == 3, "a live channel has no next row");
+    check(strcmp(ui_menu_selected(&menu), "cctv1") == 0, "on the playing channel");
+    ui_menu_t plain;
+    ui_menu_init(&plain);
+    check(ui_menu_load(&plain, RELAY_ENTRIES, 3, "up01"), "relay list loads");
+    ui_menu_open(&plain);
+    check(ui_menu_row_count(&plain) == 3, "no prefixes from the server: no next row");
+    // The server stops offering it: the prefixes clear and the row goes.
+    check(ui_menu_set_next_prefixes(&menu, NEXT_PREFIXES, 4), "prefixes load");
+    check(ui_menu_load(&menu, RELAY_ENTRIES, 3, "up01"), "relay list loads");
+    check(ui_menu_row_count(&menu) == 4, "on a relay channel: the row");
+    check(ui_menu_set_next_prefixes(&menu, NULL, 0), "no prefixes");
+    check(ui_menu_load(&menu, RELAY_ENTRIES, 3, "up01"), "relay list loads");
+    check(ui_menu_row_count(&menu) == 3, "prefixes cleared: no next row");
+    check(strcmp(ui_menu_selected(&menu), "up01") == 0, "the highlight follows the shift back");
+}
+
+static void test_next_prefixes_are_bounded(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    static const char many[UI_MENU_NEXT_PREFIXES + 1][UI_MENU_NEXT_PREFIX_MAX] = { "a" };
+    check(!ui_menu_set_next_prefixes(&menu, many, UI_MENU_NEXT_PREFIXES + 1), "too many prefixes refused");
+    check(menu.next_count == 0, "a refusal changes nothing");
+    check(!ui_menu_set_next_prefixes(&menu, NULL, 2), "a count without prefixes is refused");
+    // An unterminated prefix is cut, not read past.
+    char full[1][UI_MENU_NEXT_PREFIX_MAX];
+    memset(full, 'u', sizeof(full));
+    check(ui_menu_set_next_prefixes(&menu, (const char (*)[UI_MENU_NEXT_PREFIX_MAX])full, 1), "a full prefix loads");
+    check(strlen(menu.next_prefixes[0]) == UI_MENU_NEXT_PREFIX_MAX - 1, "cut to fit, terminated");
+    // An empty prefix matches nothing.
+    static const char empty[1][UI_MENU_NEXT_PREFIX_MAX] = { "" };
+    check(ui_menu_set_next_prefixes(&menu, empty, 1), "an empty prefix loads");
+    check(ui_menu_load(&menu, RELAY_ENTRIES, 3, "up01"), "relay list loads");
+    ui_menu_open(&menu);
+    check(ui_menu_row_count(&menu) == 3, "an empty prefix matches no channel");
+}
+
+static void test_next_row_only_on_the_group_page(void)
+{
+    ui_menu_t menu;
+    ui_menu_init(&menu);
+    check(ui_menu_set_groups(&menu, GROUP_NAMES, 4), "group names load");
+    check(ui_menu_set_next_prefixes(&menu, NEXT_PREFIXES, 4), "prefixes load");
+    check(ui_menu_load(&menu, GROUPED, (unsigned)GROUPED_COUNT, "up02"), "the grouped list loads");
+    ui_menu_set_rows(&menu, 8);
+    ui_menu_open(&menu);
+    check(ui_menu_at_groups(&menu), "grouped: opens on the groups");
+    check(ui_menu_row_count(&menu) == 4, "three groups and the next row");
+    check(strcmp(ui_menu_row_label(&menu, 0), "下一个视频") == 0, "next video tops the group page");
+    check(ui_menu_row_group(&menu, 0) < 0, "it is not a group");
+    check(ui_menu_row_group(&menu, 1) == 0, "groups follow it");
+    check(ui_menu_row_group(&menu, menu.selected) == 1, "the highlight is on the playing channel's group");
+    ui_menu_confirm(&menu);   // into "UP 主"
+    check(!ui_menu_at_groups(&menu), "into the group");
+    check(ui_menu_row_count(&menu) == 2, "the channel page has no next row");
+    check(strcmp(ui_menu_selected(&menu), "up02") == 0, "on the playing channel");
+    ui_menu_back(&menu);
+    check(ui_menu_at_groups(&menu) && ui_menu_row_group(&menu, menu.selected) == 1,
+          "back on the groups, on the same group");
+    menu.selected = 0;
+    ui_menu_confirm(&menu);
+    char out[UI_MENU_ID_MAX];
+    check(ui_menu_take_action(&menu, out, sizeof(out)) == UI_ACTION_NEXT, "the group page's next row asks for it");
+    check(menu.view == UI_VIEW_VIDEO, "and closes the list");
+}
+
 static void test_progress(void)
 {
     ui_progress_t p;
@@ -788,6 +907,10 @@ int main(void)
     test_pet_picker();
     test_episode_loading();
     test_progress();
+    test_next_row_on_a_relay_channel();
+    test_no_next_row_on_a_live_channel_or_without_prefixes();
+    test_next_prefixes_are_bounded();
+    test_next_row_only_on_the_group_page();
 
     if (failures) {
         printf("%d check(s) failed\n", failures);

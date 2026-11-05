@@ -19,6 +19,12 @@
 // The server's list has nine; the room left is for a server that grows it.
 #define UI_MENU_GROUP_MAX 16u
 #define UI_MENU_GROUP_NAME_MAX 24u
+// Channel-id prefixes whose channels can skip to their next video (CONFIG "next";
+// the server's channel_groups.NEXT_PREFIXES). A few short words: a prefix is at
+// most UI_MENU_NEXT_PREFIX_MAX - 1 bytes, and there are at most
+// UI_MENU_NEXT_PREFIXES of them.
+#define UI_MENU_NEXT_PREFIX_MAX 8u
+#define UI_MENU_NEXT_PREFIXES 6u
 
 typedef enum {
     UI_VIEW_VIDEO = 0,   // playing; a banner may still be up
@@ -35,6 +41,7 @@ typedef enum {
     UI_ACTION_SWITCH,    // switch to ui_menu_selected()
     UI_ACTION_CLOSE,     // leave the overlay and resume the session
     UI_ACTION_PET,       // save menu->pet_current as the pet
+    UI_ACTION_NEXT,      // ask the server for the next video on this channel
 } ui_action_t;
 
 typedef struct {
@@ -149,6 +156,11 @@ typedef struct {
     bool at_groups;
     unsigned group;       // the group whose channels are (or were last) shown
     char current[UI_MENU_ID_MAX]; // the channel playing, as last loaded
+    // CONFIG "next": prefixes of channels that can skip to their next video.
+    // When the playing channel matches, the first page gets a "下一个视频" row
+    // on top (row 0); every row below it moves down by one.
+    char next_prefixes[UI_MENU_NEXT_PREFIXES][UI_MENU_NEXT_PREFIX_MAX];
+    unsigned next_count;
     unsigned selected;
     unsigned scroll;      // index of the first visible row
     unsigned visible_rows; // rows the caller can draw; 0 means it has not said
@@ -220,6 +232,14 @@ bool ui_menu_load(ui_menu_t *menu, const ui_menu_entry_t *entries, unsigned coun
 // Returns false, changing nothing, for more than UI_MENU_GROUP_MAX names.
 bool ui_menu_set_groups(ui_menu_t *menu, const char (*names)[UI_MENU_GROUP_NAME_MAX],
                         unsigned count);
+// Set the channel-id prefixes that get the "下一个视频" row (CONFIG "next").
+// Call before ui_menu_load: loading the list works out the highlight's row, and
+// the row on top moves every row below it. Zero prefixes: no such row, as with
+// a server that does not offer it. A prefix longer than fits is cut; an empty
+// one matches nothing. Returns false, changing nothing, for more than
+// UI_MENU_NEXT_PREFIXES prefixes.
+bool ui_menu_set_next_prefixes(ui_menu_t *menu, const char (*prefixes)[UI_MENU_NEXT_PREFIX_MAX],
+                               unsigned count);
 // Open the list: on the groups, highlighting the playing channel's group, when
 // there is more than one non-empty group; otherwise on the channels. No effect
 // when the list is empty.
@@ -233,7 +253,8 @@ bool ui_menu_at_groups(const ui_menu_t *menu);
 // True while one group's channels are showing, so OK long press goes back.
 bool ui_menu_in_group(const ui_menu_t *menu);
 // What a row of the showing level is: a group index at the groups level, an
-// entry index otherwise; -1 for a row past the end or of the other level.
+// entry index otherwise; -1 for a row past the end, of the other level, or the
+// "下一个视频" row (ui_menu_row_label names it).
 int ui_menu_row_group(const ui_menu_t *menu, unsigned row);
 int ui_menu_row_entry(const ui_menu_t *menu, unsigned row);
 // Channels in group `g`.
@@ -267,7 +288,8 @@ void ui_menu_scroll_by(ui_menu_t *menu, int delta, unsigned rows);
 // Tell the menu how many rows it may show, so it can keep the highlight visible.
 void ui_menu_set_rows(ui_menu_t *menu, unsigned rows);
 // Confirm the highlighted row: on a group, open its channels; on a channel, ask
-// for a switch.
+// for a switch; on "下一个视频", ask for the next video (UI_ACTION_NEXT, and
+// ui_menu_take_action then closes the list).
 void ui_menu_confirm(ui_menu_t *menu);
 
 // Advance timers. Returns true when something changed and the screen must be
