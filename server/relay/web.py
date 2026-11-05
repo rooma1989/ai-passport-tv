@@ -2405,7 +2405,8 @@ class Relay:
         creator = account.get(cid)
         if creator is None:
             return "没有这个台"
-        self.refresh_if_stale(cid, account)
+        # 带上自己是谁：收藏夹台要用这个人自己的 B 站登录刷新（P1c）。
+        self.refresh_if_stale(cid, account, caller.user)
         with account.lock:
             videos = list(creator.videos)
             positions = dict(creator.positions)

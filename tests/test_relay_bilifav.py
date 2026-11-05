@@ -39,6 +39,16 @@ class RefreshTests(RelayHarness):
         self.relay.refresh_if_stale(creator.id, state, owner=self.admin)
         self.assertEqual([v.bvid for v in state.get(creator.id).videos], ["BV1a"])
 
+    def test_watching_on_the_computer_refreshes_with_the_viewers_login(self):
+        from server.relay.tenants import Caller
+        state = self.relay.user_state(self.admin)
+        creator = state.add("bilibili", "fav111", "默认收藏夹", [Video("BV1a", "a", 1, 1)], 0.0,
+                            kind="series", prefix=state_mod.FAV_PREFIX, most=state_mod.MAX_FAVS)
+        owners = []
+        self.relay.refresh_if_stale = lambda cid, state=None, owner=None: owners.append((cid, owner))
+        self.relay._pc_subscription(Caller(user=self.admin), state, creator.id, {})
+        self.assertEqual(owners[:1], [(creator.id, self.admin)])
+
 
 if __name__ == "__main__":
     unittest.main()
