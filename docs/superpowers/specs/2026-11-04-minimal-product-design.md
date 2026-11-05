@@ -64,11 +64,16 @@ Tenancy stays: pairing and Bilibili login depend on it, and a single household i
 ## 5. Bilibili channels (confirmed)
 
 - QR login on the computer (existing `bililogin`); credentials stay on that machine and are renewed before they expire (existing, **not yet tested with a real account**).
-- After login two lists are offered for ticking: followed creators (sorted by latest upload, the first 12 ticked by default, i.e. `MAX_CREATORS`) and favourite folders (**new**, up to 8 by default). Each becomes a looping channel; each device remembers its place in each channel.
-- On the device, OK opens the existing menu, which gains a "next video" item (small firmware change).
+- After login two lists are offered for ticking: followed creators (the Creators page, `follows.py`, already sorted by latest upload; up to `MAX_CREATORS` = 12) and favourite folders (**new**, up to 8). Each becomes a looping channel. Places are kept **per account** (the devices of one account share them), not per device.
+- On the device, OK opens the existing menu, which gains a "next video" row (small firmware change).
 - 360p. Deleted, members-only and region-locked videos are skipped and logged; when the login lapses the device asks the user to scan the QR code again.
 - Bilibili API calls are rate-limited.
-- **To measure**: the device CONFIG packet is capped at 7168 bytes (`channel_groups.CONFIG_MAX`). About 60 live channels plus up to 20 Bilibili channels should fit, but name lengths vary; if not, shorten the names shown on the device.
+
+**As built (P1c, 2026-11-05):**
+
+- **Favourite folders.** Creators page → "add channels from Bilibili favourites" lists your folders (`GET /api/bili/favorites`, `server/relay/bilifav.py`) and adds the ticked ones (`POST /api/bili/favorites/import`). A folder is a series channel (`kind="series"`, `source="fav<media id>"`) with its own ids `fv01…fv08` and its own device group "Bilibili favourites"; it plays oldest-favourited first. Listing, adding and the 12-hour refresh all use the owner's own Bilibili login (private folders need it) and never the shared source cache; without a login the old list is kept. Favourites sort after series, so adding one never reorders existing channels, and they stay off the series poster wall.
+- **Next video.** Firmware that says `"next": 1` in HELLO gets `"next": ["up","sr","fv","cast"]` in CONFIG (channel-id prefixes). On such a channel the first menu page has a "next video" row on top; choosing it sends STATUS `{"next": 1}`. The TV server checks what plays now and calls the relay's `/api/next` for that device with the relay key, on a worker thread, one request at a time. The TV server gets `TV_RELAY_KEY_FILE` in both editions; the voice settings stay full-edition only.
+- **CONFIG size (measured).** The packet is capped at 7168 bytes (`channel_groups.CONFIG_MAX`). The built-in 93 channels plus 12 creators and 8 favourites fit unchanged with typical names; with the longest Bilibili names 12 live names are shortened. When the list is too big, live channel names are shortened by the bytes they cost (Chinese is 6 bytes a character in the packet, Latin 1), from 16 down to 4 Chinese characters, never inside an open bracket and never into a duplicate; groups still come from the full name; relay and cast names are never shortened. Only then are channels dropped.
 
 ## 6. Deployment A: a computer in the user's home (presented, to confirm)
 
