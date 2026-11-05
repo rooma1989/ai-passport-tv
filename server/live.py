@@ -345,9 +345,11 @@ def channel_config(keep: str = "", budget: int = channel_groups.DEVICE_BUDGET) -
     """
     path = os.environ.get(GROUPS_ENV)
     overrides = channel_groups.load_overrides(Path(path) if path else None)
-    entries = channel_groups.device_list([(key, CHANNEL_LABELS.get(key, key)) for key in CHANNELS],
-                                         keep, budget)
-    of = {key: channel_groups.group_of(key, name, overrides) for key, name in entries}
+    full = {key: CHANNEL_LABELS.get(key, key) for key in CHANNELS}
+    entries = channel_groups.device_list(list(full.items()), keep, budget)
+    # 分组按全名归：放不下时 device_list 会缩短台名（「Ningxia Satellite Channel」→「Ningxia Sate」），
+    # 拿缩短的名字归类会把它从「卫视」挪到「国际」。
+    of = {key: channel_groups.group_of(key, full.get(key, name), overrides) for key, name in entries}
     used = [g for g in channel_groups.GROUPS if g in of.values()]
     index = {g: n for n, g in enumerate(used)}
     return {"groups": used,

@@ -471,7 +471,12 @@ class ConfigContractTests(unittest.TestCase):
             # pointing at a key that the next test's table did not have, which
             # made an unrelated test fail with KeyError -- a test leaking state
             # into another test, which is worse than the flakiness this replaced.
-            live.CHANNELS, live.CHANNEL_LABELS, live.DEFAULT_CHANNEL = saved
+            # In place, not rebound: tv_server imported CHANNELS by name, and a rebound dict left it
+            # counting a stale table (a later test then saw the wrong total).
+            for table, before in ((live.CHANNELS, saved[0]), (live.CHANNEL_LABELS, saved[1])):
+                table.clear()
+                table.update(before)
+            live.DEFAULT_CHANNEL = saved[2]
 
     def test_oversized_channel_file_is_rejected_not_truncated(self):
         """A file too large for a channel table is an error, never a partial table."""
@@ -504,6 +509,29 @@ class ConfigContractTests(unittest.TestCase):
                 self.assertLessEqual(len(live.channel_config()["channel_list"]), live.TV_CHANNEL_MAX)
         finally:
             # In place: tv_server imported these dicts by name.
+            for table, before in zip(tables, saved[0]):
+                table.clear()
+                table.update(before)
+            live.DEFAULT_CHANNEL = saved[1]
+            live._LOADED.clear()
+            live._LOADED.update(saved[2])
+
+    def test_a_shortened_name_keeps_the_group_of_its_full_name(self):
+        """A tight list shortens live names; the group still comes from the full name (P1c)."""
+        import server.live as live
+        tables = (live.CHANNELS, live.CHANNEL_LABELS, live.CHANNEL_AGENTS)
+        saved = [dict(t) for t in tables], live.DEFAULT_CHANNEL, dict(live._LOADED)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "channels.txt"
+                path.write_text("".join(f"ch{n:03d} | Ningxia Satellite Channel {n:03d} | http://x/{n}\n"
+                                        for n in range(120)), encoding="utf-8")
+                live.load_channels(path)
+                config = live.channel_config()
+                names = [row["name"] for row in config["channel_list"]]
+                self.assertTrue(any("Satellite" not in name for name in names), "the list had to be shortened")
+                self.assertEqual(config["groups"], ["卫视"])
+        finally:
             for table, before in zip(tables, saved[0]):
                 table.clear()
                 table.update(before)
