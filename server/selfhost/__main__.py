@@ -245,16 +245,17 @@ def build_children(layout, config, ffmpeg: str, device_address: str, public_url:
                    TV_NO_BUILTIN_CHANNELS="1", TV_ALLOW_PUBLIC="1" if config.allow_internet else "0",
                    TV_DECODER_CONNECT_TIMEOUT_S="30",
                    TV_LISTEN_PORT=str(listen_port), TV_LISTEN_ROUTE=name, TV_LISTEN_KEY_FILE=str(layout.relay_key),
-                   TV_PCM_QUEUE_CHUNKS="600", TV_VIDEO_QUEUE_S="24")
+                   TV_PCM_QUEUE_CHUNKS="600", TV_VIDEO_QUEUE_S="24",
+                   TV_RELAY_KEY_FILE=str(layout.relay_key))
         if lite:   # 精简版不给「用手机听」
             for key in ("TV_LISTEN_PORT", "TV_LISTEN_ROUTE", "TV_LISTEN_KEY_FILE"):
                 env.pop(key)
-        # 精简版没有语音：不给电视服务识别服务的地址和中转密钥。
+        # 精简版没有语音：不给识别服务的地址；中转密钥两个版本都给（设备上的「下一个视频」要用）。
         if not lite and config.asr_socket.startswith("http://"):
             # 电脑客户端的本机识别服务走回环 TCP（Windows 没有 Unix 套接字；server/voice/asr.py）。
-            env.update(TV_ASR_URL=config.asr_socket, TV_RELAY_KEY_FILE=str(layout.relay_key))
+            env.update(TV_ASR_URL=config.asr_socket)
         elif not lite and config.asr_socket:
-            env.update(TV_ASR_SOCKET=config.asr_socket, TV_RELAY_KEY_FILE=str(layout.relay_key))
+            env.update(TV_ASR_SOCKET=config.asr_socket)
         argv = child_command("server.tv_server", desktop) + ["live", "--port", str(getattr(config, port_attr)),
                                                              "--bind", config.bind, "--ffmpeg", ffmpeg]
         children.append(child(name, argv, env))

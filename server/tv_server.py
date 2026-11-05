@@ -347,6 +347,9 @@ class AVServer:
         # 主人的一次性手机登录链接，回答排在 _recover_out 里，像语音结果一样在会话的各个循环里发出去
         # （server/tenancy/recover.py）。device_peer 是这次会话设备的地址，只记网段进审计。
         self.device_recover = False
+        # 会「下一个视频」的固件（HELLO 里 "next": 1）；_next_busy：上一次请求还在路上时不再发新的。
+        self.device_next = False
+        self._next_busy = False
         self.device_peer = ""
         self._recover_out: list[dict] = []
         # 上次握手时设备报的开机时长；变小说明设备重启过。
@@ -375,6 +378,14 @@ class AVServer:
         # 语音：设备按住 OK 说的话（server/voice/）；不设 TV_ASR_SOCKET 时关闭，CONFIG 不给 voice。
         # 多用户时中转里的设备是每次会话认出来的那台（_admit → voice.bind_device），不是 TV_RELAY_DEVICE。
         self.voice = VoiceService.from_env(self.logger, per_device=self.tenancy is not None)
+        # 设备上的「下一个视频」（P1c）：用中转密钥替这台设备调 /api/next（多用户时按设备；没有密钥时没有）。
+        self.relay_for = None
+        if self.tenancy is not None:
+            try:
+                from .voice.relay_client import RelayClient
+                self.relay_for = RelayClient.factory_from_env(os.environ)
+            except (OSError, ValueError) as error:      # 只记类名：路径和密钥都不进日志
+                self.logger(f"next video: relay disabled ({type(error).__name__})")
         # 用手机听（server/listen.py）：设了 TV_LISTEN_PORT 才有，serve() 开始时开本机 HTTP。
         # device_listen：这次会话的固件会（HELLO "listen": 1）；_mute_sent：已经让它静音了；
         # _listened：这次会话里设备因为有人听而退后过 H 秒（中转据此推算进度）。
@@ -673,6 +684,34 @@ class AVServer:
             return {}
         return {"recover": 1} if tenancy_recover.enabled(self.tenancy.accounts) else {}
 
+    def _next_config(self) -> dict:
+        """CONFIG 里的 "next"：设备菜单可以「下一个视频」的台的 id 前缀。只给报了的固件、有中转密钥时。"""
+        if not self.device_next or self.relay_for is None:
+            return {}
+        return {"next": list(channel_groups.NEXT_PREFIXES)}
+
+    def _next_ask(self) -> None:
+        """设备菜单里选了「下一个视频」：在后台替这台设备调中转的 /api/next（中转切流，设备照常重连）。
+        不堵设备的收发循环；上一次还没回来时丢掉这一次。"""
+        if not self.device_next or self.relay_for is None or not self.device_id:
+            self.logger("device asked for the next video without announcing it; ignored")
+            return
+        if self._next_busy:
+            self.logger("next video: previous request still running; ignored")
+            return
+        self._next_busy = True
+        client = self.relay_for(self.device_id)
+
+        def work():
+            try:
+                answer = client.next()
+                self.logger(f"next video: {'ok' if answer.get('ok') else answer.get('error') or 'refused'}")
+            except Exception as error:  # noqa: BLE001 —— 后台线程：只记类名
+                self.logger(f"next video failed: {type(error).__name__}")
+            finally:
+                self._next_busy = False
+        threading.Thread(target=work, daemon=True, name="next-video").start()
+
     def _recover_ask(self) -> None:
         """设备上做了「恢复登录」手势：要一个链接（或说为什么不行），排队等发。"""
         if not self.device_recover:
@@ -698,6 +737,9 @@ class AVServer:
         report = json_object(packet.payload)
         if report.get("recover") == 1:
             self._recover_ask()
+            return
+        if report.get("next") == 1:
+            self._next_ask()
             return
         if isinstance(report.get("wifi"), dict):
             # 设备对一次 Wi-Fi 修改的回答（只有名字，没有密码）。
@@ -976,6 +1018,7 @@ class AVServer:
                           **({"playing": playing} if playing else {}),
                           **self._wifi_config(),
                           **self._recover_config(),
+                          **self._next_config(),
                           **self._listen_config(),
                           **self.voice.config())
             send_packet(connection, Packet(Kind.CONFIG, session, 0, 0,
@@ -1620,6 +1663,7 @@ class AVServer:
         self.phase = "hello_receive"
         # 上一台设备的恢复登录不带到这次会话（未绑定的会话在 _admit 里就服务完了，也不会有）。
         self.device_recover = False
+        self.device_next = False
         self.device_id = ""
         self._recover_out = []
         # 上一次会话发给设备的频道列表（语音按它认台）不带到这次。
@@ -1651,6 +1695,7 @@ class AVServer:
             self.device_audio_only = greeting.get("audio_only") == 1
             self.device_wifimgr = self.tenancy is not None and greeting.get("wifimgr") == 1
             self.device_recover = self.tenancy is not None and greeting.get("recover") == 1
+            self.device_next = greeting.get("next") == 1
             # 会「用手机听」的固件（"listen": 1）：SWITCH、CONFIG 带 mute，静音时 STATUS 每 2 秒带 pos。
             # 新发送端（TV_LIVE_ENGINE=v2）不照时间表发，不提供。
             self.device_listen = (self.listen is not None and greeting.get("listen") == 1

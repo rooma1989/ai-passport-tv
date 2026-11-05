@@ -237,7 +237,7 @@ class ChildrenTests(unittest.TestCase):
         self.assertNotIn("--ytlocal", by_name["relay"].argv)
         self.assertEqual(by_name["relay"].env.get(edition.ENV), "lite", "the relay is told the edition")
 
-    def test_lite_gives_the_tv_server_no_voice(self):
+    def test_lite_gives_the_tv_server_no_voice_but_the_relay_key(self):
         for socket in ("http://127.0.0.1:8090", "/run/asr.sock"):
             for which, voiced in (("lite", False), ("full", True)):
                 with self.subTest(socket=socket, edition=which), tempfile.TemporaryDirectory() as tmp, \
@@ -246,8 +246,10 @@ class ChildrenTests(unittest.TestCase):
                     children = build_children(layout, config.Config(asr_socket=socket), "/usr/bin/ffmpeg", "", "",
                                               log=lambda _m: None)
                     env = {child.name: child for child in children}["xingzhi"].env
-                    voice = {key for key in env if key.startswith("TV_ASR_") or key == "TV_RELAY_KEY_FILE"}
+                    voice = {key for key in env if key.startswith("TV_ASR_")}
                     self.assertEqual(bool(voice), voiced, voice)
+                    self.assertEqual(env.get("TV_RELAY_KEY_FILE"), str(layout.relay_key),
+                                     "both editions: the device's next-video needs the relay key")
 
     def test_children_run_in_self_host_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
