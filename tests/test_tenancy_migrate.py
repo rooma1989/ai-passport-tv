@@ -128,6 +128,21 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual((self.data / "devices" / "legacy-passport" / "now-playing.json").read_text(),
                          (self.passport / "now-playing.json").read_text())
 
+    def test_a_favourite_folder_is_not_put_in_the_shared_cache(self):
+        """收藏夹（fav…，可能是私密的）只属于它的主人：迁移照样搬它的台，但不写进大家共用的列表缓存。"""
+        fav = {"id": "fv01", "site": "bilibili", "source": "fav111", "name": "我的收藏",
+               "videos": [video("BVf")], "fetched_at": NOW - 60, "watched": [], "positions": {}, "kind": "series"}
+        state = dict(STATE, creators=STATE["creators"] + [fav])
+        (self.data / "relay-state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        code, out = run(*self.args)
+        self.assertEqual(code, 0, out)
+        accounts = Accounts(self.data / "tv.db")
+        self.addCleanup(accounts.close)
+        self.assertEqual([c["id"] for c in accounts.load_user_state(accounts.admin_id())["creators"]],
+                         ["up01", "sr01", "fv01"])
+        self.assertIsNone(accounts.cached_source("bilibili", "fav111", "series"))
+        self.assertIsNotNone(accounts.cached_source("bilibili", "ss1", "series"))
+
     def test_refuses_a_database_with_data_and_replace_keeps_a_copy(self):
         self.assertEqual(run(*self.args)[0], 0)
         code, out = run(*self.args)

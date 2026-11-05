@@ -109,6 +109,8 @@ def migrate(accounts: Accounts, state: State, groups: dict, devices_dir: Path, l
                   "group_overrides": groups}
     accounts.save_user_state(admin, user_state)
     for creator in state.creators:
+        if creator.source.startswith("fav"):
+            continue        # 收藏夹（可能是私密的）只属于它的主人，不进大家共用的列表缓存
         accounts.cache_source(creator.site, creator.source, creator.kind, creator.name,
                               [dataclasses.asdict(v) for v in creator.videos], creator.fetched_at)
     for token, created in state.sessions.items():
