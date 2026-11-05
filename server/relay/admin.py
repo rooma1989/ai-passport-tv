@@ -392,7 +392,7 @@ def channels(relay) -> dict:
                                                                meta.get(row["id"], {}).get("tvg_id", "")))
     backups = sorted(p.name for p in path.parent.glob(path.name + ".bak-*"))
     return {"ok": True, "configured": True, "version": current["version"], "rows": rows, "bad": current["bad"],
-            "groups": list(channel_groups.GROUPS[2:]), "limits": {"channels": channel_groups.CHANNEL_MAX,
+            "groups": list(channel_groups.ASSIGNABLE), "limits": {"channels": channel_groups.CHANNEL_MAX,
                                                                   "bytes": channel_groups.CONFIG_MAX,
                                                                   "table": channel_groups.TABLE_MAX},
             "fit": _fit(relay, [(r["id"], r["name"]) for r in current["rows"]]), "backups": backups[-5:],
@@ -434,7 +434,7 @@ def save_channels(relay, body: dict, caller, ip: str = "", after=None) -> dict:
         groups = {}
         for item, row in zip(body["rows"], rows):
             group = item.get("group") if isinstance(item, dict) and "group" in item else old_groups.get(row["id"], "")
-            if group and group not in channel_groups.GROUPS[2:]:
+            if group and group not in channel_groups.ASSIGNABLE:
                 return {"ok": False, "error": f"「{row['name']}」：没有「{group}」这个分组"}
             if group and group != channel_groups.classify(row["id"], row["name"]):
                 groups[row["id"]] = group

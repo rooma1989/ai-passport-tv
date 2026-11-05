@@ -15,6 +15,8 @@ CREATORS = "UP 主"
 # 收藏夹台（中转的 fv01…，P1c）：B 站收藏夹，一个收藏夹一个台。
 FAVS = "B站收藏"
 GROUPS = (CAST, CREATORS, FAVS, "央视", "卫视", "港澳台", "国际", "音乐", "动画影视", "节目回看", "其他")
+# 手机/总后台上能手动给台挑的组：投屏、UP 主、收藏夹三组只按台 id 自动归，不让手动选。
+ASSIGNABLE = tuple(g for g in GROUPS if g not in (CAST, CREATORS, FAVS))
 OTHER = "其他"
 # 剧集台（中转的 sr01…）默认放的组；和直播台一样可以在手机上改。
 SERIES = "动画影视"

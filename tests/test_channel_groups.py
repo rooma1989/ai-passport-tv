@@ -69,7 +69,9 @@ class ClassifyTests(unittest.TestCase):
                          len('{"id":"sr02","name":"\\u6d77\\u5c14","g":0},'))
 
     def test_group_order(self):
-        self.assertEqual(cg.GROUPS[:2], ("我的投屏", "UP 主"))
+        self.assertEqual(cg.GROUPS[:3], ("我的投屏", "UP 主", "B站收藏"))
+        self.assertEqual(cg.ASSIGNABLE[0], "央视")
+        self.assertNotIn("B站收藏", cg.ASSIGNABLE)
         self.assertEqual(cg.GROUPS[-1], "其他")
         self.assertEqual(set(EXPECTED) | {"我的投屏", "UP 主", "B站收藏"}, set(cg.GROUPS))
 

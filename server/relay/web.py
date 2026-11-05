@@ -2512,7 +2512,7 @@ class Relay:
         if channel not in names or channel_groups.classify(channel, names[channel]) in (
                 channel_groups.CAST, channel_groups.CREATORS):
             return {"ok": False, "error": "这个台不能调整分组"}
-        if group is not None and group not in channel_groups.GROUPS[2:]:
+        if group is not None and group not in channel_groups.ASSIGNABLE:
             return {"ok": False, "error": "没有这个分组"}
         if not self.tenant and self.groups_out is None:
             return {"ok": False, "error": "没有配置分组文件"}
@@ -2567,7 +2567,7 @@ class Relay:
                    "series": series, "room": self.room(caller=caller) if account is not None else None,
                    "cast": cast, "history": history,
                    "devices": self.device_rows(caller), "auto": self._targets.get(caller.key) is None,
-                   "group_names": list(channel_groups.GROUPS[2:])}
+                   "group_names": list(channel_groups.ASSIGNABLE)}
         if self.tenant:
             summary["me"] = {"name": caller.name, "role": caller.role}
             if self.watch is not None and not caller.guest and not edition.is_lite():
