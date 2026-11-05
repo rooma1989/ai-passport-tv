@@ -2315,7 +2315,7 @@ class WatchPlayer {
     v.removeEventListener("pause", this.onPause);
     v.removeEventListener("play", this.onPlay);
     v.removeEventListener("timeupdate", this.onTime);
-    v.playbackRate = 1;
+    v.defaultPlaybackRate = v.playbackRate = 1;
     v.pause();
     v.removeAttribute("src");
     v.load();
@@ -2712,6 +2712,7 @@ function playerFor(answer) {
   const live = answer.kind === "live";
   if (live) switching(answer.name || answer.title || answer.channel);
   if (watching) watching.player.stop();
+  { const v = $("watchVideo"); v.defaultPlaybackRate = v.playbackRate = 1; }   // 直播、跟着小电视的 1×；点播的自己再设
   $("pcwin").hidden = false;
   if (answer.mode === "dash") {
     const player = new DashPlayer($("watchVideo"), answer.url, {
@@ -3257,9 +3258,9 @@ function renderPc() {
   $("pcNext").setAttribute("aria-label", next ? "下一" + (watching.parts.kind === "up" ? "个" : "集") + "：" + (next.title || partWord(next.n)) : "下一个");
   $("pcNext").title = $("pcNext").getAttribute("aria-label") + "（N）";
   $("pcPartsBtn").hidden = !(watching.parts && watching.parts.items.length > 1 && watching.mode === "direct");
-  const vod = !!(p && p.vod);
+  const vod = pcRateOk(p);             // 能调速度（浏览器直接放的点播，或者片库这种经中转放的视频）
   $("pcRate").hidden = !vod;
-  if (vod) $("pcRate").textContent = rateLabel(v.playbackRate);
+  if (vod) $("pcRate").textContent = rateLabel(v.playbackRate);  // 片库经中转放的也算（pcRateOk）
   $("pcQuality").hidden = !watching.quality;
   if (watching.quality) $("pcQuality").textContent = watching.quality.current.toUpperCase();
   $("pcSubs").hidden = !(watching.subs && watching.subs.length);
@@ -3345,8 +3346,13 @@ function setRate(r) {
   lsSet("rootv.rate", String(r));
   renderPc();
 }
+// 能调速度的：浏览器直接放的点播（VodPlayer、DashPlayer），和这个页面自己看、中转跑在前面读的视频（片库等有头有尾、
+// 能拖的，WatchPlayer 不是直播；中转不按实时速度读，2× 也供得上，只要网盘够快）。直播、跟着小电视放的永远 1×。
+function pcRateOk(p) {
+  return !!p && (!!p.vod || (!p.live && !!watching && watching.player === p && watching.mode === "direct" && !!watching.seekable));
+}
 function stepRate(delta) {
-  if (!watching || !watching.player.vod) return;
+  if (!watching || !pcRateOk(watching.player)) return;
   const at = RATES.indexOf(savedRate()), next = RATES[Math.min(RATES.length - 1, Math.max(0, at + delta))];
   setRate(next);
   toast("播放速度 " + rateLabel(next));
@@ -3827,8 +3833,15 @@ function subsRetry(n, gen, still, why) {
   subs.timer = setTimeout(() => { if (still()) subsLoad(n); }, Math.min(SUBS_RETRY_MAX_MS, SUBS_POLL_MS * 2 ** (subs.fails - 1)));
 }
 
-// 不动鼠标 3 秒后收起控制条和上面的标题（暂停、选集、菜单或快捷键表开着、焦点在控制条或标题栏的按钮上时不收）。
+// 不动鼠标 3 秒后收起控制条和上面的标题（暂停、选集、菜单或快捷键表开着、用键盘把焦点移到了控制条或标题栏的按钮
+// 上时不收）。用鼠标点过的按钮、进度条焦点也留在那儿，那不算：以前点一下进度条、播放键，控制条就一直不收了
+// （全屏时最显眼）。键盘移过去的焦点浏览器标成 :focus-visible。
 let idleTimer = 0;
+function pcKeyFocusIn(el) {
+  const a = document.activeElement;
+  if (!el || !a || !el.contains(a)) return false;
+  try { return a.matches(":focus-visible"); } catch { return true; }
+}
 function pcActive() {
   const box = $("pcBox");
   box.classList.remove("idle");
@@ -3836,7 +3849,7 @@ function pcActive() {
   idleTimer = setTimeout(() => {
     const v = $("watchVideo");
     if (!watching || v.paused || !$("pcParts").hidden || !$("pcMenu").hidden || !$("pcUpNext").hidden || !$("pcKeys").hidden
-        || $("pcCtl").contains(document.activeElement) || qs("#pcwin .pchead").contains(document.activeElement)) return;
+        || pcKeyFocusIn($("pcCtl")) || pcKeyFocusIn(qs("#pcwin .pchead"))) return;
     box.classList.add("idle");
   }, 3000);
 }
@@ -4112,7 +4125,7 @@ addEventListener("keydown", (event) => {
   const a = document.activeElement, box = $("pcBox"), full = document.fullscreenElement === box;
   const big = $("pcwin").classList.contains("big") && !(a && a.closest && a.closest("#top, #mini, #tabs"));
   const act = pcKeyAction({ key: event.key, shift: event.shiftKey, mod: event.altKey || event.metaKey || event.ctrlKey,
-                            target: pcKeyTarget(event), watching: true, full, big, seekable: !!watching.seekable, vod: !!watching.player.vod });
+                            target: pcKeyTarget(event), watching: true, full, big, seekable: !!watching.seekable, vod: pcRateOk(watching.player) });
   if (!act) return;
   const eat = () => { event.preventDefault(); event.stopPropagation(); pcActive(); };
   if (act === "esc") {
@@ -4230,6 +4243,8 @@ function openDirect(answer, ctx) {
                subs: answer.subs || null, subsUrl: answer.subs_url || "", hls: ctx.hls };
   miniWho = "pc";
   $("watchFollow").checked = false;
+  // 片库这些经中转放的也照上次选的速度（浏览器直接放的 VodPlayer / DashPlayer 自己设过了）。
+  if (!same && pcRateOk(player)) { const v = $("watchVideo"); v.defaultPlaybackRate = v.playbackRate = savedRate(); }
   const parts = answer.parts;
   const what = parts && parts.items.length > 1 && parts.kind !== "up"
     ? partWord(parts.current) + " / " + parts.items.length + (answer.title && answer.title !== partWord(parts.current) ? " · " + answer.title : "")
