@@ -33,6 +33,27 @@ assert.equal(vodBehind(6 * 1024 * 1024), VB.GOP_S, 'a 50 Mbit/s 4K file: bytes s
 assert.ok(vodBehind(1.2 * 1024 * 1024) > VB.GOP_S && vodBehind(1.2 * 1024 * 1024) < VB.BEHIND_S, 'in between: by bytes');
 assert.ok(VB.GOP_S * 6 * 1024 * 1024 + VB.BYTES_AHEAD < 150 * 1024 * 1024, 'GOP behind + bytes ahead fit Chrome\'s ~150 MB at 50 Mbit/s');
 
+// ---- trimming stops before the previous segment's keyframe (open GOP, 2026-11-05) ----
+{
+  const trimSrc = source.match(/function vodTrimEnd\(t, keep, cuts\) \{[\s\S]*?\n\}/);
+  assert.ok(trimSrc, 'vodTrimEnd is where it was');
+  const vodTrimEnd = new Function('VOD_BUFFER', trimSrc[0] + '\nreturn vodTrimEnd;')(VB);
+  // The Shawshank Redemption at 1:34: keyframes (segment starts) 5652.4, 5662.8, 5671.7, 5682.1.
+  const cuts = [5652.4, 5662.8, 5671.7, 5682.1];
+  // At 5665, 12 s back is 5653: the browser would delete up to the next keyframe 5662.8, taking the open-GOP
+  // frames shown just before it and with them the rest of the group being played. Stop before 5652.4 instead.
+  assert.equal(vodTrimEnd(5665, 12, cuts), 5652.4 - VB.CUT_MARGIN_S);
+  assert.ok(vodTrimEnd(5684, 12, cuts) <= 5671.7 - VB.CUT_MARGIN_S, 'at 1:34:44 the group from 5671.7 stays');
+  assert.equal(vodTrimEnd(5700, 12, cuts), 5671.7 - VB.CUT_MARGIN_S, 'far into the last segment: still its predecessor');
+  assert.equal(vodTrimEnd(5690, 30, cuts), 5660, 'keep wins when it reaches back further');
+  assert.equal(vodTrimEnd(5665, 12, [5662.8]), -Infinity, 'previous segment unknown: do not trim');
+  assert.equal(vodTrimEnd(5665, 12, []), -Infinity);
+  assert.equal(vodTrimEnd(5662.8, 12, cuts), 5662.8 - 12, 'exactly on a keyframe: 12 s back is already before its predecessor');
+  // short-GOP sources: segments of 2 s keep at most ~4 s more than before
+  const short = Array.from({ length: 40 }, (_, i) => 100 + 2 * i);
+  assert.equal(vodTrimEnd(150, 12, short), 138, 'keep decides when segments are short');
+}
+
 // ---- how long the wait still is, when the drive is slower than the file ----
 // 22 Mbit/s file (2.75 MB/s), the drive gives 0.4 s of video per second (about 9 Mbit/s), 2 of 12 s buffered.
 assert.equal(vodWaitText(2, 12, 0.4, 2_750_000), '网盘现在约 8.8 Mbit/s，这部片子要 22 Mbit/s，大约还要 25 秒');

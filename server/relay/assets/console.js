@@ -1828,9 +1828,20 @@ const QUOTA_TRIES = 30;
 // GOP_S：身后至少留这么多秒。浏览器删画面时会连着删到下一个关键帧为止（后面的帧要靠前面的才解得出），蓝光压制的
 // 关键帧至多隔十来秒（《肖申克的救赎》量过 10.4 秒）：留得比这少，删的时候会把正在放的那一截也带走，播放器只好往前跳
 // 几秒（播放诊断：「跳过了 4.31 秒的空档」）。
-const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024, GOP_S: 12 };
+const VOD_BUFFER = { AHEAD_S: 60, BEHIND_S: 30, MIN_AHEAD_S: 8, BYTES_AHEAD: 64 * 1024 * 1024, BYTES_BEHIND: 24 * 1024 * 1024, GOP_S: 12, CUT_MARGIN_S: 0.5 };
 // 往回留几秒：至多 BEHIND_S，码率高（字节 / 秒）时按 BYTES_BEHIND 少留，但从不少于 GOP_S。
 function vodBehind(rate) { return rate ? Math.max(VOD_BUFFER.GOP_S, Math.min(VOD_BUFFER.BEHIND_S, VOD_BUFFER.BYTES_BEHIND / rate)) : VOD_BUFFER.BEHIND_S; }
+// 往回清到哪（不含）：现在位置往回 keep 秒，但不过「现在这一段的前一段」的开头（cuts：接上的各段在缓冲里的开头，
+// 中转切段只在关键帧上切，所以都是关键帧）。浏览器会连着删到下一个关键帧；蓝光常是 open GOP，关键帧后面紧跟的几帧
+// 显示在关键帧之前、要用到前一组，删到「前一组」里就把这几帧也删了，Chrome 随后把正在放的这一组剩下的全扔掉：
+// 画面停住、声音照走，直到下一个关键帧或者看门狗推一下（《肖申克的救赎》1:34:25、1:34:44，40 Mbit/s 那一段，
+// 都在关键帧后两秒左右）。cuts 里还没有现在这一段的前一段时不清（-Infinity）。
+function vodTrimEnd(t, keep, cuts) {
+  let cur = -1;
+  for (let i = cuts.length - 1; i >= 0; i--) if (cuts[i] <= t + 0.05) { cur = i; break; }
+  if (cur < 1) return -Infinity;
+  return Math.min(t - keep, cuts[cur - 1] - VOD_BUFFER.CUT_MARGIN_S);
+}
 
 // ---- 视频缓冲的几个纯函数（tests/console_buffer_test.mjs 截出这一段单独测）----
 // 视频（HLS，不是直播）起播、断粮时先攒一截再放，不放几秒停几秒（网盘一会儿 4 一会儿 80 Mbit/s，4K 只换封装的
@@ -1947,6 +1958,8 @@ class WatchPlayer {
     this.alive = true; this.next = -1; this.ms = null; this.sb = null; this.started = false; this.origin = null; this.ended = false;
     // 视频：接上了多少字节、多少秒（算码率，缓冲按字节封顶，见 VOD_BUFFER）。
     this.gotBytes = 0; this.gotSecs = 0;
+    // 视频：接上的各段在缓冲里的开头（都是关键帧；往回清时不过「现在这一段的前一段」的开头，见 vodTrimEnd）。
+    this.cuts = [];
     // 视频的缓冲（VOD_GATE）：hold 是为缓冲停着、要攒到的秒数（0 是没在等；和用户的暂停分开）；wantPlay 是用户要放
     // （用户暂停了就是 false，缓冲够了也不自己放）；feed 是最近接上的段（vodSpeed），取到 aheadLimit 停下时清空。
     this.hold = 0; this.wantPlay = true; this.feed = []; this.holdText = "";
@@ -2172,6 +2185,7 @@ class WatchPlayer {
           }
         }
         this.gotBytes += chunk.byteLength; this.gotSecs += durs[this.next] || 0;
+        if (!this.live) this.noteCut(durs[this.next] || 0);
         if (!this.live) { this.feed.push({ t: performance.now(), secs: durs[this.next] || 0 }); if (this.feed.length > 32) this.feed.splice(0, this.feed.length - 32); }
         this.kick();
         if (!this.live) this.fed();
@@ -2296,14 +2310,24 @@ class WatchPlayer {
     const v = this.video, b = this.sb.buffered;
     if (!b.length) return;
     if (this.live) { if (v.currentTime - b.start(0) > 90) await this.remove(b.start(0), v.currentTime - 30); return; }
-    // 视频：往回留 BEHIND_S 秒，码率高时按 BYTES_BEHIND 少留一点，但至少 GOP_S（vodBehind）。
-    const keep = vodBehind(this.rate());
-    if (v.currentTime - b.start(0) > keep + 10) await this.remove(b.start(0), v.currentTime - keep);
+    // 视频：往回留 BEHIND_S 秒，码率高时按 BYTES_BEHIND 少留一点，但至少 GOP_S（vodBehind），也不过前一段的开头
+    // （vodTrimEnd）。
+    const end = vodTrimEnd(v.currentTime, vodBehind(this.rate()), this.cuts);
+    if (end - b.start(0) > 10) await this.remove(b.start(0), end);
   }
-  // 缓冲满了：清掉现在位置 GOP_S 秒以前的（不能更近：浏览器会连着删到下一个关键帧，把正在放的也带走）。
+  // 缓冲满了：清掉现在位置 GOP_S 秒以前的，也不过前一段的开头（vodTrimEnd；不能更近：浏览器会连着删到下一个关键帧，
+  // 把正在放的也带走）。
   async squeeze() {
     const v = this.video, b = this.sb.buffered;
-    if (b.length && v.currentTime - VOD_BUFFER.GOP_S > b.start(0)) await this.remove(b.start(0), v.currentTime - VOD_BUFFER.GOP_S);
+    const end = vodTrimEnd(v.currentTime, VOD_BUFFER.GOP_S, this.cuts);
+    if (b.length && end > b.start(0)) await this.remove(b.start(0), end);
+  }
+  // 接上了一段（dur 秒）：记下它在缓冲里的开头（关键帧，vodTrimEnd 用）。
+  noteCut(dur) {
+    const b = this.sb.buffered;
+    if (!b.length || !(dur > 0)) return;
+    this.cuts.push(b.end(b.length - 1) - dur);
+    if (this.cuts.length > 64) this.cuts.splice(0, this.cuts.length - 64);
   }
   stop() {
     this.alive = false;
