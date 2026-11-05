@@ -24,12 +24,13 @@ def _owner_mid(accounts, user: int) -> str:
     return mid if _ID.match(mid) else ""
 
 
-def _subscribed(state) -> tuple[set[str], int]:
+def _subscribed(state) -> tuple[dict[str, str], int]:
+    """已经加成台的收藏夹：{收藏夹 id: 台 id}，和收藏夹台的个数。"""
     from .state import FAV_PREFIX
     with state.lock:
         mine = [c for c in state.creators if c.kind == "series" and c.site == "bilibili"
                 and c.id.startswith(FAV_PREFIX) and c.source.startswith("fav")]
-    return {c.source[3:] for c in mine}, len(mine)
+    return {c.source[3:]: c.id for c in mine}, len(mine)
 
 
 def folders(relay, caller) -> dict:
@@ -44,7 +45,9 @@ def folders(relay, caller) -> dict:
         relay.log(f"取收藏夹列表失败：{error}")
         return {"ok": False, "error": INVALID if "登录" in str(error) else UNREACHABLE}
     have, count = _subscribed(relay._account(caller))
-    return {"ok": True, "items": [dict(i, subscribed=i["id"] in have) for i in items],
+    # 加过的带上台 id（channel）：控制台据此「移除」（DELETE api/creators/<台 id>）。
+    return {"ok": True, "items": [dict(i, subscribed=True, channel=have[i["id"]]) if i["id"] in have
+                                  else dict(i, subscribed=False) for i in items],
             "count": count, "max": MAX_FAVS, "room": relay.room(caller=caller)}
 
 
@@ -93,7 +96,7 @@ def import_folders(relay, caller, ids) -> dict:
         except ValueError as error:
             skipped.append({"id": fid, "title": title, "reason": str(error)})
             continue
-        have.add(fid)
+        have[fid] = creator.id
         count += 1
         added.append({"id": fid, "title": title, "channel": creator.id})
     if added:

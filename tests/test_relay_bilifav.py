@@ -3,6 +3,8 @@ folders, add the ticked ones. Design: docs/superpowers/specs/2026-11-04-minimal-
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -104,6 +106,40 @@ class FavoritesApiTests(RelayHarness):
         self.assertEqual(seen[0].user, self.admin)
         self.assertIsNone(self.accounts.cached_source("bilibili", "fav111", "series"))
 
+    def test_listed_folders_name_the_channel_they_became(self):
+        self.request("POST", "/tv/api/bili/favorites/import", {"ids": ["111"]}, user=self.admin)
+        items = {i["id"]: i for i in self.request("GET", "/tv/api/bili/favorites", user=self.admin)[1]["items"]}
+        self.assertEqual(items["111"]["channel"], "fv01")
+        self.assertNotIn("channel", items["222"])
+
+    def test_add_remove_add_again_reuses_the_slot(self):
+        from unittest import mock
+        from server import edition
+        self.folders = [{"id": str(100 + n), "title": f"收藏{n}", "count": 1} for n in range(state_mod.MAX_FAVS + 1)]
+        self.client.series = lambda source, login=None: (source, [Video("BV1" + source, "a", 1, 1)])
+        ids = [f["id"] for f in self.folders]
+        answer = self.request("POST", "/tv/api/bili/favorites/import", {"ids": ids}, user=self.admin)[1]
+        self.assertEqual(len(answer["added"]), state_mod.MAX_FAVS)
+        self.assertEqual([s["id"] for s in answer["skipped"]], [ids[-1]], "the ninth does not fit")
+        with mock.patch.object(edition, "current", lambda: "lite"):
+            self.assertFalse(edition.blocked("/api/creators/fv03"))
+            status, removed = self.request("DELETE", "/tv/api/creators/fv03", user=self.admin)
+        self.assertEqual((status, removed), (200, {"ok": True}))
+        listed = {i["id"]: i for i in self.request("GET", "/tv/api/bili/favorites", user=self.admin)[1]["items"]}
+        self.assertFalse(listed[ids[2]]["subscribed"], "the removed folder can be added again")
+        self.assertEqual(self.request("GET", "/tv/api/bili/favorites", user=self.admin)[1]["count"],
+                         state_mod.MAX_FAVS - 1)
+        again = self.request("POST", "/tv/api/bili/favorites/import", {"ids": [ids[-1]]}, user=self.admin)[1]
+        self.assertEqual([a["channel"] for a in again["added"]], ["fv03"], "the freed slot is taken")
+        back = self.request("POST", "/tv/api/bili/favorites/import", {"ids": [ids[2]]}, user=self.admin)[1]
+        self.assertEqual(back["added"], [], "full again")
+
+    def test_removing_someone_elses_or_a_missing_favourite_fails(self):
+        self.request("POST", "/tv/api/bili/favorites/import", {"ids": ["111"]}, user=self.admin)
+        self.assertFalse(self.request("DELETE", "/tv/api/creators/fv02", user=self.admin)[1]["ok"])
+        self.assertFalse(self.request("DELETE", "/tv/api/creators/fv01", user=self.kid)[1]["ok"])
+        self.assertEqual(self.relay.user_state(self.admin).get("fv01").source, "fav111")
+
     def test_lite_edition_does_not_block_these_endpoints(self):
         from unittest import mock
         from server import edition
@@ -111,6 +147,14 @@ class FavoritesApiTests(RelayHarness):
             self.assertTrue(edition.blocked("/api/library"), "sanity: lite mode is on")
             for path in ("/api/bili/favorites", "/api/bili/favorites/import"):
                 self.assertFalse(edition.blocked(path), path)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
+class ConsoleFavouriteTests(unittest.TestCase):
+    def test_console_and_remote_favourite_helpers(self):
+        result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_fav_test.mjs")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
