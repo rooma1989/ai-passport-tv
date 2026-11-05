@@ -7512,8 +7512,8 @@ async function loadLib(force, poll) {
   else if (answer.ok && answer.pending) lib.timer = setTimeout(() => { if (route === "lib" && libTab === "local") loadLib(true, true); }, 20000);
 }
 const libKind = (k) => k === "webdav" ? "网盘" : "本机文件夹";
-// 整集缓存：能选的上限（GB，0 是关）、用了多少、一集下好了多少（c.cached，0..1；没下过的没有）。
-const LIB_FULL = [0, 10, 30, 100];
+// 边看边缓存：能选的上限（GB，0 是关）、用了多少、一集下好了多少（c.cached，0..1；没下过的没有）。
+const LIB_FULL = [0, 5, 10, 30];
 const libGB = (n) => n < 1073741824 ? Math.round(n / 1048576) + " MB" : (n / 1073741824).toFixed(1) + " GB";
 const libCached = (c) => !c.cached ? "" : c.cached >= 1 ? "已缓存" : "已缓存 " + Math.floor(c.cached * 100) + "%";
 // ---- 片库筛选的几个纯函数（tests/console_libfilter_test.mjs 截出这一段单独测）----
@@ -7978,11 +7978,12 @@ function renderLib() {
     // 备用的 TMDB：按钮上只说「已设置 / 没设置」（出错时标红）；点开是填密钥的小框（libTmdbHTML）。
     const tm = d.tmdb || {};
     const tmdbBtn = admin && d.online ? `<button class="ghost sm${tm.error ? " red" : ""}" data-libtmdb="${lib.tmdbForm ? "0" : "1"}" aria-expanded="${!!lib.tmdbForm}" title="豆瓣没对上时再查 TMDB">备用资料 TMDB：${tm.set ? (tm.error ? "出错了" : "已设置") : "没设置"}</button>` : "";
-    // 整集缓存（library.py 的 full_gb，libraryfull.py）：边看边把网盘上的整集下到这台电脑，跳转快。按一下换上限
-    // （关 → 10 → 30 → 100 GB → 关）；换成「关」会删掉已经缓存的，要再按一下确认。只有网盘的来源时才有。
+    // 边看边缓存（library.py 的 full_gb，libraryfull.py）：把网盘上正在看的地方前后一段（往前约 4 GB、身后 1 GB）
+    // 下到这台电脑，跳转快、网盘慢时暂停一会儿能攒出一段。按一下换上限（关 → 5 → 10 → 30 GB → 关）；换成「关」会删掉
+    // 已经缓存的，要再按一下确认。只有网盘的来源时才有。
     const fullGb = d.full_gb || 0;
     const fullBtn = admin && d.sources.some((s) => s.kind === "webdav")
-      ? `<button class="ghost sm" data-libfull="${LIB_FULL[(LIB_FULL.indexOf(fullGb) + 1) % LIB_FULL.length]}" title="边看边把网盘上的这一集整个下到这台电脑，跳转更快（至多用这么多磁盘，最久没看的先删）；现在用了 ${esc(libGB(d.full_used || 0))}">整集缓存：${fullGb ? fullGb + " GB" : "关"}</button>` : "";
+      ? `<button class="ghost sm" data-libfull="${LIB_FULL[(LIB_FULL.indexOf(fullGb) + 1) % LIB_FULL.length]}" title="边看边把网盘上正在看的地方前后一段（往前约 4 GB、身后 1 GB）下到这台电脑：跳转更快，网盘慢时暂停一会儿就能攒出一段（至多用这么多磁盘，看过的、最久没看的先删）；现在用了 ${esc(libGB(d.full_used || 0))}">边看边缓存：${fullGb ? fullGb + " GB" : "关"}</button>` : "";
     o += `<div class="lsrcs">${d.sources.map((s) => libSourceRow(s, admin, d.scan)).join("")}${driveBtn}${admin && !lib.form ? `<button class="ghost sm" data-libform="1">${ic("plus", 16)}添加来源</button>` : ""}${onlineBtn}${tmdbBtn}${fullBtn}</div>`;
     if (admin && d.online && lib.tmdbForm) o += `<div class="lformbox">${libTmdbHTML()}</div>`;
     o += drivePanel;
@@ -8129,7 +8130,7 @@ $("libBox").addEventListener("click", async (event) => {
       return;
     }
     const answer = await libAdmin("api/admin/library/settings", { full_gb: gb }, t);
-    if (answer && answer.ok) { toast(gb ? "整集缓存：至多用 " + gb + " GB，边看边下到这台电脑" : "整集缓存关了，已经缓存的删掉了"); loadLib(true); }
+    if (answer && answer.ok) { toast(gb ? "边看边缓存：至多用 " + gb + " GB，正在看的前后一段下到这台电脑" : "边看边缓存关了，已经缓存的删掉了"); loadLib(true); }
     return;
   }
   if (ds.libkind) { lib.kind = ds.libkind; renderLib(); return; }

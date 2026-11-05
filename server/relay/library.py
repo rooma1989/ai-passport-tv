@@ -3200,14 +3200,14 @@ class Library:
             raise LibraryError("网盘没按要的那段给")
         return upstream
 
-    def _send_local(self, handler, path: Path, at: int, count: int, tally, tee=None) -> int:
-        """从整集缓存的数据文件给 [at, at + count)，返回发了多少字节。"""
+    def _send_local(self, handler, path: Path, offset: int, count: int, tally, tee=None) -> int:
+        """从缓存的一片（path）里 offset 起给 count 字节，返回发了多少字节。"""
         try:
             handle = open(path, "rb")
         except OSError:
             return 0
         with handle:
-            handle.seek(at)
+            handle.seek(offset)
             return self._pump(handler, handle.read, count, tally, tee, close=False)
 
     def _serve_full(self, handler, dav: WebDav, item: dict, kind: str, name: str, tally, start: int,
@@ -3247,15 +3247,16 @@ class Library:
                 found = full.local(item, at)
                 if found is not None:
                     head()
-                    count = min(found[1], want)
+                    count = min(found[2], want)
                     # 索引缓存要存这里时（文件开头、一段存到的地方……）照样存：整集的以后被删了，索引区还在。
                     tee = self.cache.tee(iid, size, mtime, ext, at)
                     try:
-                        sent = self._send_local(handler, found[0], at, count, cached_tally, tee)
+                        sent = self._send_local(handler, found[0], found[1], count, cached_tally, tee)
                     finally:
                         if tee is not None:
                             tee.close()
                     at, local = at + sent, True
+                    full.seen(item, at)             # 窗口跟着往后挪（ffmpeg 一个请求一直读下去）
                     if sent < count:
                         break
                     continue
@@ -3311,8 +3312,8 @@ class Library:
             found = full.local(item, at)
             if found is not None:
                 head()
-                count = min(found[1], want)
-                sent = self._send_local(handler, found[0], at, count, None, None)
+                count = min(found[2], want)
+                sent = self._send_local(handler, found[0], found[1], count, None, None)
                 at += sent
                 if sent < count:
                     break
