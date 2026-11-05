@@ -56,6 +56,16 @@ class EditionTests(unittest.TestCase):
                          "/api/admin/devices", "/api/admin/pack", "/api/seek", "/api/series-x", "/api/watchdog"):
                 self.assertFalse(edition.blocked(path), path)
 
+    def test_favourite_episode_endpoints_pass_but_series_stay_blocked(self):
+        """收藏夹台（fv）的选集抽屉要用的两个接口精简版放行；剧集（sr）和别的 /api/series 照旧拦。"""
+        with mock.patch.dict(os.environ, {edition.ENV: "lite"}):
+            for path in ("/api/series/fv01/episodes", "/api/series/fv08/play"):
+                self.assertFalse(edition.blocked(path), path)
+            for path in ("/api/series", "/api/series/sr01/episodes", "/api/series/sr01/play", "/api/series/fv01",
+                         "/api/series/fv01/episodes/x", "/api/series/fv1/episodes", "/api/series/fv01/other",
+                         "/api/series/fv01x/episodes", "/api/detail/series/fv01"):
+                self.assertTrue(edition.blocked(path), path)
+
     def test_full_blocks_nothing(self):
         with mock.patch.dict(os.environ, {edition.ENV: "full"}):
             self.assertFalse(edition.blocked("/api/library"))

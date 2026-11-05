@@ -110,6 +110,15 @@ class WebTests(unittest.TestCase):
             self.assertEqual(status, 410, path)
             self.assertEqual(answer, {"ok": False, "error": edition.OFF_MESSAGE, "edition": "lite"}, path)
 
+    def test_favourite_episodes_are_not_410(self):
+        """精简版的选集抽屉：收藏夹台（fv）的集数表和点一集不是 410（没有这个台时是普通的「没有」）；剧集照旧 410。"""
+        status, answer = self.request("GET", "/tv/api/series/fv01/episodes")
+        self.assertNotEqual(status, 410, answer)
+        status, answer = self.request("POST", "/tv/api/series/fv01/play", {"episode": 1})
+        self.assertNotEqual(status, 410, answer)
+        status, _ = self.request("GET", "/tv/api/series/sr01/episodes")
+        self.assertEqual(status, 410 if self.which == "lite" else 200)
+
     def test_pack_admin_endpoints(self):
         status, answer = self.request("GET", "/tv/api/admin/pack")
         self.assertEqual(status, 200)

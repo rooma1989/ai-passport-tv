@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 EDITIONS = ("full", "lite")
 ENV = "TV_EDITION"
@@ -30,6 +31,9 @@ LITE_BLOCKED = (
     # 精简版的线路归频道包管，原来的频道表编辑器整个关掉（换成 /api/admin/pack）。
     "/api/admin/channels",
 )
+# 上面拦掉的前缀里精简版照样要用的：收藏夹台（fv01…，P1c）的选集抽屉（电脑版和手机遥控的集数表、点一集）。
+# 剧集（sr）的同样两个接口照旧拦。
+LITE_ALLOWED = re.compile(r"^/api/series/fv\d\d/(?:episodes|play)$")
 OFF_MESSAGE = "精简版没有这个功能"
 
 
@@ -55,6 +59,6 @@ def is_lite() -> bool:
 
 def blocked(path: str) -> bool:
     """精简版拦不拦这个路径。path 要先解析好：去掉查询串和 /tv 前缀（web.py 的 `_path()`）。"""
-    if not is_lite():
+    if not is_lite() or LITE_ALLOWED.fullmatch(path):
         return False
     return any(path == prefix or path.startswith(prefix + "/") for prefix in LITE_BLOCKED)
