@@ -696,6 +696,12 @@ class AVServer:
         if not self.device_next or self.relay_for is None or not self.device_id:
             self.logger("device asked for the next video without announcing it; ignored")
             return
+        current = self.channel_name or ""
+        if not any(current == prefix or (current.startswith(prefix) and current[len(prefix):].isdigit())
+                   for prefix in channel_groups.NEXT_PREFIXES):
+            # 设备菜单可能还停在换台之前（刚从 B 站台换到直播台）：按现在播的台算。
+            self.logger("next video: not a Bilibili or cast channel; ignored")
+            return
         if self._next_busy:
             self.logger("next video: previous request still running; ignored")
             return

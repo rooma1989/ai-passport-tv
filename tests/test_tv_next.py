@@ -33,7 +33,7 @@ class NextTests(unittest.TestCase):
 
         self.server = types.SimpleNamespace(device_next=True, relay_for=Client, device_id="aaaaaaaaaaa1",
                                             logger=self.logs.append, device_recover=False, tenancy=None,
-                                            _next_busy=False, _recover_out=[])
+                                            _next_busy=False, _recover_out=[], channel_name="up01")
         for name in ("_next_config", "_next_ask", "_recover_ask"):
             setattr(self.server, name, types.MethodType(getattr(AVServer, name), self.server))
 
@@ -62,6 +62,30 @@ class NextTests(unittest.TestCase):
         self.server.device_id = ""
         self.status({"next": 1})
         self.assertFalse(self.done.wait(0.3))
+
+    def test_a_live_channel_has_no_next_video(self):
+        # The device menu can lag a channel change; the server checks what is playing now.
+        self.server.channel_name = "ch001"
+        self.status({"next": 1})
+        self.assertFalse(self.done.wait(0.3))
+        for cid in ("up01", "sr02", "fv03", "cast"):
+            self.done.clear()
+            self.server.channel_name = cid
+            self.status({"next": 1})
+            self.assertTrue(self.done.wait(2), cid)
+            for _ in range(100):
+                if not self.server._next_busy:
+                    break
+                threading.Event().wait(0.02)
+
+    def test_prefixes_fit_what_the_firmware_keeps(self):
+        header = (Path(__file__).resolve().parents[1] / "main" / "ui_menu.h").read_text(encoding="utf-8")
+        import re
+        most = int(re.search(r"#define UI_MENU_NEXT_PREFIXES (\d+)u", header).group(1))
+        size = int(re.search(r"#define UI_MENU_NEXT_PREFIX_MAX (\d+)u", header).group(1))
+        self.assertLessEqual(len(channel_groups.NEXT_PREFIXES), most)
+        for prefix in channel_groups.NEXT_PREFIXES:
+            self.assertTrue(0 < len(prefix.encode()) < size, prefix)
 
     def test_does_not_pile_up_and_does_not_block(self):
         self.release.clear()
