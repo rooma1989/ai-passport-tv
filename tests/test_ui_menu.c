@@ -754,6 +754,30 @@ static void test_no_next_row_on_a_live_channel_or_without_prefixes(void)
     check(strcmp(ui_menu_selected(&menu), "up01") == 0, "the highlight follows the shift back");
 }
 
+// Live channel ids may start with the same letters ("upstream", "castle"): a
+// prefix counts only when digits follow it, or when it is the whole id, like
+// the server's rule (tv_server._next_ask).
+static void test_next_prefix_needs_digits_after_it(void)
+{
+    static ui_menu_entry_t ids[] = {
+        { "upstream", "Upstream", 0 }, { "castle", "Castle TV", 0 }, { "srtv", "SR TV", 0 },
+        { "fvx1", "FV X1", 0 }, { "up01x", "Up 01 X", 0 }, { "up01", "某UP(B站)", 0 },
+        { "fv08", "收藏(B站)", 0 }, { "cast", "我的投屏", 0 }, { "sr12", "剧(B站)", 0 },
+    };
+    const unsigned n = sizeof(ids) / sizeof(ids[0]);
+    for (unsigned i = 0; i < n; i++) {
+        ui_menu_t menu;
+        ui_menu_init(&menu);
+        check(ui_menu_set_next_prefixes(&menu, NEXT_PREFIXES, 4), "prefixes load");
+        check(ui_menu_load(&menu, ids, n, ids[i].id), "list loads");
+        ui_menu_open(&menu);
+        bool relay = i >= 5;
+        check(ui_menu_row_count(&menu) == n + (relay ? 1u : 0u),
+              relay ? "a relay id (prefix and digits, or cast) has the next row"
+                    : "a live id that only starts like a prefix has no next row");
+    }
+}
+
 static void test_next_prefixes_are_bounded(void)
 {
     ui_menu_t menu;
@@ -909,6 +933,7 @@ int main(void)
     test_progress();
     test_next_row_on_a_relay_channel();
     test_no_next_row_on_a_live_channel_or_without_prefixes();
+    test_next_prefix_needs_digits_after_it();
     test_next_prefixes_are_bounded();
     test_next_row_only_on_the_group_page();
 

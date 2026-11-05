@@ -15,8 +15,9 @@
 // what can be shown; a longer name is drawn truncated, never refused.
 #define UI_MENU_NAME_MAX 48u
 #define UI_MENU_ID_MAX 16u
-// Channel groups sent by the server (live TV split by kind, creators, the cast).
-// The server's list has nine; the room left is for a server that grows it.
+// Channel groups sent by the server (live TV split by kind, creators, Bilibili
+// favourites, the cast): server/channel_groups.GROUPS, eleven today, and a
+// server test keeps it within this limit.
 #define UI_MENU_GROUP_MAX 16u
 #define UI_MENU_GROUP_NAME_MAX 24u
 // Channel-id prefixes whose channels can skip to their next video (CONFIG "next";

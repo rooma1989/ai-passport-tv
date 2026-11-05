@@ -123,6 +123,27 @@ static bool two_levels(const ui_menu_t *menu)
 
 #define UI_MENU_NEXT_LABEL "下一个视频"
 
+// The playing id is the prefix itself, or the prefix followed by one or more
+// digits and nothing else: "up01", "cast", but not "upstream" or "up01x" (the
+// server's rule, tv_server._next_ask). An empty prefix matches nothing.
+static bool next_prefix_matches(const char *id, const char *prefix)
+{
+    size_t n = strnlen(prefix, UI_MENU_NEXT_PREFIX_MAX);
+    if (!n || strncmp(id, prefix, n) != 0) {
+        return false;
+    }
+    const char *rest = id + n;
+    if (!*rest) {
+        return true;
+    }
+    for (; *rest; rest++) {
+        if (*rest < '0' || *rest > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool next_shown(const ui_menu_t *menu)
 {
     if (!menu || !menu->next_count || !menu->current[0]) {
@@ -132,8 +153,7 @@ static bool next_shown(const ui_menu_t *menu)
         return false;   // a group's channels: only the first page has it
     }
     for (unsigned i = 0; i < menu->next_count && i < UI_MENU_NEXT_PREFIXES; i++) {
-        size_t n = strnlen(menu->next_prefixes[i], UI_MENU_NEXT_PREFIX_MAX);
-        if (n && strncmp(menu->current, menu->next_prefixes[i], n) == 0) {
+        if (next_prefix_matches(menu->current, menu->next_prefixes[i])) {
             return true;
         }
     }
