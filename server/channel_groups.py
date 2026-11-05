@@ -181,6 +181,33 @@ def _prefix(sizes: list[int], budget: int, limit: int) -> int:
 DEVICE_BUDGET = CONFIG_MAX - CONFIG_SPARE_BYTES
 
 
+# 放不下时直播台的名字最短缩到几个字（再短就认不出是哪个台了）；从多长开始试。
+NAME_SHORTEST = 4
+NAME_LONGEST = 16
+
+
+def _shortened(names: list[tuple[str, str]], longest: int) -> list[tuple[str, str]]:
+    """直播台的名字截到 longest 个字（中转的台、投屏台不动：它们的名字已经限过长，还带网站标记）。"""
+    out = []
+    for k, v in names:
+        relay = k == "cast" or (k[:2] in RELAY_PREFIXES and k[2:].isdigit())
+        out.append((k, v if relay or len(v) <= longest else v[:longest].rstrip()))
+    return out
+
+
+def _fit_names(names: list[tuple[str, str]], budget: int, limit: int) -> list[tuple[str, str]]:
+    """全部放得下就原样；否则逐步缩短直播台的名字，直到全部放得下或缩到 NAME_SHORTEST 个字。"""
+    def fits(rows):
+        return _prefix([_entry_bytes(k, v) for k, v in rows], budget, limit) == len(rows)
+    if fits(names):
+        return names
+    for longest in range(NAME_LONGEST, NAME_SHORTEST - 1, -1):
+        rows = _shortened(names, longest)
+        if fits(rows):
+            return rows
+    return _shortened(names, NAME_SHORTEST)
+
+
 def device_list(names, keep: str = "", budget: int = DEVICE_BUDGET,
                 limit: int = CHANNEL_MAX) -> list[tuple[str, str]]:
     """设备收得下的那部分频道列表：按顺序取，取到再多一个台就超过 limit 个或 config_bytes 超过 budget 为止。
@@ -188,7 +215,7 @@ def device_list(names, keep: str = "", budget: int = DEVICE_BUDGET,
     names 已经是优先的顺序（投屏台、自己的 UP 主和剧集在前，再是全局表）。keep：正在播的台，排在截断处
     之后时也留着，接在最后（占掉前面最后一两个台的位子），设备上的「正在播」和换台序号才对得上；
     它一个都放不下时不管它。同样的输入总是同样的结果。"""
-    names = list(names)
+    names = _fit_names(list(names), budget, limit)
     sizes = [_entry_bytes(k, v) for k, v in names]
     count = _prefix(sizes, budget, limit)
     at = next((i for i, (k, _) in enumerate(names) if k == keep), -1) if keep else -1

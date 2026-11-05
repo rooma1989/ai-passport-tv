@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server import channel_groups as cg
+from server import channelpack
 
 EXPECTED = {
     "央视": [f"CCTV{n}" for n in range(1, 18)],
@@ -280,7 +281,9 @@ class DeviceListTests(unittest.TestCase):
         for budget in (500, 2000, cg.DEVICE_BUDGET):
             for limit in (5, cg.CHANNEL_MAX):
                 got = cg.device_list(self.NAMES, budget=budget, limit=limit)
-                self.assertEqual(got, self.NAMES[:len(got)])
+                self.assertEqual([k for k, _ in got], [k for k, _ in self.NAMES[:len(got)]])
+                self.assertTrue(all(o.startswith(n) for (_, n), (_, o) in zip(got, self.NAMES)),
+                                "live names may only be cut short")
                 self.assertLessEqual(len(got), limit)
                 self.assertLessEqual(cg.config_bytes(got), budget)
                 more = self.NAMES[:len(got) + 1]
@@ -292,8 +295,8 @@ class DeviceListTests(unittest.TestCase):
 
     def test_keep_takes_the_last_place(self):
         got = cg.device_list(self.NAMES, keep="ch250")
-        self.assertEqual(got[-1], self.NAMES[250])
-        self.assertEqual(got[:-1], self.NAMES[:len(got) - 1])
+        self.assertEqual(got[-1][0], "ch250")
+        self.assertEqual([k for k, _ in got[:-1]], [k for k, _ in self.NAMES[:len(got) - 1]])
         self.assertLessEqual(len(got), cg.CHANNEL_MAX)
         self.assertLessEqual(cg.config_bytes(got), cg.DEVICE_BUDGET)
         # Deterministic: the same input, the same list.
@@ -325,6 +328,31 @@ class RemoteUrlTests(unittest.TestCase):
         url = "HTTPS://IEWWW.COM/TV/R/" + "A" * relay_state.CODE_LENGTH
         self.assertLessEqual(len(url), tv_server.REMOTE_URL_MAX)
         self.assertTrue(tv_server._REMOTE_URL.match(url))
+
+
+class FitNamesTests(unittest.TestCase):
+    def bundled_live(self):
+        raw = channelpack.BUNDLED.read_bytes()
+        pack = channelpack.unwrap(raw, channelpack.PUBLIC_KEY_HEX)
+        return [(ch["id"], ch["name"]) for ch in pack["channels"]]
+
+    def relay_rows(self, n):
+        # 最长的 B 站台名：label_for 截到 NAME_COLUMNS 列（7 个汉字 + 「(B站)」）。
+        return [(f"up{i:02d}", "很长很长的名字一(B站)") for i in range(1, n + 1)]
+
+    def test_everything_fits_unchanged_when_small(self):
+        names = [("cast", "我的投屏")] + self.relay_rows(3) + self.bundled_live()[:10]
+        self.assertEqual(cg.device_list(names), names)
+
+    def test_the_bundled_pack_plus_twenty_bilibili_channels_all_fit(self):
+        names = [("cast", "我的投屏")] + self.relay_rows(20) + self.bundled_live()
+        fitted = cg.device_list(names)
+        self.assertEqual([k for k, _ in fitted], [k for k, _ in names], "no channel is dropped, order kept")
+        relay = {k: v for k, v in names if k == "cast" or k[:2] in cg.RELAY_PREFIXES}
+        for k, v in fitted:
+            if k in relay:
+                self.assertEqual(v, relay[k], "relay and cast names are never shortened")
+        self.assertLessEqual(cg.config_bytes(fitted), cg.DEVICE_BUDGET)
 
 
 if __name__ == "__main__":

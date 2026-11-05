@@ -497,12 +497,13 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(table["limits"], {"channels": channel_groups.CHANNEL_MAX, "bytes": channel_groups.CONFIG_MAX,
                                            "table": channel_groups.TABLE_MAX})
         self.assertTrue(all(f["fits"] and f["shown"] == f["channels"] for f in table["fit"]))
-        name = ("很长的频道名字" * 5)[:39]
-        rows = ["ch000"] + [{"name": name, "url": f"https://x/{n}.m3u8"} for n in range(30)]
+        # Short names cannot be shortened further, so the device's channel count is what cuts the list.
+        count = channel_groups.CHANNEL_MAX + 2
+        rows = ["ch000"] + [{"name": f"T{n:03d}", "url": f"https://x/{n}.m3u8"} for n in range(count)]
         # What the media server will send each device: the user's own channels, then the table, cut the same way.
         own = [("cast", "我的投屏")]
-        expected = channel_groups.device_list(own + [("ch000", "CCTV1")] + [(f"ch{n:03d}", name) for n in range(30)])
-        self.assertLess(len(expected), 32)
+        expected = channel_groups.device_list(own + [("ch000", "CCTV1")] + [(f"ch{n:03d}", f"T{n:03d}") for n in range(count)])
+        self.assertLess(len(expected), count + 2)
         for dry in (True, False):
             status, answer = self.call("admin", "POST", "/api/admin/channels",
                                        {"version": table["version"], "rows": rows, "dry": dry})
@@ -512,7 +513,7 @@ class AdminApiTests(unittest.TestCase):
             self.assertEqual(set(fit), {"Alice", "Bob"})
             for user, item in fit.items():
                 self.assertFalse(item["fits"])
-                self.assertEqual(item["channels"], 32)
+                self.assertEqual(item["channels"], count + 2)
                 self.assertEqual(item["shown"], len(expected))
                 self.assertEqual(item["table_shown"], len(expected) - 1)
                 self.assertTrue(any(w.startswith(f"「{user}」的小电视上只显示前 {len(expected) - 1} 个台"
@@ -521,9 +522,10 @@ class AdminApiTests(unittest.TestCase):
             if dry:
                 self.assertEqual(self.main.read_text(encoding="utf-8"), MAIN)
         lines = [l for l in self.main.read_text(encoding="utf-8").splitlines() if l and not l.startswith("#")]
-        self.assertEqual(len(lines), 31)
+        self.assertEqual(len(lines), count + 1)
         # The cloud's 8 kB body limit still applies before anything is read.
         version = self.channels()["version"]
+        name = ("很长的频道名字" * 5)[:39]
         rows = [{"name": name, "url": f"https://x/{n}.m3u8"} for n in range(60)]
         self.assertEqual(self.call("admin", "POST", "/api/admin/channels", {"version": version, "rows": rows})[0], 400)
 
