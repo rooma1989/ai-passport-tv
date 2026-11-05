@@ -509,6 +509,11 @@ _WBI_DROP = str.maketrans("", "", "!'()*")
 # wbi 的两个 key 每天换一次；取一次用这么久。
 WBI_KEYS_S = 3600
 
+# 收藏夹（P1c）：一页 20 个，最多取这么多页（和剧集一样至多 1000 个）。
+FAV_PAGE_SIZE = 20
+FAV_PAGES = 50
+FAV_PREFIX = "fav"
+
 
 def _query(params: dict) -> str:
     """和网页版一样的编码（encodeURIComponent：空格是 %20，斜杠也编码）；签名和真发出去的是同一个串。"""
@@ -973,8 +978,11 @@ class Bilibili:
         return f"ss{season['season_id']}"
 
     def series(self, source: str, login=None) -> tuple[str, list[Video]]:
-        """(剧名, 按顺序的各集)。番剧只留不要会员的集；login 是大会员的登录时，会员集也留着。"""
+        """(剧名, 按顺序的各集)。番剧只留不要会员的集；login 是大会员的登录时，会员集也留着。
+        收藏夹（fav<id>）：要这个人自己的登录（私密收藏夹），按收藏先后、最早的在前。"""
         try:
+            if source.startswith(FAV_PREFIX):
+                return self._favorites(source[len(FAV_PREFIX):], login)
             if source.startswith("ss"):
                 return self._season(source[2:], vip=bool(login is not None and login.vip))
             return self._multipart(source)
@@ -1025,6 +1033,43 @@ class Bilibili:
             return view_parts(bvid, view)
         except (KeyError, TypeError, ValueError) as error:
             raise BilibiliError(f"{bvid}: 分 P 信息格式不对：{error}") from None
+
+    def favorite_folders(self, mid: str, login) -> list[dict]:
+        """这个人自己建的收藏夹：[{"id", "title", "count"}]（id 是 media_id，字符串）。"""
+        data = self._call("/x/v3/fav/folder/created/list-all", _login=login, up_mid=mid)
+        folders = []
+        for row in data.get("list") or []:
+            if not isinstance(row, dict) or not str(row.get("id") or "").isdigit():
+                continue
+            folders.append({"id": str(row["id"]),
+                            "title": " ".join(str(row.get("title") or "").split())[:40] or str(row["id"]),
+                            "count": _number(row.get("media_count"))})
+        return folders
+
+    def _favorites(self, media_id: str, login) -> tuple[str, list[Video]]:
+        if login is None:
+            raise BilibiliError(f"fav{media_id}: 收藏夹要登录 B 站才能看", permanent=True)
+        if not media_id.isdigit():
+            raise BilibiliError(f"fav{media_id}: 收藏夹编号不对", permanent=True)
+        name, newest_first = "", []
+        for page in range(1, FAV_PAGES + 1):
+            data = self._call("/x/v3/fav/resource/list", _login=login, media_id=media_id, pn=page,
+                              ps=FAV_PAGE_SIZE, platform="web")
+            name = name or " ".join(str((data.get("info") or {}).get("title") or "").split())
+            for m in data.get("medias") or []:
+                if not isinstance(m, dict) or m.get("type") != 2 or m.get("attr") not in (0, None):
+                    continue
+                bvid = str(m.get("bvid") or m.get("bv_id") or "")
+                if not bvid.startswith("BV") or str(m.get("title") or "") == "已失效视频":
+                    continue
+                newest_first.append(Video(bvid=bvid, title=str(m.get("title") or ""),
+                                          duration=_number(m.get("duration")), pubdate=_number(m.get("pubtime"))))
+                self._keep(self._covers, bvid, m.get("cover"))
+            if not data.get("has_more"):
+                break
+        if not newest_first:
+            raise BilibiliError(f"fav{media_id}: 收藏夹里没有能放的视频", permanent=True)
+        return name or f"收藏夹 {media_id}", list(reversed(newest_first))
 
     def _keep_view(self, bvid: str, view: dict) -> None:
         self._views.pop(bvid, None)

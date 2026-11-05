@@ -384,6 +384,58 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(bilibili.creator_hits({"result": None}), [])
 
 
+class FavoriteTests(unittest.TestCase):
+    """Favourite folders (P1c): listed with the owner's login, played oldest-favourited first."""
+
+    FOLDERS = {"code": 0, "data": {"count": 2, "list": [
+        {"id": 111, "fid": 1, "title": "默认收藏夹", "media_count": 3, "attr": 1},
+        {"id": 222, "fid": 2, "title": "动画", "media_count": 0, "attr": 0}]}}
+
+    def page(self, pn):
+        if pn == 1:
+            medias = [{"type": 2, "bvid": "BV1new", "title": "最新收藏", "duration": 60, "pubtime": 300, "attr": 0},
+                      {"type": 2, "bvid": "BV1bad", "title": "已失效视频", "duration": 0, "pubtime": 0, "attr": 9},
+                      {"type": 12, "bvid": "", "title": "一个音频", "duration": 30, "pubtime": 0, "attr": 0}]
+            return {"code": 0, "data": {"info": {"title": "默认收藏夹"}, "medias": medias, "has_more": True}}
+        medias = [{"type": 2, "bvid": "BV1old", "title": "最早收藏", "duration": 90, "pubtime": 100, "attr": 0}]
+        return {"code": 0, "data": {"info": {"title": "默认收藏夹"}, "medias": medias, "has_more": False}}
+
+    def client(self):
+        self.urls, self.cookies = [], []
+
+        def fetch(url, cookie, timeout=None):
+            self.urls.append(url)
+            self.cookies.append(cookie)
+            if "fav/folder/created/list-all" in url:
+                return self.FOLDERS
+            if "fav/resource/list" in url:
+                return self.page(int(url.split("pn=")[1].split("&")[0]))
+            raise AssertionError(url)
+        return Bilibili(fetch_json=fetch)
+
+    def login(self):
+        from server.relay.bililogin import Login
+        return Login(7, {"SESSDATA": "s", "bili_jct": "j", "DedeUserID": "42"})
+
+    def test_folders_are_listed_with_the_login(self):
+        client = self.client()
+        folders = client.favorite_folders("42", login=self.login())
+        self.assertEqual(folders, [{"id": "111", "title": "默认收藏夹", "count": 3},
+                                   {"id": "222", "title": "动画", "count": 0}])
+        self.assertIn("up_mid=42", self.urls[-1])
+        self.assertIn("SESSDATA=s", self.cookies[-1])
+
+    def test_a_folder_plays_oldest_first_and_skips_dead_items(self):
+        name, videos = self.client().series("fav111", login=self.login())
+        self.assertEqual(name, "默认收藏夹")
+        self.assertEqual([v.bvid for v in videos], ["BV1old", "BV1new"])
+        self.assertTrue(all(c and "SESSDATA=s" in c for c in self.cookies), "every page uses the login")
+
+    def test_a_folder_needs_a_login(self):
+        with self.assertRaises(BilibiliError):
+            self.client().series("fav111")
+
+
 if __name__ == "__main__":
     unittest.main()
 
