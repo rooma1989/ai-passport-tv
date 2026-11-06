@@ -50,6 +50,8 @@ function rows(manifest, mine) {
   out.sort((a, b) => (b.mine ? 1 : 0) - (a.mine ? 1 : 0));
   return out;
 }
+// 外观按钮：跟随系统 → 浅色 → 深色 → 跟随系统。
+function nextTheme(mode) { return { auto: "light", light: "dark", dark: "auto" }[mode] || "light"; }
 // ---- 官网的纯函数到此
 
 const $ = (id) => document.getElementById(id);
@@ -171,6 +173,29 @@ function reveal() {
   }
 }
 
+// 外观（data-theme，记在 localStorage 的 rootv-theme；外壳的启动代码在显示之前就套上了）。
+const THEME_ICONS = {
+  auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg>',
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a8.5 8.5 0 1 0 11.1 11.1z"/></svg>',
+};
+const THEME_NAMES = { auto: "跟随系统", light: "浅色", dark: "深色" };
+function themeMode() {
+  const m = document.documentElement.getAttribute("data-theme");
+  return m === "light" || m === "dark" ? m : "auto";
+}
+function setTheme(mode) {
+  if (mode === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", mode);
+  try { if (mode === "auto") localStorage.removeItem("rootv-theme"); else localStorage.setItem("rootv-theme", mode); } catch (_) { /* 无痕模式：只管这一次 */ }
+  const btn = $("themeBtn");
+  if (btn) {
+    btn.innerHTML = THEME_ICONS[mode];
+    btn.setAttribute("aria-label", "外观：" + THEME_NAMES[mode] + "（点一下换）");
+    btn.title = "外观：" + THEME_NAMES[mode];
+  }
+}
+
 // 启动：外壳（tools/build_site.py 的 SHELLS）取了 data/build.json，按它加载了样式和这个脚本；这里再取
 // 页面内容（导航、正文、页脚），放进页面，标上当前页，然后跑这一页的逻辑。
 const PAGES = { home, download, changelog };
@@ -181,6 +206,8 @@ async function start() {
   try { parts = await (await fetch(built.pages)).json(); }
   catch (_) { document.body.insertAdjacentHTML("beforeend", '<p class="hint" style="margin-top:30vh">页面没加载出来，刷新一下试试。</p>'); return; }
   document.body.insertAdjacentHTML("beforeend", parts.header + "<main>" + (parts[page] || "") + "</main>" + parts.footer);
+  setTheme(themeMode());
+  $("themeBtn").addEventListener("click", () => setTheme(nextTheme(themeMode())));
   const here = { home: "index.html", download: "download.html", changelog: "changelog.html" }[page];
   for (const a of document.querySelectorAll(".bar nav a")) if (a.getAttribute("href") === here) a.setAttribute("aria-current", "page");
   const run = PAGES[page];

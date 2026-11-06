@@ -31,6 +31,10 @@ TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
          ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8",
          ".svg": "image/svg+xml", ".ico": "image/x-icon", ".png": "image/png"}
 REFRESH_MAX = 60        # 七牛一次刷新最多这么多个地址
+REDIRECT = """<!doctype html><meta charset="utf-8"><title>小鼠电视</title>
+<meta http-equiv="refresh" content="0;url=site/"><script>location.replace("site/" + location.search + location.hash)</script>
+<a href="site/">小鼠电视官网</a>
+"""
 
 
 def content_type(path: Path) -> str:
@@ -45,7 +49,10 @@ def publish(store, site: Path, say=print) -> list[str]:
         store.put(f"{PREFIX}/{rel}", path.read_bytes(), path.name, content_type(path))
         if path.suffix == ".html" or rel in ("data/build.json", "data/site.json", "data/changelog.json"):
             refresh.append(f"{store.domain}/{PREFIX}/{rel}")
-    refresh.append(f"{store.domain}/{PREFIX}/")
+    # 短地址：…/site/ 就是首页（七牛的文件名可以以「/」结尾，不靠控制台的「静态页面」也能用）；…/site 跳到 …/site/。
+    store.put(f"{PREFIX}/", (site / "index.html").read_bytes(), "index.html", TYPES[".html"])
+    store.put(PREFIX, REDIRECT.encode("utf-8"), "site.html", TYPES[".html"])
+    refresh += [f"{store.domain}/{PREFIX}/", f"{store.domain}/{PREFIX}"]
     store.refresh(refresh[:REFRESH_MAX])
     say(f"官网传好了：{store.domain}/{PREFIX}/index.html")
     return refresh

@@ -11,8 +11,15 @@
   --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
   --radius: 22px;
 }
+/* 外观：跟随系统（默认），或者导航栏的按钮选的浅色 / 深色（html 的 data-theme，记在浏览器里）。 */
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark;
+  --bg: #000000; --bg-alt: #0b0b0d; --card: #161618; --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #86868b;
+    --line: rgba(255, 255, 255, .1); --blue: #0a84ff; --blue-hi: #409cff; --link: #2997ff;
+    --nav: rgba(0, 0, 0, .66); --shadow: 0 0 0 1px rgba(255, 255, 255, .06);
+}
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) { color-scheme: dark;
     --bg: #000000; --bg-alt: #0b0b0d; --card: #161618; --text: #f5f5f7; --text-2: #a1a1a6; --text-3: #86868b;
     --line: rgba(255, 255, 255, .1); --blue: #0a84ff; --blue-hi: #409cff; --link: #2997ff;
     --nav: rgba(0, 0, 0, .66); --shadow: 0 0 0 1px rgba(255, 255, 255, .06);
@@ -39,6 +46,10 @@ a:hover { text-decoration: underline; }
 .bar nav a { color: var(--text-2); font-size: 13px; }
 .bar nav a:hover, .bar nav a[aria-current="page"] { color: var(--text); text-decoration: none; }
 .bar nav .pill { color: #fff; padding: 5px 13px; font-size: 13px; }
+.theme { display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%;
+         background: transparent; color: var(--text-2); cursor: pointer; transition: background .2s, color .2s; }
+.theme:hover { background: var(--bg-alt); color: var(--text); }
+.theme svg { width: 18px; height: 18px; }
 
 /* 首屏 */
 .hero { text-align: center; padding: 88px 0 24px; overflow: hidden; }

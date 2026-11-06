@@ -11,8 +11,8 @@ const source = readFileSync(join(ROOT, 'packaging/website/app.js'), 'utf8');
 const begin = source.indexOf('// ---- 官网的纯函数');
 const end = source.indexOf('// ---- 官网的纯函数到此');
 assert.ok(begin > 0 && end > begin, 'the pure block is marked in app.js');
-const { bust, esc, inline, guess, size, rows } = new Function(source.slice(begin, end)
-  + '\nreturn { bust, esc, inline, guess, size, rows };')();
+const { bust, esc, inline, guess, size, rows, nextTheme } = new Function(source.slice(begin, end)
+  + '\nreturn { bust, esc, inline, guess, size, rows, nextTheme };')();
 
 assert.equal(bust(0), 0);
 assert.equal(bust(299999), 0);
@@ -38,4 +38,7 @@ assert.deepEqual(list.map((r) => r.key), ['windows-x64', 'macos-arm64'], 'own pl
 assert.equal(list[0].mirror, '../rootv/0.3.9-beta/RooTV-0.3.9-beta-windows-x64-setup.exe');
 assert.equal(list[0].github, 'https://github.com/rooma1989/ai-passport-tv/releases/download/v0.3.9-beta/RooTV-0.3.9-beta-windows-x64-setup.exe');
 assert.deepEqual(rows(null, ''), []);
+assert.equal(nextTheme('auto'), 'light');
+assert.equal(nextTheme('light'), 'dark');
+assert.equal(nextTheme('dark'), 'auto', 'the button cycles back to following the system');
 console.log('website: ok');

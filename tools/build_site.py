@@ -82,7 +82,9 @@ SHELLS = {
     "download.html": ("download", "下载 · 小鼠电视", "下载小鼠电视电脑客户端：Mac（Apple 芯片、Intel）、Windows、Linux。"),
     "changelog.html": ("changelog", "更新日志 · 小鼠电视", "小鼠电视每个版本改了什么。"),
 }
-BOOT = ("(function(){var t=Math.floor(Date.now()/3e5);"
+BOOT = ("(function(){try{var m=localStorage.getItem('rootv-theme');"
+        "if(m==='light'||m==='dark')document.documentElement.setAttribute('data-theme',m)}catch(e){}"
+        "var t=Math.floor(Date.now()/3e5);"
         "fetch('data/build.json?t='+t,{cache:'no-store'}).then(function(r){if(!r.ok)throw r;return r.json()})"
         ".then(function(b){window.ROOTV_BUILD=b;var l=document.createElement('link');l.rel='stylesheet';l.href=b.style;"
         "l.onload=l.onerror=function(){var s=document.createElement('script');s.src=b.app;document.head.appendChild(s)};"
@@ -102,7 +104,7 @@ SHELL = """<!doctype html>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="assets/favicon.ico" sizes="32x32">
 <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-<style>body{{margin:0;background:#fbfbfd}}@media (prefers-color-scheme:dark){{body{{background:#000;color:#f5f5f7}}}}</style>
+<style>body{{margin:0;background:#fbfbfd}}html[data-theme=dark] body{{background:#000;color:#f5f5f7}}@media (prefers-color-scheme:dark){{html:not([data-theme=light]) body{{background:#000;color:#f5f5f7}}}}</style>
 <script>{boot}</script>
 </head>
 <!-- 小鼠电视官网（packaging/website/，tools/build_site.py 生成）。这是不会变的外壳，内容见 data/build.json。 -->

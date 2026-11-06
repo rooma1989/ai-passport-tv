@@ -110,6 +110,9 @@ class PublishTests(unittest.TestCase):
         self.assertIn("https://cdn.example.com/site/data/changelog.json", store.refreshed)
         self.assertIn("https://cdn.example.com/site/download.html", store.refreshed)
         self.assertIn("https://cdn.example.com/site/data/build.json", store.refreshed)
+        self.assertEqual(types["site/"], "text/html; charset=utf-8", "the short address …/site/ is the home page")
+        self.assertIn("site", types, "…/site redirects to …/site/")
+        self.assertIn("https://cdn.example.com/site", store.refreshed)
         self.assertFalse(any(u.endswith(".js") for u in store.refreshed), "hashed files never need a refresh")
 
 
