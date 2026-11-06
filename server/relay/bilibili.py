@@ -765,6 +765,19 @@ class Bilibili:
         # 番剧（pgc）接口的内容在 result 里，其余在 data 里。
         return answer.get("data") or answer.get("result") or {}
 
+    def related(self, bvid: str) -> list[dict]:
+        """视频页右边的「相关推荐」（/x/web-interface/archive/related）：[{"bvid", "title", "pic", "duration", "owner"}]，
+        电脑上放完一个视频后的「接下来」用（bilisearch.py 的 /api/bili/related）。"""
+        data = self._call("/x/web-interface/archive/related", bvid=bvid)
+        out = []
+        for a in data if isinstance(data, list) else []:
+            if not isinstance(a, dict) or not _BVID.match(str(a.get("bvid") or "")):
+                continue
+            out.append({"bvid": a["bvid"], "title": str(a.get("title") or ""), "pic": cover_url(a.get("pic")),
+                        "duration": int(a.get("duration") or 0),
+                        "owner": str((a.get("owner") or {}).get("name") or "")})
+        return out
+
     def _wbi_keys(self, cookie: str) -> tuple[str, str]:
         """wbi 的两个 key：导航接口给（没登录也给，code 是 -101），取一次用 WBI_KEYS_S 秒。"""
         cached = self._wbi

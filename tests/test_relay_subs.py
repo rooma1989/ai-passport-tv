@@ -343,12 +343,15 @@ class SingleUserTests(unittest.TestCase):
             calls.append(url)
             raise urllib.error.URLError("unreachable")
         thumbs.fetch = down
-        self.assertEqual(thumbs.thumb("https://i0.hdslb.com/bfs/c.jpg", "p")[0], 502)
+        for n in range(bilisearch.THUMB_DOWN_AFTER):
+            self.assertEqual(thumbs.thumb(f"https://i0.hdslb.com/bfs/c{n}.jpg", "p")[0], 502)
+        self.assertEqual(len(calls), bilisearch.THUMB_DOWN_AFTER, "one timeout does not stop the others")
         self.assertEqual(thumbs.thumb("https://i0.hdslb.com/bfs/d.jpg", "p")[0], 502)
-        self.assertEqual(len(calls), 1, "after a network error the image host is left alone for a while")
+        self.assertEqual(len(calls), bilisearch.THUMB_DOWN_AFTER,
+                         "after several network errors in a row the image host is left alone for a while")
         self.tick += bilisearch.THUMB_DOWN_S
         thumbs.thumb("https://i0.hdslb.com/bfs/d.jpg", "p")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), bilisearch.THUMB_DOWN_AFTER + 1)
 
     def test_no_redirects_are_followed(self):
         handler = bilisearch._NoRedirect()

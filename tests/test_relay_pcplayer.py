@@ -438,5 +438,18 @@ class KeepAliveTests(unittest.TestCase):
         connection.close()
 
 
+import shutil as _shutil  # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+
+
+@unittest.skipUnless(_shutil.which("node"), "node is not installed")
+class EndScreenLogicTests(unittest.TestCase):
+    def test_console_end_screen_logic(self):
+        result = _subprocess.run(["node", str(Path(__file__).resolve().parent / "console_end_test.mjs")],
+                                 capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+
 if __name__ == "__main__":
     unittest.main()

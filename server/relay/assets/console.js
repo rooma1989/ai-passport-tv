@@ -255,6 +255,20 @@ function avatarSVG(name, s) {
   return `<svg viewBox="0 0 72 72" width="${s}" height="${s}" aria-hidden="true"><circle cx="36" cy="36" r="36" fill="hsl(${hue} 44% 40%)"/><circle cx="36" cy="80" r="34" fill="hsl(${(hue + 30) % 360} 48% 24%)"/><text x="36" y="45" text-anchor="middle" font-family="${SANS}" font-size="27" font-weight="700" fill="#fff">${esc(ch)}</text></svg>`;
 }
 const imgTag = (url, cls) => url ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"${cls ? ` class="${cls}"` : ""}>` : "";
+// 本站的封面代理（api/…thumb…）偶尔没取到（限速、图床一时连不上）：过 2、6、15 秒再试，不让卡片一直空着。
+const IMG_RETRY_MS = [2000, 6000, 15000];
+document.addEventListener("error", (event) => {
+  const img = event.target;
+  if (!(img instanceof HTMLImageElement) || !/(^|\/)api\/[a-z]+\/thumb\?/.test(img.getAttribute("src") || "")) return;
+  const n = Number(img.dataset.retry || 0);
+  if (n >= IMG_RETRY_MS.length) return;
+  img.dataset.retry = String(n + 1);
+  setTimeout(() => {
+    if (!img.isConnected) return;
+    const src = img.getAttribute("src").replace(/&_r=\d+$/, "");
+    img.setAttribute("src", src + "&_r=" + (n + 1));
+  }, IMG_RETRY_MS[n]);
+}, true);
 // 取不到的图（404、502、图床连不上）：去掉，露出下面的占位图。
 document.addEventListener("error", (event) => {
   const t = event.target;
@@ -1198,7 +1212,7 @@ async function playOnPc(item, label, poster) {
     return answer;
   }
   miniWho = "pc";
-  openDirect(answer, { group: groupOf(answer.channel) });
+  openDirect(answer, { group: groupOf(answer.channel), item });
   if (label) toast("在这台电脑上播放「" + label + "」");
   return answer;
 }
@@ -3264,31 +3278,111 @@ function closeParts() {
   if (had) $("pcPartsBtn").focus({ preventScroll: true });
 }
 
-// 放完以后的「下一集」：倒数 5 秒自动放，可以马上放或取消。
+// 放完以后的画面：左右两个封面（左「上一个」、右「下一个」；没有上一个时左边放第二个推荐），中间「重播」，倒数
+// UPNEXT_S 秒自动放右边那个，可以马上放或取消。选项是 {label, title, art, go}（endChoices 给）。
+// ---- 「放完以后」的纯函数（tests/console_end_test.mjs 单独取出来测）
+// 一排卡片里正在放的是第 i 个：下一个是 i+1；上一个是 i-1，没有时用 i+2（左边也放一个推荐）。
+function endNeighbours(list, i) {
+  if (!Array.isArray(list) || i < 0 || i >= list.length) return { prev: null, next: null, prevIsBack: false };
+  const next = list[i + 1] || null;
+  const back = i > 0 ? list[i - 1] : null;
+  return { next, prev: back || (next ? list[i + 2] || null : null), prevIsBack: !!back };
+}
+// ---- 「放完以后」的纯函数到此
 let upNext = null;
-function showUpNext(next) {
+function endCard(id, choice, label) {
+  const card = $(id);
+  card.hidden = !choice;
+  if (!choice) return;
+  card.querySelector(".art").style.backgroundImage = choice.art ? `url("${choice.art.replace(/"/g, "%22")}")` : "";
+  card.querySelector("small").textContent = label || choice.label || "";
+  card.querySelector("b").textContent = choice.title || "";
+  card.setAttribute("aria-label", (label || choice.label || "") + "：" + (choice.title || ""));
+  card.onclick = () => { hideUpNext(); choice.go(); };
+}
+function showEnd(prev, next) {
   hideUpNext();
+  endCard("pcEndPrev", prev, prev && prev.label);
+  endCard("pcEndNext", next, next ? "接下来 · " + (next.label || "下一个") : "");
+  $("pcEndCount").hidden = !next;
+  $("pcEndActs").hidden = !next;
+  $("pcUpNext").hidden = false;
   let left = UPNEXT_S;
-  $("pcUpNextKick").textContent = "接下来 · " + partWord(next.n);
-  $("pcUpNextTitle").textContent = next.title || partWord(next.n);
   const ring = $("pcUpNextRing");
   const draw = () => { $("pcUpNextN").textContent = left; ring.style.strokeDashoffset = String(106.8 * (1 - left / UPNEXT_S)); };
   ring.style.transition = "none"; draw(); void ring.getBoundingClientRect(); ring.style.transition = "";
-  $("pcUpNext").hidden = false;
-  upNext = { next, timer: setInterval(() => {
+  upNext = { next, timer: next ? setInterval(() => {
     left -= 1;
-    if (left <= 0) { const n = next.n; hideUpNext(); playPart(n); return; }
+    if (left <= 0) { hideUpNext(); next.go(); return; }
     draw();
-  }, 1000) };
+  }, 1000) : 0 };
   pcActive();
+  (next ? $("pcEndNext") : $("pcEndReplay")).focus({ preventScroll: true });
 }
+// 兼容以前「下一集」的叫法：放下一集（选集里的那一集）。
+function showUpNext(next) { showEnd(null, partChoice(next, "下一集")); }
 function hideUpNext() {
-  if (upNext) clearInterval(upNext.timer);
+  if (upNext && upNext.timer) clearInterval(upNext.timer);
   upNext = null;
   $("pcUpNext").hidden = true;
 }
-$("pcUpNextGo").onclick = () => { if (upNext) { const n = upNext.next.n; hideUpNext(); playPart(n); } };
-$("pcUpNextStop").onclick = () => { hideUpNext(); watchSay("放完了。点「选集」或「下一集」接着看", false); };
+function partChoice(part, label) {
+  if (!part) return null;
+  const item = watching && watching.parts ? watching.parts.items.find((x) => x.n === part.n) : null;
+  return { label, title: part.title || partWord(part.n), art: (item && item.art) || "", go: () => playPart(part.n) };
+}
+// 卡片（ITEMS 里的一项）→ 选项：在这台电脑上放，接着记住是从哪一排来的（再放完时接着往下）。
+function itemChoice(x, label) {
+  return x ? { label, title: x.title, art: x.art && x.art.url, go: () => { playCtx.current = x; playOnPc(x.play, x.title, x.art && x.art.url); } } : null;
+}
+// 点开的那个节目在哪一排（data-play 卡片的兄弟们），放完时按它找上一个、下一个。
+const playCtx = { list: [], current: null };
+function rememberRow(card) {
+  const box = card && card.parentElement;
+  const ids = box ? [...box.querySelectorAll(":scope > [data-play]")].map((c) => c.dataset.play) : [];
+  playCtx.list = ids.map((id) => ITEMS[id]).filter(Boolean);
+  playCtx.current = ITEMS[card.dataset.play] || null;
+}
+// 放完以后左右放什么：选集的上一集 / 下一集；从一排卡片点开的，那一排的上一个 / 下一个；UP 主台的下一个；
+// B 站视频再不行就用 B 站的相关推荐（/api/bili/related）。
+async function endChoices() {
+  const w = watching;
+  if (!w) return {};
+  if (w.parts && w.parts.items.length > 1) {
+    const np = nextPart(), pp = prevPart();
+    return { next: partChoice(np, "下一集"), prev: pp ? partChoice(pp, "上一集") : null };
+  }
+  const i = w.item ? playCtx.list.indexOf(playCtx.current) : -1;
+  if (i >= 0 && playCtx.current && playCtx.current.play === w.item) {
+    const nb = endNeighbours(playCtx.list, i);
+    if (nb.next) return { next: itemChoice(nb.next, "下一个"), prev: itemChoice(nb.prev, nb.prevIsBack ? "上一个" : "也可以看") };
+  }
+  if (pcStepUp()) {
+    return { next: { label: "下一个", title: (w.name || "这个 UP 主") + " 的下一个视频", art: "",
+                     go: () => startDirect({ channel: w.channel, step: 1 }, { group: w.group }) } };
+  }
+  const bv = w.video && w.video.site === "bilibili" && /^BV[0-9A-Za-z]{10}$/.test(w.video.id) ? w.video.id : "";
+  if (bv) {
+    try {
+      const answer = await call("GET", "api/bili/related?bvid=" + bv);
+      const items = answer && answer.ok ? answer.items.filter((x) => !(x.play && x.play.url && x.play.url.endsWith(bv))) : [];
+      items.forEach((x) => { ITEMS[x.id] = x; });
+      if (items.length) {
+        playCtx.list = items; playCtx.current = null;
+        return { next: itemChoice(items[0], "推荐"), prev: itemChoice(items[1], "也可以看") };
+      }
+    } catch (_) { /* 取不到推荐：只有重播 */ }
+  }
+  return {};
+}
+$("pcUpNextGo").onclick = () => { if (upNext && upNext.next) { const n = upNext.next; hideUpNext(); n.go(); } };
+$("pcUpNextStop").onclick = () => {
+  if (upNext && upNext.timer) clearInterval(upNext.timer);
+  if (upNext) upNext.timer = 0;
+  $("pcEndCount").hidden = true; $("pcEndActs").hidden = true;
+  watchSay("放完了", false);
+};
+$("pcEndReplay").onclick = () => { hideUpNext(); seekRestart(0, "start"); };
 
 // 一个视频放完了：电脑上记「看完了」，有下一集就倒数着放下一集；片源半路断了时可以从断的地方重试。
 function watchEnded() {
@@ -3303,10 +3397,13 @@ function watchEnded() {
     const cur = watching.parts.items[watching.parts.current - 1];
     if (cur) cur.watched = true;
   }
-  const next = nextPart();
-  if (next) showUpNext(next);
-  else watchSay(watching.parts ? "全部放完了" : "放完了", false);
+  const sid = watching.sid;
   renderPc();
+  endChoices().then(({ prev, next }) => {
+    if (!watching || watching.sid !== sid) return;     // 等推荐时已经换了别的
+    if (!next && !prev && watching.parts) watchSay("全部放完了", false);
+    showEnd(prev || null, next || null);
+  });
 }
 
 // ---- 控制条 ----
@@ -4229,7 +4326,8 @@ addEventListener("keydown", (event) => {
     if (!$("pcKeys").hidden) { eat(); pcKeysToggle(false); return; }
     if (!$("pcMenu").hidden) { eat(); closeMenu(); return; }
     if (!$("pcParts").hidden) { eat(); closeParts(); return; }
-    if (upNext) { eat(); $("pcUpNextStop").click(); return; }
+    // Esc：先停倒数，再按一次收起放完以后的画面。
+    if (upNext) { eat(); if (upNext.timer) $("pcUpNextStop").click(); else hideUpNext(); return; }
     return;
   }
   if (!pcCan(act)) return;
@@ -4337,7 +4435,9 @@ function openDirect(answer, ctx) {
                parts: answer.parts || null, part: answer.part || answer.index || 0, video: answer.video || null,
                quality: answer.quality || null,
                routes: answer.routes || 1, route: answer.route || 0, lines: answer.lines || [],
-               subs: answer.subs || null, subsUrl: answer.subs_url || "", hls: ctx.hls };
+               subs: answer.subs || null, subsUrl: answer.subs_url || "", hls: ctx.hls,
+               // 从卡片点开的（playOnPc）：那个节目，放完时据此找同一排的下一个（endChoices）；同一路接着放时留着。
+               item: ctx.item || (same && watching ? watching.item : null) };
   miniWho = "pc";
   $("watchFollow").checked = false;
   // 片库这些经中转放的也照上次选的速度（浏览器直接放的 VodPlayer / DashPlayer 自己设过了）。
@@ -9610,6 +9710,7 @@ document.addEventListener("click", (event) => {
   if (ds.play) {
     event.preventDefault();
     const x = ITEMS[ds.play];
+    rememberRow(t);
     if (t.closest("#allsheet")) closeSheets(true);
     if (x) pressed(t, play(x.play, null, x.title, x.art && x.art.url));
     return;

@@ -38,7 +38,11 @@ from collections import OrderedDict, deque
 from . import bilibili
 from .bilibili import SourceError
 
-PATHS = frozenset({"/api/bili/search", "/api/bili/space", "/api/bili/thumb"})
+PATHS = frozenset({"/api/bili/search", "/api/bili/space", "/api/bili/thumb", "/api/bili/related"})
+# 放完一个视频后的「接下来」（/api/bili/related）：要几个、缓存多久、最多缓存几个视频的。
+RELATED_MAX = 8
+RELATED_CACHE_S = 600
+RELATED_CACHE_SIZE = 64
 QUERY_MAX = 40
 # 搜索结果缓存多久、最多几条；每个人两次真去搜之间至少隔多久；全站每分钟最多搜几次。
 SEARCH_CACHE_S = 600
@@ -50,9 +54,12 @@ THUMB_MAX_BYTES = 512 * 1024
 THUMB_TIMEOUT_S = 6.0
 THUMB_PARALLEL = 4
 THUMB_CACHE_BYTES = 8 * 1024 * 1024
-THUMB_PER_MINUTE = 240
-# 图床连不上（网络错误、超时）后这么久内不再去取，直接 502：路由器拦着 B 站时不至于每张图都等一遍。
-THUMB_DOWN_S = 30
+# 一页 B 站推荐 24 张卡片，每张封面加头像两张图：往下滚几页就是好几百张，240 不够（以前翻到第五页左右图就没了）。
+THUMB_PER_MINUTE = 1200
+# 图床连着 THUMB_DOWN_AFTER 次连不上（网络错误、超时）后这么久内不再去取，直接 502：路由器拦着 B 站时不至于每张图都
+# 等一遍；偶尔一张超时不算（以前一次就停 30 秒，那段时间里新出来的卡片全没有封面）。
+THUMB_DOWN_S = 15
+THUMB_DOWN_AFTER = 3
 THUMB_TYPES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"})
 # 让图床缩好再给（B 站图床的「@宽w_高h_1c.webp」后缀）：视频封面、头像、番剧竖版海报。
 # h：首页大图（只限宽，不裁；原图比这小时图床给原大小，不放大，页面据此判断够不够铺满）。
@@ -165,6 +172,9 @@ class BiliSearch:
         self._gate = threading.BoundedSemaphore(THUMB_PARALLEL)
         self._down_until = 0.0
         self._yt_down_until = 0.0
+        self._related: dict[str, tuple[float, dict]] = {}
+        # 连着失败了几次（取到一张就清零）：[B 站, YouTube]。
+        self._fails = [0, 0]
 
     # ---- 搜索 ----
 
@@ -249,6 +259,33 @@ class BiliSearch:
 
     # ---- 缩略图 ----
 
+    def related(self, client, bvid) -> dict:
+        """{"ok", "items": [{"id", "title", "duration", "subtitle", "art", "play"}]}：一个 B 站视频的相关推荐，
+        卡片的样子（play 是按链接在电脑上看）。按视频缓存 RELATED_CACHE_S 秒；取不到时 ok 为假（页面就不显示）。"""
+        if client is None or not isinstance(bvid, str) or not bilibili._BVID.match(bvid):
+            return {"ok": False, "error": "请求格式不对"}
+        now = self.clock()
+        with self.lock:
+            hit = self._related.get(bvid)
+            if hit is not None and now - hit[0] < RELATED_CACHE_S:
+                return hit[1]
+        try:
+            found = client.related(bvid)
+        except (bilibili.SourceError, OSError, ValueError) as error:
+            self.log(f"B 站相关推荐取不到：{type(error).__name__}")
+            return {"ok": False, "error": "取不到"}
+        items = [{"id": "rel:" + v["bvid"], "title": v["title"], "duration": v["duration"], "subtitle": v["owner"],
+                  "art": {"url": f"api/bili/thumb?s=v&u={urllib.parse.quote(v['pic'], safe='')}" if v["pic"] else "",
+                          "ratio": "wide"},
+                  "play": {"kind": "cast", "url": f"https://www.bilibili.com/video/{v['bvid']}"}}
+                 for v in found[:RELATED_MAX]]
+        answer = {"ok": True, "items": items}
+        with self.lock:
+            self._related[bvid] = (now, answer)
+            while len(self._related) > RELATED_CACHE_SIZE:
+                self._related.pop(next(iter(self._related)))
+        return answer
+
     def thumb(self, raw, size) -> tuple[int, str, bytes]:
         """(HTTP 码, 类型, 内容)。不在白名单里的地址 404；取不到 502；太多了 503。"""
         youtube = youtube_thumb_url(raw)
@@ -276,15 +313,23 @@ class BiliSearch:
         except (OSError, ValueError) as error:
             if not isinstance(error, urllib.error.HTTPError):
                 with self.lock:
-                    if youtube:
-                        self._yt_down_until = self.clock() + THUMB_DOWN_S
-                    else:
-                        self._down_until = self.clock() + THUMB_DOWN_S
-                self.log(f"{'YouTube 缩略图' if youtube else 'B 站图床'}连不上（{type(error).__name__}），"
-                         f"{THUMB_DOWN_S} 秒内不再取")
+                    which = 1 if youtube else 0
+                    self._fails[which] += 1
+                    down = self._fails[which] >= THUMB_DOWN_AFTER
+                    if down:
+                        self._fails[which] = 0
+                        if youtube:
+                            self._yt_down_until = self.clock() + THUMB_DOWN_S
+                        else:
+                            self._down_until = self.clock() + THUMB_DOWN_S
+                if down:
+                    self.log(f"{'YouTube 缩略图' if youtube else 'B 站图床'}连着 {THUMB_DOWN_AFTER} 次连不上"
+                             f"（{type(error).__name__}），{THUMB_DOWN_S} 秒内不再取")
             return 502, "", b""
         finally:
             self._gate.release()
+        with self.lock:
+            self._fails[1 if youtube else 0] = 0
         if kind not in THUMB_TYPES or not body or len(body) > THUMB_MAX_BYTES:
             return 502, "", b""
         with self.lock:
@@ -314,6 +359,9 @@ def get(handler, relay, caller, path: str) -> None:
             from .accountfeeds import SEASON_WAIT_S, annotate_search
             answer = annotate_search(answer, feeds.watched(caller, SEASON_WAIT_S))
         handler._json(answer)
+        return
+    if path == "/api/bili/related":
+        handler._json(relay.bili_search.related(relay.clients.get("bilibili"), query.get("bvid")))
         return
     if path == "/api/bili/space":
         handler._json(relay.bili_search.space(relay.clients.get("bilibili"), query.get("mid"), query.get("page")))
