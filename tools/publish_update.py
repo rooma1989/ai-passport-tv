@@ -9,7 +9,7 @@ After the CI build has put the installers on the GitHub release:
 
 1. download SHA256SUMS-desktop and the installers from the release (or take them
    from --files) and check every one against the sums;
-2. take this version's Chinese changelog entries as the notes;
+2. take this version's Chinese changelog entries as the notes (or --notes);
 3. write rootv-update.json and sign it (rootv-update.json.sig) with the key in
    ~/.config/xiaozhi-tv/update-signing.key, after checking it matches the
    public key built into server/selfhost/updater.py;
@@ -287,7 +287,7 @@ def publish(tag: str, args, run=subprocess.run, qiniu_opener=None, today=None) -
         if not args.files:
             print(f"从 GitHub 下载 {tag} 的安装包…")
             fetch_release(tag, folder, run)
-        notes = notes_for(version, CHANGELOG.read_text(encoding="utf-8"))
+        notes = args.notes if getattr(args, "notes", None) else notes_for(version, CHANGELOG.read_text(encoding="utf-8"))
         date = today or time.strftime("%Y-%m-%d")
         manifest, paths = build_manifest(version, folder, notes, date)
         data, sig = sign(manifest, secret)
@@ -334,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="只生成、检查清单，不上传")
     parser.add_argument("--skip-qiniu", action="store_true", help="只发 GitHub")
     parser.add_argument("--no-site", action="store_true", help="不顺带更新七牛上的官网")
+    parser.add_argument("--notes", help="这一版的更新说明（不给就从 docs/CHANGELOG.zh_CN.md 取）")
     args = parser.parse_args(argv)
     if args.tag == "keygen":
         return keygen(args.key)

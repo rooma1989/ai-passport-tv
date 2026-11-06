@@ -75,6 +75,8 @@ class PublishTests(unittest.TestCase):
 
     def run_gh(self, command, **_):
         self.gh.append(command)
+        if command[1:3] == ["release", "upload"]:
+            self.uploaded = Path(command[4]).read_text(encoding="utf-8")
         return Done()
 
     def open(self, request, timeout=None):
@@ -124,7 +126,12 @@ class PublishTests(unittest.TestCase):
         keys = [r.data.split(b'name="key"\r\n\r\n', 1)[1].split(b"\r\n", 1)[0].decode()
                 for r in self.requests if r.data and b'name="key"' in r.data]
         self.assertIn("site/index.html", keys)
-        self.assertEqual(keys[-1].rsplit(".", 1)[-1], "html", "the website's pages go last")
+        self.assertEqual(keys[-2:], ["site/", "site"], "then the short addresses")
+        self.assertEqual(keys[-3].rsplit(".", 1)[-1], "html", "the website's shells go last")
+
+    def test_notes_given_by_hand(self):
+        pub.publish("v" + VERSION, self.args(notes="手写的说明", skip_qiniu=True), run=self.run_gh, today="2026-11-10")
+        self.assertEqual(json.loads(self.uploaded)["notes"], "手写的说明")
 
     def test_upload_token(self):
         token = pub.upload_token("AK", "SK", "b", "rootv/x", now=1000)
