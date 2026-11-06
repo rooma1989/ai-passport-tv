@@ -659,9 +659,11 @@ class ThumbAllowlistTests(unittest.TestCase):
                          "no Bilibili size suffix, fetched through YouTube's proxy")
         self.assertEqual(search.thumb("https://evil.com/x.jpg", "v")[0], 404)
         search.youtube_proxy = lambda: "down"
-        self.assertEqual(search.thumb("https://i.ytimg.com/vi/aaaaaaaaaaa/mqdefault.jpg", "v")[0], 502)
+        for n in range(bilisearch.THUMB_DOWN_AFTER):
+            self.assertEqual(search.thumb(f"https://i.ytimg.com/vi/aaaaaaaaaa{n}/mqdefault.jpg", "v")[0], 502)
         self.assertEqual(search.thumb("https://i.ytimg.com/vi/bbbbbbbbbbb/mqdefault.jpg", "v")[0], 502)
-        self.assertEqual(sum(1 for c in calls if c[0] == "yt"), 2, "YouTube backs off after a network error")
+        self.assertEqual(sum(1 for c in calls if c[0] == "yt"), 1 + bilisearch.THUMB_DOWN_AFTER,
+                         "YouTube backs off after network errors in a row")
         self.assertEqual(search.thumb("https://i0.hdslb.com/bfs/archive/a.jpg", "v")[0], 200, "Bilibili is not held back")
 
 
