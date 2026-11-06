@@ -32,9 +32,9 @@ from pathlib import Path
 
 # 主人的更新签名公钥（tools/publish_update.py keygen 生成；私钥在主人电脑的 ~/.config/xiaozhi-tv/update-signing.key）。
 PUBLIC_KEY = "088b6367e140c7b180f343cc32490c16be09a4af5b259b847572534e6e3793a6"
-# 七牛镜像的根地址：清单在 <根>/latest/，安装包在 <根>/<版本>/。空着就只用 GitHub。CDN 还没配 https 证书，先用 http：
-# 清单有签名、安装包有 SHA-256，被中途改了也只是校验不过、换 GitHub 下。
-MIRROR = "http://cdn.tv.iewww.com/rootv"
+# 七牛镜像的根地址：清单在 <根>/latest/，安装包在 <根>/<版本>/。空着就只用 GitHub。
+# 清单有签名、安装包有 SHA-256：镜像只是搬运，被中途改了也只是校验不过、换 GitHub 下。
+MIRROR = "https://cdn.tv.iewww.com/rootv"
 GITHUB = "https://github.com/rooma1989/ai-passport-tv/releases"
 MANIFEST = "rootv-update.json"
 SIGNATURE = MANIFEST + ".sig"
@@ -344,6 +344,11 @@ class Updater:
             except UpdateError as error:
                 self.log(f"更新：{source.label}的版本清单不能用：{error}")
                 last = error
+                continue
+            except urllib.error.HTTPError as error:
+                what = "上面还没有版本清单" if error.code == 404 else f"回答 HTTP {error.code}"
+                self.log(f"更新：{source.label}{what}")
+                last = UpdateError(f"{source.label}{what}")
                 continue
             except (OSError, ValueError, urllib.error.URLError) as error:
                 self.log(f"更新：连不上{source.label}（{type(error).__name__}）")

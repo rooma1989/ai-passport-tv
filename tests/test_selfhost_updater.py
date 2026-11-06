@@ -196,7 +196,7 @@ class UpdaterTests(unittest.TestCase):
             empty = updater.Source("mirror", self.site.base)
             u = self.make(sources=[empty, updater.Source("mirror", other.base)])
             self.assertEqual(u.check()["state"], "ready")
-            self.assertTrue(any("不能用" in m or "连不上" in m for m in self.logs))
+            self.assertTrue(any("还没有版本清单" in m for m in self.logs), self.logs)
         finally:
             other.close()
 
