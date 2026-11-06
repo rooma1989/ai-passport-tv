@@ -37,7 +37,7 @@ a = Analysis(
     binaries=[],
     # The tray icons (tools/make_icons.py); desktop/icons.py finds them beside itself.
     datas=[(str(ROOT / "desktop" / "assets"), "desktop/assets")],
-    hiddenimports=["desktop", "desktop.tray", "desktop.icons", "desktop.diagnostics", "desktop.legacy", "tools",
+    hiddenimports=["desktop", "desktop.tray", "desktop.icons", "desktop.diagnostics", "desktop.legacy", "desktop.update", "tools",
                    "tools.parentwatch", "tools.netcheck", "tools.desktop_folders"] + backends,
     hookspath=[],
     runtime_hooks=[],

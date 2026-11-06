@@ -45,6 +45,8 @@ OPEN_LOGS = "open_logs"
 DIAGNOSTICS = "diagnostics"
 RESTART = "restart"
 QUIT = "quit"
+INSTALL_UPDATE = "install_update"
+CHECK_UPDATE = "check_update"
 # Parameterised: "choose_browser:<bundle id>", "choose_browser:" = the system default.
 CHOOSE_BROWSER = "choose_browser"
 
@@ -194,6 +196,25 @@ def browser_menu(state: TrayState) -> Item | None:
     return Item("电脑版用的浏览器", submenu=tuple(choices))
 
 
+def _update(status) -> list[Item]:
+    """The update rows (server/selfhost/updater.py through status.update); none when the core does not update."""
+    if status is None or status.update.state == "off":
+        return []
+    up = status.update
+    rows = []
+    if up.result:
+        rows.append(Item(up.result, enabled=False))
+    if up.state == "ready":
+        rows.append(Item(f"更新到 {up.version} 并重启…", INSTALL_UPDATE))
+    elif up.state == "downloading":
+        pct = f"（{round(up.progress * 100)}%）" if up.progress is not None else ""
+        rows.append(Item(f"正在下载新版本 {up.version}{pct}", enabled=False))
+    else:
+        rows.append(Item("正在检查更新…" if up.state == "checking" else "检查更新", CHECK_UPDATE,
+                         enabled=up.state != "checking"))
+    return rows
+
+
 def build(state: TrayState) -> tuple[Item, ...]:
     running = state.core == "running" and state.status is not None
     status = state.status
@@ -228,6 +249,7 @@ def build(state: TrayState) -> tuple[Item, ...]:
     items.append(Item("登录时启动", AUTOSTART, checked=bool(state.autostart),
                       enabled=state.autostart is not None))
     items.append(SEPARATOR)
+    items += _update(status)
     items.append(Item("打开日志文件夹", OPEN_LOGS))
     items.append(Item("导出诊断信息…", DIAGNOSTICS, enabled=not state.busy))
     items.append(Item("重启电视服务", RESTART, enabled=state.core in ("running", "restarting", "stopped")))

@@ -607,11 +607,12 @@ function showRoute() {
   if (name === "series" || name === "up") showDetailRoute(name, was === name && from && !to ? from : null);
   else dt.kind = "";
   updateTop();
-  if (name === "home") { renderHome(); loadHome(); }
+  if (name === "home") { renderHome(); loadHome(); loadUpdate(); }
+  if (name !== "home" && !$("updBar").hidden) $("updBar").hidden = true;
   if (name === "live" && was !== name) loadEpg();
   if (name === "devices") loadDevices();
   if (name === "settings") { if (!isGuest()) loadFeeds(true);
-    if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); settingsNav(); }
+    if (!isGuest()) loadSessions(); if (was !== name) ytBrowsers = null; loadYouTube(); loadBili(); renderAbout(); loadUpdate(true); settingsNav(); }
   if (typeof adminRoute === "function") adminRoute(name === "admin" ? routeParts()[1] || "" : null);
   else if (name === "admin") openAdmin();
   if (name !== "settings") biliCancel();
@@ -706,6 +707,65 @@ function renderMe() {
   $("meList").innerHTML = rows.map(([id, t, i]) => `<a class="li" href="#/${id === "settings" && ytAlert() ? "settings/youtube" : id}"><span class="ico">${ic(i, 18)}</span><span class="tx">${t}</span>${id === "settings" && ytAlert() ? '<i class="adot" title="YouTube 要求重新登录"></i>' : ""}<em>›</em></a>`).join("")
     + `<div class="li"><span class="me">${esc(me ? [...me.name][0] : "?")}</span><span class="tx">${esc(me ? me.name : "")}<small>${me && me.role === "admin" ? "管理员" : isGuest() ? "访客" : "家人"}</small></span></div>`;
 }
+// ---- 电脑客户端的更新（管理员；核心查和下，托盘装，server/relay/updates.py）----
+// 首页顶上一条「新版本已就绪」，设置 → 通用 → 关于里有现在的版本、检查更新、更新并重启。
+// ---- 「更新」的纯函数（tests/console_update_test.mjs 单独取出来测）
+function updLine(u) {
+  if (!u || !u.on) return "";
+  if (u.state === "ready") return "新版本 " + u.version + " 已就绪";
+  if (u.state === "downloading") return "正在下载新版本 " + u.version + (u.total ? "（" + Math.round(100 * (u.done || 0) / u.total) + "%）" : "");
+  if (u.state === "checking") return "正在检查更新…";
+  if (u.state === "failed") return "检查更新没成功" + (u.error ? "：" + u.error : "");
+  return "已经是最新版本" + (u.current ? "（" + u.current + "）" : "");
+}
+// ---- 「更新」的纯函数到此
+let upd = null, updNotes = false, updAt = 0, updHidden = false;
+async function loadUpdate(force) {
+  if (!isAdmin() || isGuest() || (!force && Date.now() - updAt < 60000)) return;
+  updAt = Date.now();
+  try { upd = await call("GET", "api/update"); } catch (error) { if (error instanceof SignedOut) signedOut(); return; }
+  renderUpdate();
+}
+function renderUpdate() {
+  const u = upd && upd.on ? upd : null;
+  const bar = $("updBar"), row = $("updRow");
+  bar.hidden = !(u && u.state === "ready") || updHidden || route !== "home";
+  if (!bar.hidden) {
+    bar.innerHTML = `<span class="ico">${ic("info", 20)}</span><div><b>${esc(updLine(u))}</b><p>${esc(u.result || "点「更新并重启」，小鼠电视会自动换成新版本并重新打开，大约半分钟")}</p>${updNotes && u.notes ? `<pre class="updnotes">${esc(u.notes)}</pre>` : ""}</div>
+      <button class="btn sm" data-upd="notes">${updNotes ? "收起" : "看看改了什么"}</button><button class="btn pri sm" data-upd="install">更新并重启</button><button class="x" data-upd="hide" aria-label="先不更新，关掉这条提示">×</button>`;
+  }
+  row.hidden = !u;
+  if (u) {
+    $("updText").innerHTML = `${esc(updLine(u))}<small>${esc(u.result || (u.checked ? "上次检查：" + when(u.checked) : "每天自动检查一次"))}</small>`;
+    $("updActs").innerHTML = u.state === "ready" ? `<button class="btn pri sm" data-upd="install">更新并重启</button>`
+      : `<button class="btn sm" data-upd="check"${u.state === "checking" || u.state === "downloading" ? " disabled" : ""}>检查更新</button>`;
+  }
+}
+async function updInstall(force) {
+  let answer;
+  try { answer = await call("POST", "api/update/install", force ? { force: true } : {}); }
+  catch (error) { if (error instanceof SignedOut) signedOut(); else toast("网络不通", true); return; }
+  if (!answer.ok && answer.busy) {
+    if (confirm(answer.error + "。现在更新吗？")) updInstall(true);
+    return;
+  }
+  if (!answer.ok) { toast(answer.error || "更新没开始", true); return; }
+  toast("正在更新到 " + answer.version + "：小鼠电视会重启，大约半分钟后自动连回来", false, 60000);
+}
+for (const box of ["updBar", "updRow"]) $(box).addEventListener("click", (event) => {
+  const t = event.target.closest("[data-upd]");
+  if (!t) return;
+  if (t.dataset.upd === "notes") { updNotes = !updNotes; renderUpdate(); }
+  else if (t.dataset.upd === "hide") { updHidden = true; renderUpdate(); }
+  else if (t.dataset.upd === "install") busy(t, () => updInstall(false));
+  else if (t.dataset.upd === "check") busy(t, async () => {
+    await call("POST", "api/update/check", {});
+    toast("正在检查更新…");
+    upd = Object.assign({}, upd, { state: "checking" }); renderUpdate();
+    setTimeout(() => loadUpdate(true), 5000);
+  });
+});
+
 function renderAbout() {
   $("aboutText").innerHTML = `${esc(BRAND_ZH)} 电脑版<small>${esc(BRAND)} · ${data && data.watch ? "这台电脑就是家里的电视服务器" : "在浏览器里管理和遥控你的小电视"}</small>`;
 }
@@ -773,6 +833,7 @@ function schedule(delay) {
       if (ticks % 3 === 0) loadTargets();
       if (route === "home" && (ticks % 6 === 0 || homeDue())) loadHome(true);
       if (route === "home" && ticks % 12 === 0) loadFeeds();
+      if (ticks % 24 === 0 || (upd && (upd.state === "checking" || upd.state === "downloading") && ticks % 2 === 0)) loadUpdate(true);
     }
     schedule(pending || listenPending ? 1000 : 5000);
   }, delay);

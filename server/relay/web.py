@@ -30,8 +30,8 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import accountfeeds, bilidash, bilifav, bililogin, bilivod, follows, static, wallpaper, websites, ytsearch, \
-    ytsettings, ytvod
+from . import accountfeeds, bilidash, bilifav, bililogin, bilivod, follows, static, updates, wallpaper, websites, \
+    ytsearch, ytsettings, ytvod
 from . import library as library_api
 from . import libdouban
 from . import localsearch
@@ -3267,7 +3267,7 @@ def _manage_handler(relay: Relay):
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
             if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)
                                  or ytsettings.get(self, relay, path) or bililogin.get(self, relay, path)
-                                 or websites.get(self, relay, path)
+                                 or websites.get(self, relay, path) or updates.get(self, relay, path)
                                  or bilifav.get(self, relay, path)
                                  or accountfeeds.get(self, relay, path) or follows.get(self, relay, path)
                                  or wallpaper.get(self, relay, path)):
@@ -3467,7 +3467,7 @@ def _manage_handler(relay: Relay):
                 return
             if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)
                                  or ytsettings.post(self, relay, path) or bililogin.post(self, relay, path)
-                                 or websites.post(self, relay, path)
+                                 or websites.post(self, relay, path) or updates.post(self, relay, path)
                                  or bilifav.post(self, relay, path)
                                  or accountfeeds.post(self, relay, path) or follows.post(self, relay, path)):
                 return

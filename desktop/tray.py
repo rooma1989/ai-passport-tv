@@ -163,6 +163,7 @@ class App:
         self.last_status_raw: dict | None = None
         self.setup_opened = False
         self.quitting = threading.Event()
+        self._installing = False                # an update is being handed to the swap script
         self._notices: list[tuple[float, str]] = []
         self._next_network_check = 0.0
         self._lock = threading.RLock()
@@ -204,6 +205,16 @@ class App:
             self.state = replace(self.state, core=core_state, status=status, keep_awake=keep_awake,
                                  autostart=self._login_item_enabled(), notices=self._current_notices())
         self._browsers()
+        if status is not None and status.update.install and not self.quitting.is_set():
+            # The console's "Update and restart" (it already asked about anyone watching).
+            try:
+                self.install_update(confirm=False)
+            except (ControlUnavailable, ControlError) as error:
+                log(f"网页要更新，但取不到下好的版本：{error}")
+                try:
+                    self.client.request("POST", "/update/done", {"error": "新版本还没下好"})
+                except (ControlUnavailable, ControlError):
+                    pass
         self._first_run(status)
         self._power(status)
         self._network()
@@ -373,6 +384,8 @@ class App:
         menu.DIAGNOSTICS: "diagnostics",
         menu.RESTART: "restart",
         menu.QUIT: "quit",
+        menu.INSTALL_UPDATE: "install_update",
+        menu.CHECK_UPDATE: "check_update",
         menu.CHOOSE_BROWSER: "choose_browser",     # "choose_browser:<bundle id>"
     }
 
@@ -527,6 +540,60 @@ class App:
             self.client.restart()       # the core restarts its children, keeps its API
         except (ControlUnavailable, ControlError):
             self.core.restart(self.client)
+
+    def check_update(self) -> None:
+        self.client.request("POST", "/update/check")
+        self._notice("正在检查更新…")
+
+    def install_update(self, confirm: bool = True) -> None:
+        """Install the version the core downloaded (desktop/update.py), then quit; the swap script restarts us."""
+        from . import update
+        if self._installing:
+            return
+        self._installing = True
+        try:
+            ready = self.client.request("GET", "/update/ready")
+            version = str(ready.get("version") or "")
+            if confirm and not self._confirm_update(version):
+                return
+            update.check_file(ready)
+            chosen = update.plan(ready, self.data, Path(sys.executable), paths.system(),
+                                 self.state.status.version if self.state.status else "", os.getpid())
+            try:
+                update.launch(chosen)       # it waits for this process to exit before touching anything
+            except OSError as error:
+                raise update.UpdateFailed(f"替换程序起不来（{type(error).__name__}）") from None
+            log(f"更新到 {version}：交给替换脚本，退出")
+            self.shutdown()
+            if self.on_quit is not None:
+                self.on_quit()
+        except update.UpdateFailed as error:
+            self._notice(str(error))
+            log(f"更新没装：{error}")
+            try:
+                self.client.request("POST", "/update/done", {"error": str(error)})
+            except (ControlUnavailable, ControlError):
+                pass
+        finally:
+            if not self.quitting.is_set():
+                self._installing = False
+
+    def _confirm_update(self, version: str) -> bool:
+        """macOS asks in a dialog (someone may be watching); elsewhere the menu click is the answer."""
+        if paths.system() != "Darwin":
+            return True
+        n = menu.watching_count(self.state)
+        text = f"更新到 {version} 要重启小鼠电视，大约半分钟。" + (
+            f"现在有 {n} 台小电视在看，会中断一下。" if n else "") + "现在更新吗？"
+        script = ('on run argv\nactivate\ntry\ndisplay dialog (item 1 of argv) with title "小鼠电视" '
+                  'buttons {"以后再说", "更新并重启"} default button 2 cancel button 1\nreturn "yes"\n'
+                  'on error number -128\nreturn ""\nend try\nend run')
+        try:
+            done = subprocess.run(["osascript", "-e", script, text], capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=300)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return done.stdout.strip() == "yes"
 
     def quit(self) -> None:
         self.shutdown()

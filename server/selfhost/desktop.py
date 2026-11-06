@@ -420,6 +420,8 @@ class Desktop:
         # 没有监督进程时（设置文件有错，只开着控制接口报告）/stop 设这个。
         self.stop_event = threading.Event()
         self.control_port = 0
+        # 更新（updater.Updater）：打包好的客户端才有，None 时状态里只说没有新版本。
+        self.updater = None
         self.config_error = ""
         self._problems: list[dict] = []
         self._lock = threading.Lock()
@@ -537,6 +539,6 @@ class Desktop:
             {"id": "", "trusted": None, "profile": "", "lan_open": self.bind != "127.0.0.1"},
             "ffmpeg": {k: ffmpeg[k] for k in ("state", "path", "source", "done", "total", "error")},
             "voice": {"mode": "off"}, "youtube": self.youtube(), "hub": {"state": "off"},
-            "update": {"available": False},
+            "update": self.updater.snapshot() if self.updater is not None else {"available": False, "state": "off"},
             "settings": self.settings.snapshot(),
         }

@@ -252,6 +252,19 @@ def _run_locked(args, layout, logs_dir, log) -> int:
             watch.on_change = address_changed
             network.watchers.append(watch)
             network.start()
+        # 更新（updater.py）：打包好的客户端才查；状态给控制接口和网页（run/update.json）。
+        from .. import edition
+        from . import updater as updater_module
+
+        def update_proxy() -> str:
+            try:
+                return config_module.load(layout.config).youtube_proxy
+            except config_module.ConfigError:
+                return ""
+
+        state.updater = updater_module.start(layout, VERSION, log, datadir.is_frozen(), supervisor.stopping,
+                                             proxy=update_proxy, lite=edition.is_lite(),
+                                             portable=updater_module.windows_portable())
         if watch_stdin(supervisor.stopping):
             log("托盘关掉标准输入时停止。")
         return supervisor.run()

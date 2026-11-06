@@ -155,13 +155,29 @@ Cutting a release: make sure `desktop/__init__.py` says the version, merge to
 the default branch, and push the tag `v<version>`; the firmware, server and
 desktop workflows each add their files to the one release.
 
+Then let the installed clients know (design
+`docs/superpowers/specs/2026-11-05-pc-client-updates-design.md`): when the
+workflows have finished, run `python3 tools/publish_update.py v<version>` on the
+machine that holds the update-signing key (`~/.config/xiaozhi-tv/update-signing.key`,
+made once with `python3 tools/publish_update.py keygen`; its public key is
+`PUBLIC_KEY` in `server/selfhost/updater.py`; back the key up, a lost key means
+clients can only be updated by hand). It checks the release's installers against
+`SHA256SUMS-desktop`, takes the notes from `docs/CHANGELOG.zh_CN.md` (the
+`## v<version>` section, else the unreleased section at the top), signs `rootv-update.json`, uploads it
+and its `.sig` to the release, and copies everything to the Qiniu mirror
+(settings in `~/.config/xiaozhi-tv/qiniu.json`: `access_key`, `secret_key`,
+`bucket`, `domain`, optional `up_host` and `prefix`; `--skip-qiniu` publishes to
+GitHub only, `--dry-run` uploads nothing). Clients check once a day; the
+mirror is tried first once `MIRROR` in `server/selfhost/updater.py` names it.
+
 A local build to try (macOS): `python3 tools/build_core.py`, then
 `python3 packaging/desktop/build.py --core-dir build-core/dist/rootv-core`;
 copy the DMG to `dist-desktop/` (git-ignored) to keep it.
 
 ## Still to do
 
-- The Ed25519 signature of `SHA256SUMS-desktop` (P8).
+- Run the Windows and Linux swap scripts (`desktop/update.py`) on those systems:
+  they follow the documentation and have only been checked statically.
 - Build the PyInstaller bootloader from source in CI (fewer antivirus false
   positives, 5.12); version information in the Windows executables.
 - When GitHub's runner moves to another Inno Setup, take the matching

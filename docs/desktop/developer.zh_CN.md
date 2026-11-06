@@ -103,12 +103,20 @@ rsvg-convert，或无界面的 Chrome/Chromium/Edge）。改了 SVG 再运行它
 发版：确认 `desktop/__init__.py` 里是这个版本，合进默认分支，推标签 `v<版本>`；固件、服务器、电脑客户端三个流程各自把文件加进
 同一个发布。
 
+然后让装好的客户端知道（设计 `docs/superpowers/specs/2026-11-05-pc-client-updates-design.zh_CN.md`）：几个流程跑完以后，在有更新签名
+密钥（`~/.config/xiaozhi-tv/update-signing.key`，用 `python3 tools/publish_update.py keygen` 生成一次；公钥是
+`server/selfhost/updater.py` 的 `PUBLIC_KEY`；要备份，丢了以后客户端只能手动更新）的那台电脑上跑
+`python3 tools/publish_update.py v<版本>`。它按 `SHA256SUMS-desktop` 核对发布里的安装包，从 `docs/CHANGELOG.zh_CN.md` 取更新说明
+（`## v<版本>` 那一节，没有就 `## 未发布`），给 `rootv-update.json` 签名，把它和 `.sig` 传到发布，再全部同步到七牛镜像（设置在
+`~/.config/xiaozhi-tv/qiniu.json`：`access_key`、`secret_key`、`bucket`、`domain`，可选 `up_host`、`prefix`；`--skip-qiniu` 只发
+GitHub，`--dry-run` 什么都不传）。客户端每天查一次；`server/selfhost/updater.py` 的 `MIRROR` 填上七牛的地址后先试镜像。
+
 在本机做一份试用（macOS）：`python3 tools/build_core.py`，再 `python3 packaging/desktop/build.py --core-dir
 build-core/dist/rootv-core`；想留着就把 DMG 复制到 `dist-desktop/`（不进 git）。
 
 ## 还要做的
 
-- `SHA256SUMS-desktop` 的 Ed25519 签名（P8）。
+- 在 Windows、Linux 上真的跑一次替换脚本（`desktop/update.py`）：现在只是照文档写的，只做过静态检查。
 - 在 CI 里从源码编 PyInstaller 引导程序（减少杀毒误报，5.12）；Windows 程序的版本信息。
 - GitHub 的运行机换了 Inno Setup 版本时，换上对应的 `ChineseSimplified.isl`（CI 会警告；见
   `packaging/desktop/ChineseSimplified-SOURCE.txt`）。

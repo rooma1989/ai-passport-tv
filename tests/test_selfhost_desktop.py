@@ -252,7 +252,10 @@ class ControlApiTests(unittest.TestCase):
 
     def test_later_phases_unknown_paths_and_wrong_methods(self):
         self.assertEqual(control.call(self.info, "POST", "remote/enable")[1]["error"], "not_implemented")
-        self.assertEqual(control.call(self.info, "POST", "update/check")[0], 501)
+        self.assertEqual(control.call(self.info, "POST", "flash/start")[0], 501)
+        # Updates (updater.py): a checkout has no updater, so the routes say so instead of 501.
+        self.assertEqual(control.call(self.info, "POST", "update/check")[0], 404)
+        self.assertEqual(control.call(self.info, "GET", "update")[1]["state"], "off")
         self.assertEqual(control.call(self.info, "POST", "nothing")[0], 404)
         self.assertEqual(control.call(self.info, "GET", "stop")[0], 405)
 

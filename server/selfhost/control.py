@@ -28,7 +28,7 @@ from .version import VERSION
 
 BODY_MAX = 64 * 1024
 PREFIX = "/local/v1/"
-LATER = {"remote/": "P5", "flash/": "P7", "update/": "P8"}
+LATER = {"remote/": "P5", "flash/": "P7"}
 
 
 class ControlError(Exception):
@@ -168,6 +168,39 @@ class Actions:
         threading.Thread(target=reload_and_rebuild, daemon=True, name="restart").start()
         return 202, {"ok": True}
 
+    # ---- 更新（updater.py；托盘装，见 desktop/update.py） ----
+
+    def _updater(self):
+        updater = getattr(self.desktop, "updater", None)
+        if updater is None:
+            raise ControlError(404, "no_updates", "这个客户端不自动更新（从源代码跑的、或者没有更新签名公钥）")
+        return updater
+
+    def update(self, _body: dict) -> tuple[int, dict]:
+        updater = getattr(self.desktop, "updater", None)
+        return 200, dict(updater.snapshot() if updater is not None else {"available": False, "state": "off"}, ok=True)
+
+    def update_check(self, _body: dict) -> tuple[int, dict]:
+        updater = self._updater()
+        threading.Thread(target=updater.check, daemon=True, name="update-check").start()
+        return 202, {"ok": True}
+
+    def update_ready(self, _body: dict) -> tuple[int, dict]:
+        """托盘要装的那一份：{version, name, size, sha256, path}；还没下好 409。"""
+        ready = self._updater().ready()
+        if ready is None:
+            raise ControlError(409, "not_ready", "新版本还没下好")
+        return 200, dict(ready, ok=True)
+
+    def update_done(self, body: dict) -> tuple[int, dict]:
+        """托盘装不了（写不了文件夹、校验不对）：清掉 install 标记，error 记进状态。"""
+        updater = self._updater()
+        updater.clear_install()
+        error = body.get("error")
+        if isinstance(error, str) and error:
+            updater._set(result=error[:200])
+        return 200, {"ok": True}
+
     def stop(self, _body: dict) -> tuple[int, dict]:
         supervisor = self.desktop.supervisor
         if supervisor is not None:
@@ -179,6 +212,10 @@ class Actions:
 
 ROUTES = {
     ("GET", "status"): "status",
+    ("GET", "update"): "update",
+    ("POST", "update/check"): "update_check",
+    ("GET", "update/ready"): "update_ready",
+    ("POST", "update/done"): "update_done",
     ("POST", "console-link"): "console_link",
     ("POST", "phone-qr"): "phone_qr",
     ("POST", "power"): "power",

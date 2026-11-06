@@ -179,6 +179,17 @@ class Network:
 
 
 @dataclass(frozen=True)
+class Update:
+    """`status.update` (server/selfhost/updater.py): the downloaded new version, if any."""
+    state: str = "off"              # "off" | "latest" | "checking" | "downloading" | "ready" | "failed"
+    version: str = ""
+    progress: float | None = None   # 0..1 while downloading
+    install: bool = False           # the console asked to install: the tray does it
+    result: str = ""                # a past update that failed and was rolled back
+    error: str = ""
+
+
+@dataclass(frozen=True)
 class Problem:
     code: str
     message: str
@@ -207,6 +218,7 @@ class Status:
     logs_dir: str = ""
     power_held_by_core: bool = False
     network: Network | None = None  # None = core does not do trusted networks (yet)
+    update: Update = field(default_factory=Update)
 
     @property
     def watching(self) -> int:
@@ -250,6 +262,11 @@ class Status:
             trusted, lan_open = net.get("trusted"), net.get("lan_open")
             network = Network(_str(net.get("id")), trusted if isinstance(trusted, bool) else None,
                               _str(net.get("profile")).lower(), lan_open if isinstance(lan_open, bool) else None)
+        up = raw.get("update") if isinstance(raw.get("update"), dict) else {}
+        done, total = up.get("done"), up.get("total")
+        update = Update(_str(up.get("state")) or "off", _str(up.get("version")),
+                        max(0.0, min(1.0, done / total)) if _number(done) and _number(total) and total > 0 else None,
+                        up.get("install") is True, _str(up.get("result")), _str(up.get("error")))
         ports = raw.get("ports") if isinstance(raw.get("ports"), dict) else {}
         lan_port = ports.get("lan")
         watching = raw.get("watching")
@@ -271,6 +288,7 @@ class Status:
             logs_dir=_str(raw.get("logs_dir")),
             power_held_by_core=power.get("managed_by") == "core",
             network=network,
+            update=update,
         )
 
 

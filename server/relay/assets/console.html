@@ -41,7 +41,8 @@
       <div class="banner warn" id="notice" role="note" hidden><span class="ico" data-ic="warn"></span><div><b>YouTube</b><p id="noticeText"></p></div><a class="btn sm" id="noticeGo" href="#/settings/youtube" hidden>去设置</a></div>
 
       <!-- 首页：/api/home 拼出来的几排 -->
-      <section class="page" data-route="home" aria-label="首页"><div id="homeBody"></div></section>
+      <!-- 新版本已就绪（管理员；电脑客户端的更新，server/relay/updates.py、console.js 的 renderUpdate） -->
+      <section class="page" data-route="home" aria-label="首页"><div class="banner updbar" id="updBar" role="status" hidden></div><div id="homeBody"></div></section>
 
       <!-- 直播：分组，然后是频道卡片或节目表（M3：时间尺、现在线、节目块；手机上是每台的现在和接下来） -->
       <section class="page" data-route="live" aria-label="直播">
@@ -233,6 +234,7 @@
           <div class="list">
             <h3>关于</h3>
             <div class="li"><span class="ico" id="aboutIcon" style="background:none"></span><span class="tx" id="aboutText">电脑版<small>这台电脑就是家里的电视服务器</small></span></div>
+            <div class="li" id="updRow" hidden><span class="ico" data-ic="info" data-ics="18"></span><span class="tx" id="updText">更新</span><span class="inline" id="updActs"></span></div>
             <a class="li" href="/TV/" target="_blank" rel="noreferrer"><span class="ico" data-ic="info" data-ics="18"></span><span class="tx">使用说明</span><em>›</em></a>
           </div>
         </div>
