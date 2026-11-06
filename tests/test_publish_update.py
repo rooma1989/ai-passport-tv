@@ -71,7 +71,7 @@ class PublishTests(unittest.TestCase):
 
     def args(self, **kw):
         return argparse.Namespace(**dict({"key": self.key, "qiniu": self.qiniu, "files": str(self.files),
-                                          "dry_run": False, "skip_qiniu": False}, **kw))
+                                          "dry_run": False, "skip_qiniu": False, "no_site": True}, **kw))
 
     def run_gh(self, command, **_):
         self.gh.append(command)
@@ -117,6 +117,14 @@ class PublishTests(unittest.TestCase):
         refresh = self.requests[-1]
         self.assertTrue(refresh.full_url.endswith("/v2/tune/refresh"))
         self.assertTrue(refresh.get_header("Authorization").startswith("QBox AK:"))
+
+    def test_the_website_follows_a_release(self):
+        pub.publish("v" + VERSION, self.args(no_site=False), run=self.run_gh, qiniu_opener=self.open,
+                    today="2026-11-10")
+        keys = [r.data.split(b'name="key"\r\n\r\n', 1)[1].split(b"\r\n", 1)[0].decode()
+                for r in self.requests if r.data and b'name="key"' in r.data]
+        self.assertIn("site/index.html", keys)
+        self.assertEqual(keys[-1].rsplit(".", 1)[-1], "html", "the website's pages go last")
 
     def test_upload_token(self):
         token = pub.upload_token("AK", "SK", "b", "rootv/x", now=1000)

@@ -170,6 +170,8 @@ and its `.sig` to the release, and copies everything to the Qiniu mirror
 GitHub only, `--dry-run` uploads nothing). Clients check once a day; the
 mirror is tried first once `MIRROR` in `server/selfhost/updater.py` names it.
 
+The website (`packaging/website/`) is rebuilt and uploaded to the bucket's `site/` folder by the same run; `python3 tools/publish_site.py` does it on its own (after editing `packaging/website/content.json`, for example), `python3 tools/build_site.py --manifest <file>` builds a local preview in `build-site/`.
+
 A local build to try (macOS): `python3 tools/build_core.py`, then
 `python3 packaging/desktop/build.py --core-dir build-core/dist/rootv-core`;
 copy the DMG to `dist-desktop/` (git-ignored) to keep it.

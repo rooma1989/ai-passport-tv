@@ -48,8 +48,9 @@ class Site:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                site.hits.append((self.path, self.headers.get("Range")))
-                data = site.files.get(self.path)
+                path = self.path.split("?", 1)[0]
+                site.hits.append((path, self.headers.get("Range")))
+                data = site.files.get(path)
                 if data is None:
                     self.send_error(404)
                     return
@@ -61,7 +62,7 @@ class Site:
                 self.send_response(206 if start else 200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                limit = site.cut.pop(self.path, None)
+                limit = site.cut.pop(path, None)
                 self.wfile.write(body if limit is None else body[:limit])
 
             def log_message(self, *_):
@@ -111,6 +112,9 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(github.file_url("0.4.0-beta", "f.dmg"),
                          "https://github.com/rooma1989/ai-passport-tv/releases/download/v0.4.0-beta/f.dmg")
         self.assertTrue(github.manifest_url().endswith("/releases/latest/download/rootv-update.json"))
+        mirror = updater.Source("mirror", "https://cdn.example.com/rootv")
+        self.assertEqual(mirror.manifest_url(now=7200), "https://cdn.example.com/rootv/latest/rootv-update.json?t=2",
+                         "the mirror's manifest address changes every hour (a stale CDN copy is bypassed)")
 
 
 class ManifestTests(unittest.TestCase):

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<title>更新日志 · 小鼠电视</title>
+<meta name="description" content="小鼠电视每个版本改了什么。">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<!-- 小鼠电视官网（packaging/website/，tools/build_site.py 生成、tools/publish_site.py 发到七牛）。
+     这里只是外壳：会变的内容（功能、问答、更新日志、最新版本）都在 JSON 里，app.js 加载时带时间参数去取，
+     CDN 缓存了旧的 HTML 也不影响。 -->
+<body data-page="changelog">
+<header class="bar"><div class="wrap">
+  <a class="brand" href="index.html"><img src="assets/favicon.svg" alt="">小鼠电视<span>RooTV</span></a>
+  <nav aria-label="主导航">
+    <a href="index.html">概览</a>
+    <a href="changelog.html" aria-current="page">更新日志</a>
+    <a class="hide-s" href="https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.zh_CN.md" rel="noopener">使用说明</a>
+    <a class="pill" href="download.html">下载</a>
+  </nav>
+</div></header>
+<main>
+<section class="hero" style="padding-bottom:30px"><div class="wrap">
+  <p class="eyebrow grad">更新日志</p><h1>每一版的新东西</h1>
+</div></section>
+<section style="padding-top:20px"><div class="wrap"><div class="log" id="logList"><p class="skel">正在加载…</p></div></div></section>
+</main>
+<footer><div class="wrap">
+  <nav aria-label="页脚"><a href="index.html">概览</a><a href="download.html">下载</a><a href="changelog.html">更新日志</a>
+    <a href="https://github.com/rooma1989/ai-passport-tv" rel="noopener">GitHub 源代码</a></nav>
+  <p id="disclaimer">本项目仅供在您自己家中私人、非商业使用；按「现状」提供，不附带任何担保（MIT 许可）。</p>
+</div></footer>
+<noscript><p class="hint">这个页面要开着 JavaScript 才能显示内容。下载也可以直接去
+  <a href="https://github.com/rooma1989/ai-passport-tv/releases">GitHub 发布页</a>。</p></noscript>
+<script src="app.js" defer></script>
+</body>
+</html>

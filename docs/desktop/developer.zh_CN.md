@@ -111,6 +111,8 @@ rsvg-convert，或无界面的 Chrome/Chromium/Edge）。改了 SVG 再运行它
 `~/.config/xiaozhi-tv/qiniu.json`：`access_key`、`secret_key`、`bucket`、`domain`，可选 `up_host`、`prefix`；`--skip-qiniu` 只发
 GitHub，`--dry-run` 什么都不传）。客户端每天查一次；`server/selfhost/updater.py` 的 `MIRROR` 填上七牛的地址后先试镜像。
 
+官网（`packaging/website/`）也由这一次运行重新生成、传到桶的 `site/` 目录；单独更新（比如改了 `packaging/website/content.json`）用 `python3 tools/publish_site.py`，`python3 tools/build_site.py --manifest <文件>` 在 `build-site/` 里生成本机预览。
+
 在本机做一份试用（macOS）：`python3 tools/build_core.py`，再 `python3 packaging/desktop/build.py --core-dir
 build-core/dist/rootv-core`；想留着就把 DMG 复制到 `dist-desktop/`（不进 git）。
 

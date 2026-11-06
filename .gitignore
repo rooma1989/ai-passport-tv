@@ -89,3 +89,5 @@ packaging/docker/firmware/*
 
 # tools/build_core.py --edition 生成（server/edition.py）
 server/_edition_build.py
+# 官网（tools/build_site.py）
+/build-site/

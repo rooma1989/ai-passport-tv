@@ -208,13 +208,13 @@ def qbox_auth(access: str, secret: str, path: str) -> str:
     return f"QBox {access}:{signature}"
 
 
-def multipart(fields: dict, name: str, data: bytes) -> tuple[bytes, str]:
+def multipart(fields: dict, name: str, data: bytes, mime: str = "application/octet-stream") -> tuple[bytes, str]:
     boundary = uuid.uuid4().hex
     parts = []
     for k, v in fields.items():
         parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode())
     parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
-                 f"Content-Type: application/octet-stream\r\n\r\n".encode() + data + b"\r\n")
+                 f"Content-Type: {mime}\r\n\r\n".encode() + data + b"\r\n")
     parts.append(f"--{boundary}--\r\n".encode())
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
@@ -235,9 +235,10 @@ class Qiniu:
     def mirror(self) -> str:
         return f"{self.domain}/{self.prefix}"
 
-    def put(self, key: str, data: bytes, name: str) -> None:
+    def put(self, key: str, data: bytes, name: str, mime: str = "application/octet-stream") -> None:
+        """表单上传；mime 是七牛存下的文件类型（官网的 HTML、CSS、JSON 要对，浏览器才不会当成下载）。"""
         token = upload_token(self.s["access_key"], self.s["secret_key"], self.s["bucket"], key, self.clock())
-        body, kind = multipart({"token": token, "key": key}, name, data)
+        body, kind = multipart({"token": token, "key": key}, name, data, mime)
         request = urllib.request.Request(self.up, data=body, headers={"Content-Type": kind}, method="POST")
         try:
             with self.open(request, timeout=600) as answer:
@@ -313,6 +314,11 @@ def publish(tag: str, args, run=subprocess.run, qiniu_opener=None, today=None) -
         store.put(f"{store.prefix}/latest/{updater.MANIFEST}", data, updater.MANIFEST)
         store.refresh([f"{store.mirror}/latest/{updater.MANIFEST}", f"{store.mirror}/latest/{updater.SIGNATURE}"])
         print(f"七牛：传好了（{store.mirror}/latest/）")
+        if not args.no_site:
+            import publish_site
+            with tempfile.TemporaryDirectory() as site_tmp:
+                import build_site
+                publish_site.publish(store, build_site.build(Path(site_tmp)))
         if updater.MIRROR.rstrip("/") != store.mirror:
             print(f"注意：客户端里的 MIRROR 是「{updater.MIRROR}」，不是 {store.mirror}：下一版要改 "
                   "server/selfhost/updater.py 的 MIRROR，客户端才会先试七牛")
@@ -327,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--files", help="用这个文件夹里的安装包和 SHA256SUMS-desktop，不从 GitHub 下载")
     parser.add_argument("--dry-run", action="store_true", help="只生成、检查清单，不上传")
     parser.add_argument("--skip-qiniu", action="store_true", help="只发 GitHub")
+    parser.add_argument("--no-site", action="store_true", help="不顺带更新七牛上的官网")
     args = parser.parse_args(argv)
     if args.tag == "keygen":
         return keygen(args.key)

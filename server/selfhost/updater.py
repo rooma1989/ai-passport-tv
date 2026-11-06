@@ -152,10 +152,12 @@ class Source:
     def __init__(self, kind: str, base: str):
         self.kind, self.base = kind, base.rstrip("/")
 
-    def manifest_url(self, name: str = MANIFEST) -> str:
+    def manifest_url(self, name: str = MANIFEST, now: float | None = None) -> str:
+        """镜像的清单带 ?t=<每小时变一次的数>：CDN 缓存着旧清单时，最多一小时也会拿到新的（发版时还会刷新 CDN）。"""
         if self.kind == "github":
             return f"{self.base}/latest/download/{name}"
-        return f"{self.base}/latest/{name}"
+        stamp = int((time.time() if now is None else now) // 3600)
+        return f"{self.base}/latest/{name}?t={stamp}"
 
     def file_url(self, version: str, name: str) -> str:
         if self.kind == "github":

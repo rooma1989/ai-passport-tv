@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<title>小鼠电视 · 把家里的电脑变成小电视的电视台</title>
+<meta name="description" content="小鼠电视（RooTV）电脑客户端：直播、B 站、YouTube、网盘片库，送到家里的小电视，也能在电脑上看。免费、开源。">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<!-- 小鼠电视官网（packaging/website/，tools/build_site.py 生成、tools/publish_site.py 发到七牛）。
+     这里只是外壳：会变的内容（功能、问答、更新日志、最新版本）都在 JSON 里，app.js 加载时带时间参数去取，
+     CDN 缓存了旧的 HTML 也不影响。 -->
+<body data-page="home">
+<header class="bar"><div class="wrap">
+  <a class="brand" href="index.html"><img src="assets/favicon.svg" alt="">小鼠电视<span>RooTV</span></a>
+  <nav aria-label="主导航">
+    <a href="index.html" aria-current="page">概览</a>
+    <a href="changelog.html">更新日志</a>
+    <a class="hide-s" href="https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.zh_CN.md" rel="noopener">使用说明</a>
+    <a class="pill" href="download.html">下载</a>
+  </nav>
+</div></header>
+<main>
+<section class="hero"><div class="wrap">
+  <p class="eyebrow grad">小鼠电视 · 电脑客户端</p>
+  <h1 id="tagline">把家里的电脑变成小电视的电视台</h1>
+  <p class="lead" id="intro"></p>
+  <div class="cta"><a class="pill" href="download.html">免费下载</a><a class="more" href="changelog.html">看看更新了什么</a></div>
+  <p class="ver" id="latest"></p>
+  <p class="beta" id="beta" hidden></p>
+  <div class="stage" aria-hidden="true">
+    <div class="laptop"><div class="lid"><div class="screen"><div class="top"><i></i><i></i><i></i><i></i></div><div class="big"></div>
+      <div class="row"><b></b><b></b><b></b><b></b><b></b></div></div></div><div class="base"></div></div>
+    <div class="cube"><div class="tv"></div></div>
+  </div>
+</div></section>
+<section class="alt" id="features"><div class="wrap">
+  <h2 class="title">想看的，都在这里。</h2>
+  <p class="sub">直播、B 站、YouTube、网盘里的电影，一个地方看，送到小电视或者就在电脑上看。</p>
+  <div class="bento" id="featureList"><p class="skel">正在加载…</p></div>
+</div></section>
+<section id="devices"><div class="wrap">
+  <h2 class="title">掌心大小的电视。</h2>
+  <p class="sub">刷上小鼠电视固件就能用。没有小电视也行，电脑浏览器里照样看。</p>
+  <div class="pair" id="deviceList"></div>
+</div></section>
+<section class="alt" id="start"><div class="wrap">
+  <h2 class="title">三步就好。</h2>
+  <p class="sub">装好以后只在菜单栏或任务栏多一个小图标，不用一直开着窗口。</p>
+  <ol class="steps" id="stepList"></ol>
+  <div class="needs"><h3>你需要</h3><ul id="needList"></ul></div>
+</div></section>
+<section id="faq"><div class="wrap">
+  <h2 class="title">常见问题</h2>
+  <p class="sub">更多的在<a href="https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.zh_CN.md" rel="noopener">使用说明</a>里。</p>
+  <div class="faq" id="faqList"></div>
+  <div class="cta" style="margin-top:56px"><a class="pill" href="download.html">免费下载</a></div>
+</div></section>
+</main>
+<footer><div class="wrap">
+  <nav aria-label="页脚"><a href="index.html">概览</a><a href="download.html">下载</a><a href="changelog.html">更新日志</a>
+    <a href="https://github.com/rooma1989/ai-passport-tv" rel="noopener">GitHub 源代码</a></nav>
+  <p id="disclaimer">本项目仅供在您自己家中私人、非商业使用；按「现状」提供，不附带任何担保（MIT 许可）。</p>
+</div></footer>
+<noscript><p class="hint">这个页面要开着 JavaScript 才能显示内容。下载也可以直接去
+  <a href="https://github.com/rooma1989/ai-passport-tv/releases">GitHub 发布页</a>。</p></noscript>
+<script src="app.js" defer></script>
+</body>
+</html>
