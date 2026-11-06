@@ -43,7 +43,7 @@ def publish(store, site: Path, say=print) -> list[str]:
     for path in build_site.files_of(site):
         rel = path.relative_to(site).as_posix()
         store.put(f"{PREFIX}/{rel}", path.read_bytes(), path.name, content_type(path))
-        if path.suffix in (".html", ".json"):
+        if path.suffix == ".html" or rel in ("data/build.json", "data/site.json", "data/changelog.json"):
             refresh.append(f"{store.domain}/{PREFIX}/{rel}")
     refresh.append(f"{store.domain}/{PREFIX}/")
     store.refresh(refresh[:REFRESH_MAX])

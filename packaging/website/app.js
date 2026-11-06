@@ -96,9 +96,11 @@ async function download() {
   let manifest;
   try { manifest = await getJSON(MANIFEST); }
   catch (_) {
-    $("dlTitle").textContent = "下载列表暂时取不到";
-    $("dlList").innerHTML = `<p class="hint">可以到 <a href="${GITHUB}">GitHub 发布页</a> 下载（国内可能慢）。</p>`;
-    $("dlNotes").textContent = "—";
+    // 还没有用新流程发过版（七牛上没有清单），或者暂时取不到：直接去 GitHub 下现在的版本。
+    $("dlTitle").textContent = "国内的下载马上就来";
+    $("dlList").innerHTML = `<div class="cta"><a class="pill" href="${GITHUB}/latest" rel="noopener">到 GitHub 下载最新版本</a></div>
+      <p class="hint" style="margin-top:18px">GitHub 在国内可能比较慢。</p>`;
+    $("dlNotes").textContent = "看看完整的更新日志 ↓";
     return;
   }
   $("dlTitle").textContent = "最新版本 " + manifest.version + "（" + manifest.date + "）";
@@ -169,6 +171,19 @@ function reveal() {
   }
 }
 
+// 启动：外壳（tools/build_site.py 的 SHELLS）取了 data/build.json，按它加载了样式和这个脚本；这里再取
+// 页面内容（导航、正文、页脚），放进页面，标上当前页，然后跑这一页的逻辑。
 const PAGES = { home, download, changelog };
-const run = PAGES[document.body.dataset.page];
-if (run) run();
+async function start() {
+  const page = document.body.dataset.page;
+  const built = window.ROOTV_BUILD || {};
+  let parts;
+  try { parts = await (await fetch(built.pages)).json(); }
+  catch (_) { document.body.insertAdjacentHTML("beforeend", '<p class="hint" style="margin-top:30vh">页面没加载出来，刷新一下试试。</p>'); return; }
+  document.body.insertAdjacentHTML("beforeend", parts.header + "<main>" + (parts[page] || "") + "</main>" + parts.footer);
+  const here = { home: "index.html", download: "download.html", changelog: "changelog.html" }[page];
+  for (const a of document.querySelectorAll(".bar nav a")) if (a.getAttribute("href") === here) a.setAttribute("aria-current", "page");
+  const run = PAGES[page];
+  if (run) run();
+}
+start();

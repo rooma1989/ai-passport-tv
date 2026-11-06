@@ -30,20 +30,39 @@ class BuildTests(unittest.TestCase):
 
     def test_build(self):
         site = build_site.build(self.out)
-        names = sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file())
-        self.assertTrue(any(re.match(r"^app\.[0-9a-f]{10}\.js$", n) for n in names))
-        self.assertTrue(any(re.match(r"^style\.[0-9a-f]{10}\.css$", n) for n in names))
-        self.assertNotIn("app.js", names)
+        built = json.loads((site / "data" / "build.json").read_text(encoding="utf-8"))
+        self.assertRegex(built["app"], r"^app\.[0-9a-f]{10}\.js$")
+        self.assertRegex(built["style"], r"^style\.[0-9a-f]{10}\.css$")
+        self.assertRegex(built["pages"], r"^data/pages\.[0-9a-f]{10}\.json$")
+        for rel in built.values():
+            self.assertTrue((site / rel).is_file(), rel)
+        pages = json.loads((site / built["pages"]).read_text(encoding="utf-8"))
+        self.assertEqual(set(pages), {"header", "footer", "home", "download", "changelog"})
+        self.assertIn('id="featureList"', pages["home"])
         for page in build_site.PAGES:
             html = (site / page).read_text(encoding="utf-8")
-            self.assertNotIn('"app.js"', html, page)
+            self.assertIn("data/build.json?t=", html)
+            self.assertNotIn("app.", html.split("<script>")[0], "the shell names no hashed file")
             for ref in re.findall(r'(?:src|href)="([^":#]+)"', html):
                 self.assertTrue((site / ref).is_file(), f"{page} points at {ref}")
         content = json.loads((site / "data" / "site.json").read_text(encoding="utf-8"))
         self.assertGreaterEqual(len(content["features"]), 6)
+        for shot in content["shots"]:
+            self.assertTrue((site / shot["src"]).is_file(), shot["src"])
         log = json.loads((site / "data" / "changelog.json").read_text(encoding="utf-8"))
         self.assertTrue(log["sections"])
         self.assertFalse((self.out / "rootv").exists())
+
+    def test_shells_do_not_change_with_the_content(self):
+        first = {p: (build_site.build(self.out) / p).read_text(encoding="utf-8") for p in build_site.PAGES}
+        original = (build_site.SOURCE / "style.css").read_text(encoding="utf-8")
+        try:
+            (build_site.SOURCE / "style.css").write_text(original + "\n/* changed */\n", encoding="utf-8")
+            site = build_site.build(self.out)
+            self.assertEqual({p: (site / p).read_text(encoding="utf-8") for p in build_site.PAGES}, first,
+                             "a browser may keep the shells for a year: they must not depend on the content")
+        finally:
+            (build_site.SOURCE / "style.css").write_text(original, encoding="utf-8")
 
     def test_preview_manifest(self):
         manifest = self.out / "m.json"
@@ -60,8 +79,9 @@ class BuildTests(unittest.TestCase):
 
     def test_upload_order(self):
         site = build_site.build(self.out)
-        order = [p.suffix for p in build_site.files_of(site)]
-        self.assertEqual(order[-3:], [".html"] * 3, "the HTML goes last")
+        order = [p.relative_to(site).as_posix() for p in build_site.files_of(site)]
+        self.assertEqual([n.rsplit(".", 1)[-1] for n in order[-3:]], ["html"] * 3, "the shells go last")
+        self.assertEqual(order[-4], "data/build.json", "build.json switches to the new files after they are up")
 
 
 class FakeStore:
@@ -89,6 +109,7 @@ class PublishTests(unittest.TestCase):
         self.assertTrue(any(k.endswith(".js") and v.startswith("text/javascript") for k, v in types.items()))
         self.assertIn("https://cdn.example.com/site/data/changelog.json", store.refreshed)
         self.assertIn("https://cdn.example.com/site/download.html", store.refreshed)
+        self.assertIn("https://cdn.example.com/site/data/build.json", store.refreshed)
         self.assertFalse(any(u.endswith(".js") for u in store.refreshed), "hashed files never need a refresh")
 
 
