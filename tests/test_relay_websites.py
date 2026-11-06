@@ -217,6 +217,8 @@ class RelayWebTests(unittest.TestCase):
         self.relay.selfhost_data = Path(self.data.name)
         self.relay.youtube_kind = "local"
         self.relay.youtube_proxy = lambda: "http://127.0.0.1:9"
+        self.logs = []
+        self.relay.log = self.logs.append
         self.site = FakeWeb(self.upstream.base)
         self.relay.clients["web"] = self.site
         self.relay.webvod = websites.WebVod(lambda: self.relay.clients.get("web"),
@@ -246,6 +248,7 @@ class RelayWebTests(unittest.TestCase):
         code, _, data = self.media(answer["url"], "bytes=0-99")
         self.assertEqual((code, data), (206, tv.CLIP[:100]))
         self.assertEqual(self.site.opened, [], "no node stream")
+        self.assertFalse(any(PAGE in line for line in self.logs), "the log names the site, not the address")
         history = self.relay.user_state(self.carol).history_entry("web", PAGE)
         self.assertIsNotNone(history, "remembered in the cast history with site web")
 

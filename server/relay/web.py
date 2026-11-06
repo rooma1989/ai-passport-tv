@@ -2358,7 +2358,7 @@ class Relay:
         account.remember(item, at=self.clock())
         account.save()
         self._keep_item(dict(found, asked=None))
-        self.log(f"投到电脑 {item.bvid} 《{item.title}》" + (f"（{len(found['parts'])} 集）" if found["parts"] else ""))
+        self.log(f"投到电脑 {_log_id(item)} 《{item.title}》" + (f"（{len(found['parts'])} 集）" if found["parts"] else ""))
         return found
 
     def _keep_item(self, found: dict) -> None:
@@ -2820,7 +2820,7 @@ class Relay:
             account.save()
         if not self.tenant:
             self.write_table()
-        self.log(f"投屏 {video.bvid} 《{video.title}》")
+        self.log(f"投屏 {_log_id(video)} 《{video.title}》")
         self._event(dev, "cast")
         return {"ok": True, "title": video.title, "at": self.clock()}
 
@@ -3014,6 +3014,11 @@ def _phone_listen(listen: dict | None) -> dict | None:
     if listen is None:
         return None
     return {"ok": listen["ok"], "on": listen["on"], "lead": listen["lead"]}
+
+
+def _log_id(video) -> str:
+    """日志里写的视频：B 站、YouTube 是 id；其他网站（id 是整个网址）只写站名。"""
+    return f"网站 {websites.site_key(video.bvid)}" if video.site == "web" else video.bvid
 
 
 def _site_of(text: str) -> str:
