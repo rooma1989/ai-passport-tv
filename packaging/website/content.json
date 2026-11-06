@@ -112,5 +112,21 @@
     "github": "https://github.com/rooma1989/ai-passport-tv",
     "releases": "https://github.com/rooma1989/ai-passport-tv/releases",
     "guide": "https://github.com/rooma1989/ai-passport-tv/blob/main/docs/desktop/README.zh_CN.md"
-  }
+  },
+  "shots": [
+    {
+      "id": "live",
+      "label": "直播",
+      "title": "每个台在播什么，一眼就知道。",
+      "text": "频道墙直接显示正在播的画面和节目单，点一下就换台。",
+      "file": "live.jpg"
+    },
+    {
+      "id": "player",
+      "label": "播放",
+      "title": "电脑上看，一样流畅。",
+      "text": "浏览器里直接放：换台、倍速、拖动、选集，快捷键都有。",
+      "file": "player.jpg"
+    }
+  ]
 }

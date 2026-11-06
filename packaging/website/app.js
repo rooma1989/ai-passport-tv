@@ -84,6 +84,8 @@ async function home() {
   $("needList").innerHTML = (site.needs || []).map((n) => `<li>${esc(n)}</li>`).join("");
   $("faqList").innerHTML = (site.faq || []).map((f) => `<details><summary>${esc(f.q)}</summary><p>${esc(f.a)}</p></details>`).join("");
   if (site.disclaimer) $("disclaimer").textContent = site.disclaimer;
+  shots(site.shots || []);
+  reveal();
   try {
     const m = await getJSON(MANIFEST);
     $("latest").textContent = "最新版本 " + m.version + "，" + m.date + " 发布";
@@ -119,6 +121,52 @@ async function changelog() {
     `<div class="ver-block"><h2>${esc(s.title === "未发布" ? "开发中" : s.title)}${s.title === "未发布" ? "<small>下一版会带上</small>" : ""}</h2>
      <ul>${(s.items || []).map((item) => `<li>${inline(item)}</li>`).join("")}</ul></div>`).join("")
     || '<p class="hint">还没有内容。</p>';
+}
+
+// 「看看它的样子」：分段按钮切换截图（淡入淡出），每 5 秒自动换一张，点过按钮就不再自动换；首屏笔记本里放第一张。
+function shots(list) {
+  if (!list.length) { $("look").hidden = true; return; }
+  const hero = $("heroShot");
+  hero.src = list[0].src; hero.hidden = false;
+  $("shotFrame").innerHTML = list.map((s, i) => `<img src="${esc(s.src)}" alt="${esc(s.label)}的截图" loading="${i ? "lazy" : "eager"}"${i ? "" : ' class="on"'}>`).join("");
+  $("shotTabs").innerHTML = list.map((s, i) => `<button role="tab" aria-selected="${i === 0}" data-i="${i}">${esc(s.label)}</button>`).join("");
+  let current = 0, timer = 0;
+  const show = (i) => {
+    current = i;
+    [...$("shotFrame").children].forEach((img, n) => img.classList.toggle("on", n === i));
+    [...$("shotTabs").children].forEach((b, n) => b.setAttribute("aria-selected", String(n === i)));
+    $("shotTitle").textContent = list[i].title; $("shotText").textContent = list[i].text;
+  };
+  show(0);
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches) timer = setInterval(() => show((current + 1) % list.length), 5000);
+  $("shotTabs").addEventListener("click", (event) => {
+    const b = event.target.closest("button"); if (!b) return;
+    clearInterval(timer); show(Number(b.dataset.i));
+  });
+}
+// 滚动出现：进到屏幕里时加上 in（同一排的卡片一个接一个）；不支持 IntersectionObserver 就直接显示。
+function reveal() {
+  const items = [...document.querySelectorAll(".reveal, .tile, .steps li, .faq details")];
+  items.forEach((el) => el.classList.add("reveal"));
+  if (!("IntersectionObserver" in window)) { items.forEach((el) => el.classList.add("in")); return; }
+  const seen = new IntersectionObserver((entries) => {
+    entries.filter((e) => e.isIntersecting).forEach((e, n) => {
+      e.target.style.transitionDelay = (n * 70) + "ms";
+      e.target.classList.add("in");
+      seen.unobserve(e.target);
+    });
+  }, { rootMargin: "0px 0px -8% 0px" });
+  items.forEach((el) => seen.observe(el));
+  // 首屏的笔记本随滚动略微放大（苹果产品页那样）。
+  const stage = document.querySelector(".stage");
+  if (stage && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const zoom = () => {
+      const p = Math.min(1, Math.max(0, window.scrollY / 600));
+      stage.style.transform = `scale(${(0.94 + 0.06 * p).toFixed(4)})`;
+    };
+    zoom();
+    addEventListener("scroll", zoom, { passive: true });
+  }
 }
 
 const PAGES = { home, download, changelog };

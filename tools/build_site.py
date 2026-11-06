@@ -8,7 +8,8 @@
   that still caches the old one cannot serve it to the new page);
 - data/site.json is packaging/website/content.json;
 - data/changelog.json is docs/CHANGELOG.zh_CN.md as sections of items;
-- the icons come from packaging/site/assets/.
+- the icons come from packaging/site/assets/, the screenshots from
+  packaging/website/shots/ (hashed names, their paths written into site.json).
 
 --manifest also writes build-site/rootv/latest/rootv-update.json, for looking
 at the download page locally (python3 -m http.server -d build-site). The real
@@ -89,6 +90,14 @@ def build(out: Path, manifest: Path | None = None) -> Path:
             html = html.replace(f'"{name}"', f'"{hashed}"')
         (site / page).write_text(html, encoding="utf-8")
     content = json.loads((SOURCE / "content.json").read_text(encoding="utf-8"))
+    # 截图：带内容散列的文件名（换了图就换了地址），路径写进 site.json。
+    (site / "assets" / "shots").mkdir(parents=True, exist_ok=True)
+    for shot in content.get("shots", []):
+        data = (SOURCE / "shots" / shot["file"]).read_bytes()
+        stem, ext = shot["file"].rsplit(".", 1)
+        name = f"{stem}.{digest(data)}.{ext}"
+        (site / "assets" / "shots" / name).write_bytes(data)
+        shot["src"] = f"assets/shots/{name}"
     (site / "data" / "site.json").write_text(json.dumps(content, ensure_ascii=False), encoding="utf-8")
     log = {"sections": changelog_sections(CHANGELOG.read_text(encoding="utf-8"))}
     (site / "data" / "changelog.json").write_text(json.dumps(log, ensure_ascii=False), encoding="utf-8")
