@@ -655,5 +655,14 @@ class MetricsTests(unittest.TestCase):
             self.assertEqual(watcher.poll("ch001", 2.0), ("restart", None))
 
 
+@unittest.skipUnless(__import__("shutil").which("node"), "node is not installed")
+class ImportPlacementTests(unittest.TestCase):
+    def test_imported_channels_go_next_to_their_group(self):
+        import subprocess
+        result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_admin_import_test.mjs")],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2594,6 +2594,24 @@ async function achProbe() {
   ach.probing = false;
   if ($("achImpProbe") === btn) btn.textContent = "试一下选中的";
 }
+// ---- 导入的新台放在哪：纯函数（tests/console_admin_import_test.mjs）----
+// 表的顺序就是设备上换台的顺序，小电视也只收前面那些台；一律加在最后的话，清掉央视再导入，CCTV1 就成了
+// 第 100 多个台，后面几个还进不了小电视。所以新台放到同一组的最后一个台后面；表里还没有这一组的，放到排在
+// 它后面的那些组（groups 的顺序：央视、卫视……）的第一个台前面；都没有才放最后。groupOf(row) 是那个台的分组，
+// 不知道的给空串（不参与比较）。
+function achInsertAt(rows, group, groups, groupOf) {
+  const order = (g) => { const i = groups.indexOf(g); return i < 0 ? groups.length : i; };
+  if (!group) return rows.length;
+  let last = -1;
+  for (let i = 0; i < rows.length; i++) if (groupOf(rows[i]) === group) last = i;
+  if (last >= 0) return last + 1;
+  const mine = order(group);
+  for (let i = 0; i < rows.length; i++) { const g = groupOf(rows[i]); if (g && order(g) > mine) return i; }
+  return rows.length;
+}
+// ---- 导入的新台放在哪：纯函数到此 ----
+// 表里一个台的分组：手选的，没手选是服务器按名字分的（orig.auto），刚导入还没保存的用列表里的（kind）。
+function achGroupOf(row) { return row.group || (row.orig && row.orig.auto) || row.kind || ""; }
 async function achImpAdd() {
   achImpMark();
   const chosen = achImpChosen();
@@ -2608,9 +2626,10 @@ async function achImpAdd() {
     if (plan.add && ach.rows.length >= tableMax) { over++; continue; }
     r.on = false;
     if (plan.add) {
-      // 列表写的分组对得上我们的分组时（r.group，playlist._clean），新台就放进那一组。
-      ach.rows.push({ name: r.name, url: r.url, agent: r.agent, group: r.group || "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
-                      routes: (r.routes || []).map((x) => ({ ...x })), checks: {}, good: "" });
+      // 列表写的分组对得上我们的分组时（r.group，playlist._clean），新台就放进那一组；位置挨着同组的台（achInsertAt）。
+      const row = { name: r.name, url: r.url, agent: r.agent, group: r.group || "", tvg_id: r.tvg_id || "", tvg_name: r.tvg_name || "", logo: r.logo || "",
+                    routes: (r.routes || []).map((x) => ({ ...x })), checks: {}, good: "", kind: r.kind || "" };
+      ach.rows.splice(achInsertAt(ach.rows, achGroupOf(row), ach.data.groups || [], achGroupOf), 0, row);
       r.done = "已加入";
       added++;
       continue;

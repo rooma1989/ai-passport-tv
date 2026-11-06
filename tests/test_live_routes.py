@@ -99,6 +99,25 @@ class ImportTests(unittest.TestCase):
                          "same name, then same tvg-id; the primary's own address is not repeated")
         self.assertEqual((answer["total"], answer["merged"]), (2, 3))
 
+    def test_update_time_entries_are_not_channels(self):
+        # iptv-api puts its update time first, on CCTV-1's stream with CCTV-1's tvg-id: kept, it showed up as a
+        # channel named after the time and swallowed the real CCTV-1 (same tvg-id).
+        text = ("#EXTM3U\n"
+                '#EXTINF:-1 tvg-id="CCTV-1" group-title="🕘️更新时间",2026-08-27 14:06:22\nhttps://a/1.m3u8\n'
+                '#EXTINF:-1 tvg-id="CCTV-1" group-title="📺央视频道",CCTV-1\nhttps://b/1.m3u8\n'
+                '#EXTINF:-1 group-title="📺央视频道",CCTV-5+\nhttps://b/5p.m3u8\n'
+                '#EXTINF:-1 group-title="地方",1905\nhttps://b/1905.m3u8\n')
+        answer = playlist.read({"text": text})
+        self.assertEqual([e["name"] for e in answer["entries"]], ["CCTV-1", "CCTV-5+", "1905"])
+        self.assertEqual(answer["entries"][0]["url"], "https://b/1.m3u8")
+        self.assertEqual(answer["skipped"], 0, "a notice is not a bad address")
+        txt = "更新时间,#genre#\n2026年08月27日,https://a/1.m3u8\n央视频道,#genre#\nCCTV1,https://b/1.m3u8\n"
+        self.assertEqual([e["name"] for e in playlist.read({"text": txt})["entries"]], ["CCTV1"])
+        for name in ("2026-08-27 14:06:22", "20260827", "2026/8/27", "2026-08-27"):
+            self.assertTrue(playlist.is_notice({"name": name}), name)
+        for name in ("CCTV-1", "1905", "88.7", "CCTV5+", "凤凰卫视"):
+            self.assertFalse(playlist.is_notice({"name": name}), name)
+
     def test_routes_are_capped(self):
         text = "#EXTM3U\n" + "".join(f"#EXTINF:-1,CCTV5\nhttps://h{n}/5.m3u8\n" for n in range(9))
         entry = playlist.read({"text": text})["entries"][0]

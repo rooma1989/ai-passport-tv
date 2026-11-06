@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- **Imported channels go next to their group, not at the end of the table** (Admin → Channel table → Import). The table's order is the order channels switch on the device, and the small TV only gets the first channels that fit, so after deleting the CCTV channels and importing them again they ended up as channels 101–119 and the last four did not reach the TV. A new channel now goes after the last channel of its group; if the table has none of that group yet, before the first channel of a later group (CCTV, satellite, Hong Kong/Macau/Taiwan…), so re-imported CCTV channels are back at the top.
+- **A playlist's "update time" line is no longer listed as a channel** (Admin → Channel table → Import). iptv-api's list starts with an entry named after its update time ("2026-08-27 14:06:22", group "Update time") on CCTV-1's stream and with CCTV-1's tvg-id; it showed up as a CCTV channel and, sharing the tvg-id, swallowed the real CCTV-1, so CCTV-1 was missing from the import. Entries named only by a date or time, or in an update-time group, are now left out.
+
 ## v0.3.9-beta
 
 - **When a video ends: two covers, Replay in the middle, and the next one plays by itself** (PC console). The left cover is the previous video (or another suggestion), the right one is what plays next, with Replay and a countdown ring in the middle; after 5 seconds the right one plays, or press Play now or Cancel (Esc stops the countdown, then closes the screen). What plays next: the next episode for multi-part videos and series; the next card of the row it was opened from (a home row, the Bilibili page, search results); the up channel's next video; for a Bilibili video, Bilibili's related videos as a last resort.

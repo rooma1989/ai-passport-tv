@@ -75,6 +75,23 @@ def _fetch(url: str, opener=urllib.request.urlopen, monotonic=time.monotonic) ->
     return raw.decode("utf-8", errors="replace"), ""
 
 
+# 列表维护者写在里面的「更新时间」条目不是台：台名是个时间（「2026-08-27 14:06:22」），分组叫「🕘️更新时间」，
+# 地址借某个台的流、tvg-id 也写成那个台（iptv-api 写的是 CCTV-1）。不丢掉的话它会冒充一个台列出来，
+# 还因为 tvg-id 一样把真的 CCTV-1 并进它（merge），导入的央视里就没有 CCTV-1 了。
+_NOTICE_NAME = re.compile(r"^[\d\s:：/.\-年月日时分秒]+$")
+_NOTICE_GROUPS = ("更新时间", "更新日期", "updatetime", "updated")
+
+
+def is_notice(entry: dict) -> bool:
+    """这一条是列表写的更新时间之类的说明，不是台。"""
+    name = " ".join(str(entry.get("name") or "").split())
+    if any(c.isdigit() for c in name) and _NOTICE_NAME.match(name) and \
+            (sum(c.isdigit() for c in name) >= 6 or any(c in name for c in ":：年月日")):
+        return True
+    group = "".join(c for c in str(entry.get("group") or "") if c.isalnum()).casefold()
+    return any(word in group for word in _NOTICE_GROUPS)
+
+
 def _clean(entry: dict) -> dict | None:
     """按频道表的规矩整理一条（channeltable.problems 的那些）；地址不合格的丢掉。"""
     name = " ".join(entry["name"].replace("|", " ").split())
@@ -151,7 +168,7 @@ def read(body: dict, opener=urllib.request.urlopen) -> dict:
             return {"ok": False, "error": "播放列表太大（超过 2 MB）"}
     else:
         return {"ok": False, "error": "请粘贴播放列表的地址，或选一个 M3U 文件"}
-    found = m3u.parse_playlist(text)
+    found = [entry for entry in m3u.parse_playlist(text) if not is_notice(entry)]
     cleaned = [row for row in map(_clean, found) if row is not None]
     if not cleaned:
         return {"ok": False, "error": "这里面没有找到频道：请确认是 M3U 播放列表（#EXTINF 加地址的格式）"}
