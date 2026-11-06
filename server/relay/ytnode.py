@@ -40,6 +40,12 @@ YouTube 会拦机房 IP（要求登录证明不是机器人），所以 yt-dlp �
     GET /yt/check 不走缓存解析一次测试视频，回答用了几秒和出错的最后一行（设置页的「测试」）
     GET /yt/subscriptions  cookies 那个账号订阅的频道（「订阅」页的「从 YouTube 导入」）：先读
                   feed/channels（订阅的频道列表），读不出频道时再从 feed/subscriptions（订阅的新视频）里收集频道
+    GET /web/info?url=<网址>         本机模式，其他网站（websites.py）：一个视频（标题、时长、封面、作者、站）或一个列表
+                  （作者页、播放列表：里面的视频），只用 yt-dlp 的专门解析器（不用 generic），本机、内网的网址不收
+    GET /web/formats?url=<网址>[&fresh=1]   同 /yt/formats（多留 m3u8 的格式，DRM 的不要）
+    GET /web/stream?url=<网址>&ss=<秒>      同 /yt/stream
+                  --web-dir 里每个站的 cookies（cookies/<站>.txt）和代理（sites.json，默认直连），每次调用现读；
+                  出错时回答 {"error", "kind"}（drm、login、unsupported、gone、geo、error，web_error），不改 YouTube 的健康状态
     GET /yt/feed?kind=rec|history|subs&n=<个数>[&start=<从第几个起>]
                   cookies 那个账号的推荐（yt-dlp 的 :ytrec）、观看记录（:ythis）、订阅的新视频（:ytsubs），
                   电脑版首页的几排（server/relay/accountfeeds.py）。观看记录、订阅要 cookies，没有时 401 login。
@@ -433,6 +439,174 @@ def search_args(tools: Tools, query: str, n: int, kind: str = "video") -> list[s
                            "--", f"ytsearch{n + SEARCH_EXTRA}:{query}"]
 
 
+# ---- 其他网站（本机模式，/web/*）----
+
+# 列表（作者页、播放列表）最多列几个；给电视的流要不超过 480 行的（没有就最好的）。
+WEB_LIST_MAX = 50
+WEB_FORMAT = "b[height<=480]/bv*[height<=480]+ba/b/bv*+ba"
+WEB_URL_MAX = 2000
+_WEB_SITE = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)+$")
+_SECOND_LEVEL = ("com", "net", "org", "gov", "edu", "co", "ac")
+_LOCAL_SUFFIXES = (".local", ".lan", ".localhost", ".internal", ".home", ".arpa")
+_PROXY_ENV_NAMES = ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+# 错误归类：(归类, HTTP 码, 认得出的字样)，按顺序找第一个。
+WEB_ERRORS = (
+    ("drm", 422, ("DRM", "drm protected")),
+    ("unsupported", 400, ("Unsupported URL", "generic", "is not a valid URL", "No suitable extractor")),
+    ("geo", 451, ("geo restrict", "in your country", "in your region",
+                  "地区", "版权限制")),
+    ("login", 401, ("login", "Login", "log in", "sign in", "Sign in", "cookies", "authentication",
+                    "会员", "登录", "VIP", "vip", "premium", "Premium", "subscription")),
+    ("gone", 404, ("HTTP Error 404", "Video unavailable", "does not exist", "has been removed", "not found",
+                   "Not Found", "Not found", "private", "Private", "deleted")),
+)
+
+
+def web_url_ok(url: str) -> bool:
+    """网站的网址能不能交给 yt-dlp：http/https、有主机、不是本机或内网（字面的 IP、localhost、.local 之类）。
+    和中转的 websites.safe_url 同样的规则（节点单文件，自己一份）。"""
+    if not isinstance(url, str) or not url or len(url) > WEB_URL_MAX or any(ord(ch) < 33 for ch in url):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").lower()
+        parts.port
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not host or parts.username or parts.password:
+        return False
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_global
+    except ValueError:
+        return host != "localhost" and "." in host and not host.endswith(_LOCAL_SUFFIXES)
+
+
+def web_site(url: str) -> str:
+    """站点的键（主机的最后两段，xxx.com.cn 取三段），和 websites.site_key 一样；看不懂时空串。"""
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower().strip(".")
+    except ValueError:
+        return ""
+    labels = [label for label in host.split(".") if label]
+    if len(labels) < 2 or not _WEB_SITE.match(host) or labels[-1].isdigit():
+        return ""
+    take = 3 if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _SECOND_LEVEL else 2
+    return ".".join(labels[-take:])
+
+
+def web_settings(web_dir: str | None, site: str) -> tuple[str, bool]:
+    """(这个站的 cookies 文件，没有时空串, 走不走 YouTube 的代理)。"""
+    if not web_dir or not site:
+        return "", False
+    cookies = os.path.join(web_dir, "cookies", f"{site}.txt")
+    try:
+        with open(os.path.join(web_dir, "sites.json"), encoding="utf-8") as handle:
+            sites = json.load(handle)
+        proxied = isinstance(sites, dict) and isinstance(sites.get(site), dict) \
+            and sites[site].get("proxy") == "youtube"
+    except (OSError, ValueError):
+        proxied = False
+    return (cookies if os.path.isfile(cookies) else ""), proxied
+
+
+def web_args(tools: Tools, url: str, cookies: str = "", proxy: str = "") -> list[str]:
+    """解析一个网站的网址：只用专门的解析器（default,-generic），这个站自己的 cookies；proxy 空串是直连
+    （--proxy "" 盖掉环境变量里的代理）。视频给全部格式和选中的那个（WEB_FORMAT），列表平铺前 WEB_LIST_MAX 个。"""
+    args = ytdlp_command(tools.ytdlp) + ["--js-runtimes", f"deno:{tools.deno}", "--no-warnings", "--no-progress",
+                                         "--socket-timeout", "15", "--ignore-config",
+                                         "--use-extractors", "default,-generic", "--proxy", proxy or ""]
+    if cookies:
+        args += ["--cookies", cookies]
+    return args + ["-J", "--flat-playlist", "--playlist-end", str(WEB_LIST_MAX), "-f", WEB_FORMAT, "--", url]
+
+
+def hide_urls(text: str) -> str:
+    return re.sub(r"https?://\S+", "<地址>", hide_password(text or ""))
+
+
+def web_error(stderr: str) -> tuple[int, str]:
+    """yt-dlp 的错误 → (HTTP 码, 归类)。"""
+    text = stderr or ""
+    for kind, status, hints in WEB_ERRORS:
+        if any(hint in text for hint in hints):
+            return status, kind
+    return 502, "error"
+
+
+def _web_thumb(entry: dict) -> str:
+    thumb = entry.get("thumbnail")
+    if not thumb:
+        for t in reversed(entry.get("thumbnails") or []):
+            if isinstance(t, dict) and t.get("url"):
+                thumb = t["url"]
+                break
+    thumb = str(thumb or "")
+    return thumb if thumb.startswith(("https://", "http://")) else ""
+
+
+def web_is_list(data: dict) -> bool:
+    return data.get("_type") in ("playlist", "multi_video") or ("entries" in data and "formats" not in data)
+
+
+def web_summary(data: dict, url: str) -> dict:
+    """视频 → {"kind": "video", "id"（网址）, "title", "duration", "thumb", "uploader", "site"}；
+    列表 → {"kind": "list", "title", "uploader", "site", "entries": [{"url", "title", "duration", "thumb"}]}。"""
+    site = str(data.get("extractor_key") or data.get("ie_key") or "")
+    if not web_is_list(data):
+        return {"kind": "video", "id": url, "title": str(data.get("title") or ""),
+                "duration": int(data.get("duration") or 0), "thumb": _web_thumb(data),
+                "uploader": str(data.get("uploader") or data.get("channel") or ""), "site": site}
+    entries = []
+    for e in data.get("entries") or []:
+        if not isinstance(e, dict):
+            continue
+        link = str(e.get("url") or e.get("webpage_url") or "")
+        if not web_url_ok(link):
+            continue
+        entries.append({"url": link, "title": str(e.get("title") or ""),
+                        "duration": int(e.get("duration") or 0), "thumb": _web_thumb(e)})
+    return {"kind": "list", "title": str(data.get("title") or ""),
+            "uploader": str(data.get("uploader") or data.get("channel") or ""), "site": site,
+            "entries": entries[:WEB_LIST_MAX]}
+
+
+def web_format(f: dict) -> dict | None:
+    """slim_format 再加上 m3u8 的格式（中转自己的 ffmpeg 读）；DRM 的不要。"""
+    found = slim_format(f)
+    if found is not None:
+        return found
+    url = f.get("url")
+    if not isinstance(url, str) or not url.startswith(("https://", "http://")) or f.get("has_drm") \
+            or str(f.get("protocol") or "") not in ("m3u8", "m3u8_native"):
+        return None
+    entry = {k: f[k] for k in FORMAT_FIELDS if f.get(k) not in (None, "")}
+    entry["url"] = url
+    headers = f.get("http_headers")
+    if isinstance(headers, dict):
+        entry["headers"] = {str(k): str(v) for k, v in headers.items() if isinstance(v, (str, int))}
+    return entry
+
+
+def web_slim(info: dict) -> dict:
+    """缓存里留的（网站版的 slim_info）：多留封面、作者、站、选中的格式。"""
+    keep = {k: info[k] for k in ("id", "title", "duration", "url", "http_headers", "vcodec", "acodec",
+                                 "requested_formats", "format_id", "thumbnail", "uploader", "channel",
+                                 "extractor_key", "_version") if k in info}
+    keep["formats"] = [f for f in (web_format(f) for f in info.get("formats") or [] if isinstance(f, dict)) if f]
+    keep["_slim"] = True
+    return keep
+
+
+def web_formats_summary(info: dict) -> dict:
+    return {"id": info.get("id"), "title": info.get("title") or "", "duration": info.get("duration") or 0,
+            "format_id": str(info.get("format_id") or ""), "formats": list(info.get("formats") or [])}
+
+
+def direct_env(environ) -> dict:
+    """直连的网站：ffmpeg 的环境去掉代理变量。"""
+    return {k: v for k, v in environ.items() if k not in _PROXY_ENV_NAMES}
+
+
 def _int(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
@@ -779,13 +953,15 @@ NETWORK_HINTS = ("Unable to download", "Failed to resolve", "Connection refused"
 class Node:
     def __init__(self, tools: Tools, key: str, run=_run, popen=_popen, log=print,
                  tools_dir: str | None = None, remux: bool = False, ffmpeg_env: dict | None = None,
-                 measure: bool = False, start=_start):
+                 measure: bool = False, start=_start, web_dir: str | None = None):
         """tools_dir：本机模式，yt-dlp、deno 每次从这里的 components.json 找（tools 里的那两项不用）。
         remux：H.264 + AAC 时只换封装。ffmpeg_env：给 ffmpeg 的环境变量（代理），None 时照监督进程的。
         measure：本机模式下每换一个 yt-dlp 就在后台量一次 --version 要几秒（/yt/health 的 startup），
         搜索超时时中转据此说是 yt-dlp 自己慢还是代理慢。start：预取用的 yt-dlp 进程（_start，测试换掉它）。"""
         self.tools = tools
         self.key = key
+        # 其他网站（/web/*）：每个站的 cookies 和代理设置所在的目录（本机模式，websites.py 写它）；None 时没有。
+        self.web_dir = web_dir
         self.run = run
         self.start = start
         self.popen = popen
@@ -917,8 +1093,8 @@ class Node:
             with self._gate:
                 self._waiting -= 1
 
-    def _remember(self, video_id: str, info: dict) -> dict:
-        info = slim_info(info)
+    def _remember(self, video_id: str, info: dict, slim=None) -> dict:
+        info = (slim or slim_info)(info)
         now = self.clock()
         with self._info_lock:
             self._info = {k: v for k, v in self._info.items() if now - v[0] < INFO_CACHE_S and k != video_id}
@@ -1057,6 +1233,55 @@ class Node:
             return code, data
         return 200, feed_summary(data if isinstance(data, dict) else {}, n)
 
+    def web_tools(self, url: str) -> tuple[Tools | None, list[str], bool]:
+        """(工具, yt-dlp 的参数, 走不走 YouTube 的代理)：这个站自己的 cookies，直连或 YouTube 的代理。"""
+        tools = self.current_tools()
+        if tools is None:
+            return None, [], False
+        cookies, proxied = web_settings(self.web_dir, web_site(url))
+        proxy = tools.proxy if proxied else ""
+        return tools, web_args(tools, url, cookies, proxy), proxied and bool(tools.proxy)
+
+    def web_info(self, url: str, fresh: bool = False) -> tuple[int, dict]:
+        """解析一个网站的网址：视频（缓存，和 YouTube 的共用、键是 web:<网址>）或列表（不缓存）。
+        失败是 (HTTP 码, {"error", "kind"})；不改 YouTube 的健康状态，日志里不写网址。"""
+        key = "web:" + url
+        if fresh:
+            with self._info_lock:
+                self._info.pop(key, None)
+        info = self._cached(key)
+        if info is not None:
+            return 200, info
+        tools, args, _ = self.web_tools(url)
+        if tools is None:
+            return 503, {"error": "tools missing", "kind": "missing"}
+        self._take(key)
+        try:
+            info = self._cached(key)
+            if info is not None:
+                return 200, info
+            try:
+                code, out, err = self.run(args)
+            except subprocess.TimeoutExpired:
+                return 504, {"error": "yt-dlp timed out", "kind": "slow"}
+        finally:
+            self._play.release()
+        site = web_site(url)
+        if code != 0:
+            last = hide_urls(((err or "").strip().splitlines()[-1:] or [""])[0])[:200]
+            status, kind = web_error(err)
+            self.log(f"网站 {site} 解析失败（{kind}）：{last}")
+            return status, {"error": last, "kind": kind}
+        try:
+            data = json.loads(out)
+        except ValueError:
+            return 502, {"error": "yt-dlp output is not JSON", "kind": "error"}
+        if not isinstance(data, dict):
+            return 502, {"error": "yt-dlp output is not an object", "kind": "error"}
+        if web_is_list(data):
+            return 200, data
+        return 200, self._remember(key, data, slim=web_slim)
+
     def key_ok(self, given: str | None) -> bool:
         return bool(given) and hmac.compare_digest(given.encode(), self.key.encode())
 
@@ -1145,6 +1370,9 @@ def _handler(node: Node):
                 code, data = node.feed(kind, int(n), int(start))
                 self._json(code, data)
                 return
+            if parts.path.startswith("/web/"):
+                self._web(parts.path, query)
+                return
             tools = node.current_tools()
             if parts.path in ("/yt/list", "/yt/playlist") and tools is None:
                 self._json(503, "tools missing")
@@ -1191,6 +1419,76 @@ def _handler(node: Node):
                 self._stream(query)
             else:
                 self._send(404, b"Not Found", "text/plain")
+
+        def _web(self, path: str, query: dict) -> None:
+            url = query.get("url", "")
+            if node.web_dir is None or path not in ("/web/info", "/web/formats", "/web/stream"):
+                self._send(404, b"Not Found", "text/plain")
+                return
+            if not web_url_ok(url):
+                self._json(400, {"error": "bad url", "kind": "unsupported"})
+                return
+            if path == "/web/stream":
+                self._web_stream(url, query.get("ss", "0"))
+                return
+            code, data = node.web_info(url, fresh=path == "/web/formats" and query.get("fresh") == "1")
+            if code != 200:
+                self._json(code, data)
+            elif path == "/web/info":
+                self._json(200, web_summary(data, url))
+            elif web_is_list(data):
+                self._json(400, {"error": "this is a list", "kind": "unsupported"})
+            else:
+                self._json(200, web_formats_summary(data))
+
+        def _web_stream(self, url: str, ss: str) -> None:
+            if not ss.isdigit():
+                self._json(400, {"error": "bad offset", "kind": "error"})
+                return
+            if not node.streams.acquire(blocking=False):
+                self._json(503, {"error": "busy", "kind": "busy"})
+                return
+            try:
+                code, info = node.web_info(url)
+                if code != 200:
+                    self._json(code, info)
+                    return
+                inputs = stream_inputs(info) if not web_is_list(info) else []
+                if not inputs:
+                    self._json(404, {"error": "no playable format", "kind": "gone"})
+                    return
+                _, _, proxied = node.web_tools(url)
+                env = node.ffmpeg_env if proxied else direct_env(os.environ)
+                args = ffmpeg_args(node.tools, inputs, int(ss), copy=node.remux and copyable(info))
+                proc = node.popen(args, env=env)
+                site = web_site(url)
+                node.log(f"开始 网站 {site} 从 {ss} 秒")
+                self._pipe(proc, f"网站 {site}")
+            finally:
+                node.streams.release()
+
+        def _pipe(self, proc, name: str) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            outcome = "client_gone"
+            try:
+                while chunk := proc.stdout.read1(CHUNK_BYTES):
+                    self.wfile.write(b"%x\r\n" % len(chunk) + chunk + b"\r\n")
+                if proc.wait() == 0:
+                    self.wfile.write(b"0\r\n\r\n")
+                    outcome = "ended"
+                else:
+                    outcome = "failed"
+            except OSError:
+                pass
+            finally:
+                proc.kill()
+                proc.wait()
+                self.close_connection = True
+            node.log(f"结束 {name} {outcome}")
 
         def _stream(self, query: dict) -> None:
             video_id, ss = query.get("id", ""), query.get("ss", "0")
@@ -1267,6 +1565,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--proxy", default=None, help="代理（不给时看环境变量 TV_YT_PROXY）")
     parser.add_argument("--remux", action="store_true", help="H.264 + AAC 时只换封装")
     parser.add_argument("--no-check", action="store_true", help="不做后台检查")
+    parser.add_argument("--web-dir", help="本机模式：其他网站（/web/*）的 cookies 和代理设置所在的目录")
     args = parser.parse_args(argv)
     if args.plain and args.bind != "127.0.0.1":
         print("--plain 只能听 127.0.0.1", file=sys.stderr)
@@ -1311,7 +1610,7 @@ def main(argv: list[str] | None = None) -> int:
         ffmpeg_env = ffmpeg_proxy_env(os.environ, media_proxy)
     node = Node(Tools(args.ytdlp, args.deno, args.ffmpeg, cookies, proxy_url), key, log=log,
                 tools_dir=args.tools_dir, remux=args.remux, ffmpeg_env=ffmpeg_env,
-                measure=bool(args.tools_dir))
+                measure=bool(args.tools_dir), web_dir=args.web_dir if args.tools_dir else None)
     server = make_server(node, args.bind, args.port, context)
     if args.tools_dir:
         node.current_tools()    # 组件已装好时，在后台先量一次 yt-dlp 的启动时间

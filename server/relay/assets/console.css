@@ -1383,3 +1383,15 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .m .lsrc .lstx { flex: 1; }
 .m .lformbox { padding: 14px; }
 .m #libBox .card.p .badge { font-size: 9px; padding: 3px 4px; top: 6px; left: 6px; }
+
+/* 顶栏「网站」（websites.py）：粘贴网址的框、单个视频的卡片和按钮 */
+.webform { display: flex; gap: 10px; margin: 4px 0 22px; max-width: 760px; }
+.webform input { flex: 1; min-width: 0; }
+.webone { display: grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 24px; align-items: start; }
+.webone .wgrid { grid-template-columns: 1fr; }
+.webact h2 { margin: 4px 0 6px; font-size: 20px; line-height: 1.35; }
+.webact .inline { margin-top: 14px; }
+.webh { font-size: 18px; margin: 0 0 14px; }
+.webh small { font-weight: 400; opacity: .7; font-size: 13px; margin-left: 6px; }
+.webset input[type="text"] { min-width: 220px; }
+@media (max-width: 640px) { .webone { grid-template-columns: 1fr; } }

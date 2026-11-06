@@ -80,6 +80,8 @@ def youtube_cover(video_id: str) -> str:
 def raw_cover(relay, site: str, *keys) -> str:
     """封面的原图地址（B 站图床、i.ytimg.com，还没经缩略图代理）：按顺序试 keys（一集的 id、它所在的视频、
     剧集的 ss…），给第一个记得的；都不知道时为空串。只查内存，不访问网站。"""
+    if site == "web":
+        return ""       # 其他网站（websites.py）的封面不经缩略图代理，继续观看用占位图
     getter = None if site == "youtube" else getattr(relay.clients.get("bilibili"), "cover", None)
     for key in keys:
         key = str(key or "")

@@ -702,7 +702,11 @@ class DirectWatchTests(unittest.TestCase):
         self.assertEqual(self.watch(channel="cast")[1]["title"], "tBV1xx411c7mD", "no device: her last cast")
         self.assertTrue(self.watch(video={"site": "bilibili", "id": "BV1xx411c7mD"})[1]["ok"])
         self.assertIn("历史里没有", self.watch(video={"site": "bilibili", "id": "BV1zz"})[1]["error"])
-        self.assertIn("看不懂", self.watch(url="https://example.com/x")[1]["error"])
+        # Another website without the local node: the self-hosted full edition says where to turn it on
+        # (websites.py; the cloud and the lite edition still say they cannot read the link).
+        self.assertEqual(self.watch(url="https://example.com/x")[1]["error"], web.WEB_OFF)
+        self.assertIn("看不懂", self.watch(url="https://example.com/x")[1]["error"] if self.relay.selfhost is None
+                      else web.WEB_UNKNOWN)
         self.client.down = True
         self.assertIn("B 站连不上", self.watch(url="https://www.bilibili.com/video/BV1xx411c7mE")[1]["error"])
         self.client.down = False

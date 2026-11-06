@@ -1482,6 +1482,11 @@ def explain(site: str, reason: str) -> str:
             return f"YouTube 连不上：检查「设置 → YouTube」里的代理（{reason}）"
         if refused:
             return f"YouTube 说这个放不了（{reason}）"
+    elif site == "web":
+        if network:
+            return f"这个网站连不上（{reason}）"
+        if refused:
+            return f"这个网站说这个放不了（{reason}）"
     elif network:
         return f"直播源连不上（{reason}）"
     return reason

@@ -210,6 +210,9 @@ def _serve_tenants(args, key: str, youtube) -> int:
     # 「设置 → YouTube」（server/relay/ytsettings.py）：现在用的是哪种 YouTube、数据目录在哪。
     relay.youtube_kind = args.youtube_kind
     relay.selfhost_data = args.selfhost_data if selfhost is not None else None
+    # 其他网站的视频（websites.py）：本机 YouTube 模式时和 YouTube 用同一个节点。
+    from . import websites
+    websites.attach(relay)
     if relay.watch is not None:
         # 换台快一点：预热相邻的直播台（server/selfhost 按 config.toml 的 [pc] warm_channels 和内存给）。
         relay.watch.warm_max = max(0, args.pc_warm)

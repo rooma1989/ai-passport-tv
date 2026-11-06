@@ -144,6 +144,12 @@
         <header class="ph"><h1 class="lt">YouTube</h1><p class="hint" id="fpYtHint">YouTube 首页推荐（这台服务器登录的 YouTube 账号），看过的不再出现</p><span class="sp"></span><button class="btn sm" id="fpYtNext" data-k="fp-yt-next">换一批</button></header>
         <div id="fpYt"></div>
       </section>
+      <!-- 顶栏「网站」：粘贴 yt-dlp 认得的其他网站的视频网址，在这台电脑上看或放到小电视（websites.py）；本机 YouTube 模式、家人才有 -->
+      <section class="page" data-route="web" aria-label="网站">
+        <header class="ph"><h1 class="lt">网站</h1><p class="hint">粘贴其他视频网站的网址（央视、西瓜、Dailymotion……），在这台电脑上看或放到小电视</p></header>
+        <form class="webform" id="webForm" autocomplete="off"><input id="webUrl" type="text" inputmode="url" placeholder="粘贴视频网址" aria-label="视频网址" maxlength="2000"><button class="btn pri" type="submit" id="webGo" data-k="web-go">打开</button></form>
+        <div id="webOut"></div>
+      </section>
       <section class="page" data-route="lib" aria-label="片库">
         <header class="ph"><h1 class="lt">片库</h1></header>
         <nav class="chips ssub" id="libNav" aria-label="片库分类"></nav>
@@ -255,6 +261,20 @@
               <p>登录后：首页多出「B 站推荐」「观看记录」「关注的更新」，「UP 主 → 我的关注」自动列出你关注的 UP 主；电脑上最高 1080P（大会员 1080P+），小电视 720P；大会员能放会员剧集。</p>
               <p>每个家人登录自己的账号，互相看不到。登录信息只存在这台电脑上；用的是 B 站网页版接口，介意风控可以用小号。YouTube 不会同步回去。</p>
             </details>
+          </div>
+        </div>
+
+        <!-- 设置 → 其他网站（管理员，websites.py）：每个站的 cookies、直连还是走 YouTube 的代理 -->
+        <div class="spane" data-pane="web">
+          <div class="panel">
+            <h3>其他网站 <small>cookies 和代理</small></h3>
+            <p class="hint">要登录才能看的网站：在浏览器里登录后，用导出 cookies.txt 的扩展<b>只导出这个网站</b>，填上网站再导入。cookies 等于登录凭据，只存在这台电脑上，别发给别人。有版权加密（DRM）的会员视频放不了。</p>
+            <div class="inline webset">
+              <input id="webSite" type="text" placeholder="网站，比如 youku.com" aria-label="网站" maxlength="200">
+              <input type="file" id="webCookiesFile" accept=".txt,text/plain" hidden>
+              <button class="ghost" id="webCookiesPick">导入 cookies.txt</button>
+            </div>
+            <div class="rows" id="webSites"></div>
           </div>
         </div>
 

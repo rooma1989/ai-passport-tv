@@ -30,7 +30,8 @@ from ..tenancy.signup import SignUp
 from ..tenancy.tickets import Limited, LoginTickets
 from . import admin, bilisearch, console, epg, events, home, setup, stream, table, voice, voicecmds, \
     vod, watch as watch_pc, wifi as wifi_api, youtube as youtube_links
-from . import accountfeeds, bilidash, bilifav, bililogin, bilivod, follows, static, wallpaper, ytsearch, ytsettings, ytvod
+from . import accountfeeds, bilidash, bilifav, bililogin, bilivod, follows, static, wallpaper, websites, ytsearch, \
+    ytsettings, ytvod
 from . import library as library_api
 from . import libdouban
 from . import localsearch
@@ -573,8 +574,8 @@ class Relay:
         片库的视频（投屏位里 site 是 "library"）：ffmpeg 读只给本机的 raw 地址，缩成电视服务要的画面（library.tv_start）。"""
         if video.site == "library":
             return library_api.tv_start(self, video.bvid, offset)
-        if video.site == "youtube":
-            return self._client("youtube").open(video.bvid, offset)
+        if video.site in ("youtube", "web"):
+            return self._client(video.site).open(video.bvid, offset)
         url = self._bili_url(video.bvid, self.bili_login(owner), owner)
         return self.starter(self.ffmpeg, url, offset)
 
@@ -1403,7 +1404,7 @@ class Relay:
         if isinstance(stream, vod.VodSession):
             if source.hd:
                 quality = {"quality": {"current": source.quality, "choices": list(QUALITY_CHOICES)}}
-            elif source.site == "youtube" and len(source.choices) > 1:
+            elif source.site in ("youtube", "web") and len(source.choices) > 1:
                 # YouTube 的 DASH：菜单里是这个视频有的 360p…1080p；换一个就是另一路（vod.VodSource.variant）。
                 quality = {"quality": {"current": source.quality, "choices": list(source.choices), "site": "youtube"}}
             begin = source.start if start is None else start
@@ -1465,6 +1466,8 @@ class Relay:
         if video.site == "library":
             # 小电视在放片库的视频：在电脑上到「片库」里放（那里按页面的能力定怎么放，访客看不到）。
             return "小电视在放片库里的视频：在电脑上看请到「片库」里点它"
+        if video.site == "web":
+            return self._web_source(key, video, position, prefer)
         if video.site == "youtube":
             client = self.clients.get("youtube")
             if client is None:
@@ -1492,6 +1495,36 @@ class Relay:
         return watch_pc.Source(key, url=url, user_agent=BILIBILI_UA, referer=BILIBILI_REFERER,
                                offset=position, label=video.title, site="bilibili", start=position,
                                quality="1080p" if login is not None and prefer == "1080p" else "")
+
+    def _web_source(self, key: tuple, video, position: float, prefer):
+        """其他网站的视频在电脑上怎么放（websites.py）：浏览器能直接放的 MP4 / DASH 走点播（WebVod）；
+        不能时选中的格式是一个地址（HLS、FLV……）、这个站直连的，中转自己的 ffmpeg 读它转 HLS；
+        再不行用节点的流（/web/stream）。放不了（DRM、删了……）是给人看的原因。"""
+        client = self.clients.get("web")
+        if client is None:
+            return self._web_off()
+        webvod = getattr(self, "webvod", None)
+        info = None
+        if webvod is not None:
+            try:
+                if prefer is not None:
+                    found = webvod.source(key, video, position, getattr(prefer, "yt", ytvod.DEFAULT_QUALITY),
+                                          dash=getattr(prefer, "dash", False))
+                    if found is not None:
+                        return found
+                info = webvod.info(video.bvid)
+            except SourceError as error:
+                if error.permanent:
+                    return websites.message_of(error)
+                self.log(f"在电脑上看网站 {websites.site_key(video.bvid)} 取不到地址"
+                         f"（{getattr(error, 'reason', '') or 'error'}），用节点的流")
+        found = websites.hls_input(info) if info is not None else None
+        if found is not None and not websites.proxy_url(self, video.bvid):
+            url, agent, referer = found
+            return watch_pc.Source(key, url=url, user_agent=agent, referer=referer, offset=position,
+                                   label=video.title, site="web", start=position)
+        return watch_pc.Source(key, opener=lambda: client.open(video.bvid, position), paced=False,
+                               label=video.title, site="web", start=position)
 
     def _vod_source(self, key: tuple, video, position: float, login, dash: bool = False):
         """B 站的这个视频能不能在电脑上直接放原文件（vod.py）：能就是 vod.VodSource（地址已经取好，过期了再取），
@@ -2293,7 +2326,7 @@ class Relay:
         site = _site_of(text)
         client = self.clients.get(site)
         if client is None:
-            return self._youtube_off("YouTube 还没配置好，暂时只能看 B 站视频")
+            return self._web_off() if site == "web" else self._youtube_off("YouTube 还没配置好，暂时只能看 B 站视频")
         try:
             vid = client.video_id(text)
             playlist = ""
@@ -2313,6 +2346,8 @@ class Relay:
             found = self._pc_resolve(site, vid, playlist=playlist, user=user, text=text)
         except SourceError as error:
             self.log(f"投到电脑失败：{error}")
+            if site == "web":
+                return websites.message_of(error)
             if error.permanent:
                 # 番剧、影视剧的链接：要大会员、地区限制分开说（整季都要会员时 series() 说「都要会员」）。
                 pgc = site == "bilibili" and (parse_series_link(text) or "")[:2] in ("ss", "ep", "md")
@@ -2594,6 +2629,10 @@ class Relay:
                 if self.watch.warm_max:
                     # 换台快一点：电脑版看直播时让中转预热相邻的台（watch_warm）。
                     summary["watch_warm"] = True
+            if self.clients.get("web") is not None and not caller.guest and caller.user is not None \
+                    and not edition.is_lite():
+                # 其他网站的视频（websites.py）：本机 YouTube 模式才有，电脑版据此显示顶栏的「网站」。
+                summary["websites"] = True
             if self.bili_accounts is not None and not caller.guest and caller.user is not None:
                 # 自建：每个人自己的 B 站登录（bililogin.py），电脑版据此显示「设置 → B 站账号」和导入关注。
                 summary["bili"] = self.bili_accounts.status(caller.user)
@@ -2636,6 +2675,13 @@ class Relay:
         if edition.is_lite():
             return YOUTUBE_OFF_LITE
         return YOUTUBE_OFF_SELFHOST if self.selfhost is not None else cloud
+
+    def _web_off(self) -> str:
+        """其他网站的链接、但没有 clients["web"] 时说什么：家庭服务器的完整版去开 YouTube 本机模式；云端、精简版没有
+        这个功能，照旧说看不懂。"""
+        if self.selfhost is not None and not edition.is_lite():
+            return WEB_OFF
+        return WEB_UNKNOWN
 
     def add_creator(self, text: str, caller: Caller = LEGACY) -> dict:
         state = self._account(caller)
@@ -2727,8 +2773,11 @@ class Relay:
         if not text:
             return {"ok": False, "error": "请先粘贴视频链接"}
         site = _site_of(text)
+        if site == "web" and caller.guest:
+            return {"ok": False, "error": WEB_GUEST}
         if self.clients.get(site) is None:
-            return {"ok": False, "error": self._youtube_off("YouTube 还没配置好，暂时只能投 B 站视频")}
+            return {"ok": False, "error": self._web_off() if site == "web"
+                    else self._youtube_off("YouTube 还没配置好，暂时只能投 B 站视频")}
         try:
             bvid = self.clients[site].video_id(text)
             if bvid is None and site == "bilibili" and (parse_series_link(text) or "")[:2] in ("ss", "ep", "md"):
@@ -2739,6 +2788,8 @@ class Relay:
             video = self.clients[site].video(bvid)
         except SourceError as error:
             self.log(f"投屏失败：{error}")
+            if site == "web":
+                return {"ok": False, "error": websites.message_of(error)}
             if error.permanent:
                 return {"ok": False, "error": "这个视频放不了（可能已删除、私享或需要会员）"}
             return {"ok": False, "error": f"{_SITE_NAMES[site]}暂时取不到，请稍后再试"}
@@ -2938,7 +2989,10 @@ class Relay:
         return {"ok": True, "link": f"{self.public_url}/tv/i/{code}", "code": code}
 
 
-_SITE_NAMES = {"bilibili": "B 站", "youtube": "YouTube "}
+_SITE_NAMES = {"bilibili": "B 站", "youtube": "YouTube ", "web": "这个网站"}
+WEB_OFF = "其他网站的视频要在「设置 → YouTube」开本机模式才能放"
+WEB_GUEST = "访客不能放其他网站的视频"
+WEB_UNKNOWN = "看不懂这个链接。请粘贴视频链接（App 里“分享 → 复制链接”）"
 YOUTUBE_OFF_SELFHOST = "YouTube 还没开启：去「设置 → YouTube」填代理即可"
 YOUTUBE_OFF_LITE = "精简版不支持 YouTube，只能看 B 站视频"
 
@@ -2963,7 +3017,11 @@ def _phone_listen(listen: dict | None) -> dict | None:
 
 
 def _site_of(text: str) -> str:
-    return "youtube" if youtube_links.is_youtube(text) else "bilibili"
+    """链接是哪个网站的：YouTube、其他网站（websites.py：带 http(s):// 的、不是 B 站和 YouTube 的网址），其余当 B 站
+    （BV 号、b23.tv、不带 http 的 B 站链接）。"""
+    if youtube_links.is_youtube(text):
+        return "youtube"
+    return "web" if websites.is_web_link(text) else "bilibili"
 
 
 def _stream_handler(relay: Relay):
@@ -3204,6 +3262,7 @@ def _manage_handler(relay: Relay):
             # 电脑版和扫码登录（阶段 2）：页面、票据、登录列表……见 console.py；总后台（阶段 3）见 admin.py。
             if relay.tenant and (console.get(self, relay, path) or admin.get(self, relay, path)
                                  or ytsettings.get(self, relay, path) or bililogin.get(self, relay, path)
+                                 or websites.get(self, relay, path)
                                  or bilifav.get(self, relay, path)
                                  or accountfeeds.get(self, relay, path) or follows.get(self, relay, path)
                                  or wallpaper.get(self, relay, path)):
@@ -3403,6 +3462,7 @@ def _manage_handler(relay: Relay):
                 return
             if relay.tenant and (console.post(self, relay, path) or admin.post(self, relay, path)
                                  or ytsettings.post(self, relay, path) or bililogin.post(self, relay, path)
+                                 or websites.post(self, relay, path)
                                  or bilifav.post(self, relay, path)
                                  or accountfeeds.post(self, relay, path) or follows.post(self, relay, path)):
                 return

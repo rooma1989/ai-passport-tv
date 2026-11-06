@@ -149,7 +149,9 @@ def ytnode_child_args(layout, config, ffmpeg: str, port: int) -> list[str]:
     from .ytlocal import cookies_path
     return ["--plain", "--bind", "127.0.0.1", "--port", str(port), "--key-file", str(layout.ytnode_key),
             "--tools-dir", str(layout.youtube_bin), "--ffmpeg", ffmpeg,
-            "--cookies", str(cookies_path(layout.root, config.youtube_cookies)), "--remux", "--no-check"]
+            "--cookies", str(cookies_path(layout.root, config.youtube_cookies)), "--remux", "--no-check",
+            # 其他网站（server/relay/websites.py）的 cookies 和代理设置。
+            "--web-dir", str(layout.root / "websites")]
 
 
 # 预热（server/relay/watch.py 的 WARM_MAX）要多一两个 ffmpeg 和十几秒的段：内存少于这些的机器（小盒子、

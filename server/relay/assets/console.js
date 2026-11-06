@@ -477,17 +477,17 @@ $("logout2").onclick = logout;
 
 // ======================================================================= 外框：路由、顶栏、底栏
 
-const TITLES = { home: "首页", live: "直播", bili: "B 站", yt: "YouTube", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索",
+const TITLES = { home: "首页", live: "直播", bili: "B 站", yt: "YouTube", web: "网站", series: "剧集与番剧", up: "UP 主", lib: "片库", search: "搜索",
                  devices: "设备与遥控", settings: "设置", remote: "遥控", me: "我的", admin: "管理" };
 const GUEST_ROUTES = ["home", "live", "search", "settings", "remote", "me"];
 // 搜索不在中间的标签里：是右上角那组按钮的第一个（放大镜），窗口窄的时候中间的标签也不会被挤掉。
-const TOPT = [["home", "首页"], ["live", "直播"], ["bili", "B 站"], ["yt", "YouTube"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"]];
+const TOPT = [["home", "首页"], ["live", "直播"], ["bili", "B 站"], ["yt", "YouTube"], ["web", "网站"], ["series", "剧集"], ["up", "UP 主"], ["lib", "片库"]];
 const TABS = [["home", "首页", "home"], ["live", "直播", "live"], ["search", "搜索", "search"], ["remote", "遥控", "remote"], ["me", "我的", "set"]];
 // ---- 精简版导航的纯函数（tests/console_lite_test.mjs 单独取出来测）
 // 精简版（/api/login/status 的 edition，server/edition.py）不显示的页和分区；管理里的「频道表」换成「频道」（频道包）。
 const LITE_HIDE = Object.freeze({
-  top: ["series", "lib", "yt"], tabs: [], settings: ["youtube", "history"], admin: ["users", "audit"],
-  routes: ["series", "lib", "yt"],
+  top: ["series", "lib", "yt", "web"], tabs: [], settings: ["youtube", "web", "history"], admin: ["users", "audit"],
+  routes: ["series", "lib", "yt", "web"],
   // 关掉的功能，页面上也不提：pc 在电脑上看（服务端也不列「这台电脑」、/api/state 没有 watch），cast 直播页的
   // 「我的投屏」组，youtube 设置 → YouTube 的接口和搜索的「B 站 / YouTube」切换，invites 设置里的「家人和邀请」，
   // phoneLink「让手机登录」（/api/phone-link），pets 遥控里的宠物（/api/pet），guests 访客码和说访客的话，
@@ -618,6 +618,8 @@ function showRoute() {
   if (name === "me") renderMe();
   if (name === "lib") libNav();
   if (name === "bili" || name === "yt") fpOpen(name);
+  if (name === "web") webOpen();
+  if (name === "settings" && isAdmin() && webOn()) webSettingsLoad();
   if (name === "up") { renderUpLatest(); renderFollows(); loadFollows(); }
   if (name === "home") loadFeeds();
   if (name === "up" || name === "series") loadHome();
@@ -712,12 +714,13 @@ function renderAbout() {
 // biliBlock、ytBlock、ytLocal 的 hidden 由 loadBili、renderYouTube 等管，这里只看结果（下面的 MutationObserver）。
 // 地址里的标签还没出现（比如刚打开、B 站状态还没读到）时先显示「通用」，不改地址，读到了就换过去。
 const SET_TABS = [["general", "通用", "set"], ["account", "账号与登录", "up"], ["bili", "B 站", "tv"],
-                  ["youtube", "YouTube", "play"], ["history", "放过的", "hist"]];
+                  ["youtube", "YouTube", "play"], ["web", "其他网站", "play"], ["history", "放过的", "hist"]];
 let setTab = "", setNavHTML = "";
 function setTabOn(id) {
   if (id === "bili") return !$("biliBlock").hidden;
   if (id === "youtube") return !$("ytBlock").hidden || !$("ytLocal").hidden;
   if (id === "history") return !isGuest();
+  if (id === "web") return isAdmin() && webOn();
   return true;
 }
 function settingsNav() {
@@ -742,7 +745,7 @@ for (const id of ["ytBlock", "ytLocal"]) new MutationObserver(() => settingsNav(
 
 async function refresh() {
   if ($("app").hidden) return;
-  const id = chosen;
+  const id = chosen, webWas = webOn();
   try {
     data = await call("GET", "api/state" + (id ? "?device=" + encodeURIComponent(id) : ""));
   } catch (error) {
@@ -756,6 +759,8 @@ async function refresh() {
   claimField();
   render();
   loadEpg();
+  // 顶栏的「网站」、设置里的「其他网站」跟着服务器说的有没有（本机 YouTube 模式）出现、消失。
+  if (webOn() !== webWas) { renderTop(); settingsNav(); }
 }
 
 let timer = 0, ticks = 0;
@@ -7324,6 +7329,134 @@ function noteCard(icon, title, text, href) {
   const tag = href ? `a class="card soon note" href="${href}"` : 'div class="card soon note"';
   return `<${tag}><span class="art"><span>${ic(icon, 30)}${esc(title)}</span></span><span class="t">${esc(title)}</span><span class="s2 wrap">${esc(text)}</span></${href ? "a" : "div"}>`;
 }
+// ---- 顶栏「网站」：其他网站的视频（websites.py，GET api/websites/info）----
+// 粘贴网址 → 视频是一张卡片（「播放」按「播放到」放，旁边的箭头选放到哪）；作者页、播放列表列出里面的视频。
+// 放的时候和粘贴 B 站链接一样是 {kind: "cast", url}：电脑上 watch_direct，小电视上投屏。
+// ---- 「网站」的纯函数（tests/console_web_test.mjs 单独取出来测）
+const WEB_SITES = Object.freeze({ "cctv.com": "央视网", "cntv.cn": "央视网", "ixigua.com": "西瓜视频", "douyin.com": "抖音",
+  "dailymotion.com": "Dailymotion", "vimeo.com": "Vimeo", "acfun.cn": "AcFun", "weibo.com": "微博", "zhihu.com": "知乎",
+  "xiaohongshu.com": "小红书", "qq.com": "腾讯视频", "youku.com": "优酷", "iqiyi.com": "爱奇艺", "mgtv.com": "芒果 TV",
+  "sohu.com": "搜狐视频", "huya.com": "虎牙", "douyu.com": "斗鱼", "twitch.tv": "Twitch", "nicovideo.jp": "niconico" });
+// 站点的键（主机的最后两段，xxx.com.cn 取三段），和服务器的 websites.site_key 一样。
+function webSiteKey(url) {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch (_) { return ""; }
+  const parts = host.split(".").filter(Boolean);
+  if (parts.length < 2 || /^\d+$/.test(parts[parts.length - 1])) return "";
+  const take = parts.length >= 3 && parts[parts.length - 1].length === 2 && ["com", "net", "org", "gov", "edu", "co", "ac"].includes(parts[parts.length - 2]) ? 3 : 2;
+  return parts.slice(-take).join(".");
+}
+function webSiteName(key) { return WEB_SITES[key] || key; }
+// 粘贴的文字里的网址（分享文字常带着标题）：要带 http(s)://；没有时空串。
+function webUrlOf(text) {
+  const m = /https?:\/\/[^\s<>"'，。、！？；：“”‘’（）【】《》]+/i.exec(String(text || ""));
+  return m ? m[0].replace(/[.,;:!?)\]}>]+$/, "") : "";
+}
+// 节点给的一条（视频或列表里的一条）→ 卡片用的节目。
+function webItem(x, siteKey) {
+  return { id: "web:" + x.url, title: x.title || x.url, subtitle: webSiteName(siteKey), duration: x.duration || 0,
+           creator: { name: x.uploader || webSiteName(siteKey) }, art: { url: x.thumb || "", ratio: "wide" },
+           play: { kind: "cast", url: x.url } };
+}
+// ---- 「网站」的纯函数到此
+const webState = { busy: false, answer: null, error: "", asked: "" };
+function webOn() { return !!(data && data.websites) && !isGuest() && !liteOff("youtube", EDITION); }
+function webOpen() { webRender(); setTimeout(() => { if (route === "web" && !webState.answer) $("webUrl").focus(); }, 60); }
+async function webLookup(text) {
+  const url = webUrlOf(text);
+  if (!url) { webState.error = "请粘贴 http:// 或 https:// 开头的视频网址"; webState.answer = null; webRender(); return; }
+  webState.busy = true; webState.error = ""; webState.asked = url; webRender();
+  let answer;
+  try { answer = await call("GET", "api/websites/info?url=" + encodeURIComponent(url)); }
+  catch (error) { webState.busy = false; if (error instanceof SignedOut) signedOut(); else { webState.error = "网络不通"; webRender(); } return; }
+  if (webState.asked !== url) return;       // 等回答时又粘了别的
+  webState.busy = false;
+  if (!answer || !answer.ok) { webState.answer = null; webState.error = (answer && answer.error) || "取不到"; }
+  else { webState.answer = answer; webState.error = ""; }
+  webRender();
+}
+function webRender() {
+  if (route !== "web") return;
+  const w = webState, a = w.answer;
+  let o = "";
+  if (w.busy) o += `<p class="hint">正在解析（第一次要几秒到十几秒）…</p><div class="wgrid">${skelCards(1)}</div>`;
+  else if (w.error) o += `<p class="hint bad">${esc(w.error)}</p>`;
+  else if (a && a.kind === "video") {
+    const item = webItem({ url: a.url, title: a.title, duration: a.duration, thumb: a.thumb, uploader: a.uploader }, a.site_key);
+    const id = reg(item);
+    o += `<div class="webone"><div class="wgrid">${cardFeed(item)}</div><div class="webact"><h2>${esc(a.title || a.url)}</h2>
+      <p class="hint">${esc([webSiteName(a.site_key), a.uploader, a.duration ? clock(a.duration) : ""].filter(Boolean).join(" · "))}</p>
+      <div class="inline">${splitHTML(id, "播放")}</div></div></div>`;
+  } else if (a && a.kind === "list") {
+    o += `<h2 class="webh">${esc(a.title || "列表")} <small>${esc([webSiteName(a.site_key), a.uploader, a.entries.length + " 个视频"].filter(Boolean).join(" · "))}</small></h2>`;
+    o += a.entries.length ? `<div class="wgrid">${a.entries.map((e) => cardFeed(webItem(e, webSiteKey(e.url) || a.site_key))).join("")}</div>`
+      : `<p class="hint">这个列表里没有能放的视频。</p>`;
+  } else {
+    o += `<div class="wgrid">${noteCard("play", "粘贴网址", "yt-dlp 认得的网站都行：央视网、西瓜视频、AcFun、Dailymotion、Vimeo……要登录的网站请管理员在「设置 → 其他网站」导入 cookies。有版权加密（DRM）的会员视频放不了。")}</div>`;
+  }
+  $("webOut").innerHTML = o;
+  $("webGo").disabled = w.busy;
+}
+$("webForm").addEventListener("submit", (event) => { event.preventDefault(); webLookup($("webUrl").value); });
+$("webUrl").addEventListener("paste", () => setTimeout(() => webLookup($("webUrl").value), 0));
+
+// ---- 设置 → 其他网站（管理员）：每个站的 cookies 和代理 ----
+let webSites = null;
+async function webSettingsLoad() {
+  try { const answer = await call("GET", "api/websites/settings"); if (answer.ok) { webSites = answer.sites; webSettingsRender(); } }
+  catch (error) { if (error instanceof SignedOut) signedOut(); }
+}
+function webSettingsRender() {
+  const rows = webSites || [];
+  $("webSites").innerHTML = rows.length ? rows.map((r) => `<div class="li"><span class="tx">${esc(webSiteName(r.site))}${r.site !== webSiteName(r.site) ? ` <small>${esc(r.site)}</small>` : ""}<small>${r.cookies.present ? "cookies 已导入（" + r.cookies.count + " 条，" + when(r.cookies.updated) + "）" : "没有 cookies"}</small></span>
+    <span class="segc" role="group" aria-label="${esc(r.site)} 的网络"><button data-web-proxy="direct" data-web-site="${esc(r.site)}" aria-pressed="${r.proxy === "direct"}">直连</button><button data-web-proxy="youtube" data-web-site="${esc(r.site)}" aria-pressed="${r.proxy === "youtube"}">走 YouTube 代理</button></span>
+    ${r.cookies.present ? `<button class="ghost red sm" data-web-del="${esc(r.site)}">删除 cookies</button>` : ""}</div>`).join("")
+    : `<p class="hint">还没有设置过哪个网站：不用登录的网站直接在「网站」页粘贴就行。</p>`;
+}
+$("webSites").addEventListener("click", (event) => {
+  const t = event.target.closest("button");
+  if (!t) return;
+  if (t.dataset.webProxy) busy(t, async () => {
+    const answer = await call("POST", "api/websites/proxy", { site: t.dataset.webSite, proxy: t.dataset.webProxy });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    webSites = answer.sites; webSettingsRender();
+  });
+  if (t.dataset.webDel) busy(t, async () => {
+    if (!confirm("删除 " + t.dataset.webDel + " 的 cookies？")) return;
+    const answer = await call("POST", "api/websites/cookies/delete", { site: t.dataset.webDel });
+    if (answer.ok) { webSites = answer.sites; webSettingsRender(); toast("已删除"); }
+  });
+});
+$("webCookiesPick").onclick = () => {
+  if (!$("webSite").value.trim()) { toast("先填上网站，比如 youku.com", true); $("webSite").focus(); return; }
+  $("webCookiesFile").click();
+};
+$("webCookiesFile").onchange = () => {
+  const file = $("webCookiesFile").files[0];
+  $("webCookiesFile").value = "";
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) { toast("文件太大了", true); return; }
+  const site = $("webSite").value.trim();
+  const reader = new FileReader();
+  // 只把这个网站的行发给服务器（别的网站的 cookies 不离开这台电脑）；服务器再按站名筛一遍。
+  reader.onload = () => busy($("webCookiesPick"), async () => {
+    const key = webSiteKey(/^https?:\/\//i.test(site) ? site : "https://" + site);
+    if (!key) { toast("看不懂这个网站：填域名，比如 youku.com", true); return; }
+    const lines = String(reader.result).split(/\r?\n/).filter((line) => {
+      const domain = line.replace(/^#HttpOnly_/, "").split("\t")[0].replace(/^\./, "").toLowerCase();
+      return (line.startsWith("#HttpOnly_") || !line.startsWith("#")) && line.split("\t").length === 7 && (domain === key || domain.endsWith("." + key));
+    });
+    if (!lines.length) { toast("文件里没有 " + key + " 的 cookies（要 Netscape 格式的 cookies.txt）", true); return; }
+    const answer = await call("POST", "api/websites/cookies", { site: key, text: "# Netscape HTTP Cookie File\n" + lines.join("\n") + "\n" });
+    if (!answer.ok) { toast(answer.error, true); return; }
+    toast("已导入 " + webSiteName(key) + " 的 cookies");
+    $("webSite").value = "";
+    webSites = answer.sites; webSettingsRender();
+  });
+  reader.onerror = () => toast("读不了这个文件", true);
+  reader.readAsText(file);
+};
+
 // ---- 顶栏「B 站」「YouTube」：两个网站首页的推荐整页（GET api/feeds/page）----
 // B 站：网页版首页的推荐，一页一页往下翻（滚到离底下 FP.NEAR_PX 以内就要下一页）；「刷新」从第 1 屏重新来。
 // YouTube：第 1 页是推荐的池子（这台服务器登录的那个账号，看过的不要；节点在后台取时每 FP.POLL_MS 再问一次），往下滚
@@ -7335,6 +7468,7 @@ const fp = { bili: { items: [], page: 0, more: true, busy: false, state: "", mes
 // 顶栏、「我的」里列不列这两页：B 站要有自己账号的几排（家庭服务器、电脑客户端，不是访客）；YouTube 还要是管理员、
 // 配了 YouTube（GET api/feeds 的 youtube.shown）。
 function fpTab(id) {
+  if (id === "web") return webOn();
   if (id === "bili") return feedsOn();
   if (id === "yt") return feedsOn() && !!(feedsInfo && feedsInfo.youtube && feedsInfo.youtube.shown) && !liteOff("youtube", EDITION);
   return true;

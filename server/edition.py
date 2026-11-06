@@ -25,7 +25,7 @@ except ModuleNotFoundError as error:
 # 精简版拦掉的接口（去掉 /tv 前缀以后的路径；等于它或以它加 "/" 开头都算）。
 LITE_BLOCKED = (
     "/api/library", "/api/admin/library", "/api/admin/clouddrive", "/api/admin/storage", "/api/admin/driver",
-    "/api/youtube", "/api/yt", "/api/listen", "/api/voice", "/api/pet", "/api/epg", "/api/admin/epg",
+    "/api/youtube", "/api/yt", "/api/websites", "/api/listen", "/api/voice", "/api/pet", "/api/epg", "/api/admin/epg",
     "/api/series", "/api/detail/series", "/api/watch", "/api/subs", "/api/search/local",
     "/api/invites", "/api/admin/invites", "/api/admin/audit", "/api/phone-link",
     # 精简版的线路归频道包管，原来的频道表编辑器整个关掉（换成 /api/admin/pack）。
