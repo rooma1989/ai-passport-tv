@@ -322,7 +322,7 @@ class YouTube:
             found.append({"id": v["id"], "title": title, "duration": _count(v.get("duration")),
                           "channel": " ".join(str(v.get("channel") or "").split())[:60],
                           "channel_id": cid if _UCID.match(cid) else "", "date": _count(v.get("date")),
-                          "views": _count(v.get("views"))})
+                          "views": _count(v.get("views")), "members": v.get("members") is True})
         return found[:limit]
 
     def series_id(self, text: str) -> str | None:

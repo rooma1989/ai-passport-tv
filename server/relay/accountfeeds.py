@@ -98,6 +98,11 @@ PAGE_N = 24
 PAGE_MAX = 20
 PAGE_GAP_S = 1.0
 PAGE_TTL_S = 600
+# 频道会员专享的 YouTube 视频（节点标 members）：这台服务器的 YouTube 账号是不是那个频道的会员，后台取一次那个视频的
+# 格式试试（取得到就是，YouTube 说 Join this channel 就不是），记这么久；一次至多试几个频道。没试出来以前不显示。
+MEMBER_TTL_S = 86400
+MEMBER_PROBES = 3
+_NOT_MEMBER = ("Join this channel", "members-only", "channel's members", "available to this channel")
 # 顶栏「YouTube」页：第 1 页给几个（池子就这么大）；往下每页让节点接着取几个、至多几页（节点的 start 至多 400）。
 YT_PAGE_N = 40
 YT_MORE_N = 40
@@ -411,7 +416,7 @@ def youtube_entries(videos: list[dict]) -> list[dict]:
             continue
         found.append(entry("youtube", v["id"], _clean(v.get("title"), 120), author=_clean(v.get("channel"), 40),
                            author_id=v.get("channel_id") or "", duration=_int(v.get("duration")),
-                           date=_int(v.get("date"))))
+                           date=_int(v.get("date")), members=v.get("members") is True))
     return found
 
 
@@ -536,6 +541,9 @@ class Feeds:
         self._yt_pages: dict[int, dict] = {}
         self._page_locks: dict[int, threading.Lock] = {}
         self.sleep = time.sleep           # 翻页隔 PAGE_GAP_S（测试里换掉）
+        # 会员专享：频道 id（没有时 v:<视频 id>）→ (是不是会员, 试的时刻)；正在试的。
+        self._members: dict[str, tuple[bool, float]] = {}
+        self._member_probing: set[str] = set()
         self._queue: queue.Queue | None = None
         # 测试替身可以换掉：YouTube cookies 在不在（本机模式看 ytaccount 的 gate；节点模式先当作在）。
         self.yt_cookies = self._yt_cookies
@@ -610,6 +618,8 @@ class Feeds:
         items = []
         for _, p in usable:
             items.extend(p["items"])
+        if rid != "yt_history":
+            items = self._members_ok(items)
         if rid == "updates":
             items.sort(key=lambda e: -(e.get("date") or 0))
         if rid in ROTATE_ROWS and items:
@@ -698,7 +708,7 @@ class Feeds:
         if part["state"] in ("hidden", "login"):
             return dict(answer, state=part["state"], message=part["message"],
                         **({"need": "youtube"} if part["state"] == "login" else {}))
-        items = part["items"]
+        items = self._members_ok(part["items"])
         if items:
             items, more = self._rotate(caller, "yt_page", items, part.get("at") or 0.0, next_batch, size=YT_PAGE_N)
             answer["more"] = more
@@ -737,6 +747,7 @@ class Feeds:
                 return dict(answer, state=error.state, message=error.message,
                             **({"need": "youtube"} if error.state == "login" else {}))
             watched = self._watched_ids(caller)
+            items = self._members_ok(items)
             with self.lock:
                 found = [e for e in items if e["id"] not in book["seen"] and e["id"] not in watched]
                 book["seen"].update(e["id"] for e in items)
@@ -747,6 +758,58 @@ class Feeds:
             raw = book.get("raw", {}).get(n, True)
         return dict(answer, state="ready", items=[media("yt_page", e) for e in found],
                     more=raw and n < YT_PAGE_MAX)
+
+    # ---- 会员专享（YouTube） ----
+
+    def _members_ok(self, items: list[dict]) -> list[dict]:
+        """去掉这个账号看不了的会员专享视频：试过、是会员的留着；不是会员的、还没试出来的不要（还没试的在后台试，
+        至多 MEMBER_PROBES 个频道一次）。不是会员专享的照旧。"""
+        now = self.monotonic()
+        kept, ask = [], []
+        with self.lock:
+            for e in items:
+                if not e.get("members"):
+                    kept.append(e)
+                    continue
+                key = e.get("author_id") or "v:" + e["id"]
+                known = self._members.get(key)
+                if known is not None and now - known[1] < MEMBER_TTL_S:
+                    if known[0]:
+                        kept.append(e)
+                    continue
+                if key not in self._member_probing and len(ask) < MEMBER_PROBES and key not in [k for k, _ in ask]:
+                    self._member_probing.add(key)
+                    ask.append((key, e["id"]))
+        for key, vid in ask:
+            if self.background:
+                threading.Thread(target=self._member_probe, args=(key, vid), daemon=True, name="feed-member").start()
+            else:
+                self._member_probe(key, vid)
+        return kept
+
+    def _member_probe(self, key: str, vid: str) -> None:
+        """取一次这个会员视频的格式：取得到就是会员；YouTube 说要加入频道就不是；别的错（网络、节点忙）不记，下次再试。"""
+        from .bilibili import SourceError
+        client = self.relay.clients.get("youtube")
+        member = None
+        try:
+            if client is not None and hasattr(client, "formats"):
+                with self._yt_lock:
+                    client.formats(vid)
+                member = True
+        except SourceError as error:
+            if any(hint in str(error) for hint in _NOT_MEMBER):
+                member = False
+        except Exception:  # noqa: BLE001 —— 后台线程：试不成就是不知道
+            member = None
+        finally:
+            with self.lock:
+                self._member_probing.discard(key)
+                if member is not None:
+                    self._members[key] = (member, self.monotonic())
+            if member is not None:
+                self.relay.log(f"YouTube 会员专享：这个账号{'是' if member else '不是'}频道 {key} 的会员，"
+                               + ("它的会员视频照常显示" if member else "它的会员视频不显示"))
 
     # ---- 轮换（「YouTube 推荐」） ----
 
@@ -776,6 +839,12 @@ class Feeds:
             place = {vid: i for i, vid in enumerate(batch[1])}
             kept = sorted((e for e in pool if e["id"] in place), key=lambda e: place[e["id"]])
             if kept:
+                # 这一批还有空位、池子里又多了能放的（会员专享刚试出来能看）：补在后面。
+                extra = [e for e in pool if e["id"] not in place][:max(0, size - len(kept))]
+                if extra:
+                    kept += extra
+                    with self.lock:
+                        self._batches[key] = (at, [e["id"] for e in kept])
                 return kept, len(pool) > len(kept)
         current = set(batch[1]) if batch is not None and next_batch else set()
         shown = self.store.load(caller.user).get("shown")

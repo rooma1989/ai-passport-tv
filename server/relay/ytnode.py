@@ -464,7 +464,9 @@ def feed_args(tools: Tools, kind: str, n: int, start: int = 1) -> list[str]:
 
 def feed_summary(listing: dict, n: int) -> dict:
     """:ytrec / :ythis / :ytsubs 的平铺结果 → {"videos": [{"id", "title", "duration", "channel", "channel_id",
-    "thumb", "date", "views"}]}：去掉直播中、预告、Shorts、删掉和私享的；时长、日期、播放数不知道时为 0。"""
+    "thumb", "date", "views", "members"?}]}：去掉直播中、预告、Shorts、删掉和私享的；时长、日期、播放数不知道时为 0。
+    members：频道会员专享（yt-dlp 按「仅限会员」的角标给 availability subscriber_only），中转看这个账号是不是会员再决定
+    显示不显示（accountfeeds.py 的 _members_ok）。"""
     videos, seen = [], set()
     for e in listing.get("entries") or []:
         if not isinstance(e, dict) or not _ID.match(str(e.get("id", ""))) or e["id"] in seen:
@@ -484,6 +486,8 @@ def feed_summary(listing: dict, n: int) -> dict:
                        "channel": " ".join(str(e.get("channel") or e.get("uploader") or "").split())[:100],
                        "channel_id": cid if _UCID.match(cid) else "", "thumb": _thumb(e),
                        "date": _int(e.get("timestamp")), "views": _int(e.get("view_count"))})
+        if e.get("availability") == "subscriber_only":
+            videos[-1]["members"] = True
         if len(videos) >= n:
             break
     return {"videos": videos}

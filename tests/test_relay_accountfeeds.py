@@ -142,6 +142,16 @@ class FakeYT:
             return list(self.more[kind](start, limit))
         return list(self.feeds[kind])
 
+    def formats(self, vid, prefetch=False, fresh=False, timeout=None):
+        """Members-only check: the channels in self.member_of play, the others say 'Join this channel'."""
+        self.calls.append(("formats", vid))
+        channel = next((v.get("channel_id") for vs in self.feeds.values() for v in vs if v["id"] == vid), "")
+        if channel in getattr(self, "member_of", ()):
+            return {"id": vid, "formats": []}
+        if getattr(self, "formats_error", None) is not None:
+            raise self.formats_error
+        raise SourceError(f"youtube /yt/formats: 404 {{\"error\": \"ERROR: [youtube] {vid}: Join this channel to get access\"}}")
+
     def subscriptions(self, timeout=None):
         self.calls.append(("subscriptions",))
         if self.error is not None:
@@ -229,7 +239,8 @@ FEED_LISTING = {"_type": "playlist", "id": "recommended", "title": "recommended"
     {"_type": "url", "id": "shortshort1", "url": "https://www.youtube.com/shorts/shortshort1", "title": "Short"},
     {"_type": "url", "id": "livelivel01", "title": "Live", "live_status": "is_live"},
     {"_type": "url", "id": "gonegonego1", "title": "[Private video]"},
-    {"_type": "url", "id": "nodurnodur1", "title": "No duration", "channel_id": "bad"}]}
+    {"_type": "url", "id": "nodurnodur1", "title": "No duration", "channel_id": "bad"},
+    {"_type": "url", "id": "membermemb1", "title": "Members first", "channel_id": UC2, "availability": "subscriber_only"}]}
 
 
 class NodeFeedTests(unittest.TestCase):
@@ -254,7 +265,8 @@ class NodeFeedTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(self.runs[-1][-2:], ["--", ":ytrec"])
         self.assertIn("--cookies", self.runs[-1])
-        self.assertEqual([v["id"] for v in data["videos"]], ["recrecrec01", "nodurnodur1"])
+        self.assertEqual([v["id"] for v in data["videos"]], ["recrecrec01", "nodurnodur1", "membermemb1"])
+        self.assertEqual([v.get("members") for v in data["videos"]], [None, None, True], "members-only is marked")
         first = data["videos"][0]
         self.assertEqual((first["duration"], first["channel_id"], first["date"], first["views"]),
                          (125, UC1, 1760000000, 12), "yt-dlp gives the duration as a float")
@@ -297,10 +309,13 @@ class NodeFeedTests(unittest.TestCase):
             client.feed("subs")
         self.assertEqual(caught.exception.reason, "slow")
         good = YouTube(fetch_json=lambda p, q, timeout=None: {"videos": [
-            {"id": "recrecrec01", "title": " A  b ", "duration": 5, "channel_id": "nope", "date": True}]},
+            {"id": "recrecrec01", "title": " A  b ", "duration": 5, "channel_id": "nope", "date": True},
+            {"id": "membermemb1", "title": "M", "members": True}]},
             config={"url": "http://127.0.0.1:9", "key": "k"})
         self.assertEqual(good.feed("rec"), [{"id": "recrecrec01", "title": "A b", "duration": 5, "channel": "",
-                                             "channel_id": "", "date": 0, "views": 0}])
+                                             "channel_id": "", "date": 0, "views": 0, "members": False},
+                                            {"id": "membermemb1", "title": "M", "duration": 0, "channel": "",
+                                             "channel_id": "", "date": 0, "views": 0, "members": True}])
         asked = []
         later = YouTube(fetch_json=lambda p, q, timeout=None: asked.append(dict(q)) or {"videos": []},
                         config={"url": "http://127.0.0.1:9", "key": "k"})
@@ -629,6 +644,45 @@ class PageTests(FeedHarness):
         self.mono.t += accountfeeds.FRESH_GAP_S
         again = self.page(self.admin, site="youtube", next=1)
         self.assertIn(again["items"][0]["play"]["id"], {f"rec{i:08d}" for i in range(40, 45)})
+
+
+class MembersOnlyTests(FeedHarness):
+    """YouTube members-only videos (2026-11-06): shown only when the server's YouTube account is a member."""
+
+    def test_members_only_videos_need_a_membership(self):
+        self.yt.feeds["rec"] = [
+            {"id": "publicpubl1", "title": "公开", "duration": 60, "channel": "频道一", "channel_id": UC1, "date": 0,
+             "views": 0, "members": False},
+            {"id": "membermemb1", "title": "会员一", "duration": 60, "channel": "频道一", "channel_id": UC1, "date": 0,
+             "views": 0, "members": True},
+            {"id": "membermemb2", "title": "会员二", "duration": 60, "channel": "频道二", "channel_id": UC2, "date": 0,
+             "views": 0, "members": True},
+            {"id": "membermemb3", "title": "会员三", "duration": 60, "channel": "频道二", "channel_id": UC2, "date": 0,
+             "views": 0, "members": True}]
+        self.yt.member_of = {UC1}
+        ids = lambda: [x["play"]["id"] for x in self.request("GET", "/tv/api/feeds/page?site=youtube", user=self.admin)[1]["items"]]
+        self.assertEqual(ids(), ["publicpubl1"], "not known yet: hidden while the account is tried")
+        probes = [c for c in self.yt.calls if c[0] == "formats"]
+        self.assertEqual(sorted(probes), [("formats", "membermemb1"), ("formats", "membermemb2")], "one video per channel")
+        self.assertEqual(ids(), ["publicpubl1", "membermemb1"], "a member of 频道一, not of 频道二")
+        row = self.request("GET", "/tv/api/feeds/row?id=yt_rec", user=self.admin)[1]
+        self.assertEqual([x["play"]["id"] for x in row["items"]], ["publicpubl1", "membermemb1"], "the home row too")
+        self.assertEqual(len([c for c in self.yt.calls if c[0] == "formats"]), 2, "remembered")
+        # After MEMBER_TTL_S it is tried again (memberships change).
+        self.mono.t += accountfeeds.MEMBER_TTL_S
+        self.yt.member_of = {UC1, UC2}
+        ids()
+        self.assertEqual(set(ids()), {"publicpubl1", "membermemb1", "membermemb2", "membermemb3"})
+
+    def test_an_unclear_failure_is_not_remembered(self):
+        self.yt.feeds["rec"] = [{"id": "membermemb2", "title": "会员二", "duration": 60, "channel": "频道二",
+                                 "channel_id": UC2, "date": 0, "views": 0, "members": True}]
+        self.yt.member_of = set()
+        self.yt.formats_error = SourceError("youtube /yt/formats: 503 node busy")
+        page = lambda: self.request("GET", "/tv/api/feeds/page?site=youtube", user=self.admin)[1]["items"]
+        self.assertEqual(page(), [])
+        self.assertEqual(page(), [])
+        self.assertEqual(len([c for c in self.yt.calls if c[0] == "formats"]), 2, "busy: asked again next time")
 
 
 class RecRotationTests(FeedHarness):
