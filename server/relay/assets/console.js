@@ -3329,7 +3329,18 @@ function hideUpNext() {
 function partChoice(part, label) {
   if (!part) return null;
   const item = watching && watching.parts ? watching.parts.items.find((x) => x.n === part.n) : null;
-  return { label, title: part.title || partWord(part.n), art: (item && item.art) || "", go: () => playPart(part.n) };
+  // B 站多 P 的各 P 没有自己的封面：用这个视频的（从卡片点开时那张卡片的封面）。
+  return { label, title: part.title || partWord(part.n), art: (item && item.art) || currentArt(), go: () => playPart(part.n) };
+}
+function currentArt() {
+  const x = watching && watching.item && playCtx.current && playCtx.current.play === watching.item ? playCtx.current : null;
+  return (x && x.art && x.art.url) || "";
+}
+// 从一排卡片点开的：这一排里的上一个、下一个（不是从卡片点开的、或者换过别的节目时没有）。
+function rowNeighbours() {
+  const w = watching;
+  const i = w && w.item ? playCtx.list.indexOf(playCtx.current) : -1;
+  return i >= 0 && playCtx.current && playCtx.current.play === w.item ? endNeighbours(playCtx.list, i) : null;
 }
 // 卡片（ITEMS 里的一项）→ 选项：在这台电脑上放，接着记住是从哪一排来的（再放完时接着往下）。
 function itemChoice(x, label) {
@@ -3348,15 +3359,16 @@ function rememberRow(card) {
 async function endChoices() {
   const w = watching;
   if (!w) return {};
+  const row = rowNeighbours();
   if (w.parts && w.parts.items.length > 1) {
     const np = nextPart(), pp = prevPart();
-    return { next: partChoice(np, "下一集"), prev: pp ? partChoice(pp, "上一集") : null };
+    // 第一集没有上一集：左边放这一排的下一个视频（也可以看）；最后一集放完了就接着这一排往下。
+    const prev = pp ? partChoice(pp, "上一集") : row && row.next ? itemChoice(row.next, "也可以看") : null;
+    if (np) return { next: partChoice(np, "下一集"), prev };
+    if (row && row.next) return { next: itemChoice(row.next, "下一个"), prev: pp ? partChoice(pp, "上一集") : null };
+    return { next: null, prev };
   }
-  const i = w.item ? playCtx.list.indexOf(playCtx.current) : -1;
-  if (i >= 0 && playCtx.current && playCtx.current.play === w.item) {
-    const nb = endNeighbours(playCtx.list, i);
-    if (nb.next) return { next: itemChoice(nb.next, "下一个"), prev: itemChoice(nb.prev, nb.prevIsBack ? "上一个" : "也可以看") };
-  }
+  if (row && row.next) return { next: itemChoice(row.next, "下一个"), prev: itemChoice(row.prev, row.prevIsBack ? "上一个" : "也可以看") };
   if (pcStepUp()) {
     return { next: { label: "下一个", title: (w.name || "这个 UP 主") + " 的下一个视频", art: "",
                      go: () => startDirect({ channel: w.channel, step: 1 }, { group: w.group }) } };
@@ -4415,6 +4427,11 @@ async function startDirect(body, ctx) {
   openDirect(answer, ctx);
   return true;
 }
+// 跳转、重连、换清晰度回来的还是同一个视频（同一个台的同一个、或投屏的同一个视频）：留着从哪张卡片点开的。
+function sameVideo(w, answer) {
+  if (w.video && answer.video) return w.video.site === answer.video.site && w.video.id === answer.video.id;
+  return !!w.channel && w.channel === answer.channel && (w.index || 0) === (answer.index || 0);
+}
 // 「在电脑上看」开始了（POST /api/watch 或 /api/play 的回答）：接上播放器。
 function openDirect(answer, ctx) {
   ctx = ctx || {};
@@ -4437,7 +4454,7 @@ function openDirect(answer, ctx) {
                routes: answer.routes || 1, route: answer.route || 0, lines: answer.lines || [],
                subs: answer.subs || null, subsUrl: answer.subs_url || "", hls: ctx.hls,
                // 从卡片点开的（playOnPc）：那个节目，放完时据此找同一排的下一个（endChoices）；同一路接着放时留着。
-               item: ctx.item || (same && watching ? watching.item : null) };
+               item: ctx.item || (watching && sameVideo(watching, answer) ? watching.item : null) };
   miniWho = "pc";
   $("watchFollow").checked = false;
   // 片库这些经中转放的也照上次选的速度（浏览器直接放的 VodPlayer / DashPlayer 自己设过了）。
