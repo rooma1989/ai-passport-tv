@@ -689,6 +689,11 @@ class ApiTests(unittest.TestCase):
         show = self.watch(library=first)
         self.assertEqual([p["id"] for p in show["parts"]["items"]], [first, ids["家庭剧/S01E02.mp4"]])
         self.assertEqual((show["name"], show["parts"]["current"]), ("家庭剧", 1))
+        # Each episode carries its own picture for the player's episode list (none grabbed yet here: empty).
+        self.assertEqual([p["art"] for p in show["parts"]["items"]], ["", ""])
+        with mock.patch.object(self.relay.library.thumbs, "url", lambda item: f"api/library/thumb/{item['id']}?v=7"):
+            again = self.watch(library=first)
+        self.assertEqual(again["parts"]["items"][1]["art"], f"api/library/thumb/{ids['家庭剧/S01E02.mp4']}?v=7")
         # An mkv (not probed here: the relay's ffmpeg is fake) goes through watch.py (on a TV: test_relay_library_tv).
         clip = self.watch(library=ids["Clip.mkv"])
         self.assertEqual((clip["ok"], clip["mode"], clip["kind"], clip["seekable"]), (True, "hls", "video", True), clip)

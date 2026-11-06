@@ -2188,7 +2188,9 @@ class Relay:
             current = next(n for n, ep in enumerate(episodes, 1) if ep["id"] == found["id"])
             answer["parts"] = {"kind": "series", "name": show, "current": current,
                                "items": [{"n": n, "id": ep["id"], "title": ep["title"], "duration": 0,
-                                          "watched": ep["id"] in done, "playable": library.playable(ep)}
+                                          "watched": ep["id"] in done, "playable": library.playable(ep),
+                                          # 这一集自己的封面（旁边的图片或截的一帧，librarythumb.py），选集里当缩略图
+                                          "art": library.thumbs.url(ep)}
                                          for n, ep in enumerate(episodes, 1)]}
             answer["part"] = current
         return answer

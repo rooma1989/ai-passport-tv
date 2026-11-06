@@ -3173,7 +3173,11 @@ function openParts() {
     const row = el("button", "pcpart" + (item.n === parts.current ? " cur" : "") + (item.watched ? " seen" : ""));
     row.dataset.part = item.n;
     row.setAttribute("aria-current", item.n === parts.current ? "true" : "false");
-    row.innerHTML = `<span class="n">${parts.kind === "pages" ? "P" + item.n : item.n}</span><span class="t">${esc(item.title || partWord(item.n))}</span>`
+    // 片库的剧集：每集自己的封面（截的一帧）当缩略图，左上角是第几集；别的（B 站、YouTube）照旧只有号。
+    const num = parts.kind === "pages" ? "P" + item.n : item.n;
+    const lead = item.art ? `<span class="th"><img src="${esc(item.art)}" alt="" loading="lazy"><i>${num}</i></span>` : `<span class="n">${num}</span>`;
+    if (item.art) row.classList.add("withth");
+    row.innerHTML = lead + `<span class="t">${esc(item.title || partWord(item.n))}</span>`
       + `<span class="d">${item.watched ? ic("check", 14) : ""}${item.duration ? clock(item.duration) : ""}</span>`;
     row.setAttribute("aria-label", partWord(item.n) + " " + (item.title || "") + (item.watched ? "，看完了" : "") + (item.n === parts.current ? "，正在放" : ""));
     row.onclick = () => { if (item.n === parts.current) closeParts(); else playPart(item.n); };
