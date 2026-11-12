@@ -786,6 +786,20 @@ def post(handler, relay, path: str) -> bool:
             relay.accounts.audit(action, caller.user, ip, "library", sid[:8], detail[:40])
         handler._json(answer)
         return True
+    if path == "/api/admin/library/assign":
+        # 手动归集（library.py 的 assign）：把「其他视频」里、待识别的剧里的视频归到一部剧下（第几季第几集），或撤销。
+        library = getattr(relay, "library", None)
+        if library is None:
+            handler._json({"ok": False, "error": LIBRARY_OFF})
+            return True
+        answer = library.assign(body)
+        if answer.get("ok"):
+            undo = "clear" in body
+            relay.accounts.audit("library.unassign" if undo else "library.assign", caller.user, ip, "library",
+                                 "" if undo else answer.get("show", ""),
+                                 f"{answer.get('count', 0)} 个" + ("" if undo else f" → {str(body.get('show'))[:30]}"))
+        handler._json(answer)
+        return True
     if path == "/api/admin/library/thumb":
         # 一集的分集封面重新截一张（librarythumb.py）：删掉现在截的，排到最前面，没人在看时从下一个位置截。
         library = getattr(relay, "library", None)

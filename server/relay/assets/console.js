@@ -8135,7 +8135,8 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 // 和别的节目一样「播放到」：这台电脑上浏览器能直接放的直接放，别的中转封装或转码（library.py 的 plan）；小电视上
 // 中转缩好画面推过去（library.py 的 play_tv）。只有里面没有画面也没有声音的标「放不了」。家里人都能看，访客没有这一页。
 const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", season: 0, kind: "webdav", form: false, timer: 0, failed: false,
-              match: null, more: false, tmdbForm: false, sort: "added", genre: "", country: "", going: false };
+              match: null, more: false, tmdbForm: false, sort: "added", genre: "", country: "", going: false,
+              ver: "", asg: null };
 async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
   lib.busy = true;
@@ -8204,6 +8205,73 @@ function libSort(list, how) {
   return list.slice().sort(how === "rating" ? (a, b) => rate(b) - rate(a) || at.get(a) - at.get(b) : (a, b) => title(a, b) || at.get(a) - at.get(b));
 }
 // ---- 片库筛选的纯函数到此 ----
+// ---- 片库归集的几个纯函数（tests/console_libassign_test.mjs 截出这一段单独测）----
+// 剧的集数分两种说法：「已收录 N 集」是片库里有的不同的集（同一集的几个版本只算一集，library.py 的 logical_count），
+// 「全 M 集」是豆瓣 / TMDB 资料上这部剧一共几集；两个数从不混着用。
+function libHave(n) { return "已收录 " + (n || 0) + " 集"; }
+function libTotal(m) { return m && m.type === "tv" && m.episodes ? "全 " + m.episodes + " 集" : ""; }
+// 画面的大小（探测过才有）：2160 → 4K。
+function libRes(h) { return !h ? "" : h >= 2000 ? "4K" : h >= 1400 ? "2K" : h >= 1000 ? "1080p" : h >= 700 ? "720p" : h + "p"; }
+function libSize(n) { return !n ? "" : n < 1073741824 ? Math.round(n / 1048576) + " MB" : (n / 1073741824).toFixed(1) + " GB"; }
+// 文件夹的最后一段（「蒸蒸日上/4K」→「4K」）；在来源的根上是「根目录」。
+function libFolderName(path) { return String(path || "").split("/").filter(Boolean).pop() || "根目录"; }
+// 同一集的一个版本怎么写：文件夹、画面、大小、格式、来源（分得清是哪个文件就行）。
+function libVersionLabel(v) {
+  return [libFolderName(v.folder), libRes(v.height), libSize(v.size), (v.ext || "").toUpperCase(), v.source].filter(Boolean).join(" · ");
+}
+// 从文件名猜第几集（归集面板里先填的，管理员可以改）：「缩写-01」、第 3 集、EP03 / E03、S01E03、再不行是最后一个一到三位数
+// （画质、年份不算）。猜不出 0。
+function asgGuess(file) {
+  const stem = String(file || "").replace(/\.[A-Za-z0-9]{2,4}$/, "");
+  let m = stem.match(/^[A-Za-z]{2,12}[ ._-]?(\d{1,3})(?![0-9])/) || stem.match(/[Ss]\d{1,2}[ ._-]?[Ee](\d{1,4})(?!\d)/)
+    || stem.match(/第\s*(\d{1,4})\s*[集话話期]/) || stem.match(/(?:^|[^A-Za-z0-9])(?:EP|Ep|ep|E|e)[ ._-]?(\d{1,3})(?!\d)/);
+  if (m) return Number(m[1]);
+  const rest = stem.replace(/(?:19|20)\d{2}|\d{3,4}[pPiI]|[248][kK]|[xXhH]\.?26[45]|\d+bit/g, " ");
+  const all = rest.match(/(?<!\d)\d{1,3}(?!\d)/g);
+  return all ? Number(all[all.length - 1]) : 0;
+}
+// 「其他视频」里按缩写分的待确认组（同一个文件夹、同一个缩写的两个以上）：[{key, label, ids}]，多的在前。只是线索：
+// 管理员点一下全选这一组，再自己看、去掉不是的。
+function asgGroups(videos) {
+  const groups = new Map();
+  for (const v of videos) {
+    const m = String(v.file || "").match(/^([A-Za-z]{2,12})[ ._-]?\d{1,3}(?![0-9])/);
+    if (!m) continue;
+    const key = (v.folder || "") + "\u0000" + m[1].toLowerCase();
+    if (!groups.has(key)) groups.set(key, { key, label: m[1].toUpperCase(), ids: [] });
+    groups.get(key).ids.push(v.id);
+  }
+  return [...groups.values()].filter((g) => g.ids.length >= 2).sort((a, b) => b.ids.length - a.ids.length || a.label.localeCompare(b.label));
+}
+// 归集前的检查：rows 是选中的 [{id, episode}]，have 是那部剧（同一季）已经有的集号（不含这次选中的）。
+// bad：集号不对的（挡着不让提交）；twice：这次选了不止一个文件的集号（会成同一集的几个版本）；clash：剧里已经有的集号
+// （也成另一个版本）；missing：1 到最大集号之间缺的。
+function asgCheck(rows, have) {
+  const seen = new Map(), bad = [];
+  for (const r of rows) {
+    if (!Number.isInteger(r.episode) || r.episode < 1 || r.episode > 9999) { bad.push(r.id); continue; }
+    seen.set(r.episode, (seen.get(r.episode) || 0) + 1);
+  }
+  const owned = new Set(have || []);
+  const twice = [...seen].filter(([, n]) => n > 1).map(([e]) => e).sort((a, b) => a - b);
+  const clash = [...seen.keys()].filter((e) => owned.has(e)).sort((a, b) => a - b);
+  const all = new Set([...seen.keys(), ...owned]);
+  const top = all.size ? Math.max(...all) : 0, missing = [];
+  for (let e = 1; e <= top && missing.length < 50; e++) if (!all.has(e)) missing.push(e);
+  return { bad, twice, clash, missing };
+}
+// 一串集号写短一点：[1,2,3,5,7,8] → 「1–3、5、7–8」。
+function asgRange(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    let j = i;
+    while (j + 1 < list.length && list[j + 1] === list[j] + 1) j++;
+    out.push(j > i ? list[i] + "–" + list[j] : String(list[i]));
+    i = j;
+  }
+  return out.join("、");
+}
+// ---- 片库归集的纯函数到此 ----
 // 电影、其他视频的卡片：点开是资料页（libInfoHTML），在那里放；豆瓣的评分跟在年份后面。
 function libCard(c, wide) {
   const no = c.playable ? "" : '<span class="badge">放不了</span>';
@@ -8214,8 +8282,9 @@ function libCard(c, wide) {
 }
 function libShowCard(s) {
   const m = s.meta && s.meta.state === "matched" ? s.meta : null;
-  const sub = [s.year, m && m.rating ? "★ " + m.rating : "", (s.seasons > 1 ? s.seasons + " 季 · " : "") + s.count + " 集"].filter(Boolean).join(" · ");
-  return `<button class="card p${s.playable ? "" : " dead"}" data-libshow="${esc(s.id)}" data-k="ls-${esc(s.id)}" aria-label="${esc(s.title)}，${s.count} 集，选集"><span class="art">${art(s.title, "p", { title: s.title, kick: "剧集" })}${imgTag(s.art)}</span>
+  const sub = [s.year, m && m.rating ? "★ " + m.rating : "", (s.seasons > 1 ? s.seasons + " 季 · " : "") + libHave(s.count)].filter(Boolean).join(" · ");
+  const wait = s.pending ? '<span class="badge">待识别</span>' : "";
+  return `<button class="card p${s.playable ? "" : " dead"}" data-libshow="${esc(s.id)}" data-k="ls-${esc(s.id)}" aria-label="${esc(s.title)}，${libHave(s.count)}${s.pending ? "，待识别" : ""}，选集"><span class="art">${art(s.title, "p", { title: s.title, kick: "剧集" })}${imgTag(s.art)}${wait}</span>
     <span class="t">${esc(s.title)}</span><span class="s">${esc(sub)}</span></button>`;
 }
 // ---- 片库的资料页（剧的选集页上面、电影点开）：海报、片名和原名、年份、评分、类型、导演、主演、简介（长的折起来）。
@@ -8321,16 +8390,19 @@ function libInfoHTML(o, playHTML) {
   const m = o.meta && o.meta.state === "matched" ? o.meta : null, admin = isAdmin(), online = !!libD().online;
   const src = libSrc(m), web = libTmdb() ? "网上" : "豆瓣";
   const facts = m ? [o.year || m.year, m.rating ? `<b class="lrate">${src} ${esc(m.rating)}</b>` : "", (m.genres || []).join(" / "),
-    m.type === "tv" && m.episodes ? m.episodes + " 集" : "", (m.countries || []).slice(0, 2).join(" / "),
+    o.have || "", libTotal(m) ? libTotal(m) + "（资料）" : "", (m.countries || []).slice(0, 2).join(" / "),
     `<span class="lfrom" title="片名、海报和简介来自${src}">资料：${src}</span>`].filter(Boolean)
-    : [o.year, o.sub].filter(Boolean);
+    : [o.year, o.have || o.sub].filter(Boolean);
   const people = (label, list) => list && list.length ? `<p class="lppl"><span>${label}</span>${esc(list.join(" / "))}</p>` : "";
   let state = "";
   if (!m && admin) state = o.meta && o.meta.state === "none" ? "设成了不用" + web + "的资料" : !online ? "在线资料关着"
     : o.meta ? (libTmdb() ? "豆瓣和 TMDB 上都没找到有把握的条目，可以手动匹配" : "豆瓣上没找到有把握的条目，可以手动匹配")
     : o.kind === "video" ? "其他视频不自动往" + web + "查（名字不往外发），需要时手动匹配" : "还没查" + web + "的资料（后台慢慢查）";
   else if (m && m.partial) state = src + "的详细资料还没取全，过一会儿再补";
-  const acts = admin && online ? (m
+  // 只有「缩写-集号」的一组视频（library.py 的 _prefix_episodes）：剧名是猜的缩写，不往外查，等管理员指定。
+  if (o.pending) state = "待识别：「" + o.title + "」是按文件名里的缩写猜的一组剧集，没有往" + web + "查。"
+    + (admin ? "点「指定作品」写上剧名、核对集号，归到正确的剧下。" : "请管理员指定是哪部剧。");
+  const acts = o.pending ? "" : admin && online ? (m
     ? `<button class="ghost sm" data-libmatch="${esc(o.key)}">改匹配</button><button class="ghost sm" data-librefresh="${esc(o.key)}">重新取资料</button><button class="ghost sm red" data-libunmatch="${esc(o.key)}">不匹配</button>`
     : `<button class="ghost sm" data-libmatch="${esc(o.key)}">${libTmdb() ? "手动匹配" : "匹配豆瓣"}</button><button class="ghost sm" data-librefresh="${esc(o.key)}">自动找一次</button>`) : "";
   const plot = m && m.plot ? m.plot : o.plot || "";
@@ -8395,14 +8467,25 @@ async function libMetaCall(path, body, btn) {
 }
 // 剧的一集：封面是这一集自己的（c.art：视频旁边的图片，或中转没人在看时截的一帧，librarythumb.py），还没有时是画的图，
 // 从不用剧的海报。管理员多一个「换封面」：重新截一张（POST api/admin/library/thumb，从下一个位置截）。
+// 同一集有好几个文件（不同画质、不同文件夹、两个来源）：只出一行，点这一行放默认的版本（能放的、画面大的），
+// 「N 个版本」展开每个版本一行（文件夹 · 画面 · 大小 · 格式 · 来源），各自能放；集数只算一集。
 function libEpisode(c) {
+  const vs = c.versions || [], open = vs.length > 1 && lib.ver === c.id;
   const id = reg({ id: "lib:" + c.id, title: c.show + " " + c.title, subtitle: c.show, art: { url: c.art, ratio: "wide" },
                    play: { kind: "library", id: c.id, playable: c.playable } });
-  const se = c.season ? "第 " + c.season + " 季" : "";
-  const row = `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
-    <span class="htx"><b>${esc(c.title)}</b><small>${esc([se, c.playable ? "" : "放不了", c.source, libCached(c)].filter(Boolean).join(" · "))}</small></span></button>`;
-  if (!isAdmin()) return row;
-  return `<div class="lerow">${row}<button class="ghost sm" data-libthumb="${esc(c.id)}" data-k="lt-${esc(c.id)}" aria-label="${esc(c.title)}：重新截一张封面" title="从这一集里重新截一张封面（没人在看时截）">换封面</button></div>`;
+  const se = c.season === 0 ? "特别篇" : c.season ? "第 " + c.season + " 季" : "";
+  const facts = vs.length > 1 ? [se, vs.length + " 个版本", libVersionLabel(c)] : [se, c.playable ? "" : "放不了", c.source, libCached(c)];
+  const row = `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}${vs.length > 1 ? "（" + vs.length + " 个版本，默认 " + esc(libVersionLabel(c)) + "）" : ""}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
+    <span class="htx"><b>${esc(c.title)}</b><small>${esc(facts.filter(Boolean).join(" · "))}</small></span></button>`;
+  const verBtn = vs.length > 1 ? `<button class="ghost sm" data-libver="${esc(c.id)}" data-k="lv-${esc(c.id)}" aria-expanded="${open}" title="这一集有 ${vs.length} 个文件，选一个放">${vs.length} 个版本</button>` : "";
+  const thumb = isAdmin() ? `<button class="ghost sm" data-libthumb="${esc(c.id)}" data-k="lt-${esc(c.id)}" aria-label="${esc(c.title)}：重新截一张封面" title="从这一集里重新截一张封面（没人在看时截）">换封面</button>` : "";
+  const list = open ? `<div class="lvers" role="group" aria-label="${esc(c.title)}的版本">${vs.map((v) => {
+    const vid = reg({ id: "lib:" + v.id, title: v.show + " " + v.title, subtitle: v.show, art: { url: v.art, ratio: "wide" },
+                      play: { kind: "library", id: v.id, playable: v.playable } });
+    return `<button class="lver${v.playable ? "" : " dead"}" data-play="${esc(vid)}" data-k="lvp-${esc(v.id)}" title="${esc((v.folder ? v.folder + "/" : "") + v.file)}"><b>${esc(libVersionLabel(v))}</b><small>${esc([v.file, v.playable ? "" : "放不了", libCached(v)].filter(Boolean).join(" · "))}</small></button>`;
+  }).join("")}</div>` : "";
+  if (!verBtn && !thumb) return row;
+  return `<div class="lerow">${row}${verBtn}${thumb}</div>${list}`;
 }
 function libSourceRow(s, admin, scan) {
   const busy = scan && scan.running && scan.source === s.id;
@@ -8652,11 +8735,14 @@ function renderLib() {
         const eps = show.episodes.filter((e) => (e.season || 1) === row.n);
         o += `<div class="chips lseasons" role="group" aria-label="选季">${rows.map((r) => `<button type="button" data-libseason="${r.n}" aria-pressed="${r.n === row.n}">第 ${r.n} 季</button>`).join("")}</div>`;
         o += libInfoHTML(Object.assign({}, show, { key: row.key, meta: row.meta, art: row.art || show.art, title: row.title || show.title + " 第 " + row.n + " 季",
-                                                   year: row.year || (row.n === rows[0].n ? show.year : null), guess: libSeasonGuess(show, row.n), sub: row.count + " 集" }));
-        o += `<div class="h2 leps"><h2>选集</h2><small>第 ${row.n} 季 · ${eps.length} 集</small></div><div class="hlist">${eps.map(libEpisode).join("")}</div>`;
+                                                   year: row.year || (row.n === rows[0].n ? show.year : null), guess: libSeasonGuess(show, row.n), have: libHave(row.count) }), libAsgActs(show));
+        o += libAsgPanel("show:" + show.id);
+        o += `<div class="h2 leps"><h2>选集</h2><small>第 ${row.n} 季 · ${libHave(row.count)}</small></div><div class="hlist">${eps.map(libEpisode).join("")}</div>`;
       } else {
-        o += libInfoHTML(Object.assign({}, show, { sub: show.count + " 集" }));
-        o += `<div class="h2 leps"><h2>选集</h2><small>${show.count} 集</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
+        o += libInfoHTML(Object.assign({}, show, { have: libHave(show.count) }), libAsgActs(show));
+        o += libAsgPanel("show:" + show.id);
+        const files = show.files > show.count ? " · " + show.files + " 个视频文件" : "";
+        o += `<div class="h2 leps"><h2>选集</h2><small>${libHave(show.count)}${files}</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
       }
       o += libMoreHTML(libDetailDid(), true);
     } else if (item) {
@@ -8666,7 +8752,11 @@ function renderLib() {
       const to = currentTarget();
       const play = item.playable ? splitHTML(id, "播放", to ? (to === PC ? "在这台电脑上" : "到" + targetName(to)) : "") : '<span class="hint">这个文件放不了</span>';
       o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
-      o += libInfoHTML(Object.assign({}, item, { sub: [(item.ext || "").toUpperCase(), item.source].filter(Boolean).join(" · ") }), play);
+      // 文件名照原样给（认不出的、缩写的也看得出是哪个文件）、在哪个文件夹里。
+      const where = [(item.ext || "").toUpperCase(), item.source, (item.folder ? item.folder + "/" : "") + (item.file || "")].filter(Boolean).join(" · ");
+      const toShow = admin && item.kind === "video" ? `<button class="ghost sm" data-asgopen="item:${esc(item.id)}" data-k="asg-item">归到一部剧</button>` : "";
+      o += libInfoHTML(Object.assign({}, item, { sub: where }), play + toShow);
+      o += libAsgPanel("item:" + item.id);
       o += libMoreHTML(libDetailDid(), true);
     } else {
       // 从豆瓣页、首页「想看的到了」点过来的（libGo），片库还在取：先别丢掉要打开的那一部。
@@ -8686,7 +8776,9 @@ function renderLib() {
         videos = libSort(libFilter(d.videos.filter((c) => hit(c.title)), f), lib.sort);
       if (movies.length) o += `<section aria-label="电影"><div class="h2"><h2>电影</h2><small>${movies.length}</small></div><div class="pgrid">${movies.map((c) => libCard(c)).join("")}</div></section>`;
       if (shows.length) o += `<section aria-label="剧集"><div class="h2"><h2>剧集</h2><small>${shows.length}</small></div><div class="pgrid">${shows.map(libShowCard).join("")}</div></section>`;
-      if (videos.length) o += `<section aria-label="其他视频"><div class="h2"><h2>其他视频</h2><small>${videos.length}</small></div><div class="wgrid">${videos.map((c) => libCard(c, true)).join("")}</div></section>`;
+      // 其他视频：认不出是哪部片子的（文件名只有缩写、自己拍的…）。管理员「归到一部剧」：勾选、写剧名、核对集号再确认。
+      const asgBtn = admin && d.videos.length ? `<button class="ghost sm" data-asgopen="videos" data-k="asg-videos" aria-expanded="${!!(lib.asg && lib.asg.from === "videos")}">归到一部剧</button>` : "";
+      if (videos.length || libAsgOpen("videos")) o += `<section aria-label="其他视频"><div class="h2"><h2>其他视频</h2><small>${videos.length}</small>${asgBtn}</div>${libAsgPanel("videos")}<div class="wgrid">${videos.map((c) => libCard(c, true)).join("")}</div></section>`;
       if (!movies.length && !shows.length && !videos.length) {
         o += `<p class="hint">${q ? "没有找到「" + esc(lib.q) + "」" + (filtered ? "（还按类型、地区筛着）" : "") : filtered ? "没有这一类的片子" : d.scan.running || d.scan.queued ? "正在扫描，稍等…" : "还没有找到视频"}</p>`;
       }
@@ -8703,6 +8795,112 @@ function renderLib() {
   if (focusQ && $("libQ")) { $("libQ").focus(); $("libQ").setSelectionRange(caret, caret); }
   else restoreFocus(k);
 }
+// ---- 片库 → 归到一部剧（管理员；POST api/admin/library/assign，library.py 的 assign）----
+// 只转存了视频、没带外层写着剧名的文件夹时，文件名常只有缩写（「MTJBYDD-01」）：扫描认不出是哪部剧，进「其他视频」，
+// 或者成了一部剧名是缩写的「待识别」剧。这里选中属于同一部剧的视频（按缩写分的组只是线索，点一下全选，自己去掉不是的），
+// 写剧名（可以选片库里已有的剧）、季（可不填），每个文件的集号先按文件名猜、可以改；确认前说清楚哪些集号重复、剧里已有
+// （都成同一集的另一个版本）、缺哪几集。存下以后重新扫描也不变（手动的盖在自动识别上），「撤销手动归集」退回按文件名识别。
+// lib.asg：{from: "videos" | "show:<id>" | "item:<id>", on: 选中的 id 的 Set, num: id → 集号, show, season, busy, error}。
+const libAsgOpen = (from) => !!(lib.asg && lib.asg.from === from);
+function libAsgCands() {
+  const d = lib.data, A = lib.asg;
+  if (!d || !A) return [];
+  if (A.from === "videos") return d.videos;
+  if (A.from.startsWith("item:")) {
+    const it = d.videos.find((c) => c.id === A.from.slice(5));
+    return it ? d.videos.filter((c) => c.folder === it.folder) : [];
+  }
+  const show = d.shows.find((s) => s.id === A.from.slice(5));
+  return show ? show.episodes.flatMap((e) => e.versions || [e]) : [];
+}
+function libAsgStart(from) {
+  const d = lib.data;
+  lib.asg = { from, on: new Set(), num: {}, show: "", season: "", busy: false, error: "" };
+  const A = lib.asg, cands = libAsgCands();
+  for (const c of cands) A.num[c.id] = c.kind === "episode" && c.episode ? c.episode : asgGuess(c.file);
+  if (from.startsWith("item:")) A.on.add(from.slice(5));
+  if (from.startsWith("show:")) {
+    const show = d.shows.find((s) => s.id === from.slice(5));
+    cands.forEach((c) => A.on.add(c.id));
+    if (show && !show.pending) A.show = show.title;
+  }
+}
+// 选中的要归到的那部剧（同一季）已经有的集号：片库里同名的剧（不含这次选中的文件）。
+function libAsgHave() {
+  const A = lib.asg, name = A.show.trim().toLowerCase(), season = A.season === "" ? 1 : Number(A.season) || 0;
+  if (!name) return [];
+  const show = lib.data.shows.find((s) => s.title.toLowerCase() === name || (s.guess || "").toLowerCase() === name);
+  if (!show) return [];
+  return show.episodes.flatMap((e) => e.versions || [e])
+    .filter((e) => !A.on.has(e.id) && (e.season == null ? 1 : e.season) === season && e.episode).map((e) => e.episode);
+}
+function libAsgRows() {
+  const A = lib.asg;
+  return libAsgCands().filter((c) => A.on.has(c.id)).map((c) => ({ id: c.id, episode: Number(A.num[c.id]) }));
+}
+function libAsgStat() {
+  const A = lib.asg, rows = libAsgRows(), chk = asgCheck(rows, libAsgHave());
+  const lines = [`已选 ${rows.length} 个视频`];
+  if (chk.bad.length) lines.push(`<span class="bad">${chk.bad.length} 个集号没填对（1 到 9999）</span>`);
+  if (chk.twice.length) lines.push(`第 ${asgRange(chk.twice)} 集选了不止一个文件：会成同一集的几个版本`);
+  if (chk.clash.length) lines.push(`剧里已经有第 ${asgRange(chk.clash)} 集：会成那一集的另一个版本`);
+  if (chk.missing.length) lines.push(`缺第 ${asgRange(chk.missing)} 集`);
+  if (A.error) lines.push(`<span class="bad">${esc(A.error)}</span>`);
+  return { html: lines.map((l) => `<span>${l}</span>`).join(""), ok: rows.length > 0 && !chk.bad.length && !!A.show.trim() && !A.busy };
+}
+function libAsgRefresh() {
+  const box = qs("#libAsg");
+  if (!box || !lib.asg) return;
+  const st = libAsgStat();
+  qs("#libAsgStat", box).innerHTML = st.html;
+  qs("button[type=submit]", box).disabled = !st.ok;
+}
+function libAsgActs(show) {
+  if (!isAdmin()) return "";
+  const mine = show.episodes.flatMap((e) => e.versions || [e]).filter((e) => e.assigned);
+  const open = libAsgOpen("show:" + show.id);
+  return (show.pending ? `<button class="btn pri sm" data-asgopen="show:${esc(show.id)}" data-k="asg-show" aria-expanded="${open}">指定作品</button>`
+    : `<button class="ghost sm" data-asgopen="show:${esc(show.id)}" data-k="asg-show" aria-expanded="${open}" title="把这部剧的视频改归到别的剧、改集号">调整归集</button>`)
+    + (mine.length ? `<button class="ghost sm red" data-asgundo="${esc(show.id)}" title="退回按文件名识别（下次扫描时）">撤销手动归集（${mine.length}）</button>` : "");
+}
+function libAsgPanel(from) {
+  if (!libAsgOpen(from)) return "";
+  const A = lib.asg, cands = libAsgCands(), st = libAsgStat();
+  const groups = from === "videos" ? asgGroups(cands) : [];
+  const names = [...new Set(lib.data.shows.filter((s) => !s.pending).map((s) => s.title))].sort();
+  const rows = cands.map((c) => `<div class="lasgrow"><label><input type="checkbox" data-asgon="${esc(c.id)}" data-k="asgo-${esc(c.id)}"${A.on.has(c.id) ? " checked" : ""}>
+    <span class="lasgfn"><b title="${esc(c.file)}">${esc(c.file || c.title)}</b><small>${esc([libFolderName(c.folder), libRes(c.height), libSize(c.size), c.source].filter(Boolean).join(" · "))}</small></span></label>
+    <span class="lasgep">第<input type="number" min="1" max="9999" step="1" inputmode="numeric" data-asgnum="${esc(c.id)}" data-k="asgn-${esc(c.id)}" value="${A.num[c.id] || ""}" aria-label="${esc(c.file)} 是第几集">集</span></div>`).join("");
+  return `<form class="lformbox lasg" id="libAsg" autocomplete="off"><b>归到一部剧</b>
+    <p class="hint">勾选属于同一部剧的视频，写上完整的剧名，核对每个文件是第几集再确认。只改片库里的归类，网盘上的文件不动；以后重新扫描也保留。</p>
+    ${groups.length ? `<div class="chips lasgchips" role="group" aria-label="按文件名的缩写选（只是线索）">${groups.map((g) => `<button type="button" data-asggroup="${esc(g.key)}">${esc(g.label)} <em>${g.ids.length}</em></button>`).join("")}</div>` : ""}
+    <div class="inline"><input type="text" name="asgshow" data-k="asg-name" list="libAsgShows" value="${esc(A.show)}" placeholder="剧名（可以选片库里已有的）" aria-label="剧名" maxlength="120"><input type="number" name="asgseason" data-k="asg-season" class="lasgseason" min="0" max="99" value="${esc(String(A.season))}" placeholder="第几季（可不填）" aria-label="第几季，可不填"></div>
+    <datalist id="libAsgShows">${names.map((n) => `<option value="${esc(n)}">`).join("")}</datalist>
+    <div class="inline lasgsel"><button type="button" class="ghost sm" data-asgall="1">全选</button><button type="button" class="ghost sm" data-asgnone="1">全不选</button></div>
+    <div class="lasgrows">${rows || '<p class="hint">没有可以归集的视频</p>'}</div>
+    <p class="hint lasgstat" id="libAsgStat" aria-live="polite">${st.html}</p>
+    <div class="inline"><button class="btn pri sm" type="submit"${st.ok ? "" : " disabled"}>${A.busy ? "正在保存…" : "确认归集"}</button><button class="ghost sm" type="button" data-asgx="1">取消</button></div></form>`;
+}
+async function libAsgSubmit(form) {
+  const A = lib.asg;
+  if (!A || A.busy) return;                                     // 连点两下只发一次
+  const rows = libAsgRows(), st = libAsgStat();
+  if (!st.ok) return;
+  const season = A.season === "" ? null : Number(A.season);
+  A.busy = true; A.error = ""; libAsgRefresh();
+  const btn = qs("button[type=submit]", form); btn.textContent = "正在保存…";
+  let answer;
+  try { answer = await call("POST", "api/admin/library/assign", { show: A.show.trim(), season, items: rows }); }
+  catch (error) { answer = { ok: false, error: error instanceof SignedOut ? "登录已失效" : "网络不通，选的都还在，可以再试" }; }
+  if (lib.asg !== A) return;
+  A.busy = false;
+  if (!answer.ok) { A.error = answer.error || "没存成"; btn.textContent = "确认归集"; libAsgRefresh(); return; }
+  lib.asg = null;
+  toast("归到了「" + A.show.trim() + "」：" + answer.count + " 个视频");
+  lib.show = answer.show; lib.item = ""; lib.season = season == null ? 0 : season; lib.ver = "";
+  await loadLib(true);
+  loadHome(true);
+}
 async function libAdmin(path, body, btn) {
   let answer;
   btn.disabled = true;
@@ -8717,13 +8915,13 @@ $("libBox").addEventListener("click", async (event) => {
   if (!t) return;
   const ds = t.dataset;
   if (ds.libshow || ds.libitem) {
-    lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; lib.season = 0; renderLib();
+    lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; lib.season = 0; lib.ver = ""; lib.asg = null; renderLib();
     libPreread(ds.libitem ? { id: ds.libitem } : { show: ds.libshow });
     $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return;
   }
   if (ds.libback) {
     const was = lib.show ? `[data-libshow="${CSS.escape(lib.show)}"]` : `[data-libitem="${CSS.escape(lib.item)}"]`;
-    lib.show = ""; lib.item = ""; lib.match = null; renderLib(); const c = qs("#libBox " + was); if (c) c.focus(); return;
+    lib.show = ""; lib.item = ""; lib.match = null; lib.ver = ""; lib.asg = null; renderLib(); const c = qs("#libBox " + was); if (c) c.focus(); return;
   }
   if (ds.libmore) { lib.more = !lib.more; renderLib(); return; }
   if (ds.libthumb) {
@@ -8742,6 +8940,31 @@ $("libBox").addEventListener("click", async (event) => {
     return;
   }
   if (ds.libmatchx) { lib.match = null; renderLib(); return; }
+  if (ds.libver) { lib.ver = lib.ver === ds.libver ? "" : ds.libver; renderLib(); return; }
+  if (ds.asgopen) {
+    if (libAsgOpen(ds.asgopen)) lib.asg = null; else libAsgStart(ds.asgopen);
+    renderLib();
+    const f = qs("#libAsg input[name=asgshow]"); if (f) f.focus();
+    return;
+  }
+  if (ds.asgx) { lib.asg = null; renderLib(); return; }
+  if (ds.asgall || ds.asgnone) {
+    for (const c of libAsgCands()) { if (ds.asgall) lib.asg.on.add(c.id); else lib.asg.on.delete(c.id); }
+    renderLib(); return;
+  }
+  if (ds.asggroup) {
+    const g = asgGroups(libAsgCands()).find((x) => x.key === ds.asggroup);
+    if (g) g.ids.forEach((id) => lib.asg.on.add(id));
+    renderLib(); return;
+  }
+  if (ds.asgundo) {
+    const show = lib.data.shows.find((s) => s.id === ds.asgundo);
+    const ids = show ? show.episodes.flatMap((e) => e.versions || [e]).filter((e) => e.assigned).map((e) => e.id) : [];
+    if (!ids.length || !confirm("撤销「" + show.title + "」里 " + ids.length + " 个视频的手动归集？会马上重新扫描，按文件名重新识别。")) return;
+    const answer = await libAdmin("api/admin/library/assign", { clear: ids }, t);
+    if (answer && answer.ok) { toast("撤销了，正在重新扫描"); lib.show = ""; lib.asg = null; loadLib(true); }
+    return;
+  }
   if (ds.libpick) {
     const answer = await libMetaCall("api/admin/library/match", { key: lib.match.key, id: ds.libpick }, t);
     if (answer && answer.ok) toast("对上了" + libSrc(answer.meta) + "的「" + (answer.meta.title || "") + "」");
@@ -8863,6 +9086,7 @@ $("libBox").addEventListener("click", async (event) => {
 $("libBox").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (event.target.id === "libMatch") { libSearch(new FormData(event.target).get("q") || ""); return; }
+  if (event.target.id === "libAsg") { libAsgSubmit(event.target); return; }
   if (event.target.id === "libTmdb") {
     // 密钥只发这一次，存在中转的 secrets/ 里；发完马上清掉输入框。
     const form = event.target, field = qs("input[name=tmdb]", form), btn = qs("button[type=submit]", form);
@@ -8889,12 +9113,26 @@ $("libBox").addEventListener("input", (event) => {
   if (event.target.id === "driveMirror") { drive.mirror = event.target.value; return; }
   if (event.target.id === "driveBaiduTok") { drive.tok = event.target.value; return; }
   if (lib.match && event.target.closest("#libMatch")) { lib.match.q = event.target.value; return; }
+  if (lib.asg && event.target.closest("#libAsg")) {
+    const f = event.target;
+    if (f.dataset.asgnum) lib.asg.num[f.dataset.asgnum] = f.value === "" ? "" : Number(f.value);
+    else if (f.name === "asgshow") lib.asg.show = f.value;
+    else if (f.name === "asgseason") lib.asg.season = f.value;
+    lib.asg.error = "";
+    libAsgRefresh();
+    return;
+  }
   if (event.target.id !== "libQ") return;
   lib.q = event.target.value;
   renderLib();
 });
 $("libBox").addEventListener("change", (event) => {
   const id = event.target.id, v = event.target.value;
+  if (lib.asg && event.target.dataset.asgon) {
+    if (event.target.checked) lib.asg.on.add(event.target.dataset.asgon); else lib.asg.on.delete(event.target.dataset.asgon);
+    libAsgRefresh();
+    return;
+  }
   if (id === "libSort") lib.sort = v;
   else if (id === "libGenre") lib.genre = v;
   else if (id === "libCountry") lib.country = v;

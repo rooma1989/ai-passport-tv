@@ -182,8 +182,8 @@ def _library(relay, query: Query) -> list[tuple[int, int, dict]]:
         key = library.meta_key(item)
         group = groups.get(key)
         if group is None:
-            group = groups[key] = {"first": item, "count": 0, "names": set(), "added": 0, "year": item.get("year")}
-        group["count"] += 1
+            group = groups[key] = {"first": item, "items": [], "names": set(), "added": 0, "year": item.get("year")}
+        group["items"].append(item)
         group["added"] = max(group["added"], item.get("added") or 0)
         group["year"] = group["year"] or item.get("year")
         episode = item.get("kind") == "episode"
@@ -204,7 +204,7 @@ def _library(relay, query: Query) -> list[tuple[int, int, dict]]:
         year = group["year"] or (entry.get("year") if entry.get("state") == "matched" else None)
         if episode:
             row = {"id": f"libs:{key}", "kind": "show", "title": shown["name"], "year": year,
-                   "count": group["count"], "art": shown["art"], "open": {"show": library.show_key(item.get("show") or "")}}
+                   "count": library.logical_count(group["items"]), "art": shown["art"], "open": {"show": library.show_key(item.get("show") or "")}}
         else:
             row = {"id": f"lib:{item['id']}", "kind": item.get("kind") or "video", "title": shown["name"], "year": year,
                    "art": shown["art"], "open": {"item": item["id"]}}

@@ -139,9 +139,7 @@ class PreRead:
         item = self.library.item(iid)
         if item is None or item.get("kind") != "episode":
             return None
-        episodes = self.library.episodes_of(item)
-        n = next((n for n, ep in enumerate(episodes) if ep["id"] == iid), None)
-        return episodes[n + 1] if n is not None and n + 1 < len(episodes) else None
+        return self.library.neighbor(item, 1)        # 跳过同一集的其他版本
 
     def resume_at(self, user, iid: str) -> float:
         """这个人上次看到哪（pc-progress.json 的 lib:<id>）；没看过、看完了时 0。"""

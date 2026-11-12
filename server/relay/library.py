@@ -127,6 +127,8 @@ VIEW_MAX = 6000
 PLOT_MAX = 600
 TITLE_MAX = 120
 RECENT_MAX = 12
+# 一次手动归集至多这么多个视频（一部剧的各集）。
+ASSIGN_MAX = 2000
 # 在线资料（libmeta.py，豆瓣）：后台每查完一部歇 META_GAP_S（一分钟三部左右）；没事做时每 META_TICK_S 看一眼，
 # 扫描完了马上看；启动后先等 META_START_S。查不成（连不上）的这么久以内不再查同一部。
 META_GAP_S = 20.0
@@ -272,7 +274,14 @@ GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "�
                 "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
                 "downloads", "download", "media", "quark", "baidu"}
 # 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
-PARSE_VERSION = 7
+PARSE_VERSION = 8
+# 只有「缩写-集号」的文件名（「MTJBYDD-01.mp4」：夸克上只转存了视频、没带外层写着剧名的文件夹）：字母缩写加一到三位数，
+# 后面至多跟着画质标记。同一个文件夹里同一个缩写、数字各不相同的三个以上才当一部剧的各集，剧名先用缩写、标「待识别」
+# （pending），不往豆瓣查，等管理员指定是哪部剧（Library.assign）。相机、手机自己起的名字（IMG_001）不算。
+_PREFIX_EPISODE = re.compile(r"^([A-Za-z]{2,12})[ ._-]?(\d{1,3})$")
+_CAMERA_PREFIXES = {"img", "vid", "mvi", "dsc", "dji", "gopr", "gp", "mov", "pxl", "clip", "rec", "cam", "video",
+                    "screen", "screenrecording", "capture", "part", "cd", "disc", "track"}
+PREFIX_EPISODES_MIN = 3
 # 文件名开头的字幕组标签：[字幕组]、【xxx】。
 _TAG = re.compile(r"^\s*(?:\[[^\]]*\]|【[^】]*】)\s*")
 
@@ -555,6 +564,35 @@ def regroup(items: list[dict]) -> None:
             elif len(group) >= 3:
                 for row, stem in zip(group, stems):
                     row.update(kind="video", title=clean_title(stem) or stem)
+        _prefix_episodes(rows)
+
+
+def prefix_of(stem: str) -> tuple[str, int] | None:
+    """「MTJBYDD-01」「MTJBYDD.02.1080p」→ ("MTJBYDD", 1)；不是「缩写 + 集号」的写法、或是相机起的名字时 None。"""
+    head = _JUNK.split(stem, 1)[0].strip(" ._-")
+    match = _PREFIX_EPISODE.match(head)
+    if match is None or match.group(1).casefold() in _CAMERA_PREFIXES:
+        return None
+    return match.group(1), int(match.group(2))
+
+
+def _prefix_episodes(rows: list[dict]) -> None:
+    """一个文件夹里只有「缩写-集号」的视频（没认出是剧、也不是 .nfo 写了的）：同一个缩写（不分大小写）、集号各不相同的
+    PREFIX_EPISODES_MIN 个以上当一部待识别的剧（剧名是缩写，pending）。缩写不同的各算各的，同一个集号出现两次的不合。"""
+    groups: dict[str, list[tuple[dict, int, str]]] = {}
+    for row in rows:
+        if row["kind"] not in ("video", "movie") or row.get("nfo"):
+            continue
+        found = prefix_of(os.path.splitext(row["path"].rpartition("/")[2])[0])
+        if found is not None:
+            groups.setdefault(found[0].casefold(), []).append((row, found[1], found[0]))
+    for group in groups.values():
+        numbers = [number for _, number, _ in group]
+        if len(group) < PREFIX_EPISODES_MIN or len(set(numbers)) != len(numbers):
+            continue
+        name = max((written for _, _, written in group), key=lambda w: (w.isupper(), w))
+        for row, number, _ in group:
+            row.update(kind="episode", show=name, season=None, episode=number, title=f"第 {number} 集", pending=True)
 
 
 # ---------------------------------------------------------------- .nfo
@@ -1336,6 +1374,8 @@ class Library:
         self.dir = Path(data_dir)
         self.sources_path = self.dir / "library.json"
         self.index_path = self.dir / "library-index.json"
+        # 管理员手动归集的（assign）：条目 id → {show, season, episode, at}；扫描时盖在自动识别的结果上，从不被盖掉。
+        self.assign_path = self.dir / "library-assign.json"
         self.art_dir = self.dir / "library-art"
         self.log = log
         self.clock = clock
@@ -1482,6 +1522,97 @@ class Library:
     def _save_index(self) -> None:
         self._write(self.index_path, {"items": list(self._items.values())})
 
+    # ---- 手动归集（「其他视频」里认不出的、待识别的剧：指定是哪部剧、第几季第几集） ----
+
+    def _load_assign(self) -> dict[str, dict]:
+        try:
+            data = json.loads(self.assign_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        found = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(found, dict):
+            return {}
+        return {iid: row for iid, row in found.items() if _ID.match(str(iid)) and isinstance(row, dict)
+                and isinstance(row.get("show"), str) and row["show"].strip() and isinstance(row.get("episode"), int)}
+
+    @staticmethod
+    def _apply_assign(row: dict, assigned: dict) -> None:
+        """把手动归集盖到一个条目上（原地改）。"""
+        episode = assigned["episode"]
+        row.update(kind="episode", show=assigned["show"], season=assigned.get("season"), episode=episode,
+                   title=f"第 {episode} 集", assigned=True)
+        row.pop("pending", None)
+
+    def assign(self, body) -> dict:
+        """POST /api/admin/library/assign {show, season?, items: [{id, episode}]}：把这些视频归到一部剧下（第几季、
+        第几集，管理员在页面上预览、改过的）；{clear: [id…]} 撤销，下次扫描时按文件名重新识别（马上排上扫描）。
+        一个请求要么全记下、要么一个不记；同样的请求再发一次结果一样（不会多出条目）。"""
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "请求格式不对"}
+        if "clear" in body:
+            ids = body.get("clear")
+            if not isinstance(ids, list) or not ids or len(ids) > ASSIGN_MAX \
+                    or not all(isinstance(i, str) and _ID.match(i) for i in ids):
+                return {"ok": False, "error": "请求格式不对"}
+            with _LOCK:
+                store = self._load_assign()
+                gone = [i for i in ids if i in store]
+                for iid in gone:
+                    del store[iid]
+                sources = set()
+                for iid in gone:
+                    item = self._items.get(iid)
+                    if item is not None:
+                        item["pv"] = 0                 # 下次扫描时重新解析这个文件
+                        sources.add(item["source"])
+                self._write(self.assign_path, {"items": store})
+                self._save_index()
+            for sid in sorted(sources):
+                self.scan(sid)
+            return {"ok": True, "count": len(gone)}
+        show = " ".join(str(body.get("show") or "").split()) if isinstance(body.get("show"), str) else ""
+        if not show:
+            return {"ok": False, "error": "写一个剧名"}
+        if len(show) > TITLE_MAX:
+            return {"ok": False, "error": "剧名太长了"}
+        season = body.get("season")
+        if season is not None and (not isinstance(season, int) or isinstance(season, bool) or not 0 <= season <= 99):
+            return {"ok": False, "error": "季数不对（0 到 99，不填是不分季）"}
+        rows = body.get("items")
+        if not isinstance(rows, list) or not rows:
+            return {"ok": False, "error": "没有选视频"}
+        if len(rows) > ASSIGN_MAX:
+            return {"ok": False, "error": f"一次至多 {ASSIGN_MAX} 个"}
+        wanted: dict[str, int] = {}
+        for row in rows:
+            iid = row.get("id") if isinstance(row, dict) else None
+            episode = row.get("episode") if isinstance(row, dict) else None
+            if not isinstance(iid, str) or not _ID.match(iid) or not isinstance(episode, int) \
+                    or isinstance(episode, bool) or not 1 <= episode <= 9999:
+                return {"ok": False, "error": "集号不对（1 到 9999 的整数）"}
+            if iid in wanted:
+                return {"ok": False, "error": "同一个视频选了两次"}
+            wanted[iid] = episode
+        now = int(self.clock())
+        with _LOCK:
+            missing = [iid for iid in wanted if iid not in self._items]
+            if missing:
+                return {"ok": False, "error": "有视频已经不在片库里了，刷新一下再试"}
+            store = self._load_assign()
+            for iid, episode in wanted.items():
+                store[iid] = {"show": show, "season": season, "episode": episode, "at": now}
+                self._apply_assign(self._items[iid], store[iid])
+            try:
+                self._write(self.assign_path, {"items": store})
+            except OSError:
+                self._items.update(self._load_index())   # 没记下：片库照旧（页面留着要归集的，可以再试）
+                return {"ok": False, "error": "没存成（磁盘写不进去）"}
+            self._save_index()
+        self._meta_wake.set()                          # 新的剧名去查在线资料
+        self.thumbs.wake()                             # 归成剧集的去截分集封面
+        self.log(f"片库：{len(wanted)} 个视频归到「{show}」")
+        return {"ok": True, "count": len(wanted), "show": self.show_key(show)}
+
     def _now_of(self, iid: str) -> tuple | None:
         """索引缓存问的：这个条目现在的 (大小, 修改时间)；不在索引里（删了、扫描后不见了）时 None。"""
         with _LOCK:
@@ -1564,7 +1695,10 @@ class Library:
                 "playable": cls.playable(item), "ext": (item.get("ext") or "").lstrip("."),
                 "size": item.get("size") or 0, "plot": (item.get("plot") or "")[:300],
                 "art": f"api/library/art/{item['id']}" if item.get("poster") else "",
-                "source": source_name, "added": item.get("added") or 0}
+                "source": source_name, "added": item.get("added") or 0,
+                "file": item["path"].rpartition("/")[2], "folder": item["path"].rpartition("/")[0],
+                "height": (first_video(item.get("media")) or {}).get("h") or 0,
+                "assigned": bool(item.get("assigned")), "pending": bool(item.get("pending"))}
 
     @staticmethod
     def likely_direct(item: dict, media: dict | None) -> bool:
@@ -1591,6 +1725,20 @@ class Library:
     @staticmethod
     def show_key(name: str) -> str:
         return hashlib.sha1(" ".join(name.casefold().split()).encode("utf-8")).hexdigest()[:12]
+
+    @staticmethod
+    def episode_key(item: dict) -> tuple:
+        """一集是哪一集：(季, 集)；不分季的算第 1 季（季 0 是特别篇，单算）。认不出集号的每个文件自成一集（不计数）。"""
+        season = item.get("season")
+        episode = item.get("episode")
+        if episode is None:
+            return ("file", item.get("id") or item.get("path"))
+        return (1 if season is None else int(season), int(episode))
+
+    @classmethod
+    def logical_count(cls, items: list[dict]) -> int:
+        """收录了几集：不同的 (季, 集) 有几个（同一集的几个版本只算一集，缺的集不补，认不出集号的不算）。"""
+        return len({cls.episode_key(i) for i in items if i.get("episode") is not None})
 
     def episodes_of(self, item: dict) -> list[dict]:
         """和 item 同一部剧的各集，按季、集、路径排好。"""
@@ -1633,6 +1781,7 @@ class Library:
                 show["added"] = max(show["added"], card["added"])
                 show["year"] = show["year"] or item.get("year")
                 show["nfo"] = show["nfo"] or bool(item.get("nfo_show"))
+                show["pending"] = show.get("pending", True) and bool(item.get("pending"))
                 continue
             entry = self._dress(card, item, entries.get("m" + item["id"]))
             if item["kind"] == "movie" or (entry or {}).get("state") == "matched":
@@ -1643,7 +1792,11 @@ class Library:
         for key, show in shows.items():
             show["episodes"].sort(key=lambda c: (c[0]["season"] or 0, c[0]["episode"] or 0, c[0]["title"]))
             show["art"] = next((poster for _, poster in show["episodes"] if poster), "")
-            show["episodes"] = [card for card, _ in show["episodes"]]
+            cards = [card for card, _ in show["episodes"]]
+            # 已收录几集按 (季, 集) 去重数（同一集的几个版本、两个来源里的同一个文件都只算一集）；files 是视频文件数。
+            show["count"] = self.logical_count(cards)
+            show["files"] = len(cards)
+            show["episodes"] = self.fold_versions(cards)
             numbers = sorted(show["seasons"])
             show["seasons"] = len(numbers)
             if len(numbers) > 1:
@@ -1679,11 +1832,36 @@ class Library:
                 "full_gb": self.full_gb(), "full_used": self.full.total(),
                 "pending": len(self.meta_due()) if self._meta_can() else 0}
 
+    @classmethod
+    def fold_versions(cls, cards: list[dict]) -> list[dict]:
+        """排好的各集卡片 → 每集一张：同一集有好几个文件（不同画质、不同文件夹、两个来源）时第一张带 versions（全部
+        版本，能放的、画面大的在前），卡片本身是默认放的那个版本。"""
+        groups: dict[tuple, list[dict]] = {}
+        order: list[tuple] = []
+        for card in cards:
+            key = cls.episode_key(card)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(card)
+        folded = []
+        for key in order:
+            group = groups[key]
+            if len(group) == 1:
+                folded.append(group[0])
+                continue
+            group = sorted(group, key=lambda c: (not c["playable"], -(c.get("height") or 0), c.get("folder") or "",
+                                                 c.get("file") or ""))
+            first = dict(group[0])
+            first["versions"] = [{k: v for k, v in c.items() if k != "versions"} for c in group]
+            folded.append(first)
+        return folded
+
     def _season_row(self, key: str, n: int, episodes: list[dict], entries: dict) -> dict:
         """详情页上的一季：{n, key, count, title, year, art, meta}；对上了豆瓣的用那一季的名字、年份、海报。"""
         skey = f"s{key}-{n}"
         entry = entries.get(skey)
-        row = {"n": n, "key": skey, "count": sum(1 for c in episodes if (c["season"] or 1) == n), "title": "",
+        row = {"n": n, "key": skey, "count": self.logical_count([c for c in episodes if (c["season"] or 1) == n]), "title": "",
                "year": None, "art": "", "meta": libmeta.public(entry)}
         if entry and entry.get("state") == "matched":
             row.update(title=entry.get("title") or "", year=entry.get("year"))
@@ -1790,12 +1968,13 @@ class Library:
                 found[key] = {"key": key, "kind": "show" if episode else item["kind"],
                               "title": (item.get("show") if episode else item.get("title")) or "",
                               "alt": item.get("alt") or "", "year": item.get("year"), "added": item.get("added") or 0,
-                              "stale": False}
+                              "stale": False, "pending": bool(item.get("pending"))}
                 row = found[key]
             else:
                 row["alt"] = row["alt"] or item.get("alt") or ""
                 row["year"] = row["year"] or item.get("year")
                 row["added"] = max(row["added"], item.get("added") or 0)
+                row["pending"] = row["pending"] and bool(item.get("pending"))
             # 还没按新写法重新解析（下次扫描时解析）：片名可能不对，先不往外查。
             row["stale"] = row["stale"] or item.get("pv") != PARSE_VERSION
         # 有好几季的剧：每季再一条（豆瓣一季一个条目，各有各的海报、评分、简介），键是剧的键加「-季」。
@@ -1815,7 +1994,8 @@ class Library:
             for n in by_season:
                 year = own.get(n) if distinct else (show["year"] if n == min(by_season) else None)
                 found[f"{key}-{n}"] = {"key": f"{key}-{n}", "kind": "season", "title": show["title"], "alt": show["alt"],
-                                       "year": year, "added": show["added"], "stale": show["stale"], "season": n}
+                                       "year": year, "added": show["added"], "stale": show["stale"], "season": n,
+                                       "pending": show.get("pending", False)}
         return found
 
     def douban_index(self) -> dict[str, dict]:
@@ -1861,7 +2041,8 @@ class Library:
             failed = self._meta_failed.get(key)
             if (failed is not None and now - failed < META_FAIL_S) or title.get("stale"):
                 continue
-            auto = title["kind"] in ("show", "movie", "season") and bool(title["title"])
+            # 待识别的剧（只有「缩写-集号」，剧名是缩写）不自动往外查：缩写查不准，等管理员指定剧名。
+            auto = title["kind"] in ("show", "movie", "season") and bool(title["title"]) and not title.get("pending")
             entry = entries.get(key)
             if entry is None:
                 if auto:
@@ -2582,6 +2763,13 @@ class Library:
                 row["media"] = previous["media"]          # 只是解析的写法改了：探测的结果照旧用
             items.append(row)
         regroup(items)
+        # 管理员手动归集过的：盖在自动识别的结果上（扫描从不盖掉手动的）。
+        assigned = self._load_assign()
+        for row in items:
+            if row["id"] in assigned:
+                self._apply_assign(row, assigned[row["id"]])
+            else:
+                row.pop("assigned", None)
         # 海报、分集封面每次按目录重新找（不用取），按合起来以后的种类：剧集旁边的 <名字>.jpg 是这一集的封面。
         for row in items:
             folder = row["path"].rpartition("/")[0]
@@ -3783,11 +3971,28 @@ class Library:
 
     def neighbor(self, item: dict, step: int) -> dict | None:
         """同一部剧里的下一集（step 1）/ 上一集（−1）；不是剧集、已经是头一集 / 最后一集时 None。"""
-        episodes = self.episodes_of(item)
-        here = next((n for n, ep in enumerate(episodes) if ep["id"] == item["id"]), None)
-        if here is None or not 0 <= here + step < len(episodes):
+        return self.step_episode(self.episodes_of(item), item, step)
+
+    @classmethod
+    def step_episode(cls, episodes: list[dict], item: dict, step: int) -> dict | None:
+        """episodes（episodes_of 排好的）里 item 的下一集 / 上一集：跳过同一集的其他版本；那一集有好几个版本时
+        先挑和 item 在同一个文件夹里的（一直看 4K 的接着看 4K 的），没有时挑排在前面的。"""
+        if not any(ep["id"] == item["id"] for ep in episodes):
             return None
-        return episodes[here + step]
+        keys: list[tuple] = []
+        versions: dict[tuple, list[dict]] = {}
+        for ep in episodes:
+            key = cls.episode_key(ep)
+            if key not in versions:
+                keys.append(key)
+                versions[key] = []
+            versions[key].append(ep)
+        here = keys.index(cls.episode_key(item))
+        if not 0 <= here + step < len(keys):
+            return None
+        options = versions[keys[here + step]]
+        folder = item["path"].rpartition("/")[0]
+        return next((ep for ep in options if ep["path"].rpartition("/")[0] == folder), options[0])
 
 
 # ---------------------------------------------------------------- 播到小电视（第三步）
@@ -4145,10 +4350,10 @@ def tv_episode(relay, video) -> dict:
     library = getattr(relay, "library", None)
     item = library.item(video.bvid) if library is not None else None
     episodes = library.episodes_of(item) if item is not None else []
-    if len(episodes) < 2:
+    keys = list(dict.fromkeys(Library.episode_key(ep) for ep in episodes))     # 同一集的几个版本算一集
+    if len(keys) < 2 or not any(ep["id"] == item["id"] for ep in episodes):
         return {}
-    n = next((n for n, ep in enumerate(episodes, 1) if ep["id"] == item["id"]), 0)
-    return {"episode": n, "total": len(episodes)} if n else {}
+    return {"episode": keys.index(Library.episode_key(item)) + 1, "total": len(keys)}
 
 
 # ---------------------------------------------------------------- HTTP

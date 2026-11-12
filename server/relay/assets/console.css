@@ -1349,6 +1349,34 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .lerow { display: flex; align-items: center; gap: 8px; }
 .lerow .hrow { flex: 1; min-width: 0; }
 .lerow > .ghost { flex: none; }
+/* 同一集的几个版本（libEpisode 展开的）：每个版本一行，缩进在那一集下面。 */
+.lvers { display: grid; gap: 2px; margin: 0 0 8px 176px; }
+.lver { display: grid; gap: 2px; padding: 8px 12px; border-radius: 10px; text-align: left; background: var(--bg-2); }
+.lver:hover { background: var(--fill); }
+.lver:focus-visible { outline: none; background: var(--fill-2); box-shadow: inset 0 0 0 2px var(--label); }
+.lver b { font: 600 14px var(--sans); }
+.lver small { color: var(--label-2); font: 12px var(--sans); overflow-wrap: anywhere; }
+.lver.dead { opacity: .5; }
+/* 归到一部剧（libAsgPanel）。 */
+.h2 > .ghost.sm { margin-left: auto; }
+.lasg { display: grid; gap: 4px; max-width: 760px; margin: 0 0 18px; }
+.lasg .inline { margin: 6px 0; }
+.lasg .lasgseason { flex: 0 1 170px; }
+.lasgchips { margin: 4px 0; }
+.lasgchips button { height: 32px; padding: 0 12px; font-size: 13px; }
+.lasgrows { display: grid; gap: 2px; max-height: 440px; overflow-y: auto; padding-right: 4px; }
+.lasgrow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; }
+.lasgrow:hover { background: var(--fill); }
+.lasgrow > label { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.lasgrow input[type=checkbox] { flex: none; width: 18px; height: 18px; }
+.lasgfn { display: grid; min-width: 0; }
+.lasgfn b { font: 600 14px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lasgfn small { color: var(--label-2); font: 12px var(--sans); }
+.lasgep { flex: none; display: inline-flex; align-items: center; gap: 6px; color: var(--label-2); font: 13px var(--sans); }
+.lasgep input { width: 76px; }
+.lasgstat { display: grid; gap: 2px; }
+.m .lvers { margin-left: 0; }
+.m .lasgep input { width: 64px; }
 .m .linfo { grid-template-columns: 108px minmax(0, 1fr); gap: 14px; }
 .m .linx h2 { font-size: 21px; }
 .m .lfacts, .m .lppl { font-size: 13px; }
