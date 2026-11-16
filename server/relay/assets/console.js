@@ -3221,30 +3221,75 @@ function partReq(n) {
   return null;
 }
 function partWord(n) {
-  const kind = watching && watching.parts ? watching.parts.kind : "";
+  const parts = watching && watching.parts, kind = parts ? parts.kind : "";
+  if (kind === "library") {
+    // 片库的剧集：真实的季、集号（服务器给的 label，library.play_parts），从不拿列表里的位置 n 当集号。
+    const item = parts.items.find((x) => x.n === n);
+    return item ? item.label : "";
+  }
   return kind === "pages" ? "P" + n : kind === "up" ? "第 " + n + " 个" : "第 " + n + " 集";
 }
+// ---- 片库剧集的上一集 / 下一集（tests/console_libver_test.mjs 截出这一段单独测）----
+// items 是这个版本这一季的各集（library.play_parts：按真实集号排好，认不出集号的 ep 是 null、排在最后），cur 是正在放
+// 的那一项。下一集（step 1）/ 上一集（-1）只在认出集号、能放的里面走，同一集的别的版本、别的版本、别的季都不进来；
+// 中间缺了集时 note 说一声（「第 4 集缺失，下一集为第 5 集」）。没有时 null。
+function libStep(items, cur, step) {
+  if (!cur || cur.ep == null) return null;
+  const eps = items.filter((x) => x.ep != null).sort((a, b) => a.ep - b.ep);
+  let i = eps.findIndex((x) => x.n === cur.n);
+  if (i < 0) return null;
+  for (i += step; i >= 0 && i < eps.length; i += step) if (eps[i].playable !== false) return { item: eps[i], note: libGap(cur.ep, eps[i].ep) };
+  return null;
+}
+function libGap(here, there) {
+  if (here == null || there == null) return "";
+  const lo = Math.min(here, there), hi = Math.max(here, there);
+  if (hi - lo <= 1) return "";
+  return (hi - lo === 2 ? "第 " + (lo + 1) + " 集" : "第 " + (lo + 1) + "–" + (hi - 1) + " 集") + "缺失，" + (there > here ? "下一集" : "上一集") + "为第 " + there + " 集";
+}
+// 左上角写的：「第 3 集 / 已收录 22 集」（这个版本这一季实际有的不同集数，不是最大集号、不是文件数）。
+function libWhere(parts) {
+  const cur = parts.items.find((x) => x.n === parts.current);
+  return (cur ? cur.label : "") + " / 已收录 " + parts.count + " 集";
+}
+// ---- 片库剧集的纯函数到此 ----
 function nextPart() {
   if (!watching || watching.mode !== "direct" || !watching.parts) return null;
   const items = watching.parts.items, cur = watching.parts.current;
+  if (watching.parts.kind === "library") {
+    const found = libStep(items, items.find((x) => x.n === cur), 1);
+    return found ? { n: found.item.n, title: found.item.label, body: partReq(found.item.n), note: found.note } : null;
+  }
   if (!cur || cur >= items.length) return null;
   const item = items[cur];
   return { n: item.n, title: item.title, body: partReq(item.n) };
 }
-async function playPart(n) {
+async function playPart(n, note) {
   if (!watching || watching.busy) return;
   const body = partReq(n);
   if (!body) return;
   hideUpNext();
   closeParts();
   await pcReport();
-  watchSay("正在换到" + partWord(n) + "…");
+  if (note) toast(note);
+  watchSay(note || "正在换到" + partWord(n) + "…");
   startDirect(body, { group: watching.group });
+}
+// 播放器的选集里点了别的版本的一集：换到那个文件（那个版本成了现在放的版本，上一集 / 下一集跟着它走）。
+async function playLibFile(id, label) {
+  if (!watching || watching.busy) return;
+  hideUpNext();
+  closeParts();
+  await pcReport();
+  watchSay("正在换到" + (label || "这一集") + "…");
+  startDirect({ library: id }, { group: watching.group });
 }
 function openParts() {
   if (!watching || !watching.parts) return;
   const box = $("pcParts"), list = $("pcPartsList"), parts = watching.parts;
   $("pcPartsName").textContent = parts.name || watching.name || "选集";
+  if (parts.kind === "library") { libPartsFill(parts); return libPartsShow(box, list); }
+  $("pcPartsVers").hidden = true;
   const seen = parts.items.filter((x) => x.watched).length;
   $("pcPartsSub").textContent = "共 " + parts.items.length + (parts.kind === "pages" ? " P" : parts.kind === "up" ? " 个视频" : " 集")
     + (seen ? " · 电脑上看完 " + seen : "") + " · 正在放" + partWord(parts.current);
@@ -3263,12 +3308,54 @@ function openParts() {
     row.onclick = () => { if (item.n === parts.current) closeParts(); else playPart(item.n); };
     list.appendChild(row);
   }
+  libPartsShow(box, list);
+}
+function libPartsShow(box, list) {
   box.hidden = false;
   $("pcResume").hidden = true;
   pcLayout();
   const cur = list.querySelector(".cur") || list.firstChild;
   if (cur) { cur.scrollIntoView({ block: "center" }); cur.focus({ preventScroll: true }); }
   pcActive();
+}
+// 片库剧集的选集：上面是版本（只换列表，不打断正在放的；点了某一集才换到那个版本的文件），下面是那个版本这一季
+// 的各集，写真实集号；正在放的高亮；认不出集号的写名字和「集号未知」，能点着放，但不进上一集 / 下一集。
+function libPartsFill(parts) {
+  const list = $("pcPartsList"), vers = $("pcPartsVers");
+  const views = [{ key: parts.version, label: parts.label, count: parts.count, items: parts.items, mine: true }]
+    .concat((parts.others || []).map((o) => Object.assign({ mine: false }, o)));
+  const view = views.find((v) => v.key === parts.view) || views[0];
+  vers.hidden = views.length < 2;
+  vers.replaceChildren();
+  for (const v of views) {
+    const b = el("button", "", (v.label || "版本") + " · " + v.count + " 集");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(v === view));
+    if (v.mine) b.title = "正在放的版本";
+    b.onclick = () => { parts.view = v.key; libPartsFill(parts); const c = list.querySelector(".cur") || list.firstChild; if (c) c.focus({ preventScroll: true }); };
+    vers.appendChild(b);
+  }
+  const seen = view.items.filter((x) => x.watched).length;
+  const here = parts.items.find((x) => x.n === parts.current);
+  $("pcPartsSub").textContent = (views.length > 1 ? (view.label || "版本") + " · " : "") + "已收录 " + view.count + " 集"
+    + (seen ? " · 电脑上看完 " + seen : "") + (view.mine ? " · 正在放" + (here ? here.label : "") : " · 点一集换到这个版本");
+  list.replaceChildren();
+  for (const item of view.items) {
+    const cur = view.mine && item.n === parts.current;
+    const row = el("button", "pcpart" + (cur ? " cur" : "") + (item.watched ? " seen" : "") + (item.playable === false ? " dead" : ""));
+    row.setAttribute("aria-current", cur ? "true" : "false");
+    const num = item.ep != null ? item.ep : "?";
+    const lead = item.art ? `<span class="th"><img src="${esc(item.art)}" alt="" loading="lazy"><i>${num}</i></span>` : `<span class="n">${num}</span>`;
+    if (item.art) row.classList.add("withth");
+    const extra = [item.ep == null ? "集号未知" : "", item.choices > 1 ? item.choices + " 个候选，待确认" : "", item.playable === false ? "放不了" : ""].filter(Boolean).join(" · ");
+    const name = item.ep == null ? (item.title || "集号未知") : item.label + (item.title && item.title !== item.label ? " · " + item.title : "");
+    row.innerHTML = lead + `<span class="t">${esc(name)}${extra ? `<small>${esc(extra)}</small>` : ""}</span>`
+      + `<span class="d">${item.watched ? ic("check", 14) : ""}</span>`;
+    row.setAttribute("aria-label", name + (extra ? "，" + extra : "") + (item.watched ? "，看完了" : "") + (cur ? "，正在放" : ""));
+    row.disabled = item.playable === false;
+    row.onclick = () => { if (cur) closeParts(); else if (view.mine) playPart(item.n); else playLibFile(item.id, (view.label ? view.label + " " : "") + item.label); };
+    list.appendChild(row);
+  }
 }
 function closeParts() {
   if ($("pcParts").hidden) return;
@@ -3329,8 +3416,8 @@ function hideUpNext() {
 function partChoice(part, label) {
   if (!part) return null;
   const item = watching && watching.parts ? watching.parts.items.find((x) => x.n === part.n) : null;
-  // B 站多 P 的各 P 没有自己的封面：用这个视频的（从卡片点开时那张卡片的封面）。
-  return { label, title: part.title || partWord(part.n), art: (item && item.art) || currentArt(), go: () => playPart(part.n) };
+  // B 站多 P 的各 P 没有自己的封面：用这个视频的（从卡片点开时那张卡片的封面）。片库缺集时标签上写缺了哪几集。
+  return { label: part.note ? label + " · " + part.note : label, title: part.title || partWord(part.n), art: (item && item.art) || currentArt(), go: () => playPart(part.n, part.note) };
 }
 function currentArt() {
   const x = watching && watching.item && playCtx.current && playCtx.current.play === watching.item ? playCtx.current : null;
@@ -3360,6 +3447,11 @@ async function endChoices() {
   const w = watching;
   if (!w) return {};
   const row = rowNeighbours();
+  if (w.parts && w.parts.kind === "library") {
+    // 片库的剧集：只在这个版本这一季里接着放；最后一集放完了就停（不跳到别的版本、别的季、这一排的下一个）。
+    const np = nextPart(), pp = prevPart();
+    return { next: np ? partChoice(np, "下一集") : null, prev: pp ? partChoice(pp, "上一集") : null };
+  }
   if (w.parts && w.parts.items.length > 1) {
     const np = nextPart(), pp = prevPart();
     // 第一集没有上一集：左边放这一排的下一个视频（也可以看）；最后一集放完了就接着这一排往下。
@@ -3413,7 +3505,8 @@ function watchEnded() {
   renderPc();
   endChoices().then(({ prev, next }) => {
     if (!watching || watching.sid !== sid) return;     // 等推荐时已经换了别的
-    if (!next && !prev && watching.parts) watchSay("全部放完了", false);
+    if (!next && watching.parts && watching.parts.kind === "library") watchSay("当前版本已播放完毕", false);
+    else if (!next && !prev && watching.parts) watchSay("全部放完了", false);
     showEnd(prev || null, next || null);
   });
 }
@@ -3459,9 +3552,9 @@ function renderPc() {
   const next = nextPart();
   const stepUp = watching.mode === "direct" && watching.kind === "video" && /^up\d\d$/.test(watching.channel);
   $("pcNext").hidden = !(next || stepUp);
-  $("pcNext").setAttribute("aria-label", next ? "下一" + (watching.parts.kind === "up" ? "个" : "集") + "：" + (next.title || partWord(next.n)) : "下一个");
+  $("pcNext").setAttribute("aria-label", next ? "下一" + (watching.parts.kind === "up" ? "个" : "集") + "：" + (next.title || partWord(next.n)) + (next.note ? "（" + next.note + "）" : "") : "下一个");
   $("pcNext").title = $("pcNext").getAttribute("aria-label") + "（N）";
-  $("pcPartsBtn").hidden = !(watching.parts && watching.parts.items.length > 1 && watching.mode === "direct");
+  $("pcPartsBtn").hidden = !(watching.parts && (watching.parts.items.length > 1 || (watching.parts.others || []).length) && watching.mode === "direct");
   const vod = pcRateOk(p);             // 能调速度（浏览器直接放的点播，或者片库这种经中转放的视频）
   $("pcRate").hidden = !vod;
   if (vod) $("pcRate").textContent = rateLabel(v.playbackRate);  // 片库经中转放的也算（pcRateOk）
@@ -4127,7 +4220,8 @@ $("pcBack").onclick = () => pcSkip(-10);
 $("pcFwd").onclick = () => pcSkip(10);
 $("pcNext").onclick = () => {
   const next = nextPart();
-  if (next) playPart(next.n);
+  if (next) playPart(next.n, next.note);
+  else if (watching && watching.parts && watching.parts.kind === "library") toast("当前版本已播放完毕");
   else if (watching && !watching.busy) startDirect({ channel: watching.channel, step: 1 }, { group: watching.group });
 };
 $("pcMute").onclick = pcToggleMute;
@@ -4272,12 +4366,16 @@ function pcKeyRun(act) {
 function prevPart() {
   if (!watching || watching.mode !== "direct" || !watching.parts) return null;
   const cur = watching.parts.current;
+  if (watching.parts.kind === "library") {
+    const items = watching.parts.items, found = libStep(items, items.find((x) => x.n === cur), -1);
+    return found ? Object.assign({}, found.item, { title: found.item.label, note: found.note }) : null;
+  }
   return cur > 1 && watching.parts.items[cur - 2] ? watching.parts.items[cur - 2] : null;
 }
 function pcStepUp() { return !!watching && watching.mode === "direct" && watching.kind === "video" && /^up\d\d$/.test(watching.channel); }
 function pcPrev() {
   const prev = prevPart();
-  if (prev) playPart(prev.n);
+  if (prev) playPart(prev.n, prev.note);
   else if (pcStepUp()) { if (!watching.busy) startDirect({ channel: watching.channel, step: -1 }, { group: watching.group }); }
   else stepChannel(-1);
 }
@@ -4460,7 +4558,9 @@ function openDirect(answer, ctx) {
   // 片库这些经中转放的也照上次选的速度（浏览器直接放的 VodPlayer / DashPlayer 自己设过了）。
   if (!same && pcRateOk(player)) { const v = $("watchVideo"); v.defaultPlaybackRate = v.playbackRate = savedRate(); }
   const parts = answer.parts;
-  const what = parts && parts.items.length > 1 && parts.kind !== "up"
+  const what = parts && parts.kind === "library"
+    ? libWhere(parts) + ((parts.others || []).length && parts.label ? " · " + parts.label : "")
+    : parts && parts.items.length > 1 && parts.kind !== "up"
     ? partWord(parts.current) + " / " + parts.items.length + (answer.title && answer.title !== partWord(parts.current) ? " · " + answer.title : "")
     : answer.title && answer.title !== answer.name ? answer.title : "";
   const name = answer.item_title || answer.name || answer.channel;
@@ -8136,7 +8236,7 @@ $("histSync").onclick = (event) => setFeedSetting("writeback", event.currentTarg
 // 中转缩好画面推过去（library.py 的 play_tv）。只有里面没有画面也没有声音的标「放不了」。家里人都能看，访客没有这一页。
 const lib = { data: null, busy: false, at: 0, q: "", show: "", item: "", season: 0, kind: "webdav", form: false, timer: 0, failed: false,
               match: null, more: false, tmdbForm: false, sort: "added", genre: "", country: "", going: false,
-              ver: "", asg: null };
+              ver: "", asg: null, vsel: {}, vadj: null };
 async function loadLib(force, poll) {
   if (lib.busy || (!force && lib.data && Date.now() - lib.at < 5000)) return;
   lib.busy = true;
@@ -8272,6 +8372,38 @@ function asgRange(list) {
   return out.join("、");
 }
 // ---- 片库归集的纯函数到此 ----
+// ---- 剧集版本的纯函数（tests/console_libver_test.mjs 截出这一段单独测）----
+// 剧的版本（library.py → libversions.summarize）：{key, label, detail, manual, count, files, seasons, conflicts, unknown, ids}。
+// 详情页先选版本、再看这个版本的各集：版本里认出集号的同一季同一集只出一行（有好几个文件时那一行「N 个候选 · 待确认」，
+// 展开能挑），认不出集号的另列「集号未知」，不算集数。
+const libSeasonOf = (c) => (c.season == null ? 1 : c.season);
+// 这一季（season 为 null 时不分季）里有集的版本。
+function libVersIn(versions, cards, season) {
+  return (versions || []).map((v) => {
+    const mine = v.ids.map((id) => cards.get(id)).filter((c) => c && (season == null || libSeasonOf(c) === season || (c.episode == null && c.season == null)));
+    return Object.assign({}, v, { cards: mine, count: new Set(mine.filter((c) => c.episode != null).map((c) => libSeasonOf(c) + ":" + c.episode)).size });
+  }).filter((v) => v.cards.length);
+}
+// 现在显示哪个版本：这次点过的（pick）> 记住的（saved，这台电脑上次在这部剧选的）> 最近看的那一集的版本（now）> 第一个
+// （集多的在前）。记住的那个不在了（文件夹改了名、删了）：不悄悄换一个，gone 为 true、cur 为 null，让人重新选。
+function libVerChoose(vers, pick, saved, now) {
+  const has = (k) => k && vers.find((v) => v.key === k);
+  if (has(pick)) return { cur: has(pick), gone: false };
+  if (saved && !pick) return has(saved) ? { cur: has(saved), gone: false } : { cur: null, gone: true };
+  return { cur: has(now) || vers[0] || null, gone: false };
+}
+// 一个版本的各集：[{card（默认放的那个）, all（这一集的全部文件）}]，按季、集号；unknown 是认不出集号的。
+function libVerRows(v) {
+  const rows = [], at = new Map(), unknown = [];
+  for (const c of v.cards) {
+    if (c.episode == null) { unknown.push(c); continue; }
+    const k = libSeasonOf(c) + ":" + c.episode;
+    if (!at.has(k)) { at.set(k, rows.length); rows.push({ card: c, all: [] }); }
+    rows[at.get(k)].all.push(c);
+  }
+  return { rows, unknown };
+}
+// ---- 剧集版本的纯函数到此 ----
 // 电影、其他视频的卡片：点开是资料页（libInfoHTML），在那里放；豆瓣的评分跟在年份后面。
 function libCard(c, wide) {
   const no = c.playable ? "" : '<span class="badge">放不了</span>';
@@ -8470,14 +8602,15 @@ async function libMetaCall(path, body, btn) {
 // 同一集有好几个文件（不同画质、不同文件夹、两个来源）：只出一行，点这一行放默认的版本（能放的、画面大的），
 // 「N 个版本」展开每个版本一行（文件夹 · 画面 · 大小 · 格式 · 来源），各自能放；集数只算一集。
 function libEpisode(c) {
-  const vs = c.versions || [], open = vs.length > 1 && lib.ver === c.id;
+  const vs = c.versions || [], open = vs.length > 1 && lib.ver === c.id, unsure = !!c.unsure;
   const id = reg({ id: "lib:" + c.id, title: c.show + " " + c.title, subtitle: c.show, art: { url: c.art, ratio: "wide" },
                    play: { kind: "library", id: c.id, playable: c.playable } });
   const se = c.season === 0 ? "特别篇" : c.season ? "第 " + c.season + " 季" : "";
-  const facts = vs.length > 1 ? [se, vs.length + " 个版本", libVersionLabel(c)] : [se, c.playable ? "" : "放不了", c.source, libCached(c)];
+  const facts = unsure ? [se, vs.length + " 个候选 · 待确认", c.file] : c.ver != null ? [se, c.episode == null ? "集号未知" : "", c.playable ? "" : "放不了", libCached(c)]
+    : vs.length > 1 ? [se, vs.length + " 个版本", libVersionLabel(c)] : [se, c.playable ? "" : "放不了", c.source, libCached(c)];
   const row = `<button class="hrow${c.playable ? "" : " dead"}" data-play="${esc(id)}" data-k="le-${esc(c.id)}" aria-label="播放 ${esc(c.title)}${vs.length > 1 ? "（" + vs.length + " 个版本，默认 " + esc(libVersionLabel(c)) + "）" : ""}"><span class="art">${art(c.show || c.title, "w")}${imgTag(c.art)}</span>
     <span class="htx"><b>${esc(c.title)}</b><small>${esc(facts.filter(Boolean).join(" · "))}</small></span></button>`;
-  const verBtn = vs.length > 1 ? `<button class="ghost sm" data-libver="${esc(c.id)}" data-k="lv-${esc(c.id)}" aria-expanded="${open}" title="这一集有 ${vs.length} 个文件，选一个放">${vs.length} 个版本</button>` : "";
+  const verBtn = vs.length > 1 ? `<button class="ghost sm" data-libver="${esc(c.id)}" data-k="lv-${esc(c.id)}" aria-expanded="${open}" title="${unsure ? "这个版本里这一集有 " + vs.length + " 个文件，分不清是哪个：看看是哪个文件再放" : "这一集有 " + vs.length + " 个文件，选一个放"}">${unsure ? "待确认（" + vs.length + "）" : vs.length + " 个版本"}</button>` : "";
   const thumb = isAdmin() ? `<button class="ghost sm" data-libthumb="${esc(c.id)}" data-k="lt-${esc(c.id)}" aria-label="${esc(c.title)}：重新截一张封面" title="从这一集里重新截一张封面（没人在看时截）">换封面</button>` : "";
   const list = open ? `<div class="lvers" role="group" aria-label="${esc(c.title)}的版本">${vs.map((v) => {
     const vid = reg({ id: "lib:" + v.id, title: v.show + " " + v.title, subtitle: v.show, art: { url: v.art, ratio: "wide" },
@@ -8486,6 +8619,85 @@ function libEpisode(c) {
   }).join("")}</div>` : "";
   if (!verBtn && !thumb) return row;
   return `<div class="lerow">${row}${verBtn}${thumb}</div>${list}`;
+}
+// 版本选择 + 这个版本的各集（剧的详情页；season 为 null 时不分季）。
+const LIBVER_KEY = "rootv.libver";
+function libVerSaved(id) { try { return (JSON.parse(lsGet(LIBVER_KEY, "{}")) || {})[id] || ""; } catch (_) { return ""; } }
+function libVerSave(id, key) {
+  let all = {};
+  try { all = JSON.parse(lsGet(LIBVER_KEY, "{}")) || {}; } catch (_) { all = {}; }
+  all[id] = key;
+  const keys = Object.keys(all);
+  if (keys.length > 300) delete all[keys[0]];
+  lsSet(LIBVER_KEY, JSON.stringify(all));
+}
+function libCardsOf(show) { return new Map(show.episodes.flatMap((e) => e.versions || [e]).map((c) => [c.id, c])); }
+function libEpsHTML(show, season) {
+  const cards = libCardsOf(show), vers = libVersIn(show.versions, cards, season);
+  const ch = libVerChoose(vers, lib.vsel[show.id], libVerSaved(show.id), show.now_ver);
+  const where = season == null ? "" : "第 " + season + " 季 · ";
+  let o = "";
+  const name = (v) => v.label + (v.detail ? " · " + v.detail : "");
+  if (vers.length > 1 || ch.gone) {
+    o += `<div class="chips lversions" role="group" aria-label="选版本">${vers.map((v) => `<button type="button" data-libvsel="${esc(v.key)}" data-k="lvs-${esc(v.key)}" aria-pressed="${ch.cur === v}" title="${esc(name(v) + " · " + v.cards.length + " 个视频文件")}">${esc(name(v))} <em>${v.count} 集</em>${v.conflicts && v.conflicts.length ? ' <span class="badge">待确认</span>' : ""}</button>`).join("")}</div>`;
+  }
+  if (isAdmin()) o += `<div class="inline lveracts"><button class="ghost sm" data-libvadj="${esc(show.id)}" data-k="lvadj" aria-expanded="${!!(lib.vadj && lib.vadj.show === show.id)}" title="把文件指到别的版本、新建版本、给版本起名字">调整版本</button></div>`;
+  o += libVadjPanel(show);
+  if (!ch.cur) {
+    const why = ch.gone ? "上次在这里选的版本已经不在了（文件夹改了名、移走或删了），请重新选一个版本。" : "这一季还没有可以放的版本。";
+    return o + `<div class="h2 leps"><h2>选集</h2><small>${esc(where)}请选择版本</small></div><p class="hint">${why}</p>`;
+  }
+  const v = ch.cur, got = libVerRows(v);
+  const files = v.cards.length > v.count ? " · " + v.cards.length + " 个视频文件" : "";
+  const label = vers.length > 1 ? name(v) + " · " : "";
+  o += `<div class="h2 leps"><h2>选集</h2><small>${esc(where + label + libHave(v.count) + files)}</small></div>`;
+  if (got.rows.some((r) => r.all.length > 1)) o += `<p class="hint">标「待确认」的集在这个版本里有不止一个文件，分不清该放哪个：展开看是哪个文件再放${isAdmin() ? "，或者在「调整版本」里把多出来的指到别的版本" : ""}。</p>`;
+  o += `<div class="hlist">${got.rows.map((r) => libEpisode(r.all.length > 1 ? Object.assign({}, r.card, { unsure: true, versions: r.all }) : r.card)).join("")}</div>`;
+  if (got.unknown.length) o += `<div class="h2 leps"><h2>集号未知</h2><small>${got.unknown.length} 个视频 · 不算集数，不自动连播</small></div><div class="hlist">${got.unknown.map(libEpisode).join("")}</div>`;
+  return o;
+}
+// ---- 调整版本（管理员；POST api/admin/library/versions，libversions.Store.change）----
+// lib.vadj：{show, to: id → 选的去处（"" 不改、版本键、"auto"、"new"）, name（新版本的名字）, ren（给现在的版本起的名字）, busy}。
+function libVadjPanel(show) {
+  const A = lib.vadj;
+  if (!A || A.show !== show.id) return "";
+  const cards = [...libCardsOf(show).values()].sort((a, b) => libSeasonOf(a) - libSeasonOf(b) || (a.episode == null) - (b.episode == null) || (a.episode || 0) - (b.episode || 0) || String(a.file).localeCompare(String(b.file)));
+  const vers = show.versions || [], label = new Map(vers.map((v) => [v.key, v.label]));
+  const opts = (c) => [`<option value="">${esc(label.get(c.ver) || "现在的版本")}（不改）</option>`]
+    .concat(vers.filter((v) => v.key !== c.ver).map((v) => `<option value="${esc(v.key)}"${A.to[c.id] === v.key ? " selected" : ""}>改到：${esc(v.label)}</option>`))
+    .concat([`<option value="new"${A.to[c.id] === "new" ? " selected" : ""}>改到：新版本</option>`, `<option value="auto"${A.to[c.id] === "auto" ? " selected" : ""}>回到自动识别</option>`]).join("");
+  const rows = cards.map((c) => {
+    const ep = c.episode == null ? "集号未知" : (c.season === 0 ? "特别篇 " : (show.seasons > 1 ? "第 " + libSeasonOf(c) + " 季 " : "")) + "第 " + c.episode + " 集";
+    return `<div class="lasgrow"><span class="lasgfn"><b title="${esc((c.folder ? c.folder + "/" : "") + c.file)}">${esc(c.file || c.title)}</b><small>${esc([ep, label.get(c.ver) || "", libRes(c.height), libSize(c.size)].filter(Boolean).join(" · "))}</small></span>
+      <select class="field lsel" data-vadjto="${esc(c.id)}" data-k="vadj-${esc(c.id)}" aria-label="${esc(c.file)} 归到哪个版本">${opts(c)}</select></div>`;
+  }).join("");
+  const ren = vers.map((v) => `<div class="inline"><input type="text" data-vadjren="${esc(v.key)}" value="${esc(A.ren[v.key] != null ? A.ren[v.key] : v.label)}" maxlength="40" aria-label="版本「${esc(v.label)}」的名字"><button type="button" class="ghost sm" data-vadjrensave="${esc(v.key)}">改名</button><small>${v.count} 集 · ${v.files} 个文件${v.manual ? " · 手动" : ""}</small></div>`).join("");
+  const changed = Object.values(A.to).filter(Boolean).length;
+  return `<form class="lformbox lasg" id="libVadj" autocomplete="off"><b>调整版本</b>
+    <p class="hint">版本按文件夹自动分（同一个文件夹，或者它下面的各季文件夹，是一个版本）。分错了可以把文件指到别的版本或新建一个版本，也可以给版本起名字。只改片库里的分组，文件不动；以后重新扫描也保留。</p>
+    <div class="lvadjren">${ren}</div>
+    <div class="inline"><input type="text" name="vadjname" value="${esc(A.name)}" placeholder="新版本的名字（选了「改到：新版本」时要写）" aria-label="新版本的名字" maxlength="40"></div>
+    <div class="lasgrows">${rows}</div>
+    <p class="hint" aria-live="polite">${changed ? "要改 " + changed + " 个视频" : "还没有要改的"}${A.error ? ` · <span class="bad">${esc(A.error)}</span>` : ""}</p>
+    <div class="inline"><button class="btn pri sm" type="submit"${changed && !A.busy ? "" : " disabled"}>${A.busy ? "正在保存…" : "保存"}</button><button class="ghost sm" type="button" data-vadjx="1">取消</button></div></form>`;
+}
+async function libVadjSubmit(form) {
+  const A = lib.vadj;
+  if (!A || A.busy) return;
+  const items = Object.entries(A.to).filter(([, v]) => v).map(([id, v]) => ({ id, v }));
+  if (!items.length) return;
+  if (items.some((x) => x.v === "new") && !A.name.trim()) { A.error = "给新版本写一个名字"; renderLib(); return; }
+  A.busy = true; A.error = ""; renderLib();
+  let answer;
+  try { answer = await call("POST", "api/admin/library/versions", { items, name: A.name.trim() }); }
+  catch (error) { answer = { ok: false, error: error instanceof SignedOut ? "登录已失效" : "网络不通，可以再试" }; }
+  if (lib.vadj !== A) return;
+  A.busy = false;
+  if (!answer.ok) { A.error = answer.error || "没存成"; renderLib(); return; }
+  lib.vadj = null;
+  if (answer.key) lib.vsel[A.show] = answer.key;
+  toast("改好了：" + answer.count + " 个视频");
+  await loadLib(true);
 }
 function libSourceRow(s, admin, scan) {
   const busy = scan && scan.running && scan.source === s.id;
@@ -8737,12 +8949,12 @@ function renderLib() {
         o += libInfoHTML(Object.assign({}, show, { key: row.key, meta: row.meta, art: row.art || show.art, title: row.title || show.title + " 第 " + row.n + " 季",
                                                    year: row.year || (row.n === rows[0].n ? show.year : null), guess: libSeasonGuess(show, row.n), have: libHave(row.count) }), libAsgActs(show));
         o += libAsgPanel("show:" + show.id);
-        o += `<div class="h2 leps"><h2>选集</h2><small>第 ${row.n} 季 · ${libHave(row.count)}</small></div><div class="hlist">${eps.map(libEpisode).join("")}</div>`;
+        o += show.versions ? libEpsHTML(show, row.n) : `<div class="h2 leps"><h2>选集</h2><small>第 ${row.n} 季 · ${libHave(row.count)}</small></div><div class="hlist">${eps.map(libEpisode).join("")}</div>`;
       } else {
         o += libInfoHTML(Object.assign({}, show, { have: libHave(show.count) }), libAsgActs(show));
         o += libAsgPanel("show:" + show.id);
         const files = show.files > show.count ? " · " + show.files + " 个视频文件" : "";
-        o += `<div class="h2 leps"><h2>选集</h2><small>${libHave(show.count)}${files}</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
+        o += show.versions ? libEpsHTML(show, null) : `<div class="h2 leps"><h2>选集</h2><small>${libHave(show.count)}${files}</small></div><div class="hlist">${show.episodes.map(libEpisode).join("")}</div>`;
       }
       o += libMoreHTML(libDetailDid(), true);
     } else if (item) {
@@ -8915,13 +9127,13 @@ $("libBox").addEventListener("click", async (event) => {
   if (!t) return;
   const ds = t.dataset;
   if (ds.libshow || ds.libitem) {
-    lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; lib.season = 0; lib.ver = ""; lib.asg = null; renderLib();
+    lib.show = ds.libshow || ""; lib.item = ds.libitem || ""; lib.match = null; lib.more = false; lib.season = 0; lib.ver = ""; lib.asg = null; lib.vadj = null; renderLib();
     libPreread(ds.libitem ? { id: ds.libitem } : { show: ds.libshow });
     $("libBox").scrollIntoView({ block: "start" }); const b = qs("#libBox [data-libback]"); if (b) b.focus({ preventScroll: true }); return;
   }
   if (ds.libback) {
     const was = lib.show ? `[data-libshow="${CSS.escape(lib.show)}"]` : `[data-libitem="${CSS.escape(lib.item)}"]`;
-    lib.show = ""; lib.item = ""; lib.match = null; lib.ver = ""; lib.asg = null; renderLib(); const c = qs("#libBox " + was); if (c) c.focus(); return;
+    lib.show = ""; lib.item = ""; lib.match = null; lib.ver = ""; lib.asg = null; lib.vadj = null; renderLib(); const c = qs("#libBox " + was); if (c) c.focus(); return;
   }
   if (ds.libmore) { lib.more = !lib.more; renderLib(); return; }
   if (ds.libthumb) {
@@ -8941,6 +9153,16 @@ $("libBox").addEventListener("click", async (event) => {
   }
   if (ds.libmatchx) { lib.match = null; renderLib(); return; }
   if (ds.libver) { lib.ver = lib.ver === ds.libver ? "" : ds.libver; renderLib(); return; }
+  if (ds.libvsel) { lib.vsel[lib.show] = ds.libvsel; libVerSave(lib.show, ds.libvsel); lib.ver = ""; renderLib(); return; }
+  if (ds.libvadj) { lib.vadj = lib.vadj && lib.vadj.show === ds.libvadj ? null : { show: ds.libvadj, to: {}, name: "", ren: {}, busy: false, error: "" }; renderLib(); return; }
+  if (ds.vadjx) { lib.vadj = null; renderLib(); return; }
+  if (ds.vadjrensave) {
+    const key = ds.vadjrensave, name = lib.vadj && lib.vadj.ren[key] != null ? lib.vadj.ren[key].trim() : null;
+    if (name == null) return;
+    const answer = await libAdmin("api/admin/library/versions", { rename: key, name }, t);
+    if (answer && answer.ok) { toast(name ? "版本改名为「" + name + "」" : "版本回到按文件夹起的名字"); delete lib.vadj.ren[key]; loadLib(true); }
+    return;
+  }
   if (ds.asgopen) {
     if (libAsgOpen(ds.asgopen)) lib.asg = null; else libAsgStart(ds.asgopen);
     renderLib();
@@ -9087,6 +9309,7 @@ $("libBox").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (event.target.id === "libMatch") { libSearch(new FormData(event.target).get("q") || ""); return; }
   if (event.target.id === "libAsg") { libAsgSubmit(event.target); return; }
+  if (event.target.id === "libVadj") { libVadjSubmit(event.target); return; }
   if (event.target.id === "libTmdb") {
     // 密钥只发这一次，存在中转的 secrets/ 里；发完马上清掉输入框。
     const form = event.target, field = qs("input[name=tmdb]", form), btn = qs("button[type=submit]", form);
@@ -9122,6 +9345,12 @@ $("libBox").addEventListener("input", (event) => {
     libAsgRefresh();
     return;
   }
+  if (lib.vadj && event.target.closest("#libVadj")) {
+    const f = event.target;
+    if (f.name === "vadjname") lib.vadj.name = f.value;
+    else if (f.dataset.vadjren) lib.vadj.ren[f.dataset.vadjren] = f.value;
+    return;
+  }
   if (event.target.id !== "libQ") return;
   lib.q = event.target.value;
   renderLib();
@@ -9131,6 +9360,12 @@ $("libBox").addEventListener("change", (event) => {
   if (lib.asg && event.target.dataset.asgon) {
     if (event.target.checked) lib.asg.on.add(event.target.dataset.asgon); else lib.asg.on.delete(event.target.dataset.asgon);
     libAsgRefresh();
+    return;
+  }
+  if (lib.vadj && event.target.dataset.vadjto) {
+    if (v) lib.vadj.to[event.target.dataset.vadjto] = v; else delete lib.vadj.to[event.target.dataset.vadjto];
+    lib.vadj.error = "";
+    renderLib();
     return;
   }
   if (id === "libSort") lib.sort = v;

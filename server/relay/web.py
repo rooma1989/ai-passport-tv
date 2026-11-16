@@ -2179,7 +2179,7 @@ class Relay:
             # 看完了的（离结尾不到 PROGRESS_END_S 秒，或记过看完了、没再重看）从头放：片库的播放历史上标「看完了」的
             # 点下去就是从头，和 home.finished 一个规则。
             offset = 0.0
-        episodes = library.episodes_of(found)
+        parts = library.play_parts(found)
         # 剧名 / 片名：对上豆瓣的用豆瓣的（library.shown）。
         show = name = library.shown(found)["name"] or found["title"]
         label = found["title"] if found.get("kind") == "episode" else name
@@ -2213,18 +2213,21 @@ class Relay:
                       subs=library.subs_view(found, media, live), subs_url=f"api/library/subs/{found['id']}/")
         if start is None and offset > 0:
             answer["resume"] = round(offset, 1)
-        if len(episodes) > 1:
+        if parts is not None:
+            # 片库的剧集（library.play_parts、libversions.py）：只列这个版本这一季的各集，按真实集号；n 只是在列表里的
+            # 位置，页面显示 ep（第几集）和 count（这个版本这一季收录了几集），从不拿位置当集号、拿文件数当总集数。
+            # others 是同一季的别的版本（播放器里切过去看它的各集，点了才换）。
             done = set()
             if self.pc_progress is not None:
-                for ep in episodes:
-                    done |= self.pc_progress.done(caller.user, "lib:" + ep["id"])
-            current = next(n for n, ep in enumerate(episodes, 1) if ep["id"] == found["id"])
-            answer["parts"] = {"kind": "series", "name": show, "current": current,
-                               "items": [{"n": n, "id": ep["id"], "title": ep["title"], "duration": 0,
-                                          "watched": ep["id"] in done, "playable": library.playable(ep),
-                                          # 这一集自己的封面（旁边的图片或截的一帧，librarythumb.py），选集里当缩略图
-                                          "art": library.thumbs.url(ep)}
-                                         for n, ep in enumerate(episodes, 1)]}
+                for row in parts["items"] + [x for o in parts["others"] for x in o["items"]]:
+                    done |= self.pc_progress.done(caller.user, "lib:" + row["id"])
+            for row in parts["items"] + [x for o in parts["others"] for x in o["items"]]:
+                row["watched"] = row["id"] in done
+                row["duration"] = 0
+            for n, row in enumerate(parts["items"], 1):
+                row["n"] = n
+            current = next(row["n"] for row in parts["items"] if row["id"] == found["id"])
+            answer["parts"] = dict(parts, kind="library", name=show, current=current)
             answer["part"] = current
         return answer
 

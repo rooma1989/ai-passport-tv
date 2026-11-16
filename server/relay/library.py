@@ -85,7 +85,7 @@ from . import libraryfull
 from .libraryfull import FullCache
 from .librarypre import PreRead
 from .librarythumb import Thumbs
-from . import libdouban, libmeta
+from . import libdouban, libmeta, libversions
 from .table import CAST_ID
 
 SOURCES_MAX = 12
@@ -409,6 +409,22 @@ def _season_of(folder: str) -> int | None:
         return int(match.group(1))
     match = _DI_JI_SEASON.search(folder)
     return cn_number(match.group(1)) if match else None
+
+
+def _show_words(text: str) -> str:
+    return re.sub(r"[\W_]+", "", (text or "").casefold())
+
+
+def version_folder(path: str, show: str = "") -> str:
+    """剧集的「版本文件夹」（libversions.py）：视频所在的文件夹，去掉末尾的季文件夹（「Season 2」「S02」「第二季」，
+    或者去掉季以后只剩剧名的「某剧 第二季」），这样一个版本可以跨好几季。别的文件夹名（「4K」「某剧 第二季 4K」）不去。"""
+    parts = [p for p in path.split("/")[:-1] if p]
+    while parts and _season_of(parts[-1]) is not None:
+        rest = _show_words(_SEASON_WORD.sub(" ", parts[-1]))
+        if rest and rest != _show_words(show):
+            break
+        parts.pop()
+    return "/".join(parts)
 
 
 def parse_name(rel: str) -> dict:
@@ -1376,6 +1392,8 @@ class Library:
         self.index_path = self.dir / "library-index.json"
         # 管理员手动归集的（assign）：条目 id → {show, season, episode, at}；扫描时盖在自动识别的结果上，从不被盖掉。
         self.assign_path = self.dir / "library-assign.json"
+        # 剧集的版本（libversions.py）：管理员手动调整的（条目 → 版本、版本的名字）。自动的按文件夹算，不存。
+        self.versions = libversions.Store(self.dir / "library-versions.json")
         self.art_dir = self.dir / "library-art"
         self.log = log
         self.clock = clock
@@ -1613,6 +1631,19 @@ class Library:
         self.log(f"片库：{len(wanted)} 个视频归到「{show}」")
         return {"ok": True, "count": len(wanted), "show": self.show_key(show)}
 
+    def set_versions(self, body) -> dict:
+        """POST /api/admin/library/versions（libversions.Store.change）：把剧集的文件指到已有的版本、新建的版本或回到
+        自动识别的，给版本起名字。只改片库里的分组，文件不动；重新扫描也保留。"""
+        with _LOCK:
+            known = {iid for iid, item in self._items.items() if item.get("kind") == "episode"}
+        try:
+            answer = self.versions.change(body, known)
+        except OSError:
+            return {"ok": False, "error": "没存成（磁盘写不进去）"}
+        if answer.get("ok"):
+            self.log("片库：调整了剧集的版本" + (f"（{answer['count']} 个视频）" if answer.get("count") else ""))
+        return answer
+
     def _now_of(self, iid: str) -> tuple | None:
         """索引缓存问的：这个条目现在的 (大小, 修改时间)；不在索引里（删了、扫描后不见了）时 None。"""
         with _LOCK:
@@ -1750,7 +1781,76 @@ class Library:
                      if i.get("kind") == "episode" and self.show_key(i.get("show") or "") == key]
         return sorted(found, key=lambda i: (i.get("season") or 0, i.get("episode") or 0, i["path"]))
 
-    def view(self, recent: dict[str, int] | None = None) -> dict:
+    def ver_of(self, item: dict, manual: dict[str, str] | None = None) -> tuple[str, str]:
+        """剧集的一个文件属于哪个版本：(版本键, 版本文件夹)。手动指过的用手动的（manual 是 Store 的 items）。"""
+        folder = version_folder(item["path"], item.get("show") or "")
+        manual = self.versions.load()["items"] if manual is None else manual
+        return manual.get(item["id"]) or libversions.auto_key(item["source"], folder), folder
+
+    def show_rows(self, item: dict) -> list[dict]:
+        """和 item 同一部剧的各个文件，带上版本（ver、vfolder）和 libversions 要的几项（folder、file、playable、height）。"""
+        manual = self.versions.load()["items"]
+        rows = []
+        for ep in self.episodes_of(item):
+            ver, vfolder = self.ver_of(ep, manual)
+            rows.append(dict(ep, ver=ver, vfolder=vfolder, folder=ep["path"].rpartition("/")[0],
+                             file=ep["path"].rpartition("/")[2], playable=self.playable(ep),
+                             height=(first_video(ep.get("media")) or {}).get("h") or 0))
+        return rows
+
+    def version_queue(self, item: dict) -> tuple[list[dict], list[dict]]:
+        """(这部剧的全部文件 show_rows, item 所在版本、同一季的播放队列 libversions.queue)；不是剧集时两个都空。"""
+        if item.get("kind") != "episode":
+            return [], []
+        rows = self.show_rows(item)
+        me = next((r for r in rows if r["id"] == item["id"]), None)
+        return (rows, libversions.queue(rows, me)) if me is not None else ([], [])
+
+    def place(self, item: dict) -> dict:
+        """item 是第几集、它的版本这一季收录了几集：{"episode", "total"}（真实集号；认不出集号的或不是剧集时空）。"""
+        rows, q = self.version_queue(item)
+        if not q or item.get("episode") is None:
+            return {}
+        return {"episode": int(item["episode"]), "total": sum(1 for r in q if r.get("episode") is not None)}
+
+    def play_parts(self, item: dict) -> dict | None:
+        """电脑上放一集时的选集（web.py 的 _pc_library）：这个版本这一季的各集，和同一季别的版本（可以在播放器里换着看）。
+        {version, label, season, count, items: [{id, ep, season, label, title, playable, art, choices}], others: [...]}；
+        不是剧集、这一季只有它一个文件时 None。"""
+        rows, q = self.version_queue(item)
+        if not q:
+            return None
+        me = next(r for r in rows if r["id"] == item["id"])
+        season = libversions.season_of(me)
+        seasons = len({libversions.season_of(r) for r in rows if r.get("episode") is not None}) or 1
+        shown = libversions.summarize(rows, self.versions.load()["names"])
+        labels = {v["key"]: v["label"] + (" · " + v["detail"] if v["detail"] else "") for v in shown}
+
+        def entry(r: dict) -> dict:
+            ep = r.get("episode")
+            return {"id": r["id"], "ep": None if ep is None else int(ep), "season": libversions.season_of(r),
+                    "label": libversions.episode_label(libversions.season_of(r), ep, seasons) or "集号未知",
+                    "title": r.get("title") or "", "playable": bool(r.get("playable")), "art": self.thumbs.url(r),
+                    "choices": r.get("choices") or 1}
+
+        others = []
+        for v in shown:
+            if v["key"] == me["ver"]:
+                continue
+            first = next((r for r in rows if r["ver"] == v["key"] and r.get("episode") is not None
+                          and libversions.season_of(r) == season), None)
+            if first is None:
+                continue
+            oq = libversions.queue(rows, first)
+            others.append({"key": v["key"], "label": labels[v["key"]],
+                           "count": sum(1 for r in oq if r.get("episode") is not None), "items": [entry(r) for r in oq]})
+        if len(q) < 2 and not others:
+            return None
+        return {"version": me["ver"], "label": labels.get(me["ver"], ""), "season": season,
+                "count": sum(1 for r in q if r.get("episode") is not None), "items": [entry(r) for r in q],
+                "others": others}
+
+    def view(self, recent: dict[str, int] | None = None, recent_ver: dict[str, str] | None = None) -> dict:
         """GET /api/library：来源（没有地址）、扫描状态，电影、剧（带各集）、其他视频。有好几季的剧带 season_rows（每季
         的键、集数、资料、海报）；recent（剧的键 → 看这个页面的人最近看的是第几季）给 now_season，卡片用那一季的海报。"""
         sources = self._load_sources()
@@ -1762,6 +1862,7 @@ class Library:
         movies, videos, shows = [], [], {}
         entries = self.meta.all()
         cached = self.full.fractions()
+        vstore = self.versions.load()
         for item in items:
             card = self.card(item, names.get(item["source"], ""))
             part = cached.get(FullCache.key_of_item(item))
@@ -1776,6 +1877,7 @@ class Library:
                 # librarythumb.py），没有时空的（页面画那张图），从不用剧的海报。
                 show["episodes"].append((card, card["art"]))
                 card["art"] = self.thumbs.url(item)
+                card["ver"], card["vfolder"] = self.ver_of(item, vstore["items"])
                 show["count"] += 1
                 show["seasons"].add(item.get("season") or 1)
                 show["added"] = max(show["added"], card["added"])
@@ -1796,6 +1898,10 @@ class Library:
             # 已收录几集按 (季, 集) 去重数（同一集的几个版本、两个来源里的同一个文件都只算一集）；files 是视频文件数。
             show["count"] = self.logical_count(cards)
             show["files"] = len(cards)
+            # 版本（libversions.py）：页面上先选版本、再选集；每个版本的 ids 是它的文件（按季、集号排好）。
+            show["versions"] = libversions.summarize(cards, vstore["names"])
+            if (recent_ver or {}).get(key) in {v["key"] for v in show["versions"]}:
+                show["now_ver"] = recent_ver[key]
             show["episodes"] = self.fold_versions(cards)
             numbers = sorted(show["seasons"])
             show["seasons"] = len(numbers)
@@ -3970,29 +4076,11 @@ class Library:
         return (name if not title or _GENERIC_EPISODE.match(title) else f"{name} · {title}")[:TITLE_MAX]
 
     def neighbor(self, item: dict, step: int) -> dict | None:
-        """同一部剧里的下一集（step 1）/ 上一集（−1）；不是剧集、已经是头一集 / 最后一集时 None。"""
-        return self.step_episode(self.episodes_of(item), item, step)
-
-    @classmethod
-    def step_episode(cls, episodes: list[dict], item: dict, step: int) -> dict | None:
-        """episodes（episodes_of 排好的）里 item 的下一集 / 上一集：跳过同一集的其他版本；那一集有好几个版本时
-        先挑和 item 在同一个文件夹里的（一直看 4K 的接着看 4K 的），没有时挑排在前面的。"""
-        if not any(ep["id"] == item["id"] for ep in episodes):
-            return None
-        keys: list[tuple] = []
-        versions: dict[tuple, list[dict]] = {}
-        for ep in episodes:
-            key = cls.episode_key(ep)
-            if key not in versions:
-                keys.append(key)
-                versions[key] = []
-            versions[key].append(ep)
-        here = keys.index(cls.episode_key(item))
-        if not 0 <= here + step < len(keys):
-            return None
-        options = versions[keys[here + step]]
-        folder = item["path"].rpartition("/")[0]
-        return next((ep for ep in options if ep["path"].rpartition("/")[0] == folder), options[0])
+        """同一个版本、同一季里按真实集号的下一集（step 1）/ 上一集（−1）（libversions.step）：同一集的其他版本、
+        别的版本、别的季都不算；缺的集跳过，放不了的跳过。不是剧集、认不出集号、已经到头时 None。"""
+        _rows, q = self.version_queue(item)
+        found = libversions.step(q, item, step) if q else None
+        return self.item(found["id"]) if found is not None else None
 
 
 # ---------------------------------------------------------------- 播到小电视（第三步）
@@ -4349,11 +4437,9 @@ def tv_episode(relay, video) -> dict:
     """设备上「正在加载 / 正在播」要画的第几集、共几集（web.py 的 _describe）；不是剧集或只有一集时为空。"""
     library = getattr(relay, "library", None)
     item = library.item(video.bvid) if library is not None else None
-    episodes = library.episodes_of(item) if item is not None else []
-    keys = list(dict.fromkeys(Library.episode_key(ep) for ep in episodes))     # 同一集的几个版本算一集
-    if len(keys) < 2 or not any(ep["id"] == item["id"] for ep in episodes):
-        return {}
-    return {"episode": keys.index(Library.episode_key(item)) + 1, "total": len(keys)}
+    place = library.place(item) if item is not None else {}
+    # 真实集号、这个版本这一季收录了几集（libversions.py）；只有一集时不画。
+    return place if place.get("total", 0) >= 2 else {}
 
 
 # ---------------------------------------------------------------- HTTP
@@ -4401,17 +4487,22 @@ def raw(handler, relay, path: str) -> bool:
     return True
 
 
-def _recent_seasons(relay, library: Library, user: int) -> dict[str, int]:
-    """剧的键 → 这个人最近看的那一集是第几季（pc-progress.json 的 lib:<id>，最近的在前）。"""
+def _recent_seasons(relay, library: Library, user: int) -> tuple[dict[str, int], dict[str, str]]:
+    """(剧的键 → 这个人最近看的那一集是第几季, 剧的键 → 那一集的版本键)（pc-progress.json 的 lib:<id>，最近的在前）。"""
     store = getattr(relay, "pc_progress", None)
     found: dict[str, int] = {}
+    versions: dict[str, str] = {}
     if store is None:
-        return found
+        return found, versions
+    manual = library.versions.load()["items"]
     for key, _rec in store.rows(user):
         item = library.item(key[4:]) if key.startswith("lib:") else None
         if item is not None and item.get("kind") == "episode":
-            found.setdefault(library.show_key(item.get("show") or ""), int(item.get("season") or 1))
-    return found
+            show = library.show_key(item.get("show") or "")
+            if show not in found:
+                found[show] = int(item.get("season") or 1)
+                versions[show] = library.ver_of(item, manual)[0]
+    return found, versions
 
 
 def get(handler, relay, caller, path: str) -> bool:
@@ -4425,7 +4516,7 @@ def get(handler, relay, caller, path: str) -> bool:
         return True
     if path == "/api/library":
         fresh = handler._query().get("open") == "1" and library.freshen()
-        answer = library.view(_recent_seasons(relay, library, caller.user))
+        answer = library.view(*_recent_seasons(relay, library, caller.user))
         if fresh:
             # 后台线程可能刚把它从队里取走、还没标「正在扫」：照样告诉页面「排上了」，页面才会接着刷新。
             answer["scan"]["queued"] = max(1, answer["scan"].get("queued") or 0)
@@ -4524,8 +4615,8 @@ def history(relay, caller) -> dict:
             if seasons > 1:
                 # 豆瓣一季一个条目（「X医生 第二季」）：后面另写第几季，名字里不重复。
                 row["name"] = clean_title(_SEASON_WORD.sub(" ", name)) or name
-            n = item.get("episode") or next((n for n, ep in enumerate(episodes, 1) if ep["id"] == item["id"]), None)
-            row.update(season=int(item.get("season") or 1), seasons=seasons, episode=n)
+            # 真实集号；认不出集号的不拿队列里的位置冒充（None，页面写这一集的名字）。
+            row.update(season=int(item.get("season") or 1), seasons=seasons, episode=item.get("episode"))
         row["art"] = library.history_art(item, episodes)
         rows.append(row)
     return {"ok": True, "items": rows}

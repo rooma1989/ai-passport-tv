@@ -107,8 +107,9 @@ def _place(groups: dict[str, list[dict]], library, item: dict) -> dict:
     items = groups.get(key) or [item]
     if _kind(items) != "show":
         return {"id": key, "kind": _kind(items), "episode": 0, "total": 0}
-    n = next((n for n, i in enumerate(items, 1) if i["id"] == item["id"]), 0)
-    return {"id": key, "kind": "show", "episode": n, "total": len(items)}
+    # 真实集号、它的版本这一季收录了几集（library.place，libversions.py），和设备上画的、电脑上显示的一样。
+    place = library.place(item)
+    return {"id": key, "kind": "show", "episode": place.get("episode", 0), "total": place.get("total", 0)}
 
 
 def continue_item(relay, library, user: int) -> dict | None:
@@ -184,20 +185,24 @@ def _whole(value) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and 0 < value < 10_000 else 0
 
 
-def _episode(items: list[dict], n: int, season: int, current: dict | None) -> dict | None:
+def _episode(items: list[dict], n: int, season: int, current: dict | None, ver=None) -> dict | None:
     """第 n 集：集号对得上的（说了第几季只在那一季里找；没说时正在放这部剧就先找同一季，再找最前面那季）；
+    那一集有好几个版本时先挑正在放的那个版本的（ver 是条目 → 版本键），再挑能放的、画面大的。
     集号对不上（文件名里没写集号）时按顺序数第 n 个。"""
     same = [i for i in items if (i.get("episode") or 0) == n]
+    here_ver = ver(current) if ver is not None and current is not None and current in items else None
+    pick = lambda options: min(options, key=lambda i: ((ver(i) != here_ver) if ver is not None else False,  # noqa: E731
+                                                        not Library.playable(i), i["path"]))
     if season:
         same = [i for i in same if (i.get("season") or 1) == season]
-        return same[0] if same else None
+        return pick(same) if same else None
     if same:
         here = current.get("season") if current is not None and current in items else None
-        return next((i for i in same if i.get("season") == here), same[0])
+        return pick([i for i in same if i.get("season") == here] or same)
     return items[n - 1] if 1 <= n <= len(items) else None
 
 
-def _resume(relay, user: int, items: list[dict]) -> tuple[dict, str]:
+def _resume(relay, user: int, items: list[dict], library=None) -> tuple[dict, str]:
     """剧没说第几集：(要放的一集, 附带的话)。最近看的那一集没看完接着放，看完了放下一集，没看过从第 1 集。"""
     from . import home
     store = getattr(relay, "pc_progress", None)
@@ -213,6 +218,15 @@ def _resume(relay, user: int, items: list[dict]) -> tuple[dict, str]:
     done = latest["id"] in (record.get("done") or []) or bool(duration and position > duration - home.PROGRESS_END_S)
     if not done:
         return latest, ""
+    if library is not None and latest.get("kind") == "episode":
+        # 同一个版本、同一季里按真实集号的下一集（library.neighbor）；这个版本看完了从它的第一集重看，不换版本。
+        nxt = library.neighbor(latest, 1)
+        if nxt is not None:
+            return nxt, ""
+        _rows, q = library.version_queue(latest)
+        first = next((r for r in q if r.get("episode") is not None and r.get("playable")), None)
+        if first is not None and library.item(first["id"]) is not None:
+            return library.item(first["id"]), "已经看完了，从第 1 集重看"
     at = playable.index(latest)
     if at + 1 < len(playable):
         return playable[at + 1], ""
@@ -248,13 +262,15 @@ def play(relay, key, caller: Caller = LEGACY, body: dict | None = None, keyed: b
         if _kind(items) != "show":
             item = items[0]
         elif n:
-            item = _episode(items, n, season, _on_cast(relay, dev, library))
+            manual = library.versions.load()["items"]
+            item = _episode(items, n, season, _on_cast(relay, dev, library),
+                            ver=lambda i: library.ver_of(i, manual)[0])
             if item is None:
                 name = library.shown(items[0])["name"]
                 where = f"第 {season} 季第 {n} 集" if season else f"第 {n} 集"
                 return {"ok": False, "error": f"《{name}》没有{where}"}
         else:
-            item, note = _resume(relay, owner.user, items)
+            item, note = _resume(relay, owner.user, items, library)
     answer = play_tv(relay, owner, dev, item["id"])
     if not answer.get("ok"):
         return answer

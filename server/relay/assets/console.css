@@ -923,6 +923,13 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 #pcwin .pcpart { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; width: 100%; padding: 8px; border: 0; border-radius: 10px; background: transparent;
                  color: #f5f5f7; text-align: left; font: 13px/1.35 var(--sans); cursor: pointer; }
 #pcwin .pcpart:hover { background: rgba(255,255,255,.1); }
+/* 片库剧集的选集：上面一排版本（只换列表，点一集才换文件）；待确认、集号未知写在名字下面 */
+#pcwin .pcpvers { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,.1); }
+#pcwin .pcpvers[hidden] { display: none; }
+#pcwin .pcpvers button { padding: 4px 10px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: transparent; color: inherit; font-size: 12px; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#pcwin .pcpvers button[aria-pressed="true"] { background: rgba(255,255,255,.9); color: #111; border-color: transparent; }
+#pcwin .pcpart .t small { display: block; font-size: 11px; color: rgba(235,235,245,.55); }
+#pcwin .pcpart.dead { opacity: .45; cursor: default; }
 #pcwin .pcpart:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 #pcwin .pcpart .n { font: 600 12px var(--mono); color: rgba(235,235,245,.55); text-align: center; }
 /* 片库剧集的选集：每集的封面缩略图（16:9），左上角小号是第几集 */
@@ -1346,6 +1353,13 @@ button.opening:not(.card)::before { content: ""; flex: none; display: inline-blo
 .dbcmx { margin: 4px 0 0; font: 15px/1.6 var(--sans); color: var(--label-2); overflow-wrap: anywhere; }
 #dbBox .pgrid { margin-top: 12px; }
 /* 片库的一集，管理员多一个「换封面」（libEpisode）。 */
+/* 剧的版本：先选版本，再看这个版本的各集 */
+.lversions { margin: 4px 0 8px; }
+.lversions em { font-style: normal; opacity: .7; }
+.lversions .badge { position: static; margin-left: 4px; }
+.lveracts { margin: 0 0 8px; }
+.lvadjren { display: grid; gap: 6px; margin: 8px 0; }
+.lvadjren small { color: var(--label-2); }
 .lerow { display: flex; align-items: center; gap: 8px; }
 .lerow .hrow { flex: 1; min-width: 0; }
 .lerow > .ghost { flex: none; }

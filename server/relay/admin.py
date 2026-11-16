@@ -800,6 +800,18 @@ def post(handler, relay, path: str) -> bool:
                                  f"{answer.get('count', 0)} 个" + ("" if undo else f" → {str(body.get('show'))[:30]}"))
         handler._json(answer)
         return True
+    if path == "/api/admin/library/versions":
+        # 剧集的版本（library.py 的 set_versions、libversions.py）：把文件指到别的版本、新建版本、起名字。
+        library = getattr(relay, "library", None)
+        if library is None:
+            handler._json({"ok": False, "error": LIBRARY_OFF})
+            return True
+        answer = library.set_versions(body)
+        if answer.get("ok"):
+            relay.accounts.audit("library.versions", caller.user, ip, "library", str(body.get("rename") or "")[:16],
+                                 f"{answer.get('count', 0)} 个" if "count" in answer else str(answer.get("name") or "")[:30])
+        handler._json(answer)
+        return True
     if path == "/api/admin/library/thumb":
         # 一集的分集封面重新截一张（librarythumb.py）：删掉现在截的，排到最前面，没人在看时从下一个位置截。
         library = getattr(relay, "library", None)
