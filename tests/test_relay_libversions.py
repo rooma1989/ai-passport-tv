@@ -17,6 +17,7 @@ The page's pure helpers are tested by console_libver_test.mjs (run here under No
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -259,6 +260,7 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(self.relay.library.versions.load()["items"], {one: answer["key"]})
 
 
+@unittest.skipUnless(shutil.which("node"), "node is not installed")
 class LibVerJsTests(unittest.TestCase):
     def test_pure_functions(self):
         result = subprocess.run(["node", str(Path(__file__).resolve().parent / "console_libver_test.mjs")],
