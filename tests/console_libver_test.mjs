@@ -19,6 +19,7 @@ const { libVersIn, libVerChoose, libVerRows } = block('// ---- 剧集版本的�
                                                       ['libVersIn', 'libVerChoose', 'libVerRows']);
 const { libStep, libGap, libWhere } = block('// ---- 片库剧集的上一集 / 下一集', '// ---- 片库剧集的纯函数到此',
                                             ['libStep', 'libGap', 'libWhere']);
+const { miniStepLabel } = block('// ---- 正在播放栏的上一集 / 下一集', '// ---- 正在播放栏的纯函数到此', ['miniStepLabel']);
 
 // ---- detail page: versions ----
 const card = (id, season, episode) => ({ id, season, episode });
@@ -59,5 +60,21 @@ assert.deepEqual(libStep(items, items[1], -1), { item: items[0], note: '第 4 �
 assert.equal(libStep(items, items[4], 1), null, 'an unknown number has no neighbours');
 assert.equal(libGap(3, 4), '');
 assert.equal(libWhere({ current: 1, count: 22, items: [{ n: 1, label: '第 3 集' }] }), '第 3 集 / 已收录 22 集');
+
+// ---- bottom bar (正在播放栏): the same steps as the player, never a silent dead button ----
+// a middle episode: both sides live, labelled with the real episode and the gap note
+const mid = (dir) => { const f = libStep(items, items[1], dir); return miniStepLabel(dir, true, true, f && { title: f.item.label, note: f.note }); };
+assert.deepEqual(mid(1), { label: '下一集：第 8 集（第 6–7 集缺失，下一集为第 8 集）', disabled: false });
+assert.deepEqual(mid(-1), { label: '上一集：第 3 集（第 4 集缺失，上一集为第 3 集）', disabled: false });
+// first / last / unknown number: greyed out and saying why (same rule as the player's toast)
+assert.deepEqual(miniStepLabel(-1, true, true, null), { label: '已是当前版本的第一集', disabled: true });
+assert.deepEqual(miniStepLabel(1, true, true, null), { label: '当前版本已播放完毕', disabled: true });
+// a season-2 list only steps inside itself: the other season's episodes are not in `items`, so they are never reached
+const s2items = [{ n: 1, ep: 1, label: '第 2 季第 1 集' }, { n: 2, ep: 2, label: '第 2 季第 2 集' }];
+assert.equal(libStep(s2items, s2items[1], 1), null);
+// not the library: other parts, UP channel, live channel keep their own wording and stay clickable
+assert.deepEqual(miniStepLabel(1, false, true, { title: 'P2' }), { label: '下一集：P2', disabled: false });
+assert.deepEqual(miniStepLabel(1, false, false, { title: '第 3 个' }), { label: '下一个：第 3 个', disabled: false });
+assert.deepEqual(miniStepLabel(-1, false, false, null), { label: '上一台', disabled: false });
 
 console.log('console_libver_test: ok');

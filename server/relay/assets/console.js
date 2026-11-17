@@ -1598,7 +1598,7 @@ function renderMini2() {
     m.innerHTML = `<div class="mprog"><i id="miniBar" style="width:0%"></i></div>
       <button class="mart" data-mini-open aria-label="打开播放器">${art(watching.name || watching.title || "电脑", "w")}${watching.kind === "live" ? '<span class="badge live">直播</span>' : ""}</button>
       <div class="mtx"><b>${esc(watchHeadline())}</b><span><span class="dot"></span>这台电脑 · ${esc(watching.mode === "follow" ? "跟着" + deviceName() : watching.name || "窗口里播放")}</span></div>
-      <div class="mctl">${watching.mode === "direct" ? `<button class="iconbtn hidem" data-mk="pcprev" aria-label="上一台">${ic("prev", 18)}</button>` : ""}<button class="iconbtn big" data-mk="pcpp" aria-label="${paused ? "继续" : "暂停"}">${ic(paused ? "play" : "pause", 18)}</button>${watching.mode === "direct" ? `<button class="iconbtn hidem" data-mk="pcnext" aria-label="下一台">${ic("next", 18)}</button>` : ""}
+      <div class="mctl">${watching.mode === "direct" ? miniStepHTML("pcprev", "prev", miniStep(-1)) : ""}<button class="iconbtn big" data-mk="pcpp" aria-label="${paused ? "继续" : "暂停"}">${ic(paused ? "play" : "pause", 18)}</button>${watching.mode === "direct" ? miniStepHTML("pcnext", "next", miniStep(1)) : ""}
       <button class="iconbtn" data-mk="pcclose" aria-label="关闭电脑上的播放器">${ic("x", 18)}</button></div>`;
     renderMiniProgress();
     return;
@@ -1621,6 +1621,29 @@ function renderMini2() {
     <div class="mctl"><button class="iconbtn hidem" data-mk="chup" aria-label="上一台">${ic("prev", 18)}</button><button class="iconbtn big" data-mk="pp" aria-label="${paused ? "继续" : "暂停"}" ${pending ? "disabled" : ""}>${ic(paused ? "play" : "pause", 18)}</button><button class="iconbtn hidem" data-mk="chdn" aria-label="下一台">${ic("next", 18)}</button>
     <button class="iconbtn" data-mk="remote" aria-label="遥控 ${esc(deviceName())}">${ic("remote")}</button></div>`;
   renderMiniProgress();
+}
+// ---- 正在播放栏的上一集 / 下一集（tests/console_libver_test.mjs 截出这一段单独测）----
+// 电脑上直接看时，栏里两边的按钮和播放器走同一套：片库剧集只在这个版本这一季里走（libStep），没有时按钮灰掉、
+// 写明为什么；别的选集（B 站分 P 等）是上一集 / 下一集；UP 主台是上一个 / 下一个；直播是上一台 / 下一台。
+// lib：放的是片库剧集；series：有选集（不是 UP 主那种一排视频）；found：nextPart() / prevPart() 找到的那一集。
+function miniStepLabel(dir, lib, series, found) {
+  const word = dir > 0 ? "下一" : "上一";
+  if (lib) {
+    if (!found) return { label: dir > 0 ? "当前版本已播放完毕" : "已是当前版本的第一集", disabled: true };
+    return { label: word + "集：" + (found.title || "") + (found.note ? "（" + found.note + "）" : ""), disabled: false };
+  }
+  if (found) return { label: word + (series ? "集" : "个") + (found.title ? "：" + found.title : ""), disabled: false };
+  return { label: word + (series ? "集" : "台"), disabled: false };
+}
+// ---- 正在播放栏的纯函数到此 ----
+function miniStep(dir) {
+  const parts = watching && watching.parts;
+  const found = dir > 0 ? nextPart() : prevPart();
+  return miniStepLabel(dir, !!parts && parts.kind === "library", !!parts && parts.kind !== "up",
+                       found && { title: found.title || partWord(found.n), note: found.note });
+}
+function miniStepHTML(mk, icon, s) {
+  return `<button class="iconbtn hidem" data-mk="${mk}" aria-label="${esc(s.label)}" title="${esc(s.label)}"${s.disabled ? " disabled" : ""}>${ic(icon, 18)}</button>`;
 }
 function renderMiniProgress() {
   const bar = $("miniBar");
@@ -1648,8 +1671,8 @@ $("mini").addEventListener("click", (event) => {
   else if (k === "chdn") stepTv(1);
   else if (k === "remote") openRemote();
   else if (k === "pcpp") pcTogglePlay();
-  else if (k === "pcprev") stepChannel(-1);
-  else if (k === "pcnext") stepChannel(1);
+  else if (k === "pcprev") pcPrev();      // 和播放器、Shift+N 同一条路：片库剧集在这一版本这一季里换集
+  else if (k === "pcnext") pcNextStep();  // 和播放器左下角的下一集同一条路
   else if (k === "pcclose") stopWatch();
 });
 
@@ -4218,12 +4241,16 @@ new ResizeObserver(() => {
 $("pcPlay").onclick = pcTogglePlay;
 $("pcBack").onclick = () => pcSkip(-10);
 $("pcFwd").onclick = () => pcSkip(10);
-$("pcNext").onclick = () => {
+// 下一集：播放器左下角、正在播放栏、N 键共用。选集里有下一集就放；片库剧集放到头了说一声；UP 主台是下一个；
+// 别的（直播）是这一组的下一台。
+function pcNextStep() {
   const next = nextPart();
   if (next) playPart(next.n, next.note);
   else if (watching && watching.parts && watching.parts.kind === "library") toast("当前版本已播放完毕");
-  else if (watching && !watching.busy) startDirect({ channel: watching.channel, step: 1 }, { group: watching.group });
-};
+  else if (pcStepUp()) { if (!watching.busy) startDirect({ channel: watching.channel, step: 1 }, { group: watching.group }); }
+  else stepChannel(1);
+}
+$("pcNext").onclick = pcNextStep;
 $("pcMute").onclick = pcToggleMute;
 $("pcRush").onclick = () => { if (watching && watching.player && watching.player.rush) watching.player.rush(); };
 $("pcVol").oninput = () => {
@@ -4376,6 +4403,7 @@ function pcStepUp() { return !!watching && watching.mode === "direct" && watchin
 function pcPrev() {
   const prev = prevPart();
   if (prev) playPart(prev.n, prev.note);
+  else if (watching && watching.parts && watching.parts.kind === "library") toast("已是当前版本的第一集");
   else if (pcStepUp()) { if (!watching.busy) startDirect({ channel: watching.channel, step: -1 }, { group: watching.group }); }
   else stepChannel(-1);
 }

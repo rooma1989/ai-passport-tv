@@ -564,6 +564,7 @@ button.mart:focus-visible { outline: 2px solid var(--label); outline-offset: 2px
 .mctl { display: flex; align-items: center; gap: 4px; }
 .mctl .iconbtn.big { width: 48px; height: 48px; background: var(--label); color: var(--on-label); }
 #mini.idle { padding-left: 22px; }
+#mini .iconbtn:disabled { background: transparent; }
 #mini.idle .mtx b { color: var(--label-2); }
 
 /* ---- 抽屉 / 底部面板（播放到 / 遥控 / 选集）：厚毛玻璃 ---- */
