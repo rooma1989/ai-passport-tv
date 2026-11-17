@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+## v0.3.13-beta
+
 - **The bottom bar's previous / next episode buttons work again** (PC console, watching on this computer). While a library episode played, the buttons on either side of Play in the bottom bar did nothing: they stepped through live channel groups, and a library episode is in none. They now go the same way as the player's next button and the N / Shift+N keys: inside the current version and season, skipping missing episodes with the same note ("Episode 4 is missing, next is episode 5"), never into another version or season. On the first or last episode the button is greyed out and its tooltip says why ("First episode of this version" / "This version has finished"). Bilibili parts, up channels and live channels keep stepping as before.
 
 ## v0.3.12-beta
