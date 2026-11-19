@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+## v0.3.14-beta
+
 - **MP4 files that lost their frame order play smoothly** (PC console and small TV, My library). Some releases are remuxed into MP4 without the table that says in which order B-frames are shown; the browser then dropped about a quarter of the frames and the picture juddered (season 7 of a show here). Before playing an MP4 / MOV with H.264 or HEVC the first time, the library now checks the first packets once; a broken file is transcoded on the PC and on the TV instead of played directly or copied, and the log says so. Files on the drive are not changed.
 - **Posters no longer flash in Safari while the library scans** (PC console, My library). During a scan the page redraws every 3 seconds, and Safari blanked and re-decoded every poster each time; images already shown are now kept across redraws.
 - **A multi-season show's season buttons are below the synopsis** (PC console, My library). They used to sit above the poster; now they are between the synopsis and the episode list, next to what they switch.
