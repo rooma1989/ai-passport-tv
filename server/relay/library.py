@@ -34,7 +34,9 @@
   和页面报的能力（MediaSource / <video> 能不能放 HEVC）定怎么放（plan）：mp4 / m4v / mov、画面浏览器放得了、
   第一路声音是 AAC / MP3 的直接按 Range 放原文件；别的经 watch.py 封装成分片 MP4（第一路真画面——封面图不算——
   能放就只换封装，HEVC 写成 hvc1，放不了才转成 H.264；声音有 AAC 就直接用，没有就把默认的那一路转成 AAC 立体声；
-  字幕和附件从不放进去）。ffmpeg 读的是只给本机的 /api/library/raw/<id>?t=<令牌>（raw）：网盘的地址和密码从不在
+  字幕和附件从不放进去）。MP4 里有 B 帧、却缺了显示顺序（ctts，显示时间全等于解码时间，转封装时丢了）的：直接放
+  和只换封装时浏览器会扔掉约四分之一的帧、画面前后抖，所以第一次放时另查一次（with_order），这种的画面一律转码
+  （转码时解码器按帧号排好了顺序，出来的时间是对的）。ffmpeg 读的是只给本机的 /api/library/raw/<id>?t=<令牌>（raw）：网盘的地址和密码从不在
   ffmpeg 的命令行上，本机的文件也不用 file: 协议。网盘的文件每次起 ffmpeg 都要再读的「目录」（MP4 的 moov、MKV 的头、
   附件和 Cues）存在 library-cache/（librarycache.py，_serve_cached），只给 raw 用。扫描找到新的（或变了的）网盘片子
   以后，没人在放时后台先把这几段读进缓存、探测一次（预热，warm_step），第一次放也和第二次一样快。正在看的那一集
@@ -986,6 +988,10 @@ PROBE_ENTRIES = ("format=format_name,duration,start_time:stream=index,codec_type
                  "stream_tags=language,title")
 # 探测失败了（网盘超时之类）这么久以内不再探测同一个，照扩展名猜着放。
 PROBE_RETRY_S = 600.0
+# 查显示顺序（with_order）：读开头这么多个画面的数据包，看显示时间是不是全等于解码时间。
+ORDER_PACKETS = 32
+# 只有这几种画面会有 B 帧、浏览器也会去直接放 / 只换封装。
+ORDER_CODECS = frozenset({"h264", "hevc"})
 # 浏览器直接放（按 Range 取原文件）只认这些容器；第一路声音要是浏览器解得了的（Chrome 只放第一路）。
 DIRECT_CONTAINERS = frozenset({".mp4", ".m4v", ".mov"})
 DIRECT_AUDIO = frozenset({"aac", "mp3"})
@@ -1075,6 +1081,31 @@ def parse_probe_json(data: bytes | str) -> dict | None:
             continue
     return {"dur": _float(fmt.get("duration")), "start": _float(fmt.get("start_time")),
             "fmt": str(fmt.get("format_name") or "")[:40], "streams": streams}
+
+
+def missing_order(data: bytes | str) -> bool | None:
+    """ffprobe 查显示顺序的输出（-select_streams v:0，stream=has_b_frames、packet=pts,dts，-of json）→ 缺不缺：
+    有 B 帧（has_b_frames > 0）、开头的数据包显示时间全等于解码时间时 True（文件里缺了 ctts）；看不懂、包太少时 None。"""
+    try:
+        found = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(found, dict):
+        return None
+    streams = found.get("streams") if isinstance(found.get("streams"), list) else []
+    packets = [p for p in (found.get("packets") if isinstance(found.get("packets"), list) else [])
+               if isinstance(p, dict) and isinstance(p.get("pts"), int) and isinstance(p.get("dts"), int)]
+    if not streams or not isinstance(streams[0], dict):
+        return None
+    try:
+        reorder = int(streams[0].get("has_b_frames") or 0)
+    except (TypeError, ValueError):
+        return None
+    if reorder <= 0:
+        return False
+    if len(packets) < 8:
+        return None
+    return all(p["pts"] == p["dts"] for p in packets)
 
 
 def _float(value) -> float:
@@ -1209,11 +1240,14 @@ def plan(media: dict | None, ext: str, caps=None, remote: bool = False, remux: b
         return {"how": "none", "note": "这个文件里没有能放的画面和声音"}
     first_audio = next((s for s in streams if s.get("t") == "audio"), None)
     text_subs = any(s.get("t") == "subtitle" and s.get("c") in TEXT_SUBS for s in streams)
-    if not remux and ext in DIRECT_CONTAINERS and (video is None or video_ok(video, caps, True)) \
+    # 缺显示顺序的（with_order 查出来的 noct）：直接放、只换封装都会丢帧抖动，画面要转码。
+    broken = video is not None and bool(video.get("noct"))
+    if not remux and not broken and ext in DIRECT_CONTAINERS and (video is None or video_ok(video, caps, True)) \
             and (first_audio is None or first_audio.get("c") in DIRECT_AUDIO) and not (remote and text_subs):
         return {"how": "direct", "note": "直接放原文件"}
-    vcopy = video is not None and video_ok(video, caps, False)
-    note = [(f"画面 {video['c']} 只换封装" if vcopy else f"画面 {video['c']} 转成 H.264") if video else "没有画面",
+    vcopy = video is not None and not broken and video_ok(video, caps, False)
+    encoded = f"画面 {video['c']} 缺显示顺序，转成 H.264" if broken else f"画面 {video['c']} 转成 H.264" if video else ""
+    note = [(f"画面 {video['c']} 只换封装" if vcopy else encoded) if video else "没有画面",
             (f"声音 {audio['c']} 直接用" if acopy else f"声音 {audio['c']} 转成 AAC") if audio else "没有声音"]
     return {"how": "remux", "video": video["i"] if video else None, "audio": audio["i"] if audio else None,
             "vcodec": video["c"] if video else "", "vcopy": vcopy, "acopy": acopy,
@@ -1417,6 +1451,7 @@ class Library:
         self._probing: dict[str, threading.Lock] = {}
         self._probe_failed: dict[str, float] = {}
         self._color_failed: dict[str, float] = {}
+        self._order_failed: dict[str, float] = {}
         self._read: dict[str, int] = {}
         # 每个文件最近一次从网盘读失败的时刻（time.monotonic）：小电视上一集「提前放完」时据此分清是断了还是放完了。
         self._drive_failed: dict[str, float] = {}
@@ -3795,6 +3830,57 @@ class Library:
                 return media
             return self._keep_probe(iid, item, found)
 
+    def with_order(self, iid: str, media: dict | None) -> dict | None:
+        """放之前查一次 MP4 的画面缺不缺显示顺序（missing_order）：缺的在画面那一路记 noct（plan、tv_args 见了就转码），
+        查过的整个 media 记 order，不再查。只查 mp4 / m4v / mov 里的 H.264 / HEVC；没有 ffprobe 时不查（记 order，
+        照旧放）。查不了（网盘超时之类）时照旧用原来的，PROBE_RETRY_S 内不再试。"""
+        item = self.item(iid)
+        video = first_video(media)
+        if item is None or not self.ffmpeg or not isinstance(media, dict) or media.get("order") or video is None \
+                or video.get("c") not in ORDER_CODECS or (item.get("ext") or "") not in DIRECT_CONTAINERS:
+            return media
+        with _LOCK:
+            lock = self._probing.setdefault(iid, threading.Lock())
+            failed = self._order_failed.get(iid)
+        if failed is not None and self.clock() - failed < PROBE_RETRY_S:
+            return media
+        with lock:
+            again = (self.item(iid) or {}).get("media")
+            if isinstance(again, dict) and again.get("order"):
+                return again
+            broken = self.probe_order(iid)
+            if broken is None and _ffprobe_of(self.ffmpeg or "") is not None:
+                with _LOCK:
+                    self._order_failed[iid] = self.clock()
+                return media
+            checked = dict(media, order=True,
+                           streams=[dict(s, noct=True) if broken and s is video else s for s in media.get("streams") or []])
+            if broken:
+                self.log(f"片库：「{self._full_name(item)}」的画面缺显示顺序（ctts），在电脑上和小电视上都转码放")
+            with _LOCK:
+                if iid in self._items and self._items[iid].get("media") is not None:
+                    self._items[iid]["media"] = checked
+                    self._save_index()
+            return checked
+
+    def probe_order(self, iid: str) -> bool | None:
+        """ffprobe 读开头 ORDER_PACKETS 个画面的数据包（missing_order）。没有 ffprobe、出错、超时时 None。"""
+        probe = _ffprobe_of(self.ffmpeg) if self.ffmpeg else None
+        if not probe or self.secret is None or self.port is None:
+            return None
+        from ..proxyenv import loopback_bypass
+        item = self.item(iid)
+        limit = PROBE_TIMEOUT_REMOTE_S if item is not None and self.remote(item) else PROBE_TIMEOUT_S
+        args = [probe, "-v", "error", "-protocol_whitelist", "http,tcp", "-select_streams", "v:0",
+                "-read_intervals", f"%+#{ORDER_PACKETS}", "-show_entries", "stream=has_b_frames:packet=pts,dts",
+                "-of", "json", self.raw_url(iid)]
+        try:
+            done = subprocess.run(args, capture_output=True, timeout=limit, env=loopback_bypass(os.environ))
+        except (OSError, subprocess.SubprocessError) as error:
+            self.log(f"片库查不了一个文件的显示顺序（{type(error).__name__}）")
+            return None
+        return missing_order(done.stdout) if done.returncode == 0 else None
+
     def probe(self, iid: str, warm: bool = False) -> dict | None:
         """探测一次（ffprobe，没有时用 ffmpeg 自己打的输入信息），读的是 raw_url。出错、超时时 None。"""
         if not self.ffmpeg or self.secret is None or self.port is None:
@@ -4062,7 +4148,7 @@ class Library:
         if item is None or not self.ffmpeg or self.secret is None or self.port is None:
             return None
         hwaccel = tv_hwaccel(self.ffmpeg)
-        media = self.with_color(iid, self.media_of(iid))
+        media = self.with_color(iid, self.with_order(iid, self.media_of(iid)))
         return tv_args(self.ffmpeg, self.raw_url(iid), offset, media, item.get("ext") or "", hwaccel=hwaccel,
                        tonemap=tonemap_for(self.ffmpeg, first_video(media), hwaccel))
 
@@ -4248,7 +4334,7 @@ def tv_args(ffmpeg: str, url: str, offset: float, media: dict | None, ext: str, 
     video = first_video(media)
     audio, _ = audio_choice(media, ext)
     known = bool((media or {}).get("streams"))
-    copy = video is not None and video.get("c") == "h264" and not _deep(video) \
+    copy = video is not None and video.get("c") == "h264" and not _deep(video) and not video.get("noct") \
         and 0 < int(video.get("h") or 0) <= TV_COPY_HEIGHT
     tonemap = tonemap if video is not None and not copy and tonemap in TONEMAP_KINDS else ""
     args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]

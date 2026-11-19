@@ -2159,7 +2159,7 @@ class Relay:
         found = library.item(iid) if library is not None and isinstance(iid, str) else None
         if found is None:
             return {"ok": False, "error": "片库里没有这个视频（可能刚重新扫描过，刷新一下）"}
-        media = library.media_of(found["id"])
+        media = library.with_order(found["id"], library.media_of(found["id"]))
         remote = library.remote(found)
         decision = library_api.plan(media, found.get("ext") or "", caps, remote=remote, remux=remux)
         if decision["how"] == "none":
