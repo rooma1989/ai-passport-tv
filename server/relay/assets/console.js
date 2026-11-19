@@ -255,6 +255,23 @@ function avatarSVG(name, s) {
   return `<svg viewBox="0 0 72 72" width="${s}" height="${s}" aria-hidden="true"><circle cx="36" cy="36" r="36" fill="hsl(${hue} 44% 40%)"/><circle cx="36" cy="80" r="34" fill="hsl(${(hue + 30) % 360} 48% 24%)"/><text x="36" y="45" text-anchor="middle" font-family="${SANS}" font-size="27" font-weight="700" fill="#fff">${esc(ch)}</text></svg>`;
 }
 const imgTag = (url, cls) => url ? `<img src="${esc(url)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"${cls ? ` class="${cls}"` : ""}>` : "";
+// 整块重画（扫描时每 3 秒一次）时把已经显示出来的图原样搬回去：换成新的 <img> 时 Safari 会先空一下再重新解码，
+// 海报几秒闪一次。同一个 src 的新图换成旧的那个元素（按出现的先后一一对上）。
+function setKeepImgs(box, html) {
+  const old = new Map();
+  for (const img of box.querySelectorAll("img")) {
+    if (!img.complete || !img.naturalWidth) continue;
+    const key = img.getAttribute("src") + "|" + img.className;
+    if (!old.has(key)) old.set(key, []);
+    old.get(key).push(img);
+  }
+  box.innerHTML = html;
+  if (!old.size) return;
+  for (const img of box.querySelectorAll("img")) {
+    const list = old.get(img.getAttribute("src") + "|" + img.className);
+    if (list && list.length) img.replaceWith(list.shift());
+  }
+}
 // 本站的封面代理（api/…thumb…）偶尔没取到（限速、图床一时连不上）：过 2、6、15 秒再试，不让卡片一直空着。
 const IMG_RETRY_MS = [2000, 6000, 15000];
 document.addEventListener("error", (event) => {
@@ -8970,13 +8987,13 @@ function renderLib() {
       o += `<div class="lshow"><button class="ghost sm" data-libback="1">${ic("back", 16)}全部</button></div>`;
       const rows = show.season_rows || [];
       if (rows.length) {
-        // 好几季的剧：上面切季，每季是豆瓣上那一季自己的海报、评分、简介（改匹配也只改这一季），下面是这一季的各集。
+        // 好几季的剧：上面是这一季的资料（每季是豆瓣上那一季自己的海报、评分、简介，改匹配也只改这一季），简介下面切季，再下面是这一季的各集。
         const row = libSeason(show);
         const eps = show.episodes.filter((e) => (e.season || 1) === row.n);
-        o += `<div class="chips lseasons" role="group" aria-label="选季">${rows.map((r) => `<button type="button" data-libseason="${r.n}" aria-pressed="${r.n === row.n}">第 ${r.n} 季</button>`).join("")}</div>`;
         o += libInfoHTML(Object.assign({}, show, { key: row.key, meta: row.meta, art: row.art || show.art, title: row.title || show.title + " 第 " + row.n + " 季",
                                                    year: row.year || (row.n === rows[0].n ? show.year : null), guess: libSeasonGuess(show, row.n), have: libHave(row.count) }), libAsgActs(show));
         o += libAsgPanel("show:" + show.id);
+        o += `<div class="chips lseasons" role="group" aria-label="选季">${rows.map((r) => `<button type="button" data-libseason="${r.n}" aria-pressed="${r.n === row.n}">第 ${r.n} 季</button>`).join("")}</div>`;
         o += show.versions ? libEpsHTML(show, row.n) : `<div class="h2 leps"><h2>选集</h2><small>第 ${row.n} 季 · ${libHave(row.count)}</small></div><div class="hlist">${eps.map(libEpisode).join("")}</div>`;
       } else {
         o += libInfoHTML(Object.assign({}, show, { have: libHave(show.count) }), libAsgActs(show));
@@ -9027,7 +9044,7 @@ function renderLib() {
   }
   const focusQ = document.activeElement && document.activeElement.id === "libQ";
   const caret = focusQ ? document.activeElement.selectionStart : 0;
-  box.innerHTML = o;
+  setKeepImgs(box, o);
   // 简介没被折起来（三行放得下）就不要「展开」。
   const plotP = qs("#libBox .lplot"), plotB = qs("#libBox [data-libmore]");
   if (plotP && plotB && !lib.more && plotP.scrollHeight <= plotP.clientHeight + 1) plotB.hidden = true;
@@ -9576,7 +9593,7 @@ function dbRenderDetail() {
                     plot: d.plot || "", more: db.more, moreKey: "dbmore", state, acts });
     o += libMoreHTML(did);
   }
-  box.innerHTML = o;
+  setKeepImgs(box, o);
   // 简介没被折起来（三行放得下）就不要「展开」。
   const plotP = qs("#dbBox .lplot"), plotB = qs("#dbBox [data-dbmore]");
   if (plotP && plotB && !db.more && plotP.scrollHeight <= plotP.clientHeight + 1) plotB.hidden = true;
