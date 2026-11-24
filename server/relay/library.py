@@ -256,14 +256,16 @@ _DI_JI_SEASON = re.compile(r"第\s*([0-9零〇一二两三四五六七八九十]
 _YEAR = re.compile(r"(?i)(?<![0-9a-z])[(\[（【]?((?:19|20)\d{2})[)\]）】]?(?![0-9a-z])")
 # 没有年份时，标题到第一个这类标记为止（分辨率、片源、编码、声音、HDR、发布的网站，还有中文的「高码版」「内封」
 # 「字幕」「收藏版」「片源」这些）。中文的前后不看挨着什么（「NF高码版」「内封精修官译简中字幕」）。
-_JUNK = re.compile(r"(?i)(?<![0-9a-z])((?:hd)?(?:tc|ts|cam)?(?:2160p|1080[pi]|720p|480p)|4k|8k|uhd|fhd|hq|blu-?ray|bd|bdrip|brrip|bdremux|remux|"
+_JUNK = re.compile(r"(?i)(?<![0-9a-z])((?:hd|bd|web|uhd)?(?:tc|ts|cam)?(?:2160p|1080[pi]|720p|480p)|4k|8k|uhd|fhd|hq|blu-?ray|bd|bdrip|brrip|bdremux|remux|"
                    r"web-?dl|webrip|hdtv|dvdrip|x26[45]|h\.?26[45]|hevc|avc|aac|e?ac3|ddp?(?:\d(?:\.\d)?)?|"
                    r"dd\+|dts(?:-?hd)?|truehd|atmos|flac|hdr(?:10\+?)?|sdr|dovi|10bit|8bit|60fps|120fps|nf|amzn|"
                    r"dsnp|hmax|atvp|itunes)(?![0-9a-z])|"
                    r"(高码率|高码版|高码|内封|内嵌|外挂|精修|官译|简中|繁中|简繁|中字|中英|双语|国语|粤语|字幕|收藏版|"
                    r"片源|蓝光|原盘|无删减|未删减|完整版|修复版|特效|杜比视界|杜比|全景声|60帧|高帧率|高清|超清)")
-# 一段名字里的这些也算「只有标记」：声道（5.1）、单个数字、发布组前的横线。
-_JUNK_REST = re.compile(r"(?i)(?<![0-9a-z])(?:\d(?:\.\d)?|ma|x|h)(?![0-9a-z])")
+# 一段名字里的这些也算「只有标记」：声道（5.1）、单个数字、发布组前的横线、字幕 / 声音的语言（「English.CHS-ENG」）。
+# 语言不放进 _JUNK：片名里也有（「The.English.Patient」），_JUNK 会在那儿截断片名。
+_JUNK_REST = re.compile(r"(?i)(?<![0-9a-z])(?:\d(?:\.\d)?|ma|x|h|english|chinese|mandarin|cantonese|chs|cht|eng|"
+                        r"chi|sub|subs|dub)(?![0-9a-z])")
 _CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 # 「苏.里.南」「苏 里 南」：一个一个隔开的汉字连起来。
 _SPACED_CJK = re.compile(rf"(?<![{_CJK}])[{_CJK}](?:[ ._·・][{_CJK}])+(?![{_CJK}])")
@@ -276,7 +278,7 @@ GENERIC_DIRS = {"来自：分享", "来自:分享", "我的资源", "资源", "�
                 "movies", "movie", "films", "film", "tv", "tv shows", "shows", "series", "videos", "video",
                 "downloads", "download", "media", "quark", "baidu"}
 # 解析文件名的写法改了就加一：索引里旧的条目重新解析（探测的结果照旧留着）。
-PARSE_VERSION = 8
+PARSE_VERSION = 9
 # 只有「缩写-集号」的文件名（「MTJBYDD-01.mp4」：夸克上只转存了视频、没带外层写着剧名的文件夹）：字母缩写加一到三位数，
 # 后面至多跟着画质标记。同一个文件夹里同一个缩写、数字各不相同的三个以上才当一部剧的各集，剧名先用缩写、标「待识别」
 # （pending），不往豆瓣查，等管理员指定是哪部剧（Library.assign）。相机、手机自己起的名字（IMG_001）不算。

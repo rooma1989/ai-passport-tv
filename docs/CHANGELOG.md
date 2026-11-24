@@ -6,8 +6,9 @@
 
 ## Unreleased
 
-- **Baidu Netdisk's login error says which switch to turn on** (PC console, My library → Drive). A refresh token fetched on the OpenList token page with "Use the parameters provided by OpenList" turned off belongs to another app key and cannot be renewed here; the error now says to turn that switch on and fetch the token again.
 - **A drive added during a library scan is scanned too** (PC console, My library → Drive). Adding Baidu Netdisk while a scan was already running asked for another scan, but a source already being scanned was not queued again, so the running scan (which had listed the folders before the drive logged in) finished without any of its videos until the next hourly scan. Adding a drive, or pressing Scan, during a scan now queues one more scan after it.
+- **A video named only by year and quality takes its folder's title** (PC console and small TV, My library). `奥德赛 4K特效字幕/2026.BD1080P.X265.10Bit.AC3.DDP5.1.English.CHS-ENG.mp4` showed up in Other videos as "2026 BD1080P": a source and resolution written together (`BD1080P`, `WEB2160P`) and subtitle / audio language labels (`English`, `CHS-ENG`) were taken for part of the title. Such a file name now counts as tags only, so the movie is named after its folder ("奥德赛", 2026). Titles that really contain one of those words ("The English Patient") are unchanged. The next scan after the update reparses all names.
+- **Baidu Netdisk's login error says which switch to turn on** (PC console, My library → Drive). A refresh token fetched on the OpenList token page with "Use the parameters provided by OpenList" turned off belongs to another app key and cannot be renewed here; the error now says to turn that switch on and fetch the token again.
 
 ## v0.3.14-beta
 

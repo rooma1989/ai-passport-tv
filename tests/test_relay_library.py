@@ -176,6 +176,14 @@ class NameTests(unittest.TestCase):
         found = library.parse_name(rel)
         self.assertEqual({k: found[k] for k in want}, want, (rel, found))
 
+    def test_file_name_with_only_year_source_and_languages_uses_the_folder(self):
+        # 「奥德赛 4K特效字幕/2026.BD1080P.X265.10Bit.AC3.DDP5.1.English.CHS-ENG.mp4」：文件名里没有片名。
+        for quality in ("BD1080P", "BD2160P", "WEB2160P"):
+            self.check(f"我的资源/奥德赛 4K特效字幕/2026.{quality}.X265.10Bit.AC3.DDP5.1.English.CHS-ENG.mp4",
+                       kind="movie", title="奥德赛", year=2026)
+        # 片名里真有 English 的不受影响。
+        self.check("The.English.Patient.1996.1080p.mkv", kind="movie", title="The English Patient", year=1996)
+
     def test_movies_and_other_videos(self):
         self.check("Inception.2010.1080p.BluRay.x264.mp4", kind="movie", title="Inception", year=2010)
         self.check("电影/流浪地球 (2019).mp4", kind="movie", title="流浪地球", year=2019)
