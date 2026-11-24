@@ -128,7 +128,7 @@ Repository documentation is organized by function area. `authoritative` document
 - [`docs/desktop/`](desktop/README.md) — the PC client for Windows and macOS (0.2.0 beta): download, Gatekeeper and SmartScreen, first run, connecting phones, flashing and binding; [developer notes](desktop/developer.md).
 - [`docs/selfhost/`](selfhost/README.md) — advanced: running the server on a NAS, with Docker or plain Python (0.x beta), first-run setup code, adding your own channels.
 - [`docs/brand/`](brand/README.md) — public brand and product language (`brand-and-product.md`) and the official product visual references.
-- [`docs/`](README.md) top-level — [`CHANGELOG.md`](CHANGELOG.md), [`brand-and-product.md`](brand/brand-and-product.md), and [`fork-guide.md`](fork-guide.md).
+- [`docs/`](README.md) top-level — [`CHANGELOG.md`](CHANGELOG.md), [`brand-and-product.md`](brand/brand-and-product.md), [`fork-guide.md`](fork-guide.md), and the fork's onboarding page [`assets/onboarding.md`](assets/onboarding.md).
 
 GitHub community documents: [CONTRIBUTING.md](../.github/CONTRIBUTING.md), [CODE_OF_CONDUCT.md](../.github/CODE_OF_CONDUCT.md), [SECURITY.md](../.github/SECURITY.md), and [SUPPORT.md](../.github/SUPPORT.md).
 
