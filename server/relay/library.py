@@ -2734,8 +2734,9 @@ class Library:
             return False
         return bool(self.remove(found["id"], managed=True).get("ok"))
 
-    def scan(self, sid: str | None = None) -> dict:
-        """排上扫描（sid 为空是全部来源），后台一个一个扫。"""
+    def scan(self, sid: str | None = None, again: bool = False) -> dict:
+        """排上扫描（sid 为空是全部来源），后台一个一个扫。正在扫的来源一般不再排；again：来源里刚变了东西
+        （加了网盘、用户点了扫描），正在扫的那一轮可能已经列过那些目录了，扫完再扫一轮。"""
         sources = self._load_sources()
         wanted = [s["id"] for s in sources if sid is None or s["id"] == sid]
         if sid is not None and not wanted:
@@ -2744,7 +2745,7 @@ class Library:
             return {"ok": False, "error": "还没有片库来源"}
         with _LOCK:
             for one in wanted:
-                if one not in self._queue and not (self._status["running"] and self._status["source"] == one):
+                if one not in self._queue and (again or not (self._status["running"] and self._status["source"] == one)):
                     self._queue.append(one)
             start = self.background and (self._worker is None or not self._worker.is_alive())
             if start:

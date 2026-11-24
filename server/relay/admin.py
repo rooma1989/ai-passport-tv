@@ -780,7 +780,7 @@ def post(handler, relay, path: str) -> bool:
             answer, action = library.remove(sid), "library.delete"
             detail = answer.get("name", "")
         else:
-            answer, action = library.scan(sid or None), "library.scan"
+            answer, action = library.scan(sid or None, again=True), "library.scan"
             detail = ""
         if answer.get("ok"):
             relay.accounts.audit(action, caller.user, ip, "library", sid[:8], detail[:40])

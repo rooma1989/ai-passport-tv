@@ -463,7 +463,7 @@ def _after_added(relay) -> None:
     library = getattr(relay, "library", None)
     managed = library.managed() if library is not None else None
     if managed is not None:
-        library.scan(managed["id"])
+        library.scan(managed["id"], again=True)
 
 
 def _reinit(client: Api, storage: dict, **addition) -> dict:

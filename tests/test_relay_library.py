@@ -344,6 +344,18 @@ class LocalTests(unittest.TestCase):
         self.assertIn("只扫了前 5 个", source["note"])
         self.assertLessEqual(source["count"], 5)
 
+    def test_a_change_during_a_scan_queues_another_one(self):
+        # A scan already running may have listed the folders before the change (e.g. a drive just added):
+        # a plain request is folded into it, but again=True scans once more after it.
+        sid = self.add()
+        with library._LOCK:
+            self.lib._status.update(running=True, source=sid)
+        with mock.patch.object(self.lib, "scan_now", return_value={"ok": True}) as scan_now:
+            self.lib.scan(sid)
+            self.assertEqual(scan_now.call_count, 0)
+            self.lib.scan(sid, again=True)
+            self.assertEqual([c.args for c in scan_now.call_args_list], [(sid,)])
+
     def test_rescan_is_incremental(self):
         sid = self.add()
         movie = next(i for i in self.lib.items() if i["kind"] == "movie")
