@@ -618,7 +618,7 @@ def baidu_add(relay, body: dict) -> dict:
     if state != "ok":
         relay.log(f"网盘：「{mount.strip('/')}」没登录上")
         if state == "expired":
-            raise DriveError("百度网盘没登录上：令牌不对或过期了，回取令牌页重新取一个")
+            raise DriveError("百度网盘没登录上：令牌不对或过期了。回取令牌页，把「使用 OpenList 提供的参数」打开再重新取一个")
         raise DriveError("百度网盘没登录上：" + (reason or "网盘那边出错了"))
     relay.log(f"网盘：加好了「{mount.strip('/')}」")
     _after_added(relay)
